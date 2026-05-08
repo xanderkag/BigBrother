@@ -1,0 +1,80 @@
+services:
+  api:
+    build: .
+    image: doc-service:latest
+    command: node dist/server.js
+    env_file: .env
+    ports:
+      - "${PORT:-3000}:3000"
+    volumes:
+      - doc-data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - default          # for postgres/redis (per-stack)
+      - ai-platform      # to reach inference-service by name
+    restart: unless-stopped
+
+  worker:
+    image: doc-service:latest
+    build: .
+    command: node dist/worker.js
+    env_file: .env
+    volumes:
+      - doc-data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_started
+    networks:
+      - default
+      - ai-platform      # worker also calls inference-service from the OCR pipeline
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: docservice
+      POSTGRES_PASSWORD: docservice
+      POSTGRES_DB: docservice
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U docservice -d docservice"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  doc-data:
+  pgdata:
+  redisdata:
+
+networks:
+  # Cross-stack network shared with inference-service. Create once with:
+  #   docker network create ai-platform
+  # Then run both stacks; doc-service reaches the LLM via http://inference:8000.
+  ai-platform:
+    name: ai-platform
+    external: true
+

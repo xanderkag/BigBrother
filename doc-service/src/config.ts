@@ -1,0 +1,104 @@
+import { z } from 'zod';
+
+const numberFromEnv = (def: number) =>
+  z
+    .preprocess((v) => (v === undefined || v === '' ? undefined : Number(v)), z.number())
+    .default(def);
+
+const ConfigSchema = z.object({
+  port: numberFromEnv(3000),
+  host: z.string().default('0.0.0.0'),
+  logLevel: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+  maxUploadMb: numberFromEnv(50),
+
+  databaseUrl: z.string().min(1),
+  redisUrl: z.string().min(1),
+  storageDir: z.string().min(1),
+
+  // Empty string disables auth — used for local dev. In production set a strong key.
+  // Applies to all /api/v1/* routes; /health and /ready are always public.
+  apiKey: z.string().default(''),
+
+  // Number of jobs the BullMQ worker processes in parallel. Tesseract is
+  // CPU-bound and single-threaded — bumping past 1 doesn't speed up
+  // tesseract-heavy workloads on a single CPU core. Increase only when the
+  // workload is mostly LLM/network bound or you have multiple cores.
+  workerConcurrency: numberFromEnv(1),
+
+  // Hard cap on the multipart `metadata` field, in bytes. Caller-supplied
+  // metadata is JSONB-stored verbatim; without a cap a client could pin
+  // arbitrary blobs to every job row.
+  maxMetadataBytes: numberFromEnv(64 * 1024),
+
+  thresholds: z.object({
+    pdfText: numberFromEnv(0.9),
+    tesseract: numberFromEnv(0.75),
+    visionLlm: numberFromEnv(0.75),
+    needsReview: numberFromEnv(0.6),
+    // Below this regex-parser confidence, Phase 1 parsers fall back to LLM /extract.
+    // Set to 0 to disable LLM-fallback for invoice/UPD entirely.
+    regexFallback: numberFromEnv(0.7),
+  }),
+
+  tesseractLangs: z.string().default('rus+eng'),
+
+  llm: z.object({
+    url: z.string().optional(),
+    apiKey: z.string().optional(),
+    timeoutMs: numberFromEnv(60000),
+  }),
+
+  yandex: z.object({
+    apiKey: z.string().optional(),
+    folderId: z.string().optional(),
+    timeoutMs: numberFromEnv(30000),
+  }),
+
+  webhook: z.object({
+    hmacSecret: z.string().min(1),
+    timeoutMs: numberFromEnv(10000),
+    maxAttempts: numberFromEnv(5),
+  }),
+});
+
+export type Config = z.infer<typeof ConfigSchema>;
+
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+  return ConfigSchema.parse({
+    port: env.PORT,
+    host: env.HOST,
+    logLevel: env.LOG_LEVEL,
+    maxUploadMb: env.MAX_UPLOAD_MB,
+    databaseUrl: env.DATABASE_URL,
+    redisUrl: env.REDIS_URL,
+    storageDir: env.STORAGE_DIR,
+    apiKey: env.API_KEY ?? '',
+    workerConcurrency: env.WORKER_CONCURRENCY,
+    maxMetadataBytes: env.MAX_METADATA_BYTES,
+    thresholds: {
+      pdfText: env.PDF_TEXT_ACCEPT_THRESHOLD,
+      tesseract: env.TESSERACT_ACCEPT_THRESHOLD,
+      visionLlm: env.VISION_LLM_ACCEPT_THRESHOLD,
+      needsReview: env.NEEDS_REVIEW_THRESHOLD,
+      regexFallback: env.LLM_FALLBACK_THRESHOLD,
+    },
+    tesseractLangs: env.TESSERACT_LANGS,
+    llm: {
+      url: env.LLM_INFERENCE_URL || undefined,
+      apiKey: env.LLM_API_KEY || undefined,
+      timeoutMs: env.LLM_TIMEOUT_MS,
+    },
+    yandex: {
+      apiKey: env.YANDEX_VISION_API_KEY || undefined,
+      folderId: env.YANDEX_FOLDER_ID || undefined,
+      timeoutMs: env.YANDEX_TIMEOUT_MS,
+    },
+    webhook: {
+      hmacSecret: env.WEBHOOK_HMAC_SECRET ?? '',
+      timeoutMs: env.WEBHOOK_TIMEOUT_MS,
+      maxAttempts: env.WEBHOOK_MAX_ATTEMPTS,
+    },
+  });
+}
+
+export const config = loadConfig();

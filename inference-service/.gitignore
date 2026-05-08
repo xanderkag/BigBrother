@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+dist/
+build/
+.env
+.env.local
+*.log
+# HuggingFace cache lands here when the dev image runs locally.
+.hf-cache/
+models/

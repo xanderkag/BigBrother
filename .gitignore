@@ -1,0 +1,24 @@
+# Top-level safety net. Each service also has its own .gitignore for
+# language-specific stuff (node_modules, __pycache__, dist, etc.).
+# This file catches the cases where something ends up at the repo root.
+
+# Env files — никогда не коммитим, секреты только в env-vars / vault.
+.env
+.env.local
+.env.*.local
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Local sandbox / scratch
+scratch/
+tmp/
+*.tmp
