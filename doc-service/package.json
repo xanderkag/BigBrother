@@ -1,0 +1,46 @@
+{
+  "name": "doc-service",
+  "version": "0.1.0",
+  "description": "Universal document processing service: OCR + structured extraction for transport and accounting documents",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev:api": "tsx watch src/server.ts",
+    "dev:worker": "tsx watch src/worker.ts",
+    "build": "tsc",
+    "start:api": "node dist/server.js",
+    "start:worker": "node dist/worker.js",
+    "migrate": "tsx src/scripts/migrate.ts",
+    "smoke": "tsx src/scripts/smoke.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@fastify/multipart": "^9.0.1",
+    "@fastify/swagger": "^9.4.0",
+    "@fastify/swagger-ui": "^5.2.1",
+    "bullmq": "^5.34.0",
+    "fastify": "^5.2.0",
+    "fastify-type-provider-zod": "^4.0.2",
+    "ioredis": "^5.4.1",
+    "mime-types": "^2.1.35",
+    "node-tesseract-ocr": "^2.2.1",
+    "pdf-parse": "^1.1.1",
+    "pino": "^9.5.0",
+    "pg": "^8.13.1",
+    "undici": "^7.2.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/mime-types": "^2.1.4",
+    "@types/node": "^22.10.5",
+    "@types/pdf-parse": "^1.1.4",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

@@ -1,0 +1,17 @@
+from fastapi import APIRouter, Depends
+
+from ..auth import require_api_key
+from ..backends.base import ModelBackend
+from ..deps import get_backend
+from ..schemas import ClassifyRequest, ClassifyResponse
+
+router = APIRouter()
+
+
+@router.post("/classify", response_model=ClassifyResponse)
+async def classify(
+    body: ClassifyRequest,
+    _: None = Depends(require_api_key),
+    backend: ModelBackend = Depends(get_backend),
+) -> ClassifyResponse:
+    return await backend.classify(body.text)

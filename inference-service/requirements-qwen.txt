@@ -1,0 +1,8 @@
+# Heavy ML deps — only needed when BACKEND=qwen.
+# Installed as a separate Docker layer so the stub-only image stays small.
+# Versions track the Qwen2.5-VL release notes; bump cautiously.
+torch>=2.4
+transformers>=4.49
+accelerate>=1.2
+qwen-vl-utils>=0.0.10
+safetensors>=0.4
