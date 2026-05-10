@@ -1,0 +1,9 @@
+# Core runtime — installed in every Docker build.
+# Kept as a flat file for fast Docker layer caching; pyproject.toml is the
+# source of truth for development.
+fastapi>=0.115
+uvicorn[standard]>=0.32
+pydantic>=2.9
+pydantic-settings>=2.6
+pillow>=10.4
+python-multipart>=0.0.20

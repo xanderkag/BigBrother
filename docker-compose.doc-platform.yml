@@ -1,0 +1,24 @@
+# Master compose for the document processing stack:
+#   - doc-service (Node.js + BullMQ + Postgres + Redis)
+#   - inference-service (Python + FastAPI + Qwen-VL)
+#
+# Both stacks share the external Docker network `ai-platform`. Create it
+# once before the first up:
+#
+#   docker network create ai-platform
+#
+# Then bring everything up from this directory:
+#
+#   docker compose -f docker-compose.doc-platform.yml up -d --build
+#
+# Stop:
+#
+#   docker compose -f docker-compose.doc-platform.yml down
+#
+# Each sub-compose remains usable on its own (cd doc-service && docker
+# compose up). The root-level file is a convenience wrapper, not a
+# replacement.
+
+include:
+  - path: ./doc-service/docker-compose.yml
+  - path: ./inference-service/docker-compose.yml

@@ -1,0 +1,44 @@
+# Standalone compose for inference-service.
+#
+# To wire with doc-service, both stacks must share a Docker network. Either:
+#   (a) run `docker network create ai-platform` once, then in BOTH compose files
+#       attach the service to the external `ai-platform` network — see the
+#       `networks:` block below; or
+#   (b) merge the two stacks into a single root compose.
+#
+# In doc-service .env set: LLM_INFERENCE_URL=http://inference:8000
+
+services:
+  inference:
+    build: .
+    image: inference-service:latest
+    env_file: .env
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      - hf-cache:/app/.hf-cache
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    # Uncomment the next block to enable GPU passthrough (requires NVIDIA Container Toolkit
+    # and the CUDA-based Dockerfile change documented at the bottom of Dockerfile).
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+    networks:
+      - ai-platform
+
+volumes:
+  hf-cache:
+
+networks:
+  ai-platform:
+    name: ai-platform
+    external: true

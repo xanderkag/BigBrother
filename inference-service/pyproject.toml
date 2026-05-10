@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inference-service"
+version = "0.1.0"
+description = "Domain-shaped inference service: classify / extract / vision-ocr / verify endpoints over Qwen-VL or other VLMs"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "pillow>=10.4",
+    "python-multipart>=0.0.20",
+]
+
+[project.optional-dependencies]
+qwen = [
+    "torch>=2.4",
+    "transformers>=4.49",
+    "accelerate>=1.2",
+    "qwen-vl-utils>=0.0.10",
+    "safetensors>=0.4",
+]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.28",
+    "ruff>=0.8",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra -q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
