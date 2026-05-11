@@ -15,6 +15,7 @@ import {
 import { config } from './config.js';
 import { jobsRoutes } from './routes/jobs.js';
 import { healthRoutes } from './routes/health.js';
+import { settingsRoutes } from './routes/settings.js';
 import { closeDb } from './db.js';
 import { closeQueue } from './queue.js';
 import { DOCUMENT_TYPES } from './types/documents.js';
@@ -82,6 +83,7 @@ async function main() {
       },
       tags: [
         { name: 'jobs', description: 'Создание и отслеживание задач обработки' },
+        { name: 'settings', description: 'Снимок настроек и статус LLM-провайдеров' },
         { name: 'health', description: 'Liveness/readiness пробники' },
       ],
     },
@@ -147,6 +149,7 @@ async function main() {
 
   await app.register(healthRoutes);
   await app.register(jobsRoutes, { prefix: '/api/v1' });
+  await app.register(settingsRoutes, { prefix: '/api/v1' });
 
   // --- Operator UI: static files at /ui, redirect / → /ui/ ---
   //

@@ -1,0 +1,4 @@
+# Anthropic SDK — needed only when BACKEND=claude.
+# Kept in a separate requirements file (and a separate Dockerfile layer)
+# so the stub-only image can stay small.
+anthropic>=0.40

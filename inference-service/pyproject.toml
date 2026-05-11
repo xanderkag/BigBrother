@@ -18,6 +18,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+claude = [
+    "anthropic>=0.40",
+]
 qwen = [
     "torch>=2.4",
     "transformers>=4.49",

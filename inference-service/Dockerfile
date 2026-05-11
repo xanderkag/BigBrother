@@ -18,9 +18,14 @@ FROM base AS deps
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
-# Heavy ML deps. To skip (stub-only image): comment the next two lines and
-# rebuild. The runtime layer below copies node_modules-equivalent paths so
-# nothing else needs to change.
+# Claude SDK — small dep, installed by default so BACKEND=claude works
+# out of the box once ANTHROPIC_API_KEY is set. ~5 MB.
+COPY requirements-claude.txt ./
+RUN pip install -r requirements-claude.txt
+
+# Heavy ML deps for the Qwen-VL backend. To skip (stub/claude-only image):
+# comment the next two lines and rebuild. The runtime layer below copies
+# site-packages so nothing else needs to change.
 COPY requirements-qwen.txt ./
 RUN pip install -r requirements-qwen.txt
 

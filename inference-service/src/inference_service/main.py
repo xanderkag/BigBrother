@@ -5,7 +5,7 @@ from fastapi import FastAPI
 
 from .config import settings
 from .deps import get_backend
-from .routes import classify, extract, verify, vision
+from .routes import classify, extract, providers, verify, vision
 
 logging.basicConfig(level=settings.log_level.upper())
 log = logging.getLogger("inference-service")
@@ -47,3 +47,4 @@ app.include_router(classify.router, prefix="/v1", tags=["classify"])
 app.include_router(extract.router, prefix="/v1", tags=["extract"])
 app.include_router(vision.router, prefix="/v1", tags=["vision"])
 app.include_router(verify.router, prefix="/v1", tags=["verify"])
+app.include_router(providers.router, prefix="/v1", tags=["providers"])

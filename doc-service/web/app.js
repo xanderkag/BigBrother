@@ -655,46 +655,190 @@ function renderUpload() {
   });
 }
 
-// ---- Settings (placeholder; Phase 2 will flesh this out) ----
-function renderSettings() {
+// ---- Settings: provider status, thresholds, env snapshot ----
+async function renderSettings() {
   setView(`
-    <div class="p-8 max-w-3xl mx-auto">
+    <div class="p-8 max-w-4xl mx-auto">
       <h2 class="text-2xl font-semibold mb-1">Settings</h2>
-      <p class="text-sm text-slate-500 dark:text-slate-400 mb-6">Конфигурация сервиса и провайдеров</p>
+      <p class="text-sm text-slate-500 dark:text-slate-400 mb-6">Конфигурация сервиса и LLM-провайдеров</p>
 
-      <div class="space-y-4">
-        <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
-          <h3 class="font-semibold mb-3">Endpoints</h3>
-          <dl class="space-y-1.5 text-sm font-mono">
-            <div class="flex justify-between"><dt class="text-slate-500">API base</dt><dd>${escapeHtml(API)}</dd></div>
-            <div class="flex justify-between"><dt class="text-slate-500">Swagger UI</dt><dd><a href="/docs" class="text-indigo-600 hover:underline">/docs</a></dd></div>
-            <div class="flex justify-between"><dt class="text-slate-500">OpenAPI JSON</dt><dd><a href="/docs/json" class="text-indigo-600 hover:underline">/docs/json</a></dd></div>
-            <div class="flex justify-between"><dt class="text-slate-500">Health</dt><dd><a href="/health" class="text-indigo-600 hover:underline">/health</a></dd></div>
-            <div class="flex justify-between"><dt class="text-slate-500">Ready</dt><dd><a href="/ready" class="text-indigo-600 hover:underline">/ready</a></dd></div>
-          </dl>
-        </div>
-
-        <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
-          <h3 class="font-semibold mb-3">Providers</h3>
-          <p class="text-sm text-slate-500 dark:text-slate-400">
-            Управление LLM-провайдерами (Claude / OpenAI / Qwen) и пороги OCR-движков — в Phase 2.
-          </p>
-        </div>
-
-        <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
-          <h3 class="font-semibold mb-3">Session</h3>
-          <dl class="space-y-1.5 text-sm">
-            <div class="flex justify-between items-center"><dt class="text-slate-500">Token</dt><dd class="font-mono text-xs">${auth.token ? '••••••••' + escapeHtml(auth.token.slice(-6)) : '—'}</dd></div>
-          </dl>
-          <button id="logout-from-settings" class="mt-4 px-3 py-1.5 rounded-md border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-sm transition">Выйти</button>
-        </div>
+      <div id="settings-content" class="space-y-4">
+        <div class="text-slate-400 text-center py-8">Загрузка...</div>
       </div>
     </div>
   `);
+
+  let settings = null;
+  let providers = null;
+  try {
+    [settings, providers] = await Promise.all([
+      apiJson('/settings'),
+      apiJson('/providers/status'),
+    ]);
+  } catch (err) {
+    document.getElementById('settings-content').innerHTML = `
+      <div class="p-6 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-rose-700 dark:text-rose-300">
+        <p class="font-medium">Не удалось загрузить настройки</p>
+        <p class="text-sm mt-1">${escapeHtml(err.message)}</p>
+      </div>`;
+    return;
+  }
+
+  document.getElementById('settings-content').innerHTML = `
+    ${renderProvidersCard(providers)}
+    ${renderOcrCard(settings)}
+    ${renderStorageCard(settings)}
+    ${renderLimitsCard(settings)}
+    ${renderEndpointsCard()}
+    ${renderSessionCard()}
+  `;
+
   document.getElementById('logout-from-settings').addEventListener('click', () => {
     auth.token = null;
     showLogin();
   });
+}
+
+function renderProvidersCard(providers) {
+  const upstream = providers.upstream;
+  if (upstream === 'not_configured') {
+    return `
+      <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
+        <h3 class="font-semibold mb-3">LLM Providers</h3>
+        <div class="p-3 rounded-lg bg-slate-50 dark:bg-slate-950/50 border border-slate-200 dark:border-slate-800 text-sm">
+          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300">not connected</span>
+          <span class="ml-2 text-slate-600 dark:text-slate-400">inference-service не подключён (LLM_INFERENCE_URL пустой). Phase 2 парсеры (ТТН/CMR/АКТ) будут возвращать пустоту.</span>
+        </div>
+      </div>`;
+  }
+  if (upstream === 'unreachable') {
+    return `
+      <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
+        <h3 class="font-semibold mb-3">LLM Providers</h3>
+        <div class="p-3 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-sm text-rose-700 dark:text-rose-300">
+          <span class="font-medium">inference-service недоступен.</span>
+          ${providers.error ? `<div class="font-mono text-xs mt-1">${escapeHtml(providers.error)}</div>` : ''}
+        </div>
+      </div>`;
+  }
+  const available = providers.available || {};
+  const active = providers.active;
+  const rows = Object.entries(available).map(([name, info]) => {
+    const isActive = name === active;
+    const statusBadge = info.configured
+      ? `<span class="badge bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">configured</span>`
+      : `<span class="badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-500">not configured</span>`;
+    const activeBadge = isActive
+      ? `<span class="badge bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300">active</span>`
+      : '';
+    return `
+      <div class="flex items-start gap-4 p-3 rounded-lg ${isActive ? 'bg-indigo-50/50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-900' : 'bg-slate-50/50 dark:bg-slate-950/30'}">
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="font-mono text-sm font-medium">${escapeHtml(name)}</span>
+            ${activeBadge}
+            ${statusBadge}
+          </div>
+          <div class="text-xs text-slate-500 dark:text-slate-400">${escapeHtml(info.description || '')}</div>
+          ${info.model ? `<div class="text-xs text-slate-400 dark:text-slate-500 font-mono mt-0.5">${escapeHtml(info.model)}</div>` : ''}
+        </div>
+      </div>`;
+  }).join('');
+  return `
+    <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="font-semibold">LLM Providers</h3>
+        <span class="text-xs text-slate-500">inference-service: <span class="text-emerald-600 dark:text-emerald-400 font-medium">connected</span></span>
+      </div>
+      <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">
+        Активный бэкенд переключается через <code class="font-mono">BACKEND=</code> в env inference-service. Требует рестарта контейнера.
+      </p>
+      <div class="space-y-2">${rows || '<div class="text-sm text-slate-400">провайдеров нет</div>'}</div>
+    </div>`;
+}
+
+function renderOcrCard(settings) {
+  const t = settings.thresholds;
+  const eng = settings.ocr_engines;
+  return `
+    <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
+      <h3 class="font-semibold mb-3">OCR pipeline</h3>
+      <div class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+        <div><span class="text-slate-500">pdf-parse accept:</span> <span class="font-mono">${t.pdf_text}</span></div>
+        <div><span class="text-slate-500">tesseract accept:</span> <span class="font-mono">${t.tesseract}</span></div>
+        <div><span class="text-slate-500">vision-llm accept:</span> <span class="font-mono">${t.vision_llm}</span></div>
+        <div><span class="text-slate-500">needs_review threshold:</span> <span class="font-mono">${t.needs_review}</span></div>
+        <div><span class="text-slate-500">regex-fallback threshold:</span> <span class="font-mono">${t.regex_fallback}</span></div>
+        <div><span class="text-slate-500">tesseract langs:</span> <span class="font-mono">${escapeHtml(eng.tesseract_langs)}</span></div>
+      </div>
+      <div class="mt-4 pt-4 border-t border-slate-200 dark:border-slate-800 space-y-2">
+        <div class="flex items-center justify-between">
+          <span class="text-sm"><span class="text-slate-500">vision-llm engine:</span> ${eng.vision_llm.enabled ? '<span class="text-emerald-600 dark:text-emerald-400 font-medium">enabled</span>' : '<span class="text-slate-500">disabled</span>'}</span>
+          ${eng.vision_llm.url ? `<span class="text-xs font-mono text-slate-400">${escapeHtml(eng.vision_llm.url)}</span>` : ''}
+        </div>
+        <div class="flex items-center justify-between">
+          <span class="text-sm"><span class="text-slate-500">yandex-vision engine:</span> ${eng.yandex_vision.enabled ? '<span class="text-amber-600 dark:text-amber-400 font-medium">enabled</span>' : '<span class="text-slate-500">disabled</span>'}</span>
+        </div>
+        ${eng.yandex_vision.enabled ? `
+          <div class="p-2.5 rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 text-xs text-amber-800 dark:text-amber-300">
+            <strong>⚠</strong> ${escapeHtml(eng.yandex_vision.pii_warning)}
+          </div>` : ''}
+      </div>
+    </div>`;
+}
+
+function renderStorageCard(settings) {
+  return `
+    <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
+      <h3 class="font-semibold mb-3">Storage & sweepers</h3>
+      <div class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+        <div><span class="text-slate-500">backend:</span> <span class="font-mono">${escapeHtml(settings.storage.backend)}</span></div>
+        <div><span class="text-slate-500">dir:</span> <span class="font-mono text-xs">${escapeHtml(settings.storage.dir)}</span></div>
+        <div><span class="text-slate-500">file retention:</span> <span class="font-mono">${settings.storage.retention_days} days</span></div>
+        <div><span class="text-slate-500">worker concurrency:</span> <span class="font-mono">${settings.worker.concurrency}</span></div>
+        <div><span class="text-slate-500">pending sweep:</span> <span class="font-mono">${settings.sweepers.pending_interval_ms / 1000}s (grace ${settings.sweepers.pending_grace_seconds}s)</span></div>
+        <div><span class="text-slate-500">cleanup sweep:</span> <span class="font-mono">${settings.sweepers.file_cleanup_interval_ms / 60000} min</span></div>
+      </div>
+    </div>`;
+}
+
+function renderLimitsCard(settings) {
+  return `
+    <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
+      <h3 class="font-semibold mb-3">Limits & secrets</h3>
+      <div class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+        <div><span class="text-slate-500">max upload:</span> <span class="font-mono">${settings.limits.max_upload_mb} MB</span></div>
+        <div><span class="text-slate-500">max metadata:</span> <span class="font-mono">${(settings.limits.max_metadata_bytes / 1024).toFixed(0)} KB</span></div>
+        <div><span class="text-slate-500">API_KEY:</span> ${settings.auth.api_key_configured ? '<span class="text-emerald-600 dark:text-emerald-400">configured</span>' : '<span class="text-rose-600 dark:text-rose-400">not set</span>'}</div>
+        <div><span class="text-slate-500">webhook HMAC:</span> ${settings.webhook.hmac_secret_configured ? '<span class="text-emerald-600 dark:text-emerald-400">configured</span>' : '<span class="text-rose-600 dark:text-rose-400">default (change me)</span>'}</div>
+        <div><span class="text-slate-500">webhook attempts:</span> <span class="font-mono">${settings.webhook.max_attempts}</span></div>
+      </div>
+    </div>`;
+}
+
+function renderEndpointsCard() {
+  return `
+    <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
+      <h3 class="font-semibold mb-3">Endpoints</h3>
+      <dl class="space-y-1 text-sm font-mono">
+        <div class="flex justify-between"><dt class="text-slate-500">API base</dt><dd>${escapeHtml(API)}</dd></div>
+        <div class="flex justify-between"><dt class="text-slate-500">Swagger UI</dt><dd><a href="/docs" class="text-indigo-600 hover:underline" target="_blank">/docs</a></dd></div>
+        <div class="flex justify-between"><dt class="text-slate-500">OpenAPI JSON</dt><dd><a href="/docs/json" class="text-indigo-600 hover:underline" target="_blank">/docs/json</a></dd></div>
+        <div class="flex justify-between"><dt class="text-slate-500">Health</dt><dd><a href="/health" class="text-indigo-600 hover:underline" target="_blank">/health</a></dd></div>
+        <div class="flex justify-between"><dt class="text-slate-500">Ready</dt><dd><a href="/ready" class="text-indigo-600 hover:underline" target="_blank">/ready</a></dd></div>
+      </dl>
+    </div>`;
+}
+
+function renderSessionCard() {
+  return `
+    <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
+      <h3 class="font-semibold mb-3">Session</h3>
+      <dl class="space-y-1.5 text-sm">
+        <div class="flex justify-between items-center"><dt class="text-slate-500">Token</dt><dd class="font-mono text-xs">${auth.token ? '••••••••' + escapeHtml(auth.token.slice(-6)) : '—'}</dd></div>
+      </dl>
+      <button id="logout-from-settings" class="mt-4 px-3 py-1.5 rounded-md border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-sm transition">Выйти</button>
+    </div>`;
 }
 
 // ==========================================================
