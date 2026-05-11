@@ -59,6 +59,35 @@
 - ✅ **B5 file magic-bytes validation** — пакет `file-type ^19.6`. После сохранения файла читаются magic bytes; если детектируется не из `ACCEPTED_DOCUMENT_MIMES` (PDF/JPEG/PNG/BMP/TIFF/WebP) — 400 и удаление файла. Если detected mime ≠ declared multipart Content-Type — detected становится authoritative (логируется warning). Защита от exe-под-видом-PDF, расширения vs реальный формат, и подобного.
 - ✅ Тесты: `tests/idempotency.spec.ts` (header parsing, unique-violation detector), `tests/magic-bytes.spec.ts` (PDF/PNG/JPEG/BMP/WebP по реальным magic bytes, рейект plaintext/exe, обнаружение mislabelled PDF).
 
+### Phase 3 Day 19 — Rotate master-ключа secrets (2026-05-14)
+
+Закрыт открытый пункт из «secrets at rest» — теперь смена
+`SECRETS_ENCRYPTION_KEY` не требует ручного перевода всех ключей
+провайдеров заново.
+
+- ✅ `encryptWithKey/decryptWithKey/parseHexKey` — explicit-key
+  криптофункции в `storage/secrets.ts`. Обычный hot-path
+  `encryptSecret/decryptSecret` теперь тонкие обёртки над ними.
+- ✅ `src/scripts/rotate-secrets.ts` + `npm run rotate:secrets`. Аргументы
+  `--from <OLD-64hex> --to <NEW-64hex>`, dry-run по умолчанию, `--apply`
+  для записи. Атомарная транзакция, rollback при ошибке.
+- ✅ Поведение по типам строк:
+  - encrypted-под-OLD → перешифровывается под NEW;
+  - legacy plaintext → первая попытка шифрования под NEW;
+  - не дешифровалось под OLD → abort до любых изменений (защита от
+    промежуточно скомпрометированных ключей или неверного OLD).
+- ✅ Тесты в `tests/secrets.spec.ts`: round-trip с explicit ключом,
+  auth-failure при разных ключах, полный rotate-цикл, parseHexKey
+  валидация, legacy plaintext bypass.
+
+Использование при компрометации:
+```
+openssl rand -hex 32                          # новый ключ
+npm run rotate:secrets -- --from <OLD> --to <NEW>          # dry-run
+npm run rotate:secrets -- --from <OLD> --to <NEW> --apply  # боевой
+# пропишите NEW в env, рестарт api+worker, старый ключ сотрите
+```
+
 ### Phase 3 Day 18 — Multi-tenant фаза 2: tokens + authz + switcher (2026-05-13)
 
 Закрыт spec multi-tenant. Реальные пользовательские токены, гарды ролей,

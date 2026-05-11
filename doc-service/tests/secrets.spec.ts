@@ -23,6 +23,9 @@ process.env.SECRETS_ENCRYPTION_KEY =
 import {
   encryptSecret,
   decryptSecret,
+  encryptWithKey,
+  decryptWithKey,
+  parseHexKey,
   isEncrypted,
   _resetKeyCacheForTesting,
 } from '../src/storage/secrets.js';
@@ -106,6 +109,45 @@ describe('integrity / tamper-detection', () => {
 
   it('обрезанный envelope бросает понятную ошибку', () => {
     expect(() => decryptSecret('v1:short')).toThrow(/повреждён|короткий|envelope/i);
+  });
+});
+
+describe('encryptWithKey / decryptWithKey (для rotate-скрипта)', () => {
+  it('round-trip с explicit-ключом', () => {
+    const key = parseHexKey('a'.repeat(64));
+    const env = encryptWithKey('secret-payload', key);
+    expect(env).toMatch(/^v1:/);
+    expect(decryptWithKey(env, key)).toBe('secret-payload');
+  });
+
+  it('расшифровка под другим ключом — auth-failure', () => {
+    const keyA = parseHexKey('a'.repeat(64));
+    const keyB = parseHexKey('b'.repeat(64));
+    const env = encryptWithKey('payload', keyA);
+    expect(() => decryptWithKey(env, keyB)).toThrow(/целостности|integrity/i);
+  });
+
+  it('rotate-цикл: encrypt(A) → decrypt(A) → encrypt(B) → decrypt(B)', () => {
+    const keyA = parseHexKey('1'.repeat(64));
+    const keyB = parseHexKey('2'.repeat(64));
+    const oldEnv = encryptWithKey('my-api-key', keyA);
+    const plaintext = decryptWithKey(oldEnv, keyA);
+    expect(plaintext).toBe('my-api-key');
+    const newEnv = encryptWithKey(plaintext, keyB);
+    expect(decryptWithKey(newEnv, keyB)).toBe('my-api-key');
+    // и старый envelope под новым ключом — должен фейлиться:
+    expect(() => decryptWithKey(oldEnv, keyB)).toThrow();
+  });
+
+  it('parseHexKey: 64 hex → Buffer, иначе throw', () => {
+    expect(parseHexKey('a'.repeat(64)).length).toBe(32);
+    expect(() => parseHexKey('short')).toThrow();
+    expect(() => parseHexKey('z'.repeat(64))).toThrow();
+  });
+
+  it('legacy plaintext проходит через decryptWithKey как есть', () => {
+    const key = parseHexKey('a'.repeat(64));
+    expect(decryptWithKey('sk-ant-plaintext', key)).toBe('sk-ant-plaintext');
   });
 });
 

@@ -83,15 +83,15 @@ export function _resetKeyCacheForTesting(): void {
 }
 
 /**
- * Зашифровать строку. Возвращает envelope с префиксом `v1:`.
- * Пустые/null входы возвращаются как есть (нечего шифровать) — это
- * корректно описывает «ключ не задан».
+ * Низкоуровневое шифрование: принимает explicit-ключ. Используется
+ * rotate-скриптом, который работает с двумя ключами одновременно
+ * (старый для дешифровки, новый для перешифровки). Обычный hot-path
+ * использует `encryptSecret` ниже, который тянет ключ из env.
  */
-export function encryptSecret(plaintext: string | null): string | null {
+export function encryptWithKey(plaintext: string | null, key: Buffer): string | null {
   if (plaintext === null || plaintext === undefined || plaintext === '') {
     return plaintext as null;
   }
-  const key = getMasterKey();
   const iv = randomBytes(IV_LENGTH);
   const cipher = createCipheriv(ALGORITHM, key, iv);
   const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
@@ -101,22 +101,25 @@ export function encryptSecret(plaintext: string | null): string | null {
 }
 
 /**
- * Расшифровать envelope. Поведение:
- *   - `null` / пустая строка → возвращается как есть (нет ключа).
- *   - Строка с префиксом `v1:` → пытаемся расшифровать. При невалидной
- *     подписи (key-mismatch, повреждение) бросаем понятную ошибку.
- *   - Без префикса → legacy plaintext. Возвращаем как есть. После
- *     любого следующего write строка превратится в envelope.
+ * Зашифровать строку. Возвращает envelope с префиксом `v1:`.
+ * Пустые/null входы возвращаются как есть (нечего шифровать) — это
+ * корректно описывает «ключ не задан».
  */
-export function decryptSecret(envelope: string | null): string | null {
+export function encryptSecret(plaintext: string | null): string | null {
+  return encryptWithKey(plaintext, getMasterKey());
+}
+
+/**
+ * Низкоуровневая расшифровка с explicit-ключом. См. `encryptWithKey`
+ * для use-case (rotate с двумя ключами).
+ */
+export function decryptWithKey(envelope: string | null, key: Buffer): string | null {
   if (envelope === null || envelope === undefined || envelope === '') {
     return envelope as null;
   }
   if (!envelope.startsWith(ENVELOPE_PREFIX)) {
-    // Legacy plaintext — допустимо во время lazy-миграции.
-    return envelope;
+    return envelope; // legacy plaintext
   }
-  const key = getMasterKey();
   const raw = envelope.slice(ENVELOPE_PREFIX.length);
   let buf: Buffer;
   try {
@@ -141,6 +144,26 @@ export function decryptSecret(envelope: string | null): string | null {
       }`,
     );
   }
+}
+
+/**
+ * Расшифровать envelope. Поведение:
+ *   - `null` / пустая строка → возвращается как есть (нет ключа).
+ *   - Строка с префиксом `v1:` → пытаемся расшифровать. При невалидной
+ *     подписи (key-mismatch, повреждение) бросаем понятную ошибку.
+ *   - Без префикса → legacy plaintext. Возвращаем как есть. После
+ *     любого следующего write строка превратится в envelope.
+ */
+export function decryptSecret(envelope: string | null): string | null {
+  return decryptWithKey(envelope, getMasterKey());
+}
+
+/** Парсер hex-ключа. Используется rotate-скриптом для argv. */
+export function parseHexKey(raw: string, label = 'key'): Buffer {
+  if (!/^[0-9a-fA-F]{64}$/.test(raw)) {
+    throw new Error(`${label} должен быть 64-hex-символьной строкой (32 байта)`);
+  }
+  return Buffer.from(raw, 'hex');
 }
 
 /**
