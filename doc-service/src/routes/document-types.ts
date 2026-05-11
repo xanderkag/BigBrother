@@ -2,22 +2,33 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { documentTypesRepo } from '../storage/document-types.js';
+import { auditLogRepo } from '../storage/audit-log.js';
+import { documentTypeResolver } from '../pipeline/document-type-resolver.js';
 import { ErrorResponse } from '../types/api-schemas.js';
 import { bearerAuthHook } from '../auth.js';
 
 /**
- * Read-only API for the Document Type Registry.
+ * Document Type Registry — admin CRUD.
  *
- * Today's purpose: surface the current configured state for the admin
- * UI. Tomorrow's: become the editing surface. Write methods are
- * deliberately omitted in this iteration — adding PUT/POST should be
- * a separate, audited change with role-checks and the runtime
- * actually reading from this table.
+ * Read endpoints — surface the configured state for the admin UI dropdowns
+ * and detail pages.
  *
- * Auth: same Bearer scheme as the rest of /api/v1/*. We don't have
- * roles yet, so any valid token can read; an `admin` role will gate
- * writes when we add them.
+ * Write endpoints (POST/PATCH/DELETE) — let the operator add custom document
+ * types, retune prompts/schemas/thresholds, deactivate types that are no
+ * longer needed. Every write:
+ *   1. mutates the row in the DB,
+ *   2. fires `documentTypeResolver.invalidate(slug)` so the next job picks
+ *      up the new config without waiting for TTL,
+ *   3. appends an `audit_log` entry with before/after snapshots.
+ *
+ * Builtin-protection: `is_builtin=true` rows can be edited (admins do tune
+ * them), but never deleted via the API. Deactivate them instead.
+ *
+ * Auth: same Bearer scheme as the rest of /api/v1/*. There are no per-user
+ * roles yet — any valid token can write. Future: gate writes on `admin` role.
  */
+
+const ParserKind = z.enum(['builtin:invoice_regex', 'builtin:upd_regex', 'llm_extract']);
 
 const DocumentType = z.object({
   slug: z.string(),
@@ -25,7 +36,7 @@ const DocumentType = z.object({
   description: z.string().nullable(),
   is_active: z.boolean(),
   is_builtin: z.boolean(),
-  parser_kind: z.enum(['builtin:invoice_regex', 'builtin:upd_regex', 'llm_extract']),
+  parser_kind: ParserKind,
   llm_prompt: z.string().nullable(),
   llm_schema: z.record(z.unknown()).nullable(),
   expected_fields: z.array(z.string()),
@@ -43,8 +54,32 @@ const ListResponse = z.object({
 });
 
 const SlugParam = z.object({
-  slug: z.string().min(1).max(64),
+  slug: z.string().min(1).max(64).regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/, {
+    message: 'slug должен начинаться с буквы/цифры и содержать только [A-Za-z0-9_-]',
+  }),
 });
+
+const Threshold = z.number().min(0).max(1).nullable();
+
+// Поля, которые валидны в create. is_builtin не выставляется через API.
+const CreateBody = z.object({
+  slug: SlugParam.shape.slug,
+  display_name: z.string().min(1).max(120),
+  description: z.string().max(2000).nullable().optional(),
+  is_active: z.boolean().optional(),
+  parser_kind: ParserKind.optional(),
+  llm_prompt: z.string().max(8000).nullable().optional(),
+  llm_schema: z.record(z.unknown()).nullable().optional(),
+  expected_fields: z.array(z.string().min(1).max(80)).max(64).optional(),
+  validators: z.array(z.string().min(1).max(120)).max(64).optional(),
+  confidence_threshold: Threshold.optional(),
+  regex_fallback_threshold: Threshold.optional(),
+  classification_keywords: z.array(z.string().min(1).max(200)).max(64).optional(),
+  metadata: z.record(z.unknown()).nullable().optional(),
+});
+
+// PATCH — все поля опциональные, slug нельзя менять (берётся из URL).
+const PatchBody = CreateBody.omit({ slug: true }).partial();
 
 export async function documentTypesRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
@@ -57,8 +92,7 @@ export async function documentTypesRoutes(app: FastifyInstance): Promise<void> {
         tags: ['document-types'],
         summary: 'Список всех зарегистрированных типов документов',
         description:
-          'Возвращает все document_types из БД (включая inactive). Для админ-UI. ' +
-          'Runtime пока продолжает использовать захардкоженные значения в pipeline — это foundation-API.',
+          'Возвращает все document_types из БД (включая inactive). Для админ-UI.',
         security: [{ bearerAuth: [] }],
         response: {
           200: ListResponse,
@@ -94,6 +128,141 @@ export async function documentTypesRoutes(app: FastifyInstance): Promise<void> {
         return { error: 'document type not found' };
       }
       return documentTypesRepo.toApi(row);
+    },
+  );
+
+  r.post(
+    '/document-types',
+    {
+      schema: {
+        tags: ['document-types'],
+        summary: 'Создать новый тип документа',
+        description:
+          'Заводит пользовательский тип (is_builtin=false). slug должен быть уникален. ' +
+          'После создания — инвалидируется resolver-кэш, пишется запись в audit_log.',
+        security: [{ bearerAuth: [] }],
+        body: CreateBody,
+        response: {
+          201: DocumentType,
+          400: ErrorResponse,
+          401: ErrorResponse,
+          409: ErrorResponse,
+        },
+      },
+    },
+    async (req, reply) => {
+      const existing = await documentTypesRepo.findBySlug(req.body.slug);
+      if (existing) {
+        reply.code(409);
+        return { error: `document type "${req.body.slug}" already exists` };
+      }
+      const row = await documentTypesRepo.create(req.body);
+      const after = documentTypesRepo.toApi(row);
+      await auditLogRepo.append({
+        actor: 'admin',
+        entity: 'document_type',
+        entity_id: row.slug,
+        action: 'create',
+        after,
+      });
+      documentTypeResolver.invalidate(row.slug);
+      reply.code(201);
+      return after;
+    },
+  );
+
+  r.patch(
+    '/document-types/:slug',
+    {
+      schema: {
+        tags: ['document-types'],
+        summary: 'Частичное обновление типа документа',
+        description:
+          'Любое поле = `undefined` оставляется как есть, явный `null` — обнуляет. ' +
+          'Инвалидирует resolver-кэш, пишет audit_log.',
+        security: [{ bearerAuth: [] }],
+        params: SlugParam,
+        body: PatchBody,
+        response: {
+          200: DocumentType,
+          400: ErrorResponse,
+          401: ErrorResponse,
+          404: ErrorResponse,
+        },
+      },
+    },
+    async (req, reply) => {
+      const before = await documentTypesRepo.findBySlug(req.params.slug);
+      if (!before) {
+        reply.code(404);
+        return { error: 'document type not found' };
+      }
+      const updated = await documentTypesRepo.patch(req.params.slug, req.body);
+      if (!updated) {
+        // race: row vanished between findBySlug and patch
+        reply.code(404);
+        return { error: 'document type not found' };
+      }
+      const beforeApi = documentTypesRepo.toApi(before);
+      const afterApi = documentTypesRepo.toApi(updated);
+      await auditLogRepo.append({
+        actor: 'admin',
+        entity: 'document_type',
+        entity_id: updated.slug,
+        action: 'update',
+        before: beforeApi,
+        after: afterApi,
+      });
+      documentTypeResolver.invalidate(updated.slug);
+      return afterApi;
+    },
+  );
+
+  r.delete(
+    '/document-types/:slug',
+    {
+      schema: {
+        tags: ['document-types'],
+        summary: 'Удалить тип документа',
+        description:
+          'Удаляет пользовательский тип. Builtin-типы (is_builtin=true) защищены — ' +
+          'их следует деактивировать через PATCH { is_active: false }, а не удалять.',
+        security: [{ bearerAuth: [] }],
+        params: SlugParam,
+        response: {
+          204: z.null(),
+          401: ErrorResponse,
+          403: ErrorResponse,
+          404: ErrorResponse,
+        },
+      },
+    },
+    async (req, reply) => {
+      const row = await documentTypesRepo.findBySlug(req.params.slug);
+      if (!row) {
+        reply.code(404);
+        return { error: 'document type not found' };
+      }
+      if (row.is_builtin) {
+        reply.code(403);
+        return {
+          error:
+            'builtin types cannot be deleted; deactivate via PATCH { is_active: false } instead',
+        };
+      }
+      const deleted = await documentTypesRepo.delete(req.params.slug);
+      if (deleted) {
+        await auditLogRepo.append({
+          actor: 'admin',
+          entity: 'document_type',
+          entity_id: row.slug,
+          action: 'delete',
+          before: documentTypesRepo.toApi(row),
+        });
+        documentTypeResolver.invalidate(row.slug);
+      }
+      reply.code(204);
+      return null;
     },
   );
 }

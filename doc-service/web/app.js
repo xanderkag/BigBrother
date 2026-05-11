@@ -311,7 +311,9 @@ function route() {
     const isActive =
       h === target ||
       (target === 'jobs' && h.startsWith('jobs')) ||
-      (target === 'document-types' && h.startsWith('document-types'));
+      (target === 'document-types' && h.startsWith('document-types')) ||
+      (target === 'providers' && h.startsWith('providers')) ||
+      (target === 'audit-log' && h.startsWith('audit-log'));
     el.classList.toggle('active', isActive);
   });
 
@@ -319,7 +321,12 @@ function route() {
   if (h.startsWith('jobs/')) return renderJobDetail(h.slice(5));
   if (h === 'upload') return renderUpload();
   if (h === 'document-types') return renderDocumentTypesList();
-  if (h.startsWith('document-types/')) return renderDocumentTypeDetail(h.slice('document-types/'.length));
+  if (h === 'document-types/new') return renderDocumentTypeEditor(null);
+  if (h.startsWith('document-types/')) return renderDocumentTypeEditor(h.slice('document-types/'.length));
+  if (h === 'providers') return renderProvidersList();
+  if (h === 'providers/new') return renderProviderEditor(null);
+  if (h.startsWith('providers/')) return renderProviderEditor(h.slice('providers/'.length));
+  if (h === 'audit-log') return renderAuditLog();
   if (h === 'settings') return renderSettings();
   location.hash = '#jobs';
 }
@@ -740,11 +747,15 @@ async function renderDocumentTypesList() {
     <div class="page">
       ${pageHeader({
         title: 'Document types',
-        subtitle: 'Конфигурация типов документов: парсеры, поля, валидаторы, пороги',
+        subtitle: 'Конфигурация типов документов: парсеры, поля, инструкции для агента, валидаторы',
+        actions: `<a href="#document-types/new" class="btn-primary btn-md">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path d="M10.75 4.75a.75.75 0 0 0-1.5 0v4.5h-4.5a.75.75 0 0 0 0 1.5h4.5v4.5a.75.75 0 0 0 1.5 0v-4.5h4.5a.75.75 0 0 0 0-1.5h-4.5v-4.5Z"/></svg>
+          Новый тип
+        </a>`,
       })}
 
-      <div class="warning-banner mb-4">
-        <strong>Read-only.</strong> Runtime читает <em>часть</em> конфигурации из БД (валидаторы, пороги, ожидаемые поля, схемы LLM). Editor UI для правок — следующая фаза.
+      <div class="info-banner mb-4">
+        Каждый тип — slug + parser_kind + ожидаемые поля + инструкция для LLM + валидаторы. Editor сохраняет изменения в БД и сбрасывает кэш — следующие job'ы подхватят правки без рестарта.
       </div>
 
       <div id="dt-list" class="card overflow-hidden">${loadingState()}</div>
@@ -801,89 +812,856 @@ async function renderDocumentTypesList() {
   });
 }
 
-async function renderDocumentTypeDetail(slug) {
+/**
+ * Document type editor — used for both "edit existing" (slug=string) and
+ * "create new" (slug=null). State lives in a plain JS object that mirrors
+ * the API shape; the form re-renders chip lists imperatively when items
+ * are added/removed, but text inputs are bound by id and read at save time.
+ */
+async function renderDocumentTypeEditor(slug) {
+  const isCreate = slug === null;
   setView(`
     <div class="page-narrow">
       ${backLink('#document-types')}
-      <div id="dt-detail" class="space-y-4">${loadingState()}</div>
+      <div id="dt-editor" class="space-y-4">${loadingState()}</div>
     </div>
   `);
 
+  // --- Load existing or seed empty ---
   let t;
+  if (isCreate) {
+    t = {
+      slug: '',
+      display_name: '',
+      description: '',
+      is_active: true,
+      is_builtin: false,
+      parser_kind: 'llm_extract',
+      llm_prompt: '',
+      llm_schema: null,
+      expected_fields: [],
+      validators: [],
+      confidence_threshold: null,
+      regex_fallback_threshold: null,
+      classification_keywords: [],
+      metadata: null,
+      created_at: null,
+      updated_at: null,
+    };
+  } else {
+    try {
+      t = await apiJson(`/document-types/${encodeURIComponent(slug)}`);
+    } catch (err) {
+      document.getElementById('dt-editor').innerHTML = errorState(err.message);
+      return;
+    }
+  }
+
+  // --- State held outside DOM so chip add/remove is easy ---
+  const state = {
+    expected_fields: [...t.expected_fields],
+    validators: [...t.validators],
+    classification_keywords: [...t.classification_keywords],
+  };
+
+  const root = document.getElementById('dt-editor');
+  root.innerHTML = renderEditorForm(t, isCreate);
+  bindEditorHandlers(t, isCreate, state, root);
+}
+
+function renderEditorForm(t, isCreate) {
+  const headerBadges = [
+    !isCreate && t.is_builtin ? '<span class="badge badge-emerald">builtin</span>' : '',
+    !isCreate && !t.is_active ? '<span class="badge badge-slate">inactive</span>' : '',
+    isCreate ? '<span class="badge badge-indigo">new</span>' : '',
+  ].filter(Boolean).join(' ');
+
+  return `
+    <div class="card card-body-lg">
+      <div class="flex items-center gap-2 mb-2 flex-wrap">${headerBadges}</div>
+      <h2 class="text-xl font-semibold">${isCreate ? 'Новый тип документа' : escapeHtml(t.display_name)}</h2>
+      ${isCreate ? '' : `<div class="mt-1 font-mono text-xs text-slate-500">${escapeHtml(t.slug)}</div>`}
+    </div>
+
+    <!-- Basics -->
+    <div class="card card-body space-y-4">
+      <h3 class="card-title">Основное</h3>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="form-row">
+          <label class="form-label">Slug <span class="text-rose-500">*</span></label>
+          <input id="f-slug" type="text" value="${escapeHtml(t.slug)}" ${isCreate ? '' : 'disabled'}
+            placeholder="commercial_invoice"
+            class="form-input font-mono" />
+          <p class="form-help">${isCreate
+            ? 'Уникальный ID. Только [A-Za-z0-9_-], не меняется после создания.'
+            : 'Slug нельзя изменить — пересоздай тип, если нужно переименовать.'}</p>
+        </div>
+        <div class="form-row">
+          <label class="form-label">Display name <span class="text-rose-500">*</span></label>
+          <input id="f-display_name" type="text" value="${escapeHtml(t.display_name)}"
+            placeholder="Коммерческий инвойс" class="form-input" />
+        </div>
+      </div>
+      <div class="form-row">
+        <label class="form-label">Описание</label>
+        <textarea id="f-description" rows="2" class="form-textarea" style="font-family: inherit;"
+          placeholder="Короткое описание для оператора.">${escapeHtml(t.description || '')}</textarea>
+      </div>
+      <div class="flex items-center gap-6">
+        <label class="inline-flex items-center gap-2">
+          <input id="f-is_active" type="checkbox" ${t.is_active ? 'checked' : ''}
+            class="rounded border-slate-300 dark:border-slate-700" />
+          <span class="text-sm">Активен (классификатор и dropdown'ы включают этот тип)</span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Parser kind -->
+    <div class="card card-body space-y-4">
+      <h3 class="card-title">Парсер</h3>
+      <div class="form-row">
+        <label class="form-label">parser_kind</label>
+        <select id="f-parser_kind" class="form-select">
+          <option value="builtin:invoice_regex" ${t.parser_kind === 'builtin:invoice_regex' ? 'selected' : ''}>builtin:invoice_regex — regex для счёта на оплату</option>
+          <option value="builtin:upd_regex" ${t.parser_kind === 'builtin:upd_regex' ? 'selected' : ''}>builtin:upd_regex — regex для УПД / СФ</option>
+          <option value="llm_extract" ${t.parser_kind === 'llm_extract' ? 'selected' : ''}>llm_extract — целиком через LLM /v1/extract</option>
+        </select>
+        <p class="form-help">Builtin'ы используют свои regex'ы + LLM-fallback при низкой уверенности. <code class="font-mono">llm_extract</code> сразу идёт в LLM.</p>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="form-row">
+          <label class="form-label">confidence_threshold</label>
+          <input id="f-confidence_threshold" type="number" min="0" max="1" step="0.05"
+            value="${t.confidence_threshold ?? ''}" placeholder="0.6 (env default)" class="form-input font-mono" />
+          <p class="form-help">Ниже этого — статус <code class="font-mono">needs_review</code>. Пусто = брать из env.</p>
+        </div>
+        <div class="form-row">
+          <label class="form-label">regex_fallback_threshold</label>
+          <input id="f-regex_fallback_threshold" type="number" min="0" max="1" step="0.05"
+            value="${t.regex_fallback_threshold ?? ''}" placeholder="0.7" class="form-input font-mono" />
+          <p class="form-help">Только для builtin-парсеров. Ниже этого — regex отдаёт ход LLM.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Expected fields -->
+    <div class="card card-body space-y-2">
+      <h3 class="card-title">Ожидаемые поля</h3>
+      <p class="text-xs text-slate-500 dark:text-slate-400">Парсер обязан попытаться извлечь эти поля. Что не нашлось → попадает в <code class="font-mono">missing</code>.</p>
+      ${renderChipsInput('expected_fields', 'добавить поле и Enter', 'number, date, total, seller.inn, ...')}
+    </div>
+
+    <!-- Validators -->
+    <div class="card card-body space-y-2">
+      <h3 class="card-title">Валидаторы</h3>
+      <p class="text-xs text-slate-500 dark:text-slate-400">
+        Формат: <code class="font-mono">name</code> или <code class="font-mono">name:arg1,arg2</code>. Доступные:
+        <code class="font-mono text-xs">inn_checksum</code>, <code class="font-mono text-xs">kpp_format</code>,
+        <code class="font-mono text-xs">vehicle_plate</code>, <code class="font-mono text-xs">country_code</code>,
+        <code class="font-mono text-xs">date_range</code>, <code class="font-mono text-xs">money_sanity</code>,
+        <code class="font-mono text-xs">vat_consistency</code>, <code class="font-mono text-xs">parties_differ</code>,
+        <code class="font-mono text-xs">weight_nett_le_gross</code>.
+      </p>
+      ${renderChipsInput('validators', 'добавить валидатор и Enter', 'inn_checksum:seller.inn')}
+    </div>
+
+    <!-- Classification keywords -->
+    <div class="card card-body space-y-2">
+      <h3 class="card-title">Ключи классификатора</h3>
+      <p class="text-xs text-slate-500 dark:text-slate-400">Регулярки. Если совпали с текстом OCR — классификатор присваивает этот тип. Без подсказки <code class="font-mono">document_hint</code> от клиента.</p>
+      ${renderChipsInput('classification_keywords', 'добавить regex и Enter', '\\bсч[её]т-фактура\\b')}
+    </div>
+
+    <!-- Agent instruction (llm_prompt) -->
+    <div class="card card-body space-y-2">
+      <h3 class="card-title">Инструкция для LLM-агента</h3>
+      <p class="text-xs text-slate-500 dark:text-slate-400">Что показывать модели вместе с текстом документа. Пусто = использовать default-prompt из inference-service (<code class="font-mono">prompts/extract.py</code>).</p>
+      <textarea id="f-llm_prompt" rows="8" class="code-editor"
+        placeholder="Ты — парсер транспортной накладной. Извлеки поля строго по JSON Schema...">${escapeHtml(t.llm_prompt || '')}</textarea>
+    </div>
+
+    <!-- LLM schema -->
+    <div class="card card-body space-y-2">
+      <h3 class="card-title">JSON Schema для /extract</h3>
+      <p class="text-xs text-slate-500 dark:text-slate-400">JSON-схема, по которой LLM должна вернуть структуру. Пусто = builtin-схема из <code class="font-mono">document-json-schemas.ts</code>.</p>
+      <textarea id="f-llm_schema" rows="14" class="code-editor"
+        placeholder='{"type":"object","properties":{"number":{"type":"string"}, ...}}'>${t.llm_schema ? escapeHtml(JSON.stringify(t.llm_schema, null, 2)) : ''}</textarea>
+      <p id="f-llm_schema-error" class="form-error hidden"></p>
+    </div>
+
+    <!-- Bookkeeping + actions -->
+    ${!isCreate ? `
+      <div class="card card-body">
+        <h3 class="card-title mb-3">Bookkeeping</h3>
+        <dl class="kv">
+          <div class="kv-row"><dt class="kv-key">Created</dt><dd class="kv-value">${escapeHtml(t.created_at || '—')}</dd></div>
+          <div class="kv-row"><dt class="kv-key">Updated</dt><dd class="kv-value">${escapeHtml(t.updated_at || '—')}</dd></div>
+        </dl>
+      </div>` : ''}
+
+    <p id="editor-error" class="form-error hidden"></p>
+
+    <div class="flex items-center justify-between gap-2 sticky bottom-0 bg-slate-50/95 dark:bg-slate-950/95 backdrop-blur-sm py-3 -mx-8 px-8 border-t border-slate-200 dark:border-slate-800">
+      <div>
+        ${!isCreate && !t.is_builtin ? `<button id="delete-btn" class="btn-danger btn-md">Удалить</button>` : ''}
+        ${!isCreate && t.is_builtin ? `<span class="text-xs text-slate-500">builtin-типы нельзя удалить, можно деактивировать.</span>` : ''}
+      </div>
+      <div class="flex items-center gap-2">
+        <a href="#audit-log" class="btn-ghost btn-sm">История</a>
+        <a href="#document-types" class="btn-secondary btn-md">Отмена</a>
+        <button id="save-btn" class="btn-primary btn-md">${isCreate ? 'Создать' : 'Сохранить'}</button>
+      </div>
+    </div>
+  `;
+}
+
+/**
+ * Render a chip-input block. The actual chip rendering is dynamic — done
+ * in `redrawChips()` after creation so add/remove updates the DOM without
+ * a full form re-render.
+ */
+function renderChipsInput(field, placeholder, exampleValue) {
+  return `
+    <div id="chips-${field}" class="chip-input"></div>
+    <input id="chips-${field}-add" type="text" placeholder="${escapeHtml(placeholder)} (пример: ${escapeHtml(exampleValue)})"
+      class="form-input font-mono text-xs" />`;
+}
+
+function bindEditorHandlers(originalRow, isCreate, state, root) {
+  const redrawChips = (field) => {
+    const container = root.querySelector(`#chips-${field}`);
+    if (!container) return;
+    if (state[field].length === 0) {
+      container.innerHTML = `<span class="text-xs text-slate-400 px-1 py-0.5">—</span>`;
+      return;
+    }
+    container.innerHTML = state[field].map((value, idx) => `
+      <span class="chip">
+        ${escapeHtml(value)}
+        <span class="chip-remove" data-remove="${field}" data-idx="${idx}" title="Удалить">×</span>
+      </span>`).join('');
+    container.querySelectorAll('[data-remove]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const f = el.dataset.remove;
+        const i = Number(el.dataset.idx);
+        state[f].splice(i, 1);
+        redrawChips(f);
+      });
+    });
+  };
+
+  ['expected_fields', 'validators', 'classification_keywords'].forEach((field) => {
+    redrawChips(field);
+    const addInput = root.querySelector(`#chips-${field}-add`);
+    if (!addInput) return;
+    addInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const v = addInput.value.trim();
+        if (v && !state[field].includes(v)) {
+          state[field].push(v);
+          redrawChips(field);
+        }
+        addInput.value = '';
+      }
+    });
+  });
+
+  // Delete button
+  const delBtn = root.querySelector('#delete-btn');
+  if (delBtn) {
+    delBtn.addEventListener('click', async () => {
+      if (!confirm(`Удалить тип "${originalRow.slug}"? Это необратимо.`)) return;
+      try {
+        const res = await api(`/document-types/${encodeURIComponent(originalRow.slug)}`, { method: 'DELETE' });
+        if (!res.ok && res.status !== 204) {
+          const t = await res.text();
+          throw new Error(`HTTP ${res.status}: ${t.slice(0, 200)}`);
+        }
+        location.hash = '#document-types';
+      } catch (err) {
+        showEditorError(root, err.message);
+      }
+    });
+  }
+
+  // Save / Create
+  root.querySelector('#save-btn').addEventListener('click', async () => {
+    const errEl = root.querySelector('#editor-error');
+    errEl.classList.add('hidden');
+    const schemaErrEl = root.querySelector('#f-llm_schema-error');
+    schemaErrEl.classList.add('hidden');
+
+    // Parse JSON-schema textarea (empty = null = use builtin)
+    const schemaRaw = root.querySelector('#f-llm_schema').value.trim();
+    let schema = null;
+    if (schemaRaw) {
+      try {
+        schema = JSON.parse(schemaRaw);
+      } catch (err) {
+        schemaErrEl.textContent = `JSON Schema: невалидный JSON — ${err.message}`;
+        schemaErrEl.classList.remove('hidden');
+        return;
+      }
+    }
+
+    const promptRaw = root.querySelector('#f-llm_prompt').value;
+    const confRaw = root.querySelector('#f-confidence_threshold').value;
+    const regexThrRaw = root.querySelector('#f-regex_fallback_threshold').value;
+
+    const payload = {
+      display_name: root.querySelector('#f-display_name').value.trim(),
+      description: root.querySelector('#f-description').value.trim() || null,
+      is_active: root.querySelector('#f-is_active').checked,
+      parser_kind: root.querySelector('#f-parser_kind').value,
+      llm_prompt: promptRaw.trim() || null,
+      llm_schema: schema,
+      expected_fields: [...state.expected_fields],
+      validators: [...state.validators],
+      confidence_threshold: confRaw === '' ? null : Number(confRaw),
+      regex_fallback_threshold: regexThrRaw === '' ? null : Number(regexThrRaw),
+      classification_keywords: [...state.classification_keywords],
+    };
+
+    try {
+      if (isCreate) {
+        const slug = root.querySelector('#f-slug').value.trim();
+        if (!slug) throw new Error('slug обязателен');
+        if (!payload.display_name) throw new Error('display_name обязателен');
+        const data = await apiJson('/document-types', {
+          method: 'POST',
+          body: JSON.stringify({ slug, ...payload }),
+        });
+        location.hash = `#document-types/${data.slug}`;
+      } else {
+        await apiJson(`/document-types/${encodeURIComponent(originalRow.slug)}`, {
+          method: 'PATCH',
+          body: JSON.stringify(payload),
+        });
+        // Stay on the same page to confirm save visually
+        flashSave(root);
+      }
+    } catch (err) {
+      showEditorError(root, err.message);
+    }
+  });
+}
+
+function showEditorError(root, message) {
+  const el = root.querySelector('#editor-error');
+  el.textContent = message;
+  el.classList.remove('hidden');
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function flashSave(root) {
+  const btn = root.querySelector('#save-btn');
+  if (!btn) return;
+  const prev = btn.textContent;
+  btn.textContent = 'Сохранено ✓';
+  btn.classList.add('bg-emerald-600', 'hover:bg-emerald-700');
+  btn.classList.remove('bg-indigo-600', 'hover:bg-indigo-700');
+  setTimeout(() => {
+    btn.textContent = prev;
+    btn.classList.remove('bg-emerald-600', 'hover:bg-emerald-700');
+    btn.classList.add('bg-indigo-600', 'hover:bg-indigo-700');
+  }, 1200);
+}
+
+// ============================================================
+// Providers (LLM keys + OCR engines)
+// ============================================================
+
+const PROVIDER_KIND_BADGE = {
+  llm: { label: 'LLM', variant: 'badge-violet' },
+  ocr: { label: 'OCR', variant: 'badge-sky' },
+};
+
+async function renderProvidersList() {
+  setView(`
+    <div class="page">
+      ${pageHeader({
+        title: 'Providers',
+        subtitle: 'API-ключи и endpoint-ы для LLM (Anthropic, OpenAI, локальные) и OCR (Tesseract, Yandex)',
+        actions: `<a href="#providers/new" class="btn-primary btn-md">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path d="M10.75 4.75a.75.75 0 0 0-1.5 0v4.5h-4.5a.75.75 0 0 0 0 1.5h4.5v4.5a.75.75 0 0 0 1.5 0v-4.5h4.5a.75.75 0 0 0 0-1.5h-4.5v-4.5Z"/></svg>
+          Новый
+        </a>`,
+      })}
+
+      <div class="info-banner mb-4">
+        Ключи хранятся в БД; в ответах API маскируются (••••XXXX). Активный по умолчанию для каждого kind помечается флагом <strong>default</strong>. Изменения подхватываются hot-path'ом без рестарта (TTL 30s).
+      </div>
+
+      <div id="providers-list" class="space-y-3">${loadingState()}</div>
+    </div>
+  `);
+
+  let data;
   try {
-    t = await apiJson(`/document-types/${encodeURIComponent(slug)}`);
+    data = await apiJson('/provider-settings');
   } catch (err) {
-    document.getElementById('dt-detail').innerHTML = errorState(err.message);
+    document.getElementById('providers-list').innerHTML = errorState(err.message);
     return;
   }
 
-  const listItem = (items, emptyLabel) => items.length
-    ? `<ul class="space-y-1 list-disc list-inside">${items.map((x) => `<li class="font-mono text-xs">${escapeHtml(x)}</li>`).join('')}</ul>`
-    : `<p class="text-sm text-slate-400">${emptyLabel}</p>`;
+  if (!data.items.length) {
+    document.getElementById('providers-list').innerHTML = `
+      <div class="card empty-state">
+        <p class="empty-state-text">Провайдеров пока нет.</p>
+        <a href="#providers/new" class="empty-state-cta">Добавить первый →</a>
+      </div>`;
+    return;
+  }
 
-  document.getElementById('dt-detail').innerHTML = `
-    <div class="card card-body-lg">
-      <div class="flex items-center gap-2 mb-2 flex-wrap">
-        ${parserKindBadge(t.parser_kind)}
-        ${t.is_builtin ? '<span class="badge badge-emerald">builtin</span>' : ''}
-        ${!t.is_active ? '<span class="badge badge-slate">inactive</span>' : ''}
+  // Group by kind for clearer reading
+  const byKind = { llm: [], ocr: [] };
+  data.items.forEach((p) => {
+    if (byKind[p.kind]) byKind[p.kind].push(p);
+  });
+
+  const renderRow = (p) => `
+    <div class="card card-body cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/30 transition" data-id="${escapeHtml(p.id)}">
+      <div class="flex items-start justify-between gap-4">
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center gap-2 flex-wrap mb-1">
+            <span class="font-medium">${escapeHtml(p.display_name)}</span>
+            <span class="badge ${PROVIDER_KIND_BADGE[p.kind]?.variant ?? 'badge-slate'}">${PROVIDER_KIND_BADGE[p.kind]?.label ?? p.kind}</span>
+            ${p.is_default ? '<span class="badge badge-indigo">default</span>' : ''}
+            ${!p.is_active ? '<span class="badge badge-slate">inactive</span>' : ''}
+            ${p.has_api_key ? '<span class="badge badge-emerald">key set</span>' : '<span class="badge badge-rose">no key</span>'}
+          </div>
+          <div class="font-mono text-xs text-slate-500">${escapeHtml(p.id)}</div>
+          ${p.description ? `<div class="text-xs text-slate-500 dark:text-slate-400 mt-2">${escapeHtml(p.description)}</div>` : ''}
+        </div>
+        <div class="text-right shrink-0 space-y-1">
+          ${p.model ? `<div class="text-xs font-mono text-slate-400">${escapeHtml(p.model)}</div>` : ''}
+          ${p.base_url ? `<div class="text-xs font-mono text-slate-400 truncate max-w-[14rem]" title="${escapeHtml(p.base_url)}">${escapeHtml(p.base_url)}</div>` : ''}
+          ${p.api_key_masked ? `<div class="text-xs font-mono text-slate-400">key: ${escapeHtml(p.api_key_masked)}</div>` : ''}
+        </div>
       </div>
-      <h2 class="text-xl font-semibold">${escapeHtml(t.display_name)}</h2>
-      <div class="mt-1 font-mono text-xs text-slate-500">${escapeHtml(t.slug)}</div>
-      ${t.description ? `<p class="mt-3 text-sm text-slate-600 dark:text-slate-400">${escapeHtml(t.description)}</p>` : ''}
-    </div>
+    </div>`;
 
+  document.getElementById('providers-list').innerHTML = `
     <div class="card card-body">
-      <h3 class="card-title mb-3">Thresholds</h3>
-      <dl class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
-        <div class="kv-row"><dt class="kv-key">confidence_threshold</dt><dd class="kv-value">${t.confidence_threshold !== null ? t.confidence_threshold : '<span class="text-slate-400">default из env</span>'}</dd></div>
-        <div class="kv-row"><dt class="kv-key">regex_fallback_threshold</dt><dd class="kv-value">${t.regex_fallback_threshold !== null ? t.regex_fallback_threshold : '<span class="text-slate-400">—</span>'}</dd></div>
-      </dl>
+      <h3 class="card-title mb-3">LLM провайдеры <span class="text-sm font-normal text-slate-500">(${byKind.llm.length})</span></h3>
+      <div class="space-y-2">
+        ${byKind.llm.length ? byKind.llm.map(renderRow).join('') : '<p class="text-sm text-slate-400">— нет</p>'}
+      </div>
     </div>
-
     <div class="card card-body">
-      <h3 class="card-title mb-1">Expected fields <span class="text-sm font-normal text-slate-500">(${t.expected_fields.length})</span></h3>
-      <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">Парсер обязан попытаться извлечь эти поля. Не найденное → <code class="font-mono">missing</code>.</p>
-      ${listItem(t.expected_fields, 'не настроено')}
-    </div>
-
-    <div class="card card-body">
-      <h3 class="card-title mb-1">Validators <span class="text-sm font-normal text-slate-500">(${t.validators.length})</span></h3>
-      <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">Доменные проверки на извлечённых данных. Формат: <code class="font-mono">name</code> или <code class="font-mono">name:args</code>.</p>
-      ${listItem(t.validators, 'не настроено')}
-    </div>
-
-    <div class="card card-body">
-      <h3 class="card-title mb-1">Classification keywords <span class="text-sm font-normal text-slate-500">(${t.classification_keywords.length})</span></h3>
-      <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">Регулярки для keyword-классификатора. Совпадение → этот тип.</p>
-      ${listItem(t.classification_keywords, 'не настроено')}
-    </div>
-
-    ${t.parser_kind === 'llm_extract' ? `
-      <div class="card card-body">
-        <h3 class="card-title mb-3">LLM extraction config</h3>
-        <div class="mb-4">
-          <div class="kv-key text-sm mb-1">Prompt override</div>
-          ${t.llm_prompt
-            ? `<pre class="text-xs font-mono bg-slate-50 dark:bg-slate-950 p-3 rounded-lg overflow-x-auto">${escapeHtml(t.llm_prompt)}</pre>`
-            : '<p class="text-sm text-slate-400">— не задан, используется default из inference-service prompts/extract.py</p>'}
-        </div>
-        <div>
-          <div class="kv-key text-sm mb-1">JSON Schema override</div>
-          ${t.llm_schema
-            ? `<div class="bg-slate-50 dark:bg-slate-950 p-3 rounded-lg overflow-x-auto max-h-64">${jsonTree(t.llm_schema)}</div>`
-            : '<p class="text-sm text-slate-400">— не задан, используется default из doc-service document-json-schemas.ts</p>'}
-        </div>
-      </div>` : ''}
-
-    <div class="card card-body">
-      <h3 class="card-title mb-3">Bookkeeping</h3>
-      <dl class="kv">
-        <div class="kv-row"><dt class="kv-key">Created</dt><dd class="kv-value">${escapeHtml(t.created_at)}</dd></div>
-        <div class="kv-row"><dt class="kv-key">Updated</dt><dd class="kv-value">${escapeHtml(t.updated_at)}</dd></div>
-      </dl>
+      <h3 class="card-title mb-3">OCR движки <span class="text-sm font-normal text-slate-500">(${byKind.ocr.length})</span></h3>
+      <div class="space-y-2">
+        ${byKind.ocr.length ? byKind.ocr.map(renderRow).join('') : '<p class="text-sm text-slate-400">— нет</p>'}
+      </div>
     </div>
   `;
+
+  document.querySelectorAll('[data-id]').forEach((row) => {
+    row.addEventListener('click', () => {
+      location.hash = `#providers/${row.dataset.id}`;
+    });
+  });
+}
+
+async function renderProviderEditor(id) {
+  const isCreate = id === null;
+  setView(`
+    <div class="page-narrow">
+      ${backLink('#providers')}
+      <div id="prov-editor" class="space-y-4">${loadingState()}</div>
+    </div>
+  `);
+
+  let p;
+  if (isCreate) {
+    p = {
+      id: '',
+      kind: 'llm',
+      display_name: '',
+      description: '',
+      base_url: '',
+      api_key_masked: null,
+      has_api_key: false,
+      model: '',
+      is_active: true,
+      is_default: false,
+      extra: null,
+      created_at: null,
+      updated_at: null,
+    };
+  } else {
+    try {
+      p = await apiJson(`/provider-settings/${encodeURIComponent(id)}`);
+    } catch (err) {
+      document.getElementById('prov-editor').innerHTML = errorState(err.message);
+      return;
+    }
+  }
+
+  const root = document.getElementById('prov-editor');
+  root.innerHTML = renderProviderForm(p, isCreate);
+  bindProviderHandlers(p, isCreate, root);
+}
+
+function renderProviderForm(p, isCreate) {
+  const headerBadges = [
+    p.is_default ? '<span class="badge badge-indigo">default</span>' : '',
+    p.has_api_key ? '<span class="badge badge-emerald">key set</span>' : '',
+    !p.is_active && !isCreate ? '<span class="badge badge-slate">inactive</span>' : '',
+    isCreate ? '<span class="badge badge-indigo">new</span>' : '',
+  ].filter(Boolean).join(' ');
+
+  return `
+    <div class="card card-body-lg">
+      <div class="flex items-center gap-2 mb-2 flex-wrap">${headerBadges}</div>
+      <h2 class="text-xl font-semibold">${isCreate ? 'Новый провайдер' : escapeHtml(p.display_name)}</h2>
+      ${isCreate ? '' : `<div class="mt-1 font-mono text-xs text-slate-500">${escapeHtml(p.id)}</div>`}
+    </div>
+
+    <div class="card card-body space-y-4">
+      <h3 class="card-title">Идентификация</h3>
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="form-row">
+          <label class="form-label">ID <span class="text-rose-500">*</span></label>
+          <input id="f-id" type="text" value="${escapeHtml(p.id)}" ${isCreate ? '' : 'disabled'}
+            placeholder="anthropic" class="form-input font-mono" />
+          <p class="form-help">${isCreate ? 'Lowercase, только [a-z0-9_-].' : 'ID нельзя изменить — пересоздай если нужно.'}</p>
+        </div>
+        <div class="form-row">
+          <label class="form-label">Kind</label>
+          <select id="f-kind" class="form-select" ${isCreate ? '' : 'disabled'}>
+            <option value="llm" ${p.kind === 'llm' ? 'selected' : ''}>llm — LLM провайдер</option>
+            <option value="ocr" ${p.kind === 'ocr' ? 'selected' : ''}>ocr — OCR движок</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <label class="form-label">Display name <span class="text-rose-500">*</span></label>
+        <input id="f-display_name" type="text" value="${escapeHtml(p.display_name)}"
+          placeholder="Anthropic Claude" class="form-input" />
+      </div>
+      <div class="form-row">
+        <label class="form-label">Описание</label>
+        <textarea id="f-description" rows="2" class="form-textarea" style="font-family: inherit;">${escapeHtml(p.description || '')}</textarea>
+      </div>
+      <label class="inline-flex items-center gap-2">
+        <input id="f-is_active" type="checkbox" ${p.is_active ? 'checked' : ''} class="rounded border-slate-300 dark:border-slate-700" />
+        <span class="text-sm">Активен</span>
+      </label>
+    </div>
+
+    <div class="card card-body space-y-4">
+      <h3 class="card-title">Connection</h3>
+      <div class="form-row">
+        <label class="form-label">Base URL</label>
+        <input id="f-base_url" type="text" value="${escapeHtml(p.base_url || '')}"
+          placeholder="https://api.anthropic.com или http://inference:8000" class="form-input font-mono" />
+        <p class="form-help">Пусто = SDK-defaults (для Anthropic/OpenAI) или fallback к <code class="font-mono">LLM_INFERENCE_URL</code> из env.</p>
+      </div>
+      <div class="form-row">
+        <label class="form-label">API key</label>
+        <input id="f-api_key" type="password" value="" autocomplete="off"
+          placeholder="${p.has_api_key ? `текущий: ${escapeHtml(p.api_key_masked || '')} — оставь пусто чтобы не менять` : 'sk-ant-... или ya-...'}"
+          class="form-input font-mono" />
+        <p class="form-help">Хранится в БД, в API возвращается только маска. ${p.has_api_key ? 'Пусто = оставить текущий. Чтобы стереть — нажми «Очистить ключ».' : ''}</p>
+      </div>
+      <div class="form-row">
+        <label class="form-label">Model</label>
+        <input id="f-model" type="text" value="${escapeHtml(p.model || '')}"
+          placeholder="claude-sonnet-4-5 / gpt-4o-mini / qwen2.5-vl-7b-instruct" class="form-input font-mono" />
+      </div>
+      <div class="flex items-center gap-2 pt-2">
+        <button id="test-btn" class="btn-secondary btn-sm" ${isCreate ? 'disabled title="Сначала сохраните"' : ''}>Проверить связь</button>
+        <span id="test-result" class="text-xs text-slate-500"></span>
+      </div>
+    </div>
+
+    <p id="editor-error" class="form-error hidden"></p>
+
+    <div class="flex items-center justify-between gap-2 sticky bottom-0 bg-slate-50/95 dark:bg-slate-950/95 backdrop-blur-sm py-3 -mx-8 px-8 border-t border-slate-200 dark:border-slate-800">
+      <div class="flex items-center gap-2">
+        ${!isCreate ? `<button id="delete-btn" class="btn-danger btn-md">Удалить</button>` : ''}
+        ${!isCreate && p.has_api_key ? `<button id="clear-key-btn" class="btn-ghost btn-sm">Очистить ключ</button>` : ''}
+        ${!isCreate && !p.is_default ? `<button id="set-default-btn" class="btn-accent-outline btn-sm">Сделать default</button>` : ''}
+      </div>
+      <div class="flex items-center gap-2">
+        <a href="#audit-log?entity=provider_setting${isCreate ? '' : `&entity_id=${encodeURIComponent(p.id)}`}" class="btn-ghost btn-sm">История</a>
+        <a href="#providers" class="btn-secondary btn-md">Отмена</a>
+        <button id="save-btn" class="btn-primary btn-md">${isCreate ? 'Создать' : 'Сохранить'}</button>
+      </div>
+    </div>
+  `;
+}
+
+function bindProviderHandlers(originalRow, isCreate, root) {
+  const errEl = root.querySelector('#editor-error');
+
+  const collectPayload = () => {
+    const apiKeyRaw = root.querySelector('#f-api_key').value;
+    return {
+      kind: root.querySelector('#f-kind').value,
+      display_name: root.querySelector('#f-display_name').value.trim(),
+      description: root.querySelector('#f-description').value.trim() || null,
+      base_url: root.querySelector('#f-base_url').value.trim() || null,
+      // Пустой инпут = не менять (в PATCH не отправляем поле api_key)
+      api_key: apiKeyRaw === '' ? undefined : apiKeyRaw,
+      model: root.querySelector('#f-model').value.trim() || null,
+      is_active: root.querySelector('#f-is_active').checked,
+    };
+  };
+
+  root.querySelector('#save-btn').addEventListener('click', async () => {
+    errEl.classList.add('hidden');
+    const payload = collectPayload();
+    if (!payload.display_name) {
+      errEl.textContent = 'display_name обязателен';
+      errEl.classList.remove('hidden');
+      return;
+    }
+    try {
+      if (isCreate) {
+        const id = root.querySelector('#f-id').value.trim();
+        if (!id) throw new Error('id обязателен');
+        // На create передаём kind + id, api_key если есть
+        const body = { id, ...payload };
+        if (body.api_key === undefined) delete body.api_key;
+        const data = await apiJson('/provider-settings', {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
+        location.hash = `#providers/${data.id}`;
+      } else {
+        // PATCH: убираем поля, которые на update не меняем
+        delete payload.kind;
+        if (payload.api_key === undefined) delete payload.api_key;
+        await apiJson(`/provider-settings/${encodeURIComponent(originalRow.id)}`, {
+          method: 'PATCH',
+          body: JSON.stringify(payload),
+        });
+        flashSave(root);
+      }
+    } catch (err) {
+      errEl.textContent = err.message;
+      errEl.classList.remove('hidden');
+    }
+  });
+
+  // Delete
+  const delBtn = root.querySelector('#delete-btn');
+  if (delBtn) {
+    delBtn.addEventListener('click', async () => {
+      if (!confirm(`Удалить провайдера "${originalRow.id}"?`)) return;
+      try {
+        const res = await api(`/provider-settings/${encodeURIComponent(originalRow.id)}`, { method: 'DELETE' });
+        if (!res.ok && res.status !== 204) {
+          throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+        }
+        location.hash = '#providers';
+      } catch (err) {
+        errEl.textContent = err.message;
+        errEl.classList.remove('hidden');
+      }
+    });
+  }
+
+  // Clear API key
+  const clearBtn = root.querySelector('#clear-key-btn');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', async () => {
+      if (!confirm('Стереть API key? Провайдер перестанет авторизовываться.')) return;
+      try {
+        await apiJson(`/provider-settings/${encodeURIComponent(originalRow.id)}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ api_key: null }),
+        });
+        renderProviderEditor(originalRow.id);
+      } catch (err) {
+        errEl.textContent = err.message;
+        errEl.classList.remove('hidden');
+      }
+    });
+  }
+
+  // Set default
+  const defaultBtn = root.querySelector('#set-default-btn');
+  if (defaultBtn) {
+    defaultBtn.addEventListener('click', async () => {
+      try {
+        await apiJson(`/provider-settings/${encodeURIComponent(originalRow.id)}/set-default`, {
+          method: 'POST',
+        });
+        renderProviderEditor(originalRow.id);
+      } catch (err) {
+        errEl.textContent = err.message;
+        errEl.classList.remove('hidden');
+      }
+    });
+  }
+
+  // Test connection
+  const testBtn = root.querySelector('#test-btn');
+  if (testBtn && !isCreate) {
+    testBtn.addEventListener('click', async () => {
+      const resultEl = root.querySelector('#test-result');
+      resultEl.textContent = '…';
+      resultEl.className = 'text-xs text-slate-500';
+      try {
+        const res = await apiJson(`/provider-settings/${encodeURIComponent(originalRow.id)}/test`, {
+          method: 'POST',
+        });
+        if (res.ok) {
+          resultEl.textContent = `OK · HTTP ${res.status ?? '?'} · ${res.latency_ms ?? '?'} ms`;
+          resultEl.className = 'text-xs text-emerald-600 dark:text-emerald-400 font-medium';
+        } else {
+          resultEl.textContent = `FAIL · ${res.message || `HTTP ${res.status}`}`;
+          resultEl.className = 'text-xs text-rose-600 dark:text-rose-400 font-medium';
+        }
+      } catch (err) {
+        resultEl.textContent = `error · ${err.message}`;
+        resultEl.className = 'text-xs text-rose-600 dark:text-rose-400 font-medium';
+      }
+    });
+  }
+}
+
+// ============================================================
+// Audit log
+// ============================================================
+
+const AUDIT_ACTION_BADGE = {
+  create: { label: 'create', variant: 'badge-emerald' },
+  update: { label: 'update', variant: 'badge-indigo' },
+  delete: { label: 'delete', variant: 'badge-rose' },
+};
+const AUDIT_ENTITY_LABEL = {
+  document_type: 'Document type',
+  provider_setting: 'Provider',
+};
+
+async function renderAuditLog() {
+  // Поддерживаем query-параметры в hash для глубоких ссылок типа
+  // #audit-log?entity=provider_setting&entity_id=anthropic
+  const hashPart = (location.hash || '').split('?')[1] || '';
+  const params = new URLSearchParams(hashPart);
+  const filterEntity = params.get('entity') || '';
+  const filterEntityId = params.get('entity_id') || '';
+
+  setView(`
+    <div class="page">
+      ${pageHeader({
+        title: 'Audit log',
+        subtitle: 'История админ-изменений document_types и provider_settings',
+      })}
+
+      <div class="flex flex-wrap items-center gap-3 mb-4">
+        <select id="audit-entity" class="form-select" style="width: auto;">
+          <option value="" ${filterEntity === '' ? 'selected' : ''}>Всё</option>
+          <option value="document_type" ${filterEntity === 'document_type' ? 'selected' : ''}>Document types</option>
+          <option value="provider_setting" ${filterEntity === 'provider_setting' ? 'selected' : ''}>Providers</option>
+        </select>
+        <input id="audit-entity-id" type="text" placeholder="entity id (slug или provider id)"
+          value="${escapeHtml(filterEntityId)}" class="form-input" style="width: 14rem;" />
+        <button id="audit-refresh" class="btn-secondary btn-sm">Обновить</button>
+      </div>
+
+      <div id="audit-list" class="space-y-2">${loadingState()}</div>
+    </div>
+  `);
+
+  const entityEl = document.getElementById('audit-entity');
+  const entityIdEl = document.getElementById('audit-entity-id');
+  const refreshEl = document.getElementById('audit-refresh');
+
+  async function load() {
+    const qs = new URLSearchParams();
+    if (entityEl.value) qs.set('entity', entityEl.value);
+    if (entityIdEl.value.trim()) qs.set('entity_id', entityIdEl.value.trim());
+    qs.set('limit', '100');
+    try {
+      const data = await apiJson(`/audit-log?${qs.toString()}`);
+      renderRows(data.items);
+    } catch (err) {
+      document.getElementById('audit-list').innerHTML = errorState(err.message);
+    }
+  }
+
+  function renderRows(items) {
+    if (!items.length) {
+      document.getElementById('audit-list').innerHTML = `
+        <div class="card empty-state">
+          <p class="empty-state-text">История пуста.</p>
+        </div>`;
+      return;
+    }
+    document.getElementById('audit-list').innerHTML = items.map(renderAuditRow).join('');
+  }
+
+  function renderAuditRow(row) {
+    const action = AUDIT_ACTION_BADGE[row.action] ?? { label: row.action, variant: 'badge-slate' };
+    const entityLabel = AUDIT_ENTITY_LABEL[row.entity] ?? row.entity;
+    const diff = row.diff ?? {};
+    const diffRows = Object.entries(diff).map(([k, v]) => `
+      <div class="audit-diff-row">
+        <span class="text-slate-500 truncate" title="${escapeHtml(k)}">${escapeHtml(k)}</span>
+        <span class="audit-diff-from truncate" title='${escapeHtml(JSON.stringify(v.from))}'>${escapeHtml(formatDiffValue(v.from))}</span>
+        <span class="audit-diff-to truncate" title='${escapeHtml(JSON.stringify(v.to))}'>${escapeHtml(formatDiffValue(v.to))}</span>
+      </div>`).join('');
+
+    return `
+      <details class="card">
+        <summary class="card-body cursor-pointer list-none hover:bg-slate-50 dark:hover:bg-slate-800/30 transition">
+          <div class="flex items-center justify-between gap-4 flex-wrap">
+            <div class="flex items-center gap-2 flex-wrap min-w-0">
+              <span class="badge ${action.variant}">${action.label}</span>
+              <span class="text-sm font-medium">${entityLabel}</span>
+              <span class="font-mono text-xs text-slate-500">${escapeHtml(row.entity_id)}</span>
+            </div>
+            <div class="flex items-center gap-3 text-xs text-slate-500">
+              <span>by <span class="font-medium">${escapeHtml(row.actor)}</span></span>
+              <span title="${escapeHtml(row.at)}">${escapeHtml(relativeTime(row.at))}</span>
+            </div>
+          </div>
+          ${Object.keys(diff).length ? `
+            <div class="mt-2 text-xs text-slate-500">${Object.keys(diff).length} fields changed</div>
+          ` : ''}
+        </summary>
+        <div class="card-section">
+          ${Object.keys(diff).length ? `
+            <div class="audit-diff-row font-medium text-slate-500 uppercase tracking-wider" style="font-size: 10px;">
+              <span>field</span><span>before</span><span>after</span>
+            </div>
+            ${diffRows}
+          ` : '<p class="text-xs text-slate-400">No field-level diff.</p>'}
+          <details class="mt-3">
+            <summary class="text-xs text-slate-400 cursor-pointer">raw before/after</summary>
+            <div class="mt-2 grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <div class="text-xs text-slate-500 mb-1">before</div>
+                <div class="bg-slate-50 dark:bg-slate-950 p-2 rounded text-xs">${row.before ? jsonTree(row.before) : '<span class="text-slate-400">—</span>'}</div>
+              </div>
+              <div>
+                <div class="text-xs text-slate-500 mb-1">after</div>
+                <div class="bg-slate-50 dark:bg-slate-950 p-2 rounded text-xs">${row.after ? jsonTree(row.after) : '<span class="text-slate-400">—</span>'}</div>
+              </div>
+            </div>
+          </details>
+        </div>
+      </details>`;
+  }
+
+  entityEl.addEventListener('change', load);
+  entityIdEl.addEventListener('change', load);
+  entityIdEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') load(); });
+  refreshEl.addEventListener('click', load);
+
+  await load();
+}
+
+function formatDiffValue(value) {
+  if (value === null || value === undefined) return '—';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
 }
 
 // ============================================================
@@ -929,8 +1707,11 @@ function renderProvidersCard(providers) {
   const head = (status, body) => `
     <div class="card card-body">
       <div class="flex items-center justify-between mb-3">
-        <h3 class="card-title">LLM Providers</h3>
-        ${status}
+        <h3 class="card-title">LLM upstream <span class="text-sm font-normal text-slate-500">(inference-service)</span></h3>
+        <div class="flex items-center gap-2">
+          ${status}
+          <a href="#providers" class="btn-ghost btn-xs">→ Provider keys</a>
+        </div>
       </div>
       ${body}
     </div>`;

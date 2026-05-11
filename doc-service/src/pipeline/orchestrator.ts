@@ -11,8 +11,7 @@ import { selectOcrChain } from './router.js';
 import { KeywordClassifier } from './classifier/keywords.js';
 import { combineConfidence } from './quality.js';
 import { buildParsers } from './parsers/index.js';
-import { HttpLlmClient } from './llm/http-client.js';
-import { NullLlmClient } from './llm/null-client.js';
+import { dynamicLlm } from './llm/provider-resolver.js';
 import type { LlmClient } from './llm/types.js';
 import type { DocumentType } from '../types/documents.js';
 import { validateExtractedWithResolver } from './validation/index.js';
@@ -20,14 +19,11 @@ import { documentTypeResolver, type ResolvedTypeConfig } from './document-type-r
 import { jobsDurationSeconds, jobsTotal, ocrEngineDurationSeconds } from '../metrics.js';
 
 // --- Wire dependencies once at module load. The pipeline is stateless beyond this.
-
-const llm: LlmClient = config.llm.url
-  ? new HttpLlmClient({
-      baseUrl: config.llm.url,
-      apiKey: config.llm.apiKey,
-      timeoutMs: config.llm.timeoutMs,
-    })
-  : new NullLlmClient();
+//
+// LLM-клиент берём через resolver, который читает provider_settings из БД
+// (с env-fallback). Это позволяет админу менять ключ/URL через UI без
+// рестарта; resolver инкапсулирует TTL-кэш и lazy-инициализацию.
+const llm: LlmClient = dynamicLlm;
 
 const engines: readonly OcrEngine[] = [
   new PdfTextEngine(config.thresholds.pdfText),
