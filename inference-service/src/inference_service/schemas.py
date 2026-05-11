@@ -33,6 +33,11 @@ class ExtractRequest(BaseModel):
     # Если задана — backend использует её вместо встроенного prompt'а для этого типа.
     # Опциональный max_length — защита от 1 MB prompt'ов из БД, ломающих токен-лимит.
     prompt_override: str | None = Field(default=None, max_length=16000)
+    # Захватить ли в ответ финальный prompt и сырой текст ответа модели.
+    # Используется doc-service для job debug-трассы. Не пишем по умолчанию —
+    # ответ может вырасти на 10-50 KB (объём prompt+raw). Включаем когда
+    # точно хотим видеть в UI.
+    include_debug: bool = False
 
     # Allow population by both "schema" (the public name) and "schema_" (Python attr).
     # `schema` is a reserved attribute on BaseModel in Pydantic v1; the alias keeps
@@ -40,10 +45,20 @@ class ExtractRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class ExtractDebug(BaseModel):
+    """Отладочный след extract-вызова. Прозрачно для нашей бизнес-логики,
+    нужно админу для понимания «что мы попросили / что модель ответила»."""
+    prompt: str
+    raw_response: str
+    model: str
+    backend: str
+
+
 class ExtractResponse(BaseModel):
     extracted: dict[str, Any]
     confidence: float = Field(ge=0.0, le=1.0)
     issues: list[str] = Field(default_factory=list)
+    debug: ExtractDebug | None = None
 
 
 # --- /v1/vision-ocr ---

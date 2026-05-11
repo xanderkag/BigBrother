@@ -19,4 +19,5 @@ async def extract(
         schema=body.schema_,
         hint=body.hint,
         prompt_override=body.prompt_override,
+        include_debug=body.include_debug,
     )

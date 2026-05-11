@@ -441,6 +441,10 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         extracted: extractedToStore,
         confidence: overall,
         error: null,
+        // Если парсер ходил в LLM — обновляем трассу. Если нет (regex
+        // справился без fallback'а) — передаём null, чтобы старый
+        // trace, который мог сбить с толку, очистился.
+        llmCall: post.llmCall ?? null,
       });
       if (!updated) {
         reply.code(404);

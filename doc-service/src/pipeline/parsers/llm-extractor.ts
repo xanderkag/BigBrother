@@ -31,7 +31,10 @@ export async function llmExtract(
     };
   }
 
-  const result = await llm.extract({ text: rawText, schema, hint, promptOverride });
+  // Всегда просим debug — это включается доспро на стороне inference только
+  // если бэкенд готов. Размер трассы — десятки KB на крупный prompt, что
+  // приемлемо для платформы с job'ами по гигабайтам метаданных.
+  const result = await llm.extract({ text: rawText, schema, hint, promptOverride, includeDebug: true });
   const extracted = result.extracted ?? {};
   const present = new Set(Object.keys(extracted));
   const missing = expectedFields.filter((f) => {
@@ -44,6 +47,7 @@ export async function llmExtract(
     extracted,
     confidence: clamp01(result.confidence),
     missing,
+    llmCall: result.debug,
   };
 }
 

@@ -544,6 +544,27 @@ async function renderJobDetail(jobId) {
         </div>
       </details>
 
+      ${job.last_llm_call ? `
+        <details class="card">
+          <summary class="card-header cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 transition list-none">
+            <div class="flex items-center justify-between w-full">
+              <span class="card-title">LLM call <span class="text-sm font-normal text-slate-500">${escapeHtml(job.last_llm_call.backend)} / ${escapeHtml(job.last_llm_call.model)}</span></span>
+              <span class="text-xs text-slate-400">${job.last_llm_call.prompt.length} chars prompt · ${job.last_llm_call.raw_response.length} chars response</span>
+            </div>
+          </summary>
+          <div class="card-body space-y-3">
+            <p class="text-xs text-slate-500 dark:text-slate-400">Финальный prompt отправленный модели и её ответ ДО нашего JSON-парсинга. Если extracted кривой — смотрите здесь: prompt криво подставился, схема не подошла, или модель вернула не-JSON.</p>
+            <div>
+              <div class="text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1.5">Prompt</div>
+              <pre class="text-xs font-mono bg-slate-50 dark:bg-slate-950 p-3 rounded-lg whitespace-pre-wrap max-h-96 overflow-y-auto text-slate-700 dark:text-slate-300">${escapeHtml(job.last_llm_call.prompt)}</pre>
+            </div>
+            <div>
+              <div class="text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1.5">Raw model response</div>
+              <pre class="text-xs font-mono bg-slate-50 dark:bg-slate-950 p-3 rounded-lg whitespace-pre-wrap max-h-96 overflow-y-auto text-slate-700 dark:text-slate-300">${escapeHtml(job.last_llm_call.raw_response)}</pre>
+            </div>
+          </div>
+        </details>` : ''}
+
       ${job.metadata ? `
         <details class="card">
           <summary class="card-header cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 transition list-none">

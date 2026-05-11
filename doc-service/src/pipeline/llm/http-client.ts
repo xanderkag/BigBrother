@@ -32,14 +32,15 @@ export class HttpLlmClient implements LlmClient {
     schema: Record<string, unknown>;
     hint?: DocumentTypeSlug;
     promptOverride?: string;
+    includeDebug?: boolean;
   }): Promise<LlmExtractResult> {
-    // Inference-service ожидает snake_case `prompt_override` (Python convention).
-    // Перекладываем camelCase → snake_case на сетевой границе, чтобы остальной
-    // TS-код жил в своих идиомах.
-    const { promptOverride, ...rest } = input;
+    // Inference-service ожидает snake_case (Python convention).
+    // Перекладываем camelCase → snake_case на сетевой границе.
+    const { promptOverride, includeDebug, ...rest } = input;
     return this.post<LlmExtractResult>('/v1/extract', {
       ...rest,
       ...(promptOverride ? { prompt_override: promptOverride } : {}),
+      ...(includeDebug ? { include_debug: true } : {}),
     });
   }
 

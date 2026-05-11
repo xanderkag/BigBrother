@@ -41,6 +41,7 @@ from ..prompts import extract as extract_prompts
 from ..prompts import verify as verify_prompts
 from ..schemas import (
     ClassifyResponse,
+    ExtractDebug,
     ExtractResponse,
     VerifyResponse,
     VisionResponse,
@@ -188,6 +189,7 @@ class OpenAICompatibleBackend(ModelBackend):
         schema: dict[str, Any],
         hint: str | None,
         prompt_override: str | None = None,
+        include_debug: bool = False,
     ) -> ExtractResponse:
         prompt = extract_prompts.build(
             text=text, schema=schema, hint=hint, prompt_override=prompt_override
@@ -197,10 +199,16 @@ class OpenAICompatibleBackend(ModelBackend):
         extracted = data.get("extracted") if isinstance(data.get("extracted"), dict) else {}
         confidence = float(data.get("confidence", 0.0) or 0.0)
         issues = data.get("issues") if isinstance(data.get("issues"), list) else []
+        debug = (
+            ExtractDebug(prompt=prompt, raw_response=raw, model=self.model_id, backend=self.name)
+            if include_debug
+            else None
+        )
         return ExtractResponse(
             extracted=extracted or {},
             confidence=_clamp01(confidence),
             issues=[str(i) for i in issues],
+            debug=debug,
         )
 
     async def vision_ocr(

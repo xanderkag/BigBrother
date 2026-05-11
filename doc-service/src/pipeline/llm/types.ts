@@ -5,10 +5,19 @@ export type LlmClassifyResult = {
   confidence: number;
 };
 
+export type LlmExtractDebug = {
+  prompt: string;
+  raw_response: string;
+  model: string;
+  backend: string;
+};
+
 export type LlmExtractResult = {
   extracted: Record<string, unknown>;
   confidence: number;
   issues: string[];
+  /** Заполнено если в запросе был промбит `includeDebug=true`. */
+  debug?: LlmExtractDebug;
 };
 
 export type LlmVisionResult = {
@@ -43,6 +52,11 @@ export interface LlmClient {
      * `ResolvedTypeConfig.llmPrompt` и передаёт сюда.
      */
     promptOverride?: string;
+    /**
+     * Просить inference-service вернуть финальный prompt и сырой ответ
+     * модели в `result.debug` — для job-debug-трассы в UI.
+     */
+    includeDebug?: boolean;
   }): Promise<LlmExtractResult>;
   visionOcr(input: { imagePath: string; prompt?: string }): Promise<LlmVisionResult>;
   verify(input: {

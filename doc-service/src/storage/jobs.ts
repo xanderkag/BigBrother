@@ -1,6 +1,13 @@
 import { db } from '../db.js';
 import type { DocumentTypeSlug, JobStatus, OcrEngineName } from '../types/documents.js';
 
+export type LlmCallTrace = {
+  prompt: string;
+  raw_response: string;
+  model: string;
+  backend: string;
+};
+
 export type JobRow = {
   id: string;
   status: JobStatus;
@@ -26,6 +33,7 @@ export type JobRow = {
   started_at: Date | null;
   finished_at: Date | null;
   idempotency_key: string | null;
+  last_llm_call: LlmCallTrace | null;
 };
 
 export type CreateJobInput = {
@@ -56,6 +64,12 @@ export type ProcessingUpdate = {
   confidence?: number | null;
   extracted?: Record<string, unknown> | null;
   error?: string | null;
+  /**
+   * Дебаг-трасса LLM-вызова. `undefined` = не трогать колонку,
+   * `null` = очистить, объект = записать. Это позволяет последовательным
+   * вызовам не затирать ранее сохранённый trace, если новый run не дёргал LLM.
+   */
+  llmCall?: LlmCallTrace | null;
 };
 
 class JobsRepo {
@@ -105,6 +119,11 @@ class JobsRepo {
   }
 
   async finalize(id: string, update: ProcessingUpdate): Promise<JobRow | null> {
+    // last_llm_call: undefined → не менять, null → очистить, объект → записать.
+    // Через $9 передаём JSON-encoded или null; через $10 — boolean флаг
+    // «обновлять ли поле вообще».
+    const llmCallProvided = update.llmCall !== undefined;
+    const llmCallJson = update.llmCall == null ? null : JSON.stringify(update.llmCall);
     const { rows } = await db.query<JobRow>(
       `UPDATE jobs SET
          status        = $2,
@@ -114,6 +133,7 @@ class JobsRepo {
          confidence    = COALESCE($6, confidence),
          extracted     = COALESCE($7::jsonb, extracted),
          error         = $8,
+         last_llm_call = CASE WHEN $10::boolean THEN $9::jsonb ELSE last_llm_call END,
          finished_at   = now()
        WHERE id = $1
        RETURNING *`,
@@ -126,6 +146,8 @@ class JobsRepo {
         update.confidence ?? null,
         update.extracted == null ? null : JSON.stringify(update.extracted),
         update.error ?? null,
+        llmCallJson,
+        llmCallProvided,
       ],
     );
     return rows[0] ?? null;
@@ -385,6 +407,7 @@ class JobsRepo {
       mime_type: row.mime_type,
       file_size: Number(row.file_size),
       error: row.error,
+      last_llm_call: row.last_llm_call,
       created_at: row.created_at.toISOString(),
       updated_at: row.updated_at.toISOString(),
       finished_at: row.finished_at ? row.finished_at.toISOString() : null,

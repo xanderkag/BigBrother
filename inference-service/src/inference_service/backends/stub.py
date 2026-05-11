@@ -56,6 +56,7 @@ class StubBackend(ModelBackend):
         schema: dict[str, Any],
         hint: str | None,
         prompt_override: str | None = None,
+        include_debug: bool = False,
     ) -> ExtractResponse:
         # The stub returns an empty extract with a "stub mode" issue so
         # callers know real extraction did not happen but the contract held.

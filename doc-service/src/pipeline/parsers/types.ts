@@ -1,4 +1,5 @@
 import type { DocumentTypeSlug } from '../../types/documents.js';
+import type { LlmExtractDebug } from '../llm/types.js';
 
 export type ParseResult = {
   extracted: Record<string, unknown>;
@@ -9,6 +10,12 @@ export type ParseResult = {
   confidence: number;
   /** Field names that the parser tried to find and could not. */
   missing: string[];
+  /**
+   * Дебаг-след LLM-вызова, если парсер ходил в модель и был включён
+   * `includeDebug`. Орxестратор сохраняет это в jobs.last_llm_call.
+   * Для regex-парсеров без LLM-fallback это поле всегда undefined.
+   */
+  llmCall?: LlmExtractDebug;
 };
 
 /**

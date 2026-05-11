@@ -12,7 +12,7 @@ import { KeywordClassifier } from './classifier/keywords.js';
 import { combineConfidence } from './quality.js';
 import { ParsersFactory } from './parsers/index.js';
 import { dynamicLlm } from './llm/provider-resolver.js';
-import type { LlmClient } from './llm/types.js';
+import type { LlmClient, LlmExtractDebug } from './llm/types.js';
 import type { DocumentTypeSlug } from '../types/documents.js';
 import { validateExtractedWithResolver } from './validation/index.js';
 import { documentTypeResolver, type ResolvedTypeConfig } from './document-type-resolver.js';
@@ -122,6 +122,7 @@ export async function processJob(jobId: string, log: Logger): Promise<void> {
       ocrEngine: ocr.engine,
       rawText: ocr.text,
       confidence: overall,
+      llmCall: post.llmCall ?? null,
       extracted: extractedToStore,
       error: null,
     });
@@ -253,6 +254,8 @@ export async function runDocumentPipeline(
    * classified — caller falls back to global env threshold.
    */
   typeConfig: ResolvedTypeConfig | null;
+  /** Debug-след LLM-вызова (если парсер ходил в модель). */
+  llmCall?: LlmExtractDebug;
 }> {
   let documentType: DocumentTypeSlug | null = options.hint ?? null;
   let classificationSource: 'hint' | 'keyword' = documentType ? 'hint' : 'keyword';
@@ -270,6 +273,7 @@ export async function runDocumentPipeline(
   let parserMissing: string[] = [];
   let validationIssues: string[] = [];
   let typeConfig: ResolvedTypeConfig | null = null;
+  let llmCall: LlmExtractDebug | undefined;
 
   if (documentType) {
     // Resolve the DB-backed config snapshot ONCE per job. Passed to:
@@ -297,6 +301,7 @@ export async function runDocumentPipeline(
     extracted = result.extracted;
     parserConfidence = result.confidence;
     parserMissing = result.missing;
+    llmCall = result.llmCall;
     if (result.missing.length > 0) {
       log.info({ ...context, type: documentType, missing: result.missing }, 'parser missing fields');
     }
@@ -312,5 +317,6 @@ export async function runDocumentPipeline(
     parserMissing,
     validationIssues,
     typeConfig,
+    llmCall,
   };
 }

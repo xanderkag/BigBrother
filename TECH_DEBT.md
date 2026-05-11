@@ -59,6 +59,30 @@
 - ✅ **B5 file magic-bytes validation** — пакет `file-type ^19.6`. После сохранения файла читаются magic bytes; если детектируется не из `ACCEPTED_DOCUMENT_MIMES` (PDF/JPEG/PNG/BMP/TIFF/WebP) — 400 и удаление файла. Если detected mime ≠ declared multipart Content-Type — detected становится authoritative (логируется warning). Защита от exe-под-видом-PDF, расширения vs реальный формат, и подобного.
 - ✅ Тесты: `tests/idempotency.spec.ts` (header parsing, unique-violation detector), `tests/magic-bytes.spec.ts` (PDF/PNG/JPEG/BMP/WebP по реальным magic bytes, рейект plaintext/exe, обнаружение mislabelled PDF).
 
+### Phase 3 Day 16 — LLM call trace в job detail (2026-05-13)
+
+Закрыт последний пробел debug-петли: теперь видно ЧТО реально
+отправили в модель и ЧТО модель вернула ДО парсинга. Когда extracted
+плохой — оператор открывает job → видит финальный prompt (с подставленной
+схемой и текстом) и сырой ответ → сразу понимает: prompt криво подставился,
+схема не подошла, модель ответила markdown'ом, OCR-текст обрезался.
+
+Сквозная цепочка:
+- inference-service `ExtractRequest.include_debug=true` → backends
+  заполняют `ExtractResponse.debug { prompt, raw_response, model, backend }`.
+- doc-service `llmExtract` всегда просит debug; пробрасывает в
+  `ParseResult.llmCall`; orchestrator складывает в `jobs.last_llm_call`
+  (новая jsonb-колонка, миграция 007).
+- API `Job.last_llm_call` опционально присутствует в job-ответе.
+- UI: collapsed `<details>` секция «LLM call» в job detail — backend/model
+  в заголовке, prompt и raw_response в раскрытом виде.
+
+Поведение при reprocess: если на новом прогоне парсер ходил в LLM —
+trace обновляется. Если regex справился без fallback'а — trace
+очищается (старый мог сбить с толку, его нет в текущем результате).
+В failed-ветке processJob trace не трогается, чтобы предыдущий
+успешный run был доступен для расследования причин сбоя.
+
 ### Phase 3 Day 15 — Reprocess: перепрогнать job без новой OCR (2026-05-13)
 
 Замкнут цикл тюнинга prompt'а. Раньше: поменял `llm_prompt` в админ-UI

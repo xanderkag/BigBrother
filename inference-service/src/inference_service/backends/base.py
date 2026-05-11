@@ -35,6 +35,7 @@ class ModelBackend(ABC):
         schema: dict[str, Any],
         hint: str | None,
         prompt_override: str | None = None,
+        include_debug: bool = False,
     ) -> ExtractResponse:
         """Извлечь структурированные данные из текста.
 
@@ -43,6 +44,11 @@ class ModelBackend(ABC):
         document_types настроил кастомную инструкцию для своего типа
         документа. Backend сам решает, как использовать override —
         обычно: «вставить как system prompt, к нему прилепить text+schema».
+
+        `include_debug`: если true, заполняет `ExtractResponse.debug`
+        финальным prompt'ом и сырым ответом модели. Используется
+        doc-service'ом для job-debug трассы в UI. Бэкенды без реальной
+        LLM (stub) могут оставлять debug=None.
         """
         ...
 

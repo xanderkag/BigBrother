@@ -64,6 +64,17 @@ export const Job = z
       .record(z.unknown())
       .nullable()
       .describe('Произвольный JSON, переданный клиентом при создании задачи'),
+    last_llm_call: z
+      .object({
+        prompt: z.string(),
+        raw_response: z.string(),
+        model: z.string(),
+        backend: z.string(),
+      })
+      .nullable()
+      .describe(
+        'Дебаг-трасса последнего LLM-вызова при обработке этого job: финальный prompt и сырой ответ модели до парсинга. Заполнено только если парсер реально ходил в LLM.',
+      ),
     file_name: z.string(),
     mime_type: z.string(),
     file_size: z.number().int().nonnegative().describe('Размер исходного файла в байтах'),

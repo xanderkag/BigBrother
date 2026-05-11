@@ -63,6 +63,7 @@ class DynamicLlmClient implements LlmClient {
     schema: Record<string, unknown>;
     hint?: DocumentTypeSlug;
     promptOverride?: string;
+    includeDebug?: boolean;
   }): Promise<LlmExtractResult> {
     return this.delegate().then((c) => c.extract(input));
   }
