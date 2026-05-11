@@ -59,6 +59,35 @@
 - ✅ **B5 file magic-bytes validation** — пакет `file-type ^19.6`. После сохранения файла читаются magic bytes; если детектируется не из `ACCEPTED_DOCUMENT_MIMES` (PDF/JPEG/PNG/BMP/TIFF/WebP) — 400 и удаление файла. Если detected mime ≠ declared multipart Content-Type — detected становится authoritative (логируется warning). Защита от exe-под-видом-PDF, расширения vs реальный формат, и подобного.
 - ✅ Тесты: `tests/idempotency.spec.ts` (header parsing, unique-violation detector), `tests/magic-bytes.spec.ts` (PDF/PNG/JPEG/BMP/WebP по реальным magic bytes, рейект plaintext/exe, обнаружение mislabelled PDF).
 
+### Phase 3 Day 21 — Multi-token: label + expires_at + last_used_at (2026-05-14)
+
+Закрыт UX-долг из фазы 2 multi-tenant'а: каждый user теперь имеет
+несколько именованных токенов с опц. сроком действия. Можно выдавать
+отдельные под CI / IDE / автоматизации и отзывать по одному без
+обнуления остальных.
+
+- ✅ Миграция 010: `personal_access_tokens` с (id, user_id, name,
+  token_hash, expires_at, last_used_at, created_at), UNIQUE
+  (user_id, name) и UNIQUE-индекс token_hash для быстрого lookup.
+- ✅ `storage/tokens.ts`: create/findById/findByHash/listByUser/
+  revoke/touchLastUsed/revokeAllForUser + static isExpired. toApi
+  маскирует token_hash.
+- ✅ Auth-хук: сначала ищем в personal_access_tokens (с проверкой
+  expires_at), fallback на legacy users.api_token_hash. Уже выданные
+  однотокенные ключи продолжают работать.
+- ✅ Routes: GET /users/:id/tokens, POST /users/:id/tokens (name +
+  expires_at), DELETE /tokens/:id. ACL: super_admin / org_admin
+  своим / user себе.
+- ✅ touchLastUsed асинхронный из auth-хука — не блокирует hot-path.
+- ✅ Legacy endpoints сохранены без изменений — работают на
+  users.api_token_hash. UI пока через них; multi-token UI — отдельно.
+- ✅ Тесты: isExpired + toApi маска (нет утечки hash, ISO даты).
+
+Дальнейшее:
+- UI в Tenants → Users: list токенов с подписями / экспирацией.
+- Sweeper expired tokens.
+- Дропнуть users.api_token_hash отдельной миграцией через 2-3 мес.
+
 ### Phase 3 Day 20 — metadata sanitization (2026-05-14)
 
 Закрыт security-долг: client-supplied `metadata` теперь фильтруется на

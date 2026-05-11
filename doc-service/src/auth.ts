@@ -1,7 +1,8 @@
 import type { FastifyReply, FastifyRequest, onRequestHookHandler } from 'fastify';
 import { config } from './config.js';
 import { SYSTEM_ORG_ID, SYSTEM_USER_ID, DEFAULT_PROJECT_ID } from './storage/tenant-constants.js';
-import { usersRepo, type UserRole, type UserRow } from './storage/users.js';
+import { usersRepo, hashToken, type UserRole, type UserRow } from './storage/users.js';
+import { tokensRepo, TokensRepo } from './storage/tokens.js';
 
 /**
  * Auth + req.user. Multi-tenant фаза 2:
@@ -97,11 +98,31 @@ export const bearerAuthHook: onRequestHookHandler = async (
   // случайно начали бы хэшировать и искать в users каждый чужой запрос.
   if (provided.startsWith('pdpat_')) {
     try {
-      const user = await usersRepo.findByToken(provided);
-      if (user) {
-        req.user = userToAuth(user);
-        // Touch last_seen асинхронно — не ждём, незачем блокировать запрос.
-        void usersRepo.touchLastSeen(user.id).catch(() => undefined);
+      const hash = hashToken(provided);
+
+      // 1. Сначала — multi-token таблица (новая модель).
+      const tokenRow = await tokensRepo.findByHash(hash);
+      if (tokenRow) {
+        if (TokensRepo.isExpired(tokenRow)) {
+          reply.code(401).send({ error: 'token expired' });
+          return;
+        }
+        const user = await usersRepo.findById(tokenRow.user_id);
+        if (user && user.status === 'active') {
+          req.user = userToAuth(user);
+          void tokensRepo.touchLastUsed(tokenRow.id).catch(() => undefined);
+          void usersRepo.touchLastSeen(user.id).catch(() => undefined);
+          return;
+        }
+      }
+
+      // 2. Fallback — legacy users.api_token_hash (однотокенная модель).
+      // Для уже выданных до миграции токенов и для тех, что выдаются
+      // через старый endpoint POST /users/:id/token.
+      const legacyUser = await usersRepo.findByToken(provided);
+      if (legacyUser) {
+        req.user = userToAuth(legacyUser);
+        void usersRepo.touchLastSeen(legacyUser.id).catch(() => undefined);
         return;
       }
     } catch (err) {

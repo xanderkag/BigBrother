@@ -3,9 +3,10 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { organizationsRepo } from '../storage/organizations.js';
 import { projectsRepo } from '../storage/projects.js';
-import { usersRepo } from '../storage/users.js';
+import { usersRepo, type UserRow } from '../storage/users.js';
+import { tokensRepo } from '../storage/tokens.js';
 import { ErrorResponse } from '../types/api-schemas.js';
-import { bearerAuthHook } from '../auth.js';
+import { bearerAuthHook, type AuthUser } from '../auth.js';
 import {
   requireSuperAdmin,
   requireOrgAdmin,
@@ -449,11 +450,50 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
   );
 
   // --- Personal access tokens ---
+  //
+  // Две модели сосуществуют:
+  //   1. Legacy (`users.api_token_hash`) — один токен на юзера, без подписи.
+  //      POST /users/:id/token / DELETE /users/:id/token. Сохранены ради
+  //      backward-compat с уже выданными токенами.
+  //   2. Multi-token (`personal_access_tokens`) — N токенов на юзера, с
+  //      `name` и опциональным `expires_at`. GET/POST /users/:id/tokens
+  //      + DELETE /tokens/:tokenId.
 
   const TokenRegenerateResponse = z.object({
     plaintext: z.string().describe('Plaintext-токен. Виден ровно один раз — сохраните его.'),
     user_id: z.string().uuid(),
   });
+
+  const TokenApi = z.object({
+    id: z.string().uuid(),
+    user_id: z.string().uuid(),
+    name: z.string(),
+    expires_at: z.string().nullable(),
+    is_expired: z.boolean(),
+    last_used_at: z.string().nullable(),
+    created_at: z.string(),
+  });
+  const TokenCreateBody = z.object({
+    name: z.string().min(1).max(80).regex(/^[A-Za-z0-9 ._-]+$/, {
+      message: 'name: 1-80 символов, только [A-Za-z0-9 ._-]',
+    }),
+    expires_at: z.string().datetime().nullable().optional(),
+  });
+  const TokenCreateResponse = z.object({
+    token: TokenApi,
+    plaintext: z.string(),
+  });
+  const TokenListResponse = z.object({ items: z.array(TokenApi) });
+  const TokenIdParam = z.object({ id: z.string().uuid() });
+
+  /** Проверка права выдавать/смотреть/отзывать токены: super_admin кому
+   *  угодно, org_admin своим юзерам, обычный — себе. */
+  const canManageUserTokens = (me: AuthUser | undefined, target: UserRow): boolean => {
+    if (!me) return false;
+    if (me.isSuperAdmin) return true;
+    if (me.role === 'org_admin' && target.organization_id === me.organization_id) return true;
+    return me.id === target.id;
+  };
 
   r.post(
     '/users/:id/token',
@@ -536,6 +576,122 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
         return { error: 'cannot revoke token for this user' };
       }
       await usersRepo.clearToken(req.params.id);
+      reply.code(204);
+      return null;
+    },
+  );
+
+  // --- Multi-token API: список / создание / отзыв с label + expiry ---
+
+  r.get(
+    '/users/:id/tokens',
+    {
+      schema: {
+        tags: ['tenants'],
+        summary: 'Список personal access tokens пользователя',
+        security: [{ bearerAuth: [] }],
+        params: UserIdParam,
+        response: { 200: TokenListResponse, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse },
+      },
+    },
+    async (req, reply) => {
+      const target = await usersRepo.findById(req.params.id);
+      if (!target) {
+        reply.code(404);
+        return { error: 'user not found' };
+      }
+      if (!canManageUserTokens(req.user, target)) {
+        reply.code(403);
+        return { error: 'cannot view tokens for this user' };
+      }
+      const rows = await tokensRepo.listByUser(req.params.id);
+      return { items: rows.map((r) => tokensRepo.toApi(r)) };
+    },
+  );
+
+  r.post(
+    '/users/:id/tokens',
+    {
+      schema: {
+        tags: ['tenants'],
+        summary: 'Создать новый personal access token (с подписью и опц. сроком)',
+        description:
+          'Создаёт токен с заданным `name` (уникальный в пределах юзера) и ' +
+          'опциональным `expires_at` (ISO datetime; NULL = бессрочный). ' +
+          'Plaintext возвращается ОДИН РАЗ — сохраните его сейчас.',
+        security: [{ bearerAuth: [] }],
+        params: UserIdParam,
+        body: TokenCreateBody,
+        response: {
+          201: TokenCreateResponse,
+          401: ErrorResponse,
+          403: ErrorResponse,
+          404: ErrorResponse,
+          409: ErrorResponse,
+        },
+      },
+    },
+    async (req, reply) => {
+      const target = await usersRepo.findById(req.params.id);
+      if (!target) {
+        reply.code(404);
+        return { error: 'user not found' };
+      }
+      if (!canManageUserTokens(req.user, target)) {
+        reply.code(403);
+        return { error: 'cannot create tokens for this user' };
+      }
+      const expiresAt = req.body.expires_at ? new Date(req.body.expires_at) : null;
+      if (expiresAt && expiresAt.getTime() <= Date.now()) {
+        reply.code(400);
+        return { error: 'expires_at must be in the future' };
+      }
+      try {
+        const { plaintext, row } = await tokensRepo.create({
+          user_id: req.params.id,
+          name: req.body.name,
+          expires_at: expiresAt,
+        });
+        reply.code(201);
+        return { token: tokensRepo.toApi(row), plaintext };
+      } catch (err) {
+        // UNIQUE (user_id, name) — дубль имени.
+        if (err instanceof Error && /unique/i.test(err.message)) {
+          reply.code(409);
+          return { error: `token with name "${req.body.name}" already exists for this user` };
+        }
+        throw err;
+      }
+    },
+  );
+
+  r.delete(
+    '/tokens/:id',
+    {
+      schema: {
+        tags: ['tenants'],
+        summary: 'Отозвать конкретный токен по id',
+        security: [{ bearerAuth: [] }],
+        params: TokenIdParam,
+        response: { 204: z.null(), 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse },
+      },
+    },
+    async (req, reply) => {
+      const tokenRow = await tokensRepo.findById(req.params.id);
+      if (!tokenRow) {
+        reply.code(404);
+        return { error: 'token not found' };
+      }
+      const owner = await usersRepo.findById(tokenRow.user_id);
+      if (!owner) {
+        reply.code(404);
+        return { error: 'token owner not found' };
+      }
+      if (!canManageUserTokens(req.user, owner)) {
+        reply.code(403);
+        return { error: 'cannot revoke this token' };
+      }
+      await tokensRepo.revoke(req.params.id);
       reply.code(204);
       return null;
     },
