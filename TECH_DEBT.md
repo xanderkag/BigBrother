@@ -59,6 +59,55 @@
 - ✅ **B5 file magic-bytes validation** — пакет `file-type ^19.6`. После сохранения файла читаются magic bytes; если детектируется не из `ACCEPTED_DOCUMENT_MIMES` (PDF/JPEG/PNG/BMP/TIFF/WebP) — 400 и удаление файла. Если detected mime ≠ declared multipart Content-Type — detected становится authoritative (логируется warning). Защита от exe-под-видом-PDF, расширения vs реальный формат, и подобного.
 - ✅ Тесты: `tests/idempotency.spec.ts` (header parsing, unique-violation detector), `tests/magic-bytes.spec.ts` (PDF/PNG/JPEG/BMP/WebP по реальным magic bytes, рейект plaintext/exe, обнаружение mislabelled PDF).
 
+### Phase 3 Day 13 — CP5: расширение каталога типов документов (2026-05-13)
+
+Каталог вырос с 6 до 12 builtin-типов. Демонстрация что platform-as-product
+работает: новые типы добавляются миграцией со seed'ом, без правок
+TypeScript-кода. Runtime обработки идёт через `GenericLlmParser`,
+который берёт схему / поля / валидаторы из БД через resolver.
+
+Добавлены 6 типов:
+- ✅ **`payment_order`** — Платёжное поручение (форма 0401060).
+  Плательщик/получатель с ИНН/КПП/счётом/БИК, сумма, назначение.
+  Валидаторы: inn_checksum, parties_differ, kpp_format, money_sanity, date_range.
+- ✅ **`commercial_invoice`** — Международный коммерческий инвойс.
+  Exporter/consignee с countries, позиции с HS-кодами, Incoterms,
+  валюта. Билингвальный English/русский prompt. Валидаторы: country_code.
+- ✅ **`packing_list`** — Упаковочный лист. Пара к commercial_invoice.
+  Места, вес нетто/брутто, объём, габариты. Валидатор weight_nett_le_gross.
+- ✅ **`bill_of_lading`** — Коносамент / B/L. Морская/мульти-модальная
+  накладная. Shipper/consignee/notify, carrier, vessel/voyage, ports,
+  контейнеры по ISO 6346, freight terms.
+- ✅ **`customs_declaration`** — ГТД / ДТ (форма 0014001). Декларант/
+  отправитель/получатель, графа 31 (товары) с HS-кодами 10 цифр,
+  пошлины (1010/2010/5010). Валидаторы: inn_checksum:declarant.inn и др.
+- ✅ **`cash_receipt`** — Кассовый чек ККТ (54-ФЗ). Merchant, ФН (16 цифр),
+  ФД, ФП, позиции с НДС, способ оплаты. Для авансовых отчётов и розничной
+  верификации.
+
+Каждый тип сидится со:
+- JSON-схемой (`llm_schema`) — описание каждого поля для LLM;
+- ожидаемыми полями (`expected_fields`) — что считать «извлечено» в
+  coverage stats;
+- ключами классификатора (`classification_keywords`) — regex'ы для
+  keyword-классификатора;
+- валидаторами (`validators`) — из реестра, с конкретными dot-paths;
+- кастомным `llm_prompt` где это даёт прирост качества (5 из 6 типов).
+
+Тест: `tests/extended-types-seed.spec.ts` (30+ кейсов via it.each).
+Парсит миграцию и проверяет: JSON-schemas валидны, expected_fields
+не пустые, classification_keywords компилируются как regex,
+validators имеют известные имена из реестра. Опечатки ловятся до prod.
+
+Что это даёт продуктово:
+- Сразу видны в админ-UI после миграции.
+- Классификатор подхватывает по ключевым словам автоматически.
+- Через UI можно отредактировать prompt/схему любого типа под свои
+  документы (builtin-флаг защищает от случайного DELETE, но любое
+  поле редактируется).
+- Все 12 типов одинаково проходят через generic-парсер и Field
+  coverage stats — workflow тюнинга работает на всех.
+
 ### Phase 3 Day 12 — Per-type observation: видим что реально извлекается (2026-05-13)
 
 Чтобы во время тестирования на железе клиента можно было сразу видеть
