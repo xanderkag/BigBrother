@@ -59,7 +59,8 @@
 │   ├── README.md                     ← детальный гайд по doc-service
 │   ├── Dockerfile, docker-compose.yml
 │   ├── migrations/001_init.sql       ← схема jobs
-│   ├── src/                          ← см. ниже
+│   ├── src/                          ← бэкенд, см. ниже
+│   ├── web/                          ← Operator UI: HTML + Tailwind + Alpine
 │   └── tests/                        ← unit + integration
 └── inference-service/                ← Python сервис
     ├── README.md                     ← гайд по inference-service
@@ -137,7 +138,8 @@ docker compose -f docker-compose.doc-platform.yml up -d --build
 
 | Сервис | URL | Что |
 |---|---|---|
-| doc-service API | `http://localhost:3000` | основной API |
+| **Operator UI** | **`http://localhost:3000/`** | загрузка документов, статусы, корректировка extracted |
+| doc-service API | `http://localhost:3000/api/v1` | основной REST API |
 | doc-service Swagger UI | `http://localhost:3000/docs` | интерактивная документация |
 | doc-service OpenAPI JSON | `http://localhost:3000/docs/json` | для кодогенерации клиентов |
 | doc-service health | `http://localhost:3000/ready` | пробник: Postgres + Redis + storage |
@@ -186,6 +188,20 @@ pytest
 ```
 
 Требования: Node 22+, Python 3.11+, `tesseract-ocr` и `poppler-utils` в PATH (для smoke без Docker).
+
+---
+
+## Operator UI
+
+`http://localhost:3000/` — встроенный веб-интерфейс для операторов. Логин по API-токену (тот же `API_KEY` что в env), хранится в localStorage браузера. После логина:
+
+- Список задач с фильтрами по статусу и типу документа, auto-refresh для in-flight (pending/processing).
+- Drag-and-drop загрузка документов с опциональными полями (`document_hint`, `webhook_url`, `metadata`).
+- Детальная страница задачи: статус, confidence-bar, `validation_issues`, JSON-viewer для `extracted`, RAW OCR text (collapsed), ручная правка `extracted` с PATCH (валидация перезапускается автоматически).
+- Dark mode (auto-detect + manual toggle + remember в localStorage).
+- Responsive layout (нормально работает на ноутах и широких мониторах).
+
+**Стек:** чистый HTML + Tailwind v3 (Play CDN) + Alpine.js, без build-шага. Файлы в `doc-service/web/`. Расширять под новые экраны — без vite/webpack возни.
 
 ---
 

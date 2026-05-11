@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="ru" class="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>parsdocs</title>
+
+  <!-- Inter (UI) + JetBrains Mono (JSON / values) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+  <!-- Tailwind v3 Play CDN — in-browser JIT compile. No build step for scaffold;
+       swap for a precompiled CSS bundle when we care about production weight. -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        fontFamily: {
+          sans: ['Inter', 'system-ui', '-apple-system', 'Segoe UI', 'sans-serif'],
+          mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+        },
+      },
+    };
+  </script>
+
+  <!-- Alpine.js for small declarative state (modals, dropdowns, toggles).
+       Big interaction logic lives in app.js. -->
+  <script defer src="https://unpkg.com/alpinejs@3.14.1/dist/cdn.min.js"></script>
+
+  <style>
+    /* Make rounded-pill status badges look consistent regardless of font size. */
+    .badge { @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium; }
+    /* Decent default for JSON pre blocks. Tailwind classes added inline too. */
+    pre.json { tab-size: 2; }
+    /* Drag-over visual feedback on the upload dropzone. */
+    .dropzone.dragover { @apply ring-2 ring-indigo-500 bg-indigo-50 dark:bg-indigo-950/50; }
+  </style>
+</head>
+<body class="font-sans antialiased bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 min-h-screen">
+
+  <!-- ========================================================== -->
+  <!-- LOGIN MODAL — full-screen when no token, hidden otherwise   -->
+  <!-- ========================================================== -->
+  <div id="login-screen" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-slate-50 dark:bg-slate-950">
+    <div class="w-full max-w-md mx-4 bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 p-8">
+      <div class="flex items-center gap-3 mb-6">
+        <div class="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center text-white">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-6 h-6"><path d="M5.625 1.5c-1.036 0-1.875.84-1.875 1.875v17.25c0 1.035.84 1.875 1.875 1.875h12.75c1.035 0 1.875-.84 1.875-1.875V12.75A3.75 3.75 0 0 0 16.5 9h-1.875a1.875 1.875 0 0 1-1.875-1.875V5.25A3.75 3.75 0 0 0 9 1.5H5.625Z"/><path d="M12.971 1.816A5.23 5.23 0 0 1 14.25 5.25v1.875c0 .207.168.375.375.375H16.5a5.23 5.23 0 0 1 3.434 1.279 9.768 9.768 0 0 0-6.963-6.963Z"/></svg>
+        </div>
+        <div>
+          <h1 class="text-xl font-semibold">parsdocs</h1>
+          <p class="text-sm text-slate-500 dark:text-slate-400">Document processing</p>
+        </div>
+      </div>
+
+      <form id="login-form" class="space-y-4">
+        <div>
+          <label class="block text-sm font-medium mb-1.5">API token</label>
+          <input id="token-input" type="password" autocomplete="off" required
+            class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            placeholder="Вставь API_KEY из .env" />
+          <p class="mt-1.5 text-xs text-slate-500 dark:text-slate-400">Сохраняется в браузере (localStorage). На сервер уходит только в Authorization-заголовке.</p>
+        </div>
+        <button type="submit" class="w-full py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-medium transition">
+          Войти
+        </button>
+        <p id="login-error" class="hidden text-sm text-rose-600 dark:text-rose-400"></p>
+      </form>
+    </div>
+  </div>
+
+  <!-- ========================================================== -->
+  <!-- APP SHELL — sidebar + main, shown when token present        -->
+  <!-- ========================================================== -->
+  <div id="app-shell" class="hidden h-screen flex">
+    <!-- Sidebar -->
+    <aside class="w-60 shrink-0 flex flex-col bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800">
+      <div class="px-5 py-5 flex items-center gap-2.5">
+        <div class="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-5 h-5"><path d="M5.625 1.5c-1.036 0-1.875.84-1.875 1.875v17.25c0 1.035.84 1.875 1.875 1.875h12.75c1.035 0 1.875-.84 1.875-1.875V12.75A3.75 3.75 0 0 0 16.5 9h-1.875a1.875 1.875 0 0 1-1.875-1.875V5.25A3.75 3.75 0 0 0 9 1.5H5.625Z"/><path d="M12.971 1.816A5.23 5.23 0 0 1 14.25 5.25v1.875c0 .207.168.375.375.375H16.5a5.23 5.23 0 0 1 3.434 1.279 9.768 9.768 0 0 0-6.963-6.963Z"/></svg>
+        </div>
+        <div class="font-semibold">parsdocs</div>
+      </div>
+      <nav class="px-3 py-2 space-y-0.5 flex-1">
+        <a href="#jobs"     data-nav="jobs"     class="nav-link"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path fill-rule="evenodd" d="M3 6.5A1.5 1.5 0 0 1 4.5 5h11A1.5 1.5 0 0 1 17 6.5v7a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 13.5v-7Zm2 0v7h10v-7H5Z" clip-rule="evenodd"/></svg> Jobs</a>
+        <a href="#upload"   data-nav="upload"   class="nav-link"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path fill-rule="evenodd" d="M10 1a.75.75 0 0 1 .75.75v9.69l1.95-2.1a.75.75 0 1 1 1.1 1.02l-3.25 3.5a.75.75 0 0 1-1.1 0l-3.25-3.5a.75.75 0 1 1 1.1-1.02l1.95 2.1V1.75A.75.75 0 0 1 10 1ZM4 14.5a.75.75 0 0 1 .75.75V17h10.5v-1.75a.75.75 0 0 1 1.5 0v2A.75.75 0 0 1 16 18H4a.75.75 0 0 1-.75-.75v-2A.75.75 0 0 1 4 14.5Z" clip-rule="evenodd"/></svg> Upload</a>
+        <a href="#settings" data-nav="settings" class="nav-link"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path fill-rule="evenodd" d="M7.84 1.804A1 1 0 0 1 8.82 1h2.36a1 1 0 0 1 .98.804l.331 1.652a6.993 6.993 0 0 1 1.929 1.115l1.598-.54a1 1 0 0 1 1.186.447l1.18 2.044a1 1 0 0 1-.205 1.251l-1.267 1.113a7.047 7.047 0 0 1 0 2.228l1.267 1.113a1 1 0 0 1 .206 1.25l-1.18 2.045a1 1 0 0 1-1.187.447l-1.598-.54a6.993 6.993 0 0 1-1.929 1.115l-.33 1.652a1 1 0 0 1-.98.804H8.82a1 1 0 0 1-.98-.804l-.331-1.652a6.993 6.993 0 0 1-1.929-1.115l-1.598.54a1 1 0 0 1-1.186-.447l-1.18-2.044a1 1 0 0 1 .205-1.251l1.267-1.114a7.05 7.05 0 0 1 0-2.227L1.821 7.773a1 1 0 0 1-.206-1.25l1.18-2.045a1 1 0 0 1 1.187-.447l1.598.54A6.992 6.992 0 0 1 7.51 3.456l.33-1.652ZM10 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" clip-rule="evenodd"/></svg> Settings</a>
+      </nav>
+      <div class="border-t border-slate-200 dark:border-slate-800 px-3 py-3 flex items-center justify-between gap-2">
+        <button id="dark-toggle" title="Theme" class="p-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+          <svg id="icon-sun" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 hidden dark:block"><path d="M10 2a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 10 2ZM10 15a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 10 15ZM10 7a3 3 0 1 0 0 6 3 3 0 0 0 0-6ZM15.657 5.404a.75.75 0 0 0-1.06-1.06l-1.062 1.06a.75.75 0 0 0 1.06 1.06l1.061-1.06ZM6.464 14.596a.75.75 0 0 0-1.06-1.06l-1.06 1.06a.75.75 0 0 0 1.06 1.06l1.06-1.06ZM18 10a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 18 10ZM5 10a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 5 10ZM14.596 15.657a.75.75 0 0 0 1.06-1.06l-1.06-1.062a.75.75 0 1 0-1.06 1.06l1.06 1.062ZM5.404 6.464a.75.75 0 0 0 1.06-1.06l-1.06-1.06a.75.75 0 0 0-1.06 1.06l1.06 1.06Z"/></svg>
+          <svg id="icon-moon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 dark:hidden"><path fill-rule="evenodd" d="M7.455 2.004a.75.75 0 0 1 .26.77 7 7 0 0 0 9.958 7.967.75.75 0 0 1 1.067.853A8.5 8.5 0 1 1 6.647 1.921a.75.75 0 0 1 .808.083Z" clip-rule="evenodd"/></svg>
+        </button>
+        <button id="logout-btn" class="text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition">
+          Logout
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main content area — views inject here -->
+    <main id="view" class="flex-1 overflow-y-auto"></main>
+  </div>
+
+  <!-- Nav-link Tailwind helpers, attached via JS (avoids duplicate strings) -->
+  <style>
+    .nav-link {
+      @apply flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition;
+    }
+    .nav-link.active {
+      @apply bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300;
+    }
+  </style>
+
+  <script type="module" src="/ui/app.js"></script>
+</body>
+</html>

@@ -33,6 +33,8 @@ ENV NODE_ENV=production
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
+# Operator UI — plain HTML + CDN-loaded Tailwind/Alpine; no build step needed.
+COPY web ./web
 
 # Storage volume mount point — must match STORAGE_DIR in .env.
 RUN mkdir -p /app/data && chown -R node:node /app/data

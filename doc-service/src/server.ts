@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import Fastify from 'fastify';
 import multipart from '@fastify/multipart';
+import staticFiles from '@fastify/static';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import {
@@ -144,6 +147,24 @@ async function main() {
 
   await app.register(healthRoutes);
   await app.register(jobsRoutes, { prefix: '/api/v1' });
+
+  // --- Operator UI: static files at /ui, redirect / → /ui/ ---
+  //
+  // Lives outside src/ — kept as plain HTML + CDN-loaded Tailwind/Alpine so
+  // there's no frontend build step. Source: ../web (relative to compiled
+  // dist/, or src/ in dev via tsx). Resolved from this file's location to
+  // work in both modes.
+  const here = dirname(fileURLToPath(import.meta.url));
+  const webDir = join(here, '..', 'web');
+  await app.register(staticFiles, {
+    root: webDir,
+    prefix: '/ui/',
+    decorateReply: false,
+  });
+  // Bare GET / → UI. Nothing else should live at the root.
+  app.get('/', async (_req, reply) => {
+    reply.redirect('/ui/', 302);
+  });
 
   const shutdown = async (signal: string) => {
     app.log.info({ signal }, 'shutting down');
