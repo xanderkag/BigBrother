@@ -20,7 +20,7 @@ import {
   ListJobsResponse,
 } from '../types/api-schemas.js';
 import { bearerAuthHook } from '../auth.js';
-import { validateExtracted } from '../pipeline/validation/index.js';
+import { validateExtractedWithResolver } from '../pipeline/validation/index.js';
 import type { DocumentType } from '../types/documents.js';
 
 function isValidWebhookUrl(value: string): boolean {
@@ -337,7 +337,11 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
       delete sanitizedBody._issues;
 
       if (job.document_type) {
-        const issues = validateExtracted(sanitizedBody, job.document_type as DocumentType);
+        const issues = await validateExtractedWithResolver(
+          sanitizedBody,
+          job.document_type as DocumentType,
+          req.log,
+        );
         if (issues.length > 0) sanitizedBody._issues = issues;
       }
 

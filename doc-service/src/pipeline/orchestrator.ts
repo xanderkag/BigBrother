@@ -15,7 +15,7 @@ import { HttpLlmClient } from './llm/http-client.js';
 import { NullLlmClient } from './llm/null-client.js';
 import type { LlmClient } from './llm/types.js';
 import type { DocumentType } from '../types/documents.js';
-import { validateExtracted } from './validation/index.js';
+import { validateExtractedWithResolver } from './validation/index.js';
 import { jobsDurationSeconds, jobsTotal, ocrEngineDurationSeconds } from '../metrics.js';
 
 // --- Wire dependencies once at module load. The pipeline is stateless beyond this.
@@ -268,7 +268,7 @@ export async function runDocumentPipeline(
     if (result.missing.length > 0) {
       log.info({ ...context, type: documentType, missing: result.missing }, 'parser missing fields');
     }
-    validationIssues = validateExtracted(extracted, documentType);
+    validationIssues = await validateExtractedWithResolver(extracted, documentType, log);
   }
 
   return {

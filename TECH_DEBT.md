@@ -59,13 +59,20 @@
 - ✅ **B5 file magic-bytes validation** — пакет `file-type ^19.6`. После сохранения файла читаются magic bytes; если детектируется не из `ACCEPTED_DOCUMENT_MIMES` (PDF/JPEG/PNG/BMP/TIFF/WebP) — 400 и удаление файла. Если detected mime ≠ declared multipart Content-Type — detected становится authoritative (логируется warning). Защита от exe-под-видом-PDF, расширения vs реальный формат, и подобного.
 - ✅ Тесты: `tests/idempotency.spec.ts` (header parsing, unique-violation detector), `tests/magic-bytes.spec.ts` (PDF/PNG/JPEG/BMP/WebP по реальным magic bytes, рейект plaintext/exe, обнаружение mislabelled PDF).
 
+### Phase 3 Day 2 — Validator Registry + первый runtime-шаг (2026-05-12)
+
+- ✅ **CP3 Validator Registry** — `pipeline/validation/registry.ts`. Парсер строковых спецификаций (`inn_checksum:seller.inn`, `parties_differ:seller.inn,buyer.inn`, `vat_consistency`, ...) с резолюцией в builtin-функции и dot-path-доступом к полям. 9 builtin'ов: inn_checksum, kpp_format, vehicle_plate, country_code, date_range, money_sanity, vat_consistency, parties_differ, weight_nett_le_gross. Unknown specs логируются и пропускаются — не падает пайплайн.
+- ✅ **CP1 partial — `DocumentTypeResolver`** (`pipeline/document-type-resolver.ts`). Кэширующий слой над `documentTypesRepo` с TTL 60 секунд и хук `invalidate(slug?)` под будущие PUT/POST. Process-wide singleton.
+- ✅ **Validation runtime читает из БД.** Новый `validateExtractedWithResolver` (async): для каждого job'а резолвит DocumentType из БД через resolver, прогоняет его список validators через registry. **Hardcoded composer оставлен как fallback** — если slug'а нет в БД (свежий тест-стенд, runtime до миграции), пайплайн использует прежнюю логику. Подключено в `orchestrator.runDocumentPipeline` и `PATCH /jobs/:id/extracted`.
+- ✅ Тесты на registry (15+ кейсов): парсер спецификаций, dot-path resolution, все 9 builtin-валидаторов в позитивных/негативных сценариях, мульти-issue прогон.
+
 ### Phase 3 Day 1 — Document Type Registry (foundation, 2026-05-12)
 
 - ✅ **Стратегический pivot:** платформа эволюционирует с «OCR-сервиса с захардкоженными типами» в **configurable document-processing system** с admin layer'ом. Каждый тип документа — first-class конфиг в БД: парсер, prompt, схема, валидаторы, пороги, ключевые слова классификатора.
 - ✅ Миграция `20260512000003_document_types.sql`: новая таблица + seed из 6 текущих типов (invoice, factInvoice, UPD, TTN, CMR, AKT) с их фактическими параметрами.
 - ✅ Repo `src/storage/document-types.ts` + API `GET /api/v1/document-types{/:slug}` для админ-UI.
 - ✅ Сайдбар-секция **Document types**: список с парсером/полями/валидаторами + детальная страница со всей конфигурацией.
-- ⏸ Runtime пока продолжает читать захардкоженные значения — БД-foundation готов, переключение пайплайна на чтение из БД, мутабельность (PUT/POST), editor UI, validator registry — в следующих фазах (см. ниже).
+- ⏸ Парсеры, классификатор, OCR-пороги пока всё ещё хардкод — следующий шаг CP1.
 
 ### Phase 2 Day 3 — Prometheus metrics + migration framework (2026-05-11)
 
@@ -108,15 +115,25 @@
 
 Эти пункты — продолжение Phase 3 Day 1 (foundation сделан, см. шапку). Переводят рантайм с захардкоженных значений на чтение из БД, добавляют admin-UI редактор и подготавливают почву под multi-tenant.
 
-### CP1. Runtime читает Document Types из БД
+### CP1. Runtime читает Document Types из БД (in progress)
 
 **Где:** `doc-service/src/pipeline/orchestrator.ts`, `parsers/index.ts`, `classifier/keywords.ts`, `validation/index.ts`, `types/document-json-schemas.ts`
 
 **Симптом:** Сейчас pipeline использует захардкоженные значения. Конфиг в БД — informational only.
 
-**Лечение:** Слой `DocumentTypeResolver` который кэширует конфигурацию из БД (с инвалидацией при PUT). Парсеры/классификатор/валидаторы получают конфиг через resolver, а не через статические импорты.
+**Прогресс:**
+- ✅ `DocumentTypeResolver` (кэш + invalidate hook) — готов.
+- ✅ Валидация читает `validators[]` из БД через resolver — готово. Hardcoded composer оставлен как fallback.
+- ⏸ Классификатор всё ещё читает захардкоженные keywords (хотя seed в БД совпадает).
+- ⏸ Парсеры не используют `expected_fields[]` из БД — продолжают использовать хардкод.
+- ⏸ `confidence_threshold` per-type не применяется — глобальный `NEEDS_REVIEW_THRESHOLD` всегда.
+- ⏸ `regex_fallback_threshold` per-type не применяется.
+- ⏸ `parser_kind` поле есть, но не диспатчит парсера — определяет TS-импорты.
+- ⏸ `llm_prompt`/`llm_schema` overrides не работают (передаются в inference-service со стандартными значениями).
 
-**Оценка:** 2-3 дня.
+**Лечение оставшегося:** Continue passing resolved type config through the pipeline. Parsers accept a `DocumentTypeConfig` object instead of being self-contained.
+
+**Оценка:** 1-2 дня на оставшееся.
 
 ---
 
@@ -132,15 +149,9 @@
 
 ---
 
-### CP3. Validator registry
+### ~~CP3. Validator registry~~ — ✅ закрыто 2026-05-12
 
-**Где:** `doc-service/src/pipeline/validation/`
-
-**Симптом:** Валидаторы сейчас — захардкоженные TS-функции. В Document Type Registry на них ссылаются по имени (`inn_checksum:seller.inn`), но runtime resolution ещё не написан.
-
-**Лечение:** `Map<name, fn>` реестр + парсер аргументов из строки `name:path[,path2]`. При unknown-валидаторе — лог warning и пропуск (не падать). Расширяемость: внешние модули могут регистрировать свои валидаторы.
-
-**Оценка:** день.
+Реализован `pipeline/validation/registry.ts` (resolver, parseSpec, runValidatorSpecs) + интеграция в `validateExtractedWithResolver`. См. «Phase 3 Day 2» в шапке.
 
 ---
 

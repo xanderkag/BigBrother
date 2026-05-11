@@ -1,11 +1,22 @@
 /**
- * Validation composer. Reads `extracted` and runs the validators that apply
- * for the given document type, returning a flat `string[]` of issues.
+ * Validation composer.
  *
- * Validators don't throw and don't mutate. The composer only knows which
- * fields exist on each document type; the actual rules live in
- * `./validators.ts`. Adding a new document type means: add a case here +
- * (optionally) extend validators.
+ * Two entry points exist side-by-side during the Document-Type-Registry
+ * migration:
+ *
+ *   `validateExtractedWithResolver` — primary, async. Reads validator
+ *     specs from the DB-backed registry via DocumentTypeResolver and
+ *     runs them through the builtin function registry. Falls back to
+ *     the hardcoded composer when the type isn't (yet) in the DB.
+ *
+ *   `validateExtracted` — sync, hardcoded. Pre-existing composer kept
+ *     as fallback and for direct unit tests of the validation logic
+ *     without DB dependencies. Will be retired when every caller is
+ *     migrated to the async variant.
+ *
+ * Validators themselves don't throw and don't mutate. The actual rules
+ * live in `./validators.ts`; the registry binds them to string names in
+ * `./registry.ts`.
  */
 
 import type { DocumentType } from '../../types/documents.js';
@@ -20,6 +31,10 @@ import {
   validateVatConsistency,
   validateVehiclePlate,
 } from './validators.js';
+import { runValidatorSpecs } from './registry.js';
+import { documentTypeResolver } from '../document-type-resolver.js';
+
+type WarnLogger = { warn: (data: Record<string, unknown>, msg: string) => void };
 
 type Bag = Record<string, unknown>;
 
@@ -46,8 +61,38 @@ function push(into: string[], msg: string | null): void {
 }
 
 /**
+ * Async variant: consults the Document Type Registry first. When the
+ * type has DB-configured validators, runs them via the registry; when
+ * not (slug missing from `document_types`, e.g. early dev DBs), falls
+ * back to the hardcoded composer below.
+ *
+ * Unknown validator names are logged through the supplied logger and
+ * skipped — preferable to crashing the orchestrator on a typo.
+ */
+export async function validateExtractedWithResolver(
+  extracted: Bag,
+  type: DocumentType,
+  log?: WarnLogger,
+): Promise<string[]> {
+  const typeConfig = await documentTypeResolver.get(type);
+  if (typeConfig && typeConfig.validators.length > 0) {
+    return runValidatorSpecs(extracted, typeConfig.validators, {
+      onUnknown: (spec) => {
+        log?.warn({ spec: spec.raw, document_type: type }, 'unknown validator spec, skipping');
+      },
+    });
+  }
+  // No DB entry → keep validating with the legacy hardcoded composer so
+  // a fresh DB or a deliberately-removed type doesn't lose coverage.
+  return validateExtracted(extracted, type);
+}
+
+/**
  * Run validators relevant to `type` over `extracted`. Returns 0..N issues.
  * Empty array = nothing wrong (or nothing to check).
+ *
+ * Synchronous, hardcoded fallback. See `validateExtractedWithResolver`
+ * for the DB-driven path.
  */
 export function validateExtracted(extracted: Bag, type: DocumentType): string[] {
   const issues: string[] = [];
