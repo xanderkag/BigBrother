@@ -3,8 +3,9 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { documentTypesRepo } from '../storage/document-types.js';
 import { auditLogRepo } from '../storage/audit-log.js';
+import { jobsRepo } from '../storage/jobs.js';
 import { documentTypeResolver } from '../pipeline/document-type-resolver.js';
-import { ErrorResponse } from '../types/api-schemas.js';
+import { ErrorResponse, Job } from '../types/api-schemas.js';
 import { bearerAuthHook } from '../auth.js';
 
 /**
@@ -263,6 +264,121 @@ export async function documentTypesRoutes(app: FastifyInstance): Promise<void> {
       }
       reply.code(204);
       return null;
+    },
+  );
+
+  // --- Observation endpoints: realtime feedback на работу типа ---
+
+  const RecentJobsQuery = z.object({
+    limit: z.coerce.number().int().min(1).max(200).default(50),
+  });
+
+  const RecentJobsResponse = z.object({
+    items: z.array(Job),
+  });
+
+  r.get(
+    '/document-types/:slug/jobs',
+    {
+      schema: {
+        tags: ['document-types'],
+        summary: 'Последние jobs этого типа документа',
+        description:
+          'Возвращает N последних jobs с `document_type=:slug`, по убыванию created_at. ' +
+          'Используется страницей типа документа для отображения реальных примеров обработки.',
+        security: [{ bearerAuth: [] }],
+        params: SlugParam,
+        querystring: RecentJobsQuery,
+        response: {
+          200: RecentJobsResponse,
+          401: ErrorResponse,
+          404: ErrorResponse,
+        },
+      },
+    },
+    async (req, reply) => {
+      const exists = await documentTypesRepo.findBySlug(req.params.slug);
+      if (!exists) {
+        reply.code(404);
+        return { error: 'document type not found' };
+      }
+      const rows = await jobsRepo.listByDocumentType(req.params.slug, req.query.limit);
+      return { items: rows.map((r) => jobsRepo.toApi(r)) };
+    },
+  );
+
+  const StatsQuery = z.object({
+    days: z.coerce.number().int().min(1).max(365).default(30),
+  });
+
+  const StatsResponse = z.object({
+    slug: z.string(),
+    period_days: z.number(),
+    total_jobs: z.number(),
+    terminal_breakdown: z.object({
+      done: z.number(),
+      needs_review: z.number(),
+      failed: z.number(),
+    }),
+    avg_confidence: z.number().nullable(),
+    expected_fields_coverage: z.array(
+      z.object({
+        field: z.string(),
+        filled: z.number(),
+        total: z.number(),
+        filled_pct: z.number(),
+      }),
+    ),
+  });
+
+  r.get(
+    '/document-types/:slug/stats',
+    {
+      schema: {
+        tags: ['document-types'],
+        summary: 'Сводная статистика по типу: покрытие полей, doneness, avg confidence',
+        description:
+          'За последние N дней (по умолчанию 30) возвращает: сколько jobs обработано, ' +
+          'раскладку по терминальным статусам, средний confidence терминальных, и ' +
+          'для каждого `expected_field` — долю jobs где это поле фактически заполнено. ' +
+          'Под выявление пробелов в parser/prompt — если `seller.inn` filled_pct=0.6, ' +
+          'значит модель не справляется и нужно тюнить инструкцию или схему.',
+        security: [{ bearerAuth: [] }],
+        params: SlugParam,
+        querystring: StatsQuery,
+        response: {
+          200: StatsResponse,
+          401: ErrorResponse,
+          404: ErrorResponse,
+        },
+      },
+    },
+    async (req, reply) => {
+      const type = await documentTypesRepo.findBySlug(req.params.slug);
+      if (!type) {
+        reply.code(404);
+        return { error: 'document type not found' };
+      }
+
+      const days = req.query.days;
+      const [stats, coverage] = await Promise.all([
+        jobsRepo.getTypeStats(req.params.slug, days),
+        jobsRepo.getFieldCoverage(req.params.slug, type.expected_fields, days),
+      ]);
+
+      return {
+        slug: req.params.slug,
+        period_days: days,
+        total_jobs: stats.total_jobs,
+        terminal_breakdown: stats.terminal_breakdown,
+        avg_confidence: stats.avg_confidence,
+        expected_fields_coverage: coverage.map((c) => ({
+          field: c.field,
+          filled: c.filled,
+          total: c.total,
+          filled_pct: c.total === 0 ? 0 : Math.round((c.filled / c.total) * 100) / 100,
+        })),
+      };
     },
   );
 }

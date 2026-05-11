@@ -867,6 +867,156 @@ async function renderDocumentTypeEditor(slug) {
   const root = document.getElementById('dt-editor');
   root.innerHTML = renderEditorForm(t, isCreate);
   bindEditorHandlers(t, isCreate, state, root);
+
+  // Для существующих типов — асинхронно подгрузить статистику и список
+  // последних jobs, чтобы пользователь сразу видел реальное качество
+  // обработки. Без блокировки editor'а — рендерится поверх через
+  // отдельные DOM-узлы.
+  if (!isCreate) {
+    void loadTypeObservations(slug);
+  }
+}
+
+/**
+ * Подгружает /document-types/:slug/stats и /jobs и врендеривает их
+ * в две panel'и: "Recent jobs" (последние 20 jobs этого типа со
+ * статусом + confidence) и "Field coverage" (% jobs где каждое
+ * expected_field фактически заполнено).
+ *
+ * Идея: после правки prompt'а или схемы открыл страницу типа и сразу
+ * видишь как изменилось покрытие полей по новым jobs.
+ */
+async function loadTypeObservations(slug) {
+  const obsRoot = document.getElementById('dt-observations');
+  if (!obsRoot) return;
+
+  obsRoot.innerHTML = `
+    <div class="card card-body">${loadingState()}</div>
+    <div class="card card-body">${loadingState()}</div>
+  `;
+
+  let stats, jobs;
+  try {
+    [stats, jobs] = await Promise.all([
+      apiJson(`/document-types/${encodeURIComponent(slug)}/stats?days=30`),
+      apiJson(`/document-types/${encodeURIComponent(slug)}/jobs?limit=20`),
+    ]);
+  } catch (err) {
+    obsRoot.innerHTML = errorState(err.message);
+    return;
+  }
+
+  obsRoot.innerHTML = `
+    ${renderCoveragePanel(stats)}
+    ${renderRecentJobsPanel(jobs.items)}
+  `;
+
+  obsRoot.querySelectorAll('[data-recent-job-id]').forEach((el) => {
+    el.addEventListener('click', () => {
+      location.hash = `#jobs/${el.dataset.recentJobId}`;
+    });
+  });
+}
+
+function renderCoveragePanel(stats) {
+  const breakdown = stats.terminal_breakdown;
+  const total = stats.total_jobs;
+  const reviewPct = total === 0 ? 0 : Math.round((breakdown.needs_review / total) * 100);
+  const failedPct = total === 0 ? 0 : Math.round((breakdown.failed / total) * 100);
+  const donePct = total === 0 ? 0 : Math.round((breakdown.done / total) * 100);
+  const avgConfLabel = stats.avg_confidence === null
+    ? '—'
+    : `${Math.round(stats.avg_confidence * 100)}%`;
+
+  const coverageRows = (stats.expected_fields_coverage || []).map((c) => {
+    const pct = Math.round(c.filled_pct * 100);
+    const colorClass =
+      pct >= 80 ? 'bg-emerald-500' :
+      pct >= 50 ? 'bg-amber-500' :
+      'bg-rose-500';
+    return `
+      <div class="grid grid-cols-[10rem_1fr_3.5rem] gap-3 items-center py-1.5 border-b border-slate-100 dark:border-slate-800 last:border-b-0">
+        <span class="font-mono text-xs">${escapeHtml(c.field)}</span>
+        <div class="h-1.5 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
+          <div class="h-full ${colorClass}" style="width:${pct}%"></div>
+        </div>
+        <span class="text-xs font-mono tabular-nums text-right text-slate-600 dark:text-slate-400">${pct}% <span class="text-slate-400">(${c.filled}/${c.total})</span></span>
+      </div>`;
+  }).join('');
+
+  return `
+    <div class="card card-body">
+      <h3 class="card-title mb-1">Field coverage <span class="text-sm font-normal text-slate-500">за последние ${stats.period_days} дней</span></h3>
+      <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">
+        Для каждого <code class="font-mono">expected_field</code> — в скольких jobs это поле фактически
+        заполнено в <code class="font-mono">extracted</code>. Это и есть «соответствие API»: если поле
+        в схеме обещано, а извлекается в 60% случаев — promt или схему надо тюнить.
+      </p>
+
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm mb-4">
+        <div class="card-body bg-slate-50 dark:bg-slate-950 rounded-lg p-3">
+          <div class="text-xs text-slate-500 uppercase tracking-wide">Всего</div>
+          <div class="text-xl font-semibold mt-1">${stats.total_jobs}</div>
+        </div>
+        <div class="card-body bg-slate-50 dark:bg-slate-950 rounded-lg p-3">
+          <div class="text-xs text-slate-500 uppercase tracking-wide">Done</div>
+          <div class="text-xl font-semibold mt-1 text-emerald-600 dark:text-emerald-400">${donePct}% <span class="text-xs text-slate-400">(${breakdown.done})</span></div>
+        </div>
+        <div class="card-body bg-slate-50 dark:bg-slate-950 rounded-lg p-3">
+          <div class="text-xs text-slate-500 uppercase tracking-wide">Review</div>
+          <div class="text-xl font-semibold mt-1 text-amber-600 dark:text-amber-400">${reviewPct}% <span class="text-xs text-slate-400">(${breakdown.needs_review})</span></div>
+        </div>
+        <div class="card-body bg-slate-50 dark:bg-slate-950 rounded-lg p-3">
+          <div class="text-xs text-slate-500 uppercase tracking-wide">Avg confidence</div>
+          <div class="text-xl font-semibold mt-1">${avgConfLabel}</div>
+        </div>
+      </div>
+
+      ${coverageRows
+        ? `<div class="border-t border-slate-200 dark:border-slate-800 pt-3">${coverageRows}</div>`
+        : '<p class="text-sm text-slate-400">expected_fields не заданы — добавьте в редакторе сверху чтобы измерять покрытие.</p>'}
+
+      ${failedPct > 0
+        ? `<div class="warning-banner mt-3 text-xs">${failedPct}% jobs упали со статусом <code class="font-mono">failed</code> — проверьте логи воркера.</div>`
+        : ''}
+    </div>`;
+}
+
+function renderRecentJobsPanel(items) {
+  if (items.length === 0) {
+    return `
+      <div class="card card-body">
+        <h3 class="card-title mb-2">Последние документы</h3>
+        <p class="text-sm text-slate-400">Пока ни одного job этого типа. Загрузите документ через <a href="#upload" class="text-indigo-600 hover:underline">Upload</a>.</p>
+      </div>`;
+  }
+  const rows = items.map((j) => {
+    const issuesBadge = (j.validation_issues?.length ?? 0) > 0
+      ? `<span class="badge badge-amber text-[10px]">${j.validation_issues.length} issues</span>`
+      : '';
+    return `
+      <tr class="row-clickable" data-recent-job-id="${escapeHtml(j.job_id)}">
+        <td class="font-mono text-xs text-slate-500">${escapeHtml(j.job_id.slice(0, 8))}</td>
+        <td>${badge(j.status)}</td>
+        <td class="truncate max-w-[14rem]" title="${escapeHtml(j.file_name)}">${escapeHtml(j.file_name)}</td>
+        <td>${confidenceBar(j.confidence)}</td>
+        <td>${issuesBadge}</td>
+        <td class="text-xs text-slate-500" title="${escapeHtml(j.created_at)}">${escapeHtml(relativeTime(j.created_at))}</td>
+      </tr>`;
+  }).join('');
+  return `
+    <div class="card overflow-hidden">
+      <div class="card-header">
+        <h3 class="card-title">Последние документы <span class="text-sm font-normal text-slate-500">(${items.length})</span></h3>
+        <a href="#jobs" class="btn-ghost btn-xs">все →</a>
+      </div>
+      <table class="data-table">
+        <thead>
+          <tr><th>ID</th><th>Status</th><th>File</th><th>Confidence</th><th>Issues</th><th>Created</th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
 }
 
 function renderEditorForm(t, isCreate) {
@@ -995,6 +1145,9 @@ function renderEditorForm(t, isCreate) {
         placeholder='{"type":"object","properties":{"number":{"type":"string"}, ...}}'>${t.llm_schema ? escapeHtml(JSON.stringify(t.llm_schema, null, 2)) : ''}</textarea>
       <p id="f-llm_schema-error" class="form-error hidden"></p>
     </div>
+
+    <!-- Observations: загружается асинхронно для существующих типов -->
+    ${!isCreate ? `<div id="dt-observations" class="space-y-4"></div>` : ''}
 
     <!-- Bookkeeping + actions -->
     ${!isCreate ? `

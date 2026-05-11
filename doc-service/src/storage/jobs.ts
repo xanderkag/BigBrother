@@ -210,6 +210,126 @@ class JobsRepo {
     }
   }
 
+  /**
+   * Раздельный список jobs по типу документа — оптимизированный путь для
+   * страницы /document-types/:slug/jobs. Возвращает последние N документов
+   * этого типа (по created_at DESC).
+   */
+  async listByDocumentType(slug: string, limit = 50): Promise<JobRow[]> {
+    const { rows } = await db.query<JobRow>(
+      `SELECT * FROM jobs
+       WHERE document_type = $1
+       ORDER BY created_at DESC
+       LIMIT $2`,
+      [slug, limit],
+    );
+    return rows;
+  }
+
+  /**
+   * Агрегированная статистика по типу документа за последние N дней.
+   *
+   * Что считаем (всё — на стороне Postgres, без выгрузки строк в Node):
+   *   - total_jobs            — сколько всего jobs этого типа за период.
+   *   - terminal_breakdown    — раскладка по итоговому статусу (done /
+   *                             needs_review / failed). Идёт в product-метрику
+   *                             "сколько процентов уходит в ручной review".
+   *   - avg_confidence        — средний overall confidence по терминальным.
+   *                             NULL когда нет ни одного готового.
+   *
+   * Покрытие по полям (`expected_fields_coverage`) считается отдельным
+   * запросом, см. `getFieldCoverage`. Разделили чтобы не делать
+   * мегазапрос ради нескольких процентов производительности.
+   */
+  async getTypeStats(
+    slug: string,
+    sinceDays: number,
+  ): Promise<{
+    total_jobs: number;
+    terminal_breakdown: { done: number; needs_review: number; failed: number };
+    avg_confidence: number | null;
+  }> {
+    const { rows } = await db.query<{
+      total_jobs: string;
+      done: string;
+      needs_review: string;
+      failed: string;
+      avg_confidence: string | null;
+    }>(
+      `SELECT
+         COUNT(*)::text                                                                  AS total_jobs,
+         COUNT(*) FILTER (WHERE status = 'done')::text                                    AS done,
+         COUNT(*) FILTER (WHERE status = 'needs_review')::text                            AS needs_review,
+         COUNT(*) FILTER (WHERE status = 'failed')::text                                  AS failed,
+         AVG(confidence) FILTER (WHERE status IN ('done', 'needs_review'))::text          AS avg_confidence
+       FROM jobs
+       WHERE document_type = $1
+         AND created_at >= now() - ($2 || ' days')::interval`,
+      [slug, String(sinceDays)],
+    );
+    const r = rows[0]!;
+    return {
+      total_jobs: Number(r.total_jobs),
+      terminal_breakdown: {
+        done: Number(r.done),
+        needs_review: Number(r.needs_review),
+        failed: Number(r.failed),
+      },
+      avg_confidence: r.avg_confidence === null ? null : Number(r.avg_confidence),
+    };
+  }
+
+  /**
+   * Покрытие по каждому ожидаемому полю: какая доля терминальных jobs
+   * этого типа имеет это поле в `extracted` непустым.
+   *
+   * Поле может быть вложенным (`seller.inn`) — обрабатываем через
+   * jsonb path: `extracted #> '{seller,inn}'`. SQL вычисляет всё разом
+   * для всех полей, что важно при большой истории.
+   *
+   * «Непустое» = JSON value не null и не пустая строка (`""`). Числа,
+   * массивы и объекты считаются непустыми. Для глубоких объектов
+   * пустота не проверяется рекурсивно — упрощение, в реальных
+   * docs-сценариях лучше иметь конкретный leaf-путь типа `seller.inn`,
+   * а не `seller` целиком.
+   */
+  async getFieldCoverage(
+    slug: string,
+    expectedFields: readonly string[],
+    sinceDays: number,
+  ): Promise<Array<{ field: string; filled: number; total: number }>> {
+    if (expectedFields.length === 0) return [];
+    const expressions = expectedFields.map((field, i) => {
+      const path = field.split('.');
+      // jsonb #> '{a,b,c}' — извлекаем по dot-path. Параметризуем сам path
+      // массивом ($i), чтобы избежать SQL-инъекций в имени поля.
+      return `COUNT(*) FILTER (
+        WHERE extracted #> $${i + 3} IS NOT NULL
+          AND extracted #> $${i + 3} <> 'null'::jsonb
+          AND extracted #> $${i + 3} <> '""'::jsonb
+      )::text AS f${i}`;
+    });
+    const params: unknown[] = [slug, String(sinceDays)];
+    for (const field of expectedFields) params.push(field.split('.'));
+
+    const { rows } = await db.query<Record<string, string>>(
+      `SELECT
+         COUNT(*) FILTER (WHERE status IN ('done', 'needs_review'))::text AS total,
+         ${expressions.join(',\n         ')}
+       FROM jobs
+       WHERE document_type = $1
+         AND created_at >= now() - ($2 || ' days')::interval`,
+      params,
+    );
+    const r = rows[0]!;
+    const total = Number(r.total ?? 0);
+    return expectedFields.map((field, i) => ({
+      field,
+      filled: Number(r[`f${i}`] ?? 0),
+      total,
+    }));
+  }
+
   async list(filters: ListFilters): Promise<JobRow[]> {
     const where: string[] = [];
     const params: unknown[] = [];

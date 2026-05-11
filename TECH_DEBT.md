@@ -59,6 +59,56 @@
 - ✅ **B5 file magic-bytes validation** — пакет `file-type ^19.6`. После сохранения файла читаются magic bytes; если детектируется не из `ACCEPTED_DOCUMENT_MIMES` (PDF/JPEG/PNG/BMP/TIFF/WebP) — 400 и удаление файла. Если detected mime ≠ declared multipart Content-Type — detected становится authoritative (логируется warning). Защита от exe-под-видом-PDF, расширения vs реальный формат, и подобного.
 - ✅ Тесты: `tests/idempotency.spec.ts` (header parsing, unique-violation detector), `tests/magic-bytes.spec.ts` (PDF/PNG/JPEG/BMP/WebP по реальным magic bytes, рейект plaintext/exe, обнаружение mislabelled PDF).
 
+### Phase 3 Day 12 — Per-type observation: видим что реально извлекается (2026-05-13)
+
+Чтобы во время тестирования на железе клиента можно было сразу видеть
+качество обработки по типу документа и понимать что тюнить — добавлены
+два аналитических endpoint'а и панели в UI редактора типа.
+
+API:
+- ✅ `GET /api/v1/document-types/:slug/jobs?limit=N` — последние N jobs
+  этого типа (по умолчанию 50, max 200). Сорт `created_at DESC`.
+- ✅ `GET /api/v1/document-types/:slug/stats?days=N` — за последние N
+  дней (default 30) возвращает:
+  - `total_jobs` — сколько всего обработано;
+  - `terminal_breakdown` — раскладка по статусам (done / needs_review / failed);
+  - `avg_confidence` — средний overall confidence терминальных;
+  - `expected_fields_coverage[]` — для каждого ожидаемого поля доля
+    jobs где оно фактически заполнено в extracted. Это и есть
+    «соответствие API»: если admin обещает в схеме `seller.inn`, а
+    модель извлекает в 60% случаев — нужно тюнить prompt или схему.
+
+Repo (jobsRepo):
+- ✅ `listByDocumentType(slug, limit)` — параметризованный SELECT с
+  ORDER BY created_at DESC.
+- ✅ `getTypeStats(slug, sinceDays)` — single-query агрегация на
+  Postgres-стороне (COUNT FILTER), без выгрузки строк в Node.
+- ✅ `getFieldCoverage(slug, expectedFields, sinceDays)` — dot-path
+  через `jsonb #> '{a,b,c}'` с параметризованным массивом
+  пути (защита от инъекций в названии поля). «Непусто» = json value
+  не null и не пустая строка `""`.
+
+UI (страница типа документа):
+- ✅ Под формой редактора асинхронно подгружаются две панели:
+  - **Field coverage** — 4 верхних KPI (total / done % / review % /
+    avg confidence) + список ожидаемых полей с прогресс-бар'ом
+    покрытия в %. Цвет: ≥80% emerald, ≥50% amber, иначе rose.
+    Сразу видно «seller.inn в 73% — надо тюнить».
+  - **Последние документы** — таблица последних 20 jobs этого типа
+    (status, файл, confidence, issues, created). Клик → job detail.
+
+Тесты:
+- ✅ `tests/type-stats.spec.ts` — 9 кейсов на listByDocumentType +
+  getTypeStats + getFieldCoverage (структура ответа, защита от SQL
+  injection через параметризацию, edge cases: пустой expectedFields,
+  total=0, avg_confidence=null).
+
+Workflow тюнинга prompt'а теперь замкнут:
+  1. Прогнали документы → видим coverage = 60% по `seller.inn`.
+  2. Открыли редактор типа, поменяли `llm_prompt`.
+  3. Save → resolver кэш сбрасывается → следующие jobs идут с новым prompt'ом.
+  4. Прогнали ещё 10 документов → coverage стало 90%. Профит.
+
 ### Phase 3 Day 11 — Готовность к развороту на локальной модели (2026-05-13)
 
 Фаза A из плана «подготовка к боевому развороту»: реальный smoke,
