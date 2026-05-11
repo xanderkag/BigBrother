@@ -217,12 +217,18 @@ function route() {
   // Highlight active nav
   document.querySelectorAll('[data-nav]').forEach((el) => {
     const target = el.dataset.nav;
-    el.classList.toggle('active', h === target || (target === 'jobs' && h.startsWith('jobs')));
+    const isActive =
+      h === target ||
+      (target === 'jobs' && h.startsWith('jobs')) ||
+      (target === 'document-types' && h.startsWith('document-types'));
+    el.classList.toggle('active', isActive);
   });
 
   if (h === 'jobs') return renderJobsList();
   if (h.startsWith('jobs/')) return renderJobDetail(h.slice(5));
   if (h === 'upload') return renderUpload();
+  if (h === 'document-types') return renderDocumentTypesList();
+  if (h.startsWith('document-types/')) return renderDocumentTypeDetail(h.slice('document-types/'.length));
   if (h === 'settings') return renderSettings();
   // Unknown → default
   location.hash = '#jobs';
@@ -653,6 +659,218 @@ function renderUpload() {
       submitBtn.textContent = 'Загрузить';
     }
   });
+}
+
+// ---- Document Types: registry browser ----
+//
+// Read-only for this iteration: lists configured types, click → detail
+// page showing parser kind, prompts, schema, validators, thresholds,
+// classification keywords. Editing UI lands when the backend gains
+// PUT/POST and the runtime starts reading from DB instead of hardcoded
+// values.
+
+const PARSER_KIND_LABELS = {
+  'builtin:invoice_regex': { label: 'regex (invoice)', cls: 'bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300' },
+  'builtin:upd_regex':     { label: 'regex (UPD)',     cls: 'bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300' },
+  'llm_extract':           { label: 'LLM /extract',    cls: 'bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300' },
+};
+
+function parserKindBadge(kind) {
+  const s = PARSER_KIND_LABELS[kind] ?? { label: kind, cls: 'bg-slate-100 text-slate-700' };
+  return `<span class="badge ${s.cls}">${escapeHtml(s.label)}</span>`;
+}
+
+async function renderDocumentTypesList() {
+  setView(`
+    <div class="p-8 max-w-6xl mx-auto">
+      <div class="flex items-center justify-between mb-6">
+        <div>
+          <h2 class="text-2xl font-semibold">Document types</h2>
+          <p class="text-sm text-slate-500 dark:text-slate-400 mt-0.5">Конфигурация типов документов: парсеры, поля, валидаторы, пороги</p>
+        </div>
+      </div>
+
+      <div class="mb-4 p-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 text-sm text-amber-800 dark:text-amber-300">
+        <strong>Read-only.</strong> Runtime пока продолжает использовать захардкоженные значения; эта секция показывает, как платформа настроена. Редактор и применение конфигурации из БД — в следующей фазе.
+      </div>
+
+      <div id="dt-list" class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+        <div class="p-8 text-center text-slate-400">Загрузка...</div>
+      </div>
+    </div>
+  `);
+
+  let data;
+  try {
+    data = await apiJson('/document-types');
+  } catch (err) {
+    document.getElementById('dt-list').innerHTML = `
+      <div class="p-8 text-center text-rose-600 dark:text-rose-400">
+        <p class="font-medium">Не удалось загрузить</p>
+        <p class="text-sm mt-1">${escapeHtml(err.message)}</p>
+      </div>`;
+    return;
+  }
+
+  if (!data.items.length) {
+    document.getElementById('dt-list').innerHTML = `
+      <div class="p-12 text-center text-slate-500 dark:text-slate-400">
+        Реестр пустой. Запустите миграцию: <code class="font-mono text-xs">npm run migrate</code>
+      </div>`;
+    return;
+  }
+
+  const rows = data.items.map((t) => {
+    const inactive = !t.is_active ? '<span class="badge bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-400">inactive</span>' : '';
+    const builtin = t.is_builtin ? '<span class="badge bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">builtin</span>' : '';
+    const conf = t.confidence_threshold !== null ? t.confidence_threshold.toFixed(2) : '<span class="text-slate-400">default</span>';
+    return `
+      <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer transition" data-slug="${escapeHtml(t.slug)}">
+        <td class="px-4 py-3 font-mono text-xs text-slate-500">${escapeHtml(t.slug)}</td>
+        <td class="px-4 py-3 text-sm font-medium">${escapeHtml(t.display_name)}</td>
+        <td class="px-4 py-3">${parserKindBadge(t.parser_kind)}</td>
+        <td class="px-4 py-3 text-xs font-mono">${conf}</td>
+        <td class="px-4 py-3 text-xs">${t.expected_fields.length} fields</td>
+        <td class="px-4 py-3 text-xs">${t.validators.length} validators</td>
+        <td class="px-4 py-3 flex gap-1">${builtin}${inactive}</td>
+      </tr>`;
+  }).join('');
+
+  document.getElementById('dt-list').innerHTML = `
+    <table class="w-full">
+      <thead class="bg-slate-50 dark:bg-slate-950/50 text-xs uppercase text-slate-500 dark:text-slate-400">
+        <tr>
+          <th class="text-left px-4 py-2.5 font-medium">Slug</th>
+          <th class="text-left px-4 py-2.5 font-medium">Display name</th>
+          <th class="text-left px-4 py-2.5 font-medium">Parser</th>
+          <th class="text-left px-4 py-2.5 font-medium">Confidence</th>
+          <th class="text-left px-4 py-2.5 font-medium">Fields</th>
+          <th class="text-left px-4 py-2.5 font-medium">Validators</th>
+          <th class="text-left px-4 py-2.5 font-medium">Flags</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-100 dark:divide-slate-800">${rows}</tbody>
+    </table>`;
+
+  document.querySelectorAll('[data-slug]').forEach((row) => {
+    row.addEventListener('click', () => {
+      location.hash = `#document-types/${row.dataset.slug}`;
+    });
+  });
+}
+
+async function renderDocumentTypeDetail(slug) {
+  setView(`
+    <div class="p-8 max-w-4xl mx-auto">
+      <a href="#document-types" class="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 mb-4">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path fill-rule="evenodd" d="M17 10a.75.75 0 0 1-.75.75H5.612l4.158 3.96a.75.75 0 1 1-1.04 1.08l-5.5-5.25a.75.75 0 0 1 0-1.08l5.5-5.25a.75.75 0 1 1 1.04 1.08L5.612 9.25H16.25A.75.75 0 0 1 17 10Z" clip-rule="evenodd"/></svg>
+        К списку
+      </a>
+      <div id="dt-detail" class="space-y-4">
+        <div class="text-slate-400 text-center py-12">Загрузка...</div>
+      </div>
+    </div>
+  `);
+
+  let t;
+  try {
+    t = await apiJson(`/document-types/${encodeURIComponent(slug)}`);
+  } catch (err) {
+    document.getElementById('dt-detail').innerHTML = `
+      <div class="p-8 text-center text-rose-600 dark:text-rose-400">
+        <p class="font-medium">Не удалось загрузить</p>
+        <p class="text-sm mt-1">${escapeHtml(err.message)}</p>
+      </div>`;
+    return;
+  }
+
+  const validatorRows = t.validators.length
+    ? t.validators.map((v) => `<li class="font-mono text-xs">${escapeHtml(v)}</li>`).join('')
+    : '<li class="text-sm text-slate-400">не настроено</li>';
+
+  const fieldRows = t.expected_fields.length
+    ? t.expected_fields.map((f) => `<li class="font-mono text-xs">${escapeHtml(f)}</li>`).join('')
+    : '<li class="text-sm text-slate-400">не настроено</li>';
+
+  const keywordRows = t.classification_keywords.length
+    ? t.classification_keywords.map((k) => `<li class="font-mono text-xs">${escapeHtml(k)}</li>`).join('')
+    : '<li class="text-sm text-slate-400">не настроено</li>';
+
+  document.getElementById('dt-detail').innerHTML = `
+    <!-- Header -->
+    <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-6">
+      <div class="flex items-start justify-between gap-4">
+        <div class="min-w-0">
+          <div class="flex items-center gap-2 mb-2">
+            ${parserKindBadge(t.parser_kind)}
+            ${t.is_builtin ? '<span class="badge bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">builtin</span>' : ''}
+            ${!t.is_active ? '<span class="badge bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-400">inactive</span>' : ''}
+          </div>
+          <h2 class="text-xl font-semibold">${escapeHtml(t.display_name)}</h2>
+          <div class="mt-1 font-mono text-xs text-slate-500">${escapeHtml(t.slug)}</div>
+          ${t.description ? `<p class="mt-3 text-sm text-slate-600 dark:text-slate-400">${escapeHtml(t.description)}</p>` : ''}
+        </div>
+      </div>
+    </div>
+
+    <!-- Thresholds -->
+    <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
+      <h3 class="font-semibold mb-3">Thresholds</h3>
+      <div class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+        <div><span class="text-slate-500">confidence_threshold:</span> <span class="font-mono">${t.confidence_threshold !== null ? t.confidence_threshold : '<span class="text-slate-400">default из env</span>'}</span></div>
+        <div><span class="text-slate-500">regex_fallback_threshold:</span> <span class="font-mono">${t.regex_fallback_threshold !== null ? t.regex_fallback_threshold : '<span class="text-slate-400">— (только для regex parser)</span>'}</span></div>
+      </div>
+    </div>
+
+    <!-- Expected fields -->
+    <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
+      <h3 class="font-semibold mb-3">Expected fields <span class="text-sm font-normal text-slate-500">(${t.expected_fields.length})</span></h3>
+      <p class="text-xs text-slate-500 dark:text-slate-400 mb-2">Парсер обязан попытаться извлечь эти поля. Отсутствие → пометится в <code class="font-mono">missing</code>.</p>
+      <ul class="space-y-1 list-disc list-inside">${fieldRows}</ul>
+    </div>
+
+    <!-- Validators -->
+    <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
+      <h3 class="font-semibold mb-3">Validators <span class="text-sm font-normal text-slate-500">(${t.validators.length})</span></h3>
+      <p class="text-xs text-slate-500 dark:text-slate-400 mb-2">Доменные проверки, прогоняемые на извлечённых данных. Формат: <code class="font-mono">имя</code> или <code class="font-mono">имя:аргумент</code>.</p>
+      <ul class="space-y-1 list-disc list-inside">${validatorRows}</ul>
+    </div>
+
+    <!-- Classification keywords -->
+    <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
+      <h3 class="font-semibold mb-3">Classification keywords <span class="text-sm font-normal text-slate-500">(${t.classification_keywords.length})</span></h3>
+      <p class="text-xs text-slate-500 dark:text-slate-400 mb-2">Регулярки/литералы для keyword-классификатора. Совпадение → этот тип.</p>
+      <ul class="space-y-1 list-disc list-inside">${keywordRows}</ul>
+    </div>
+
+    <!-- LLM config (when relevant) -->
+    ${t.parser_kind === 'llm_extract' ? `
+      <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
+        <h3 class="font-semibold mb-3">LLM extraction config</h3>
+        <div class="mb-3 text-sm">
+          <div class="text-slate-500 mb-1">Prompt override</div>
+          ${t.llm_prompt
+            ? `<pre class="text-xs font-mono bg-slate-50 dark:bg-slate-950 p-3 rounded overflow-x-auto">${escapeHtml(t.llm_prompt)}</pre>`
+            : '<div class="text-slate-400 text-sm">— не задан, используется default из inference-service prompts/extract.py</div>'}
+        </div>
+        <div class="text-sm">
+          <div class="text-slate-500 mb-1">JSON Schema override</div>
+          ${t.llm_schema
+            ? `<pre class="text-xs font-mono bg-slate-50 dark:bg-slate-950 p-3 rounded overflow-x-auto max-h-64">${escapeHtml(JSON.stringify(t.llm_schema, null, 2))}</pre>`
+            : '<div class="text-slate-400 text-sm">— не задан, используется default из doc-service document-json-schemas.ts</div>'}
+        </div>
+      </div>
+    ` : ''}
+
+    <!-- Metadata -->
+    <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
+      <h3 class="font-semibold mb-3">Bookkeeping</h3>
+      <dl class="space-y-1 text-sm">
+        <div class="flex justify-between"><dt class="text-slate-500">Created</dt><dd class="font-mono text-xs">${escapeHtml(t.created_at)}</dd></div>
+        <div class="flex justify-between"><dt class="text-slate-500">Updated</dt><dd class="font-mono text-xs">${escapeHtml(t.updated_at)}</dd></div>
+      </dl>
+    </div>
+  `;
 }
 
 // ---- Settings: provider status, thresholds, env snapshot ----

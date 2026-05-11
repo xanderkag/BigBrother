@@ -59,6 +59,14 @@
 - ✅ **B5 file magic-bytes validation** — пакет `file-type ^19.6`. После сохранения файла читаются magic bytes; если детектируется не из `ACCEPTED_DOCUMENT_MIMES` (PDF/JPEG/PNG/BMP/TIFF/WebP) — 400 и удаление файла. Если detected mime ≠ declared multipart Content-Type — detected становится authoritative (логируется warning). Защита от exe-под-видом-PDF, расширения vs реальный формат, и подобного.
 - ✅ Тесты: `tests/idempotency.spec.ts` (header parsing, unique-violation detector), `tests/magic-bytes.spec.ts` (PDF/PNG/JPEG/BMP/WebP по реальным magic bytes, рейект plaintext/exe, обнаружение mislabelled PDF).
 
+### Phase 3 Day 1 — Document Type Registry (foundation, 2026-05-12)
+
+- ✅ **Стратегический pivot:** платформа эволюционирует с «OCR-сервиса с захардкоженными типами» в **configurable document-processing system** с admin layer'ом. Каждый тип документа — first-class конфиг в БД: парсер, prompt, схема, валидаторы, пороги, ключевые слова классификатора.
+- ✅ Миграция `20260512000003_document_types.sql`: новая таблица + seed из 6 текущих типов (invoice, factInvoice, UPD, TTN, CMR, AKT) с их фактическими параметрами.
+- ✅ Repo `src/storage/document-types.ts` + API `GET /api/v1/document-types{/:slug}` для админ-UI.
+- ✅ Сайдбар-секция **Document types**: список с парсером/полями/валидаторами + детальная страница со всей конфигурацией.
+- ⏸ Runtime пока продолжает читать захардкоженные значения — БД-foundation готов, переключение пайплайна на чтение из БД, мутабельность (PUT/POST), editor UI, validator registry — в следующих фазах (см. ниже).
+
 ### Phase 2 Day 3 — Prometheus metrics + migration framework (2026-05-11)
 
 - ✅ **C3 Migration framework** — подключен `node-pg-migrate`. Миграции лежат в `migrations/<timestamp>_<slug>.sql` с явными секциями `-- Up Migration` / `-- Down Migration`. Применённые версии трекаются в таблице `pgmigrations`. Команды: `npm run migrate` (up all), `npm run migrate:down` (rollback 1), `npm run migrate:create <name>` (scaffold). В docker-compose добавлен one-shot сервис `migrate`, от которого зависят `api` и `worker` — схема гарантированно актуальна перед стартом трафика. Убран автозагрузочный mount `/docker-entrypoint-initdb.d`.
@@ -93,6 +101,94 @@
 ### ~~C4. Нет TTL на загруженные файлы~~ — ✅ закрыто 2026-05-11
 
 Реализован file-cleanup sweeper. См. «Phase 1 Day 1» в шапке. Disk-usage в `/ready` пока не добавлен — отдельный мини-таск.
+
+---
+
+## 🟣 Configurable Platform (Document Type Registry roadmap)
+
+Эти пункты — продолжение Phase 3 Day 1 (foundation сделан, см. шапку). Переводят рантайм с захардкоженных значений на чтение из БД, добавляют admin-UI редактор и подготавливают почву под multi-tenant.
+
+### CP1. Runtime читает Document Types из БД
+
+**Где:** `doc-service/src/pipeline/orchestrator.ts`, `parsers/index.ts`, `classifier/keywords.ts`, `validation/index.ts`, `types/document-json-schemas.ts`
+
+**Симптом:** Сейчас pipeline использует захардкоженные значения. Конфиг в БД — informational only.
+
+**Лечение:** Слой `DocumentTypeResolver` который кэширует конфигурацию из БД (с инвалидацией при PUT). Парсеры/классификатор/валидаторы получают конфиг через resolver, а не через статические импорты.
+
+**Оценка:** 2-3 дня.
+
+---
+
+### CP2. Editor UI для Document Types
+
+**Где:** `doc-service/web/`
+
+**Симптом:** UI сейчас read-only. Чтобы добавить новый тип / поправить промпт — лезть в SQL.
+
+**Лечение:** Форма редактирования (markdown-style для prompt, JSON-editor для schema, list-builder для validators/keywords). Кнопка «Тестировать» — гонит выбранный документ через draft-конфигурацию, показывает результат до сохранения.
+
+**Оценка:** 3-4 дня.
+
+---
+
+### CP3. Validator registry
+
+**Где:** `doc-service/src/pipeline/validation/`
+
+**Симптом:** Валидаторы сейчас — захардкоженные TS-функции. В Document Type Registry на них ссылаются по имени (`inn_checksum:seller.inn`), но runtime resolution ещё не написан.
+
+**Лечение:** `Map<name, fn>` реестр + парсер аргументов из строки `name:path[,path2]`. При unknown-валидаторе — лог warning и пропуск (не падать). Расширяемость: внешние модули могут регистрировать свои валидаторы.
+
+**Оценка:** день.
+
+---
+
+### CP4. PUT/POST /document-types + audit log
+
+**Где:** новые API + миграция
+
+**Симптом:** Конфигурация в БД read-only через API. Изменения только через SQL.
+
+**Лечение:** PUT для существующих, POST для новых типов (с slug-validation). Каждое изменение → запись в `document_types_history` (кто/когда/что поменял + diff). Подготовит почву под role-based access (admin vs operator).
+
+**Оценка:** 2 дня (включая history-таблицу + UI changelog).
+
+---
+
+### CP5. Расширение набора document types
+
+**Где:** `migrations/...` + опционально через API после CP4
+
+**Симптом:** Сейчас только 6 типов. По roadmap нужно: commercial invoice, packing list, AWB, B/L, контракты, customs, этикеты, доверенности, сертификаты, внутренние формы.
+
+**Лечение:** После CP1-CP4 каждый новый тип = миграция со seed-вставкой (или админ через UI). Параллельно — определить JSON schemas для каждого, написать LLM-промпты, валидаторы.
+
+**Оценка:** ~день на тип (включая prompt-инжиниринг и проверку на образцах).
+
+---
+
+### CP6. Quality Review workflow
+
+**Где:** `web/` + новые роуты
+
+**Симптом:** Сейчас `needs_review` задачи висят в общем списке job'ов. Нет отдельного «оператор-режима» где видны только они с быстрым approve/edit.
+
+**Лечение:** Новый view `/review` — очередь needs_review с side-by-side: preview документа + редактор extracted + batch-кнопки (approve / reject / re-process). Накапливать diff between OCR-result и финальный — будет training data.
+
+**Оценка:** 2-3 дня.
+
+---
+
+### CP7. Multi-tenant foundation (когда понадобится)
+
+**Где:** schema-wide
+
+**Симптом:** Платформа сейчас single-tenant. Если завтра появится клиент со своими типами/правилами — придётся вводить tenancy с нуля.
+
+**Лечение:** Добавить `tenant_id` в `jobs` и `document_types`. Auth middleware резолвит `tenant_id` из токена. Document types становятся scoped per-tenant (builtin = глобальные, custom = per-tenant). Это **не делать сейчас** — добавить когда появится второй потребитель.
+
+**Оценка:** 1-2 недели после первого реального запроса от не-нашего клиента.
 
 ---
 

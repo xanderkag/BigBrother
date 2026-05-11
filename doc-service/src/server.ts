@@ -13,6 +13,7 @@ import {
   type ZodTypeProvider,
 } from 'fastify-type-provider-zod';
 import { config } from './config.js';
+import { documentTypesRoutes } from './routes/document-types.js';
 import { jobsRoutes } from './routes/jobs.js';
 import { healthRoutes } from './routes/health.js';
 import { metricsRoutes } from './routes/metrics.js';
@@ -84,6 +85,7 @@ async function main() {
       },
       tags: [
         { name: 'jobs', description: 'Создание и отслеживание задач обработки' },
+        { name: 'document-types', description: 'Реестр типов документов (конфигурация парсинга/валидации)' },
         { name: 'settings', description: 'Снимок настроек и статус LLM-провайдеров' },
         { name: 'health', description: 'Liveness/readiness пробники' },
       ],
@@ -152,6 +154,7 @@ async function main() {
   await app.register(metricsRoutes);
   await app.register(jobsRoutes, { prefix: '/api/v1' });
   await app.register(settingsRoutes, { prefix: '/api/v1' });
+  await app.register(documentTypesRoutes, { prefix: '/api/v1' });
 
   // --- Operator UI: static files at /ui, redirect / → /ui/ ---
   //
