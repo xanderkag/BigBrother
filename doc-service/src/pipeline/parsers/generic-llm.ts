@@ -19,9 +19,10 @@ import type { DocumentParser, ParseResult, ParserOverride } from './types.js';
  * не попадает (нечего ожидать), а LLM получает пустую `{}` схему. Это
  * деградация к "extract whatever you can"; качество низкое, но не падаем.
  *
- * Slug задаётся при конструировании — он же передаётся как hint в LLM,
- * чтобы inference-service мог поднять prompt для нужного типа из своих
- * настроек (когда подключится фича llm_prompt override).
+ * Slug задаётся при конструировании — он же передаётся как hint в LLM.
+ * Если в override задан `llmPrompt` (админ-настроенная инструкция),
+ * парсер пробрасывает её в inference-service, который заменяет ею
+ * встроенный prompt для этого типа.
  */
 export class GenericLlmParser implements DocumentParser {
   readonly type: DocumentTypeSlug;
@@ -40,6 +41,7 @@ export class GenericLlmParser implements DocumentParser {
       override?.llmSchema ?? {},
       this.type,
       override?.expectedFields ?? [],
+      override?.llmPrompt,
     );
   }
 }

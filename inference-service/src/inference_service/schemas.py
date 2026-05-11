@@ -2,7 +2,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-DocumentType = Literal["invoice", "factInvoice", "UPD", "TTN", "CMR", "AKT"]
+# Six builtin types we have hardcoded prompts/schemas for. Used as a hint in
+# /v1/classify response (модель должна выбрать ровно один из них). На /v1/extract
+# hint — свободная строка (`DocumentTypeSlug`), потому что админ может через
+# Document Type Registry заводить любые пользовательские типы.
+BuiltinDocumentType = Literal["invoice", "factInvoice", "UPD", "TTN", "CMR", "AKT"]
+DocumentType = BuiltinDocumentType  # backwards-compat alias
+DocumentTypeSlug = str
 
 
 # --- /v1/classify ---
@@ -21,7 +27,12 @@ class ClassifyResponse(BaseModel):
 class ExtractRequest(BaseModel):
     text: str = Field(min_length=1)
     schema_: dict[str, Any] = Field(alias="schema")
-    hint: DocumentType | None = None
+    # Свободный slug: builtin или пользовательский из Document Type Registry.
+    hint: DocumentTypeSlug | None = None
+    # Кастомная инструкция, которую doc-service резолвит из `document_types.llm_prompt`.
+    # Если задана — backend использует её вместо встроенного prompt'а для этого типа.
+    # Опциональный max_length — защита от 1 MB prompt'ов из БД, ломающих токен-лимит.
+    prompt_override: str | None = Field(default=None, max_length=16000)
 
     # Allow population by both "schema" (the public name) and "schema_" (Python attr).
     # `schema` is a reserved attribute on BaseModel in Pydantic v1; the alias keeps

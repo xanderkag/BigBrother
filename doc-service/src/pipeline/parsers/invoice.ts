@@ -57,6 +57,7 @@ export class InvoiceParser implements DocumentParser {
         override?.llmSchema ?? DOCUMENT_JSON_SCHEMAS.invoice,
         'invoice',
         override?.expectedFields ?? EXPECTED_FIELDS.invoice,
+        override?.llmPrompt,
       );
     } catch {
       // LLM glitch — silently fall back to regex. The orchestrator will

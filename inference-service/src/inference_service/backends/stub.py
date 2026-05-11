@@ -55,14 +55,17 @@ class StubBackend(ModelBackend):
         text: str,
         schema: dict[str, Any],
         hint: str | None,
+        prompt_override: str | None = None,
     ) -> ExtractResponse:
         # The stub returns an empty extract with a "stub mode" issue so
         # callers know real extraction did not happen but the contract held.
-        return ExtractResponse(
-            extracted={},
-            confidence=0.0,
-            issues=[f"stub backend cannot extract (hint={hint})"],
-        )
+        # `prompt_override` echoed in issues so интеграционные тесты могут
+        # убедиться, что override доехал до самого backend'а.
+        note = f"stub backend cannot extract (hint={hint}"
+        if prompt_override:
+            note += f", prompt_override len={len(prompt_override)}"
+        note += ")"
+        return ExtractResponse(extracted={}, confidence=0.0, issues=[note])
 
     async def vision_ocr(
         self,

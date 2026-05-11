@@ -59,6 +59,55 @@
 - ✅ **B5 file magic-bytes validation** — пакет `file-type ^19.6`. После сохранения файла читаются magic bytes; если детектируется не из `ACCEPTED_DOCUMENT_MIMES` (PDF/JPEG/PNG/BMP/TIFF/WebP) — 400 и удаление файла. Если detected mime ≠ declared multipart Content-Type — detected становится authoritative (логируется warning). Защита от exe-под-видом-PDF, расширения vs реальный формат, и подобного.
 - ✅ Тесты: `tests/idempotency.spec.ts` (header parsing, unique-violation detector), `tests/magic-bytes.spec.ts` (PDF/PNG/JPEG/BMP/WebP по реальным magic bytes, рейект plaintext/exe, обнаружение mislabelled PDF).
 
+### Phase 3 Day 8 — llm_prompt override доходит до модели (2026-05-13)
+
+Закрыт долг «UI обманывает»: в админ-форме типа документа есть поле
+«Инструкция для LLM-агента», админ его правит, сохраняет — но runtime
+до сегодня **игнорировал** этот текст и использовал встроенный prompt
+из `inference-service/prompts/extract.py`. Теперь связка целиком сквозная.
+
+inference-service:
+- ✅ `ExtractRequest.prompt_override: str | None` (≤16 KB) — новое поле
+  в API. `hint` тоже расширен до `DocumentTypeSlug = str` для пользовательских
+  типов.
+- ✅ `prompts/extract.build()` принимает `prompt_override`. Two-режимный
+  template: `BUILTIN_TEMPLATE` (наши русско-доковые правила) vs
+  `OVERRIDE_TEMPLATE` (админская инструкция + общий технический контракт
+  ответа). Контракт ответа (валидный JSON с extracted/confidence/issues)
+  подмешивается всегда — админ не должен дублировать «верни JSON …».
+- ✅ Все четыре backend'а (`stub`, `claude`, `openai_compatible`, `qwen_vl`)
+  принимают и пробрасывают `prompt_override` в builder. `ModelBackend.extract()`
+  расширен в base.py с backward-compatible default `None`.
+- ✅ Route `/v1/extract` форвардит поле из body в backend.
+
+doc-service:
+- ✅ `LlmClient.extract({ promptOverride })` — новое поле в интерфейсе.
+  HttpLlmClient переводит camelCase → snake_case на сетевой границе
+  (`prompt_override` в JSON).
+- ✅ `ParserOverride.llmPrompt` — пробрасывается дальше через все
+  парсеры: GenericLlmParser, TtnParser, CmrParser, AktParser, и Phase 1
+  LLM-fallback (InvoiceParser/UpdParser).
+- ✅ `ResolvedTypeConfig.llmPrompt` — теперь возвращается резолвером
+  (whitespace-only трактуется как null — защита от пустого Save из UI).
+- ✅ Orchestrator передаёт `typeConfig.llmPrompt` в parser.parse() —
+  замыкая цепочку DB → resolver → parser → LLM client → inference-service.
+
+UI:
+- ✅ Подсказка под textarea «Инструкция для LLM-агента» переписана —
+  раньше говорила «будет использоваться когда-нибудь», теперь «активно,
+  пробрасывается на каждый /extract, технический контракт добавляется
+  автоматически». Не врёт.
+
+Тесты:
+- ✅ `inference-service/tests/test_prompt_override.py` — 8 кейсов:
+  prompt builder (builtin vs override, whitespace-strip, truncation),
+  StubBackend (echo override length в issues), OpenAICompatibleBackend
+  (override доходит до OpenAI SDK через mock).
+- ✅ `doc-service/tests/prompt-override.spec.ts` — 9 кейсов:
+  resolveConfigFromRow (null / present / whitespace), GenericLlmParser
+  (passes через), TtnParser (Phase 2), InvoiceParser (Phase 1 fallback
+  + skip когда regex confident).
+
 ### Phase 3 Day 7 — OpenAI-compat backend для локальных моделей (2026-05-13)
 
 Чтобы не тащить torch внутрь нашего контейнера и не писать новый backend

@@ -46,6 +46,7 @@ export class UpdParser implements DocumentParser {
         override?.llmSchema ?? DOCUMENT_JSON_SCHEMAS[this.type],
         this.type,
         override?.expectedFields ?? EXPECTED_FIELDS[this.type],
+        override?.llmPrompt,
       );
     } catch {
       return regex;

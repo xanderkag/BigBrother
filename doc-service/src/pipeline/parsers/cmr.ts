@@ -22,6 +22,7 @@ export class CmrParser implements DocumentParser {
       override?.llmSchema ?? DOCUMENT_JSON_SCHEMAS.CMR,
       'CMR',
       override?.expectedFields ?? EXPECTED_FIELDS.CMR,
+      override?.llmPrompt,
     );
   }
 }

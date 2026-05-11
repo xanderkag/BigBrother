@@ -35,6 +35,14 @@ export interface LlmClient {
     text: string;
     schema: Record<string, unknown>;
     hint?: DocumentTypeSlug;
+    /**
+     * Кастомная инструкция для модели, заведённая админом в Document
+     * Type Registry (`document_types.llm_prompt`). Если задана,
+     * inference-service использует её вместо встроенного prompt'а
+     * для этого типа документа. Оркестратор резолвит её из
+     * `ResolvedTypeConfig.llmPrompt` и передаёт сюда.
+     */
+    promptOverride?: string;
   }): Promise<LlmExtractResult>;
   visionOcr(input: { imagePath: string; prompt?: string }): Promise<LlmVisionResult>;
   verify(input: {

@@ -34,7 +34,16 @@ class ModelBackend(ABC):
         text: str,
         schema: dict[str, Any],
         hint: str | None,
+        prompt_override: str | None = None,
     ) -> ExtractResponse:
+        """Извлечь структурированные данные из текста.
+
+        `prompt_override`: если задан, заменяет встроенный prompt
+        (`prompts/extract.build()`). Используется когда админ через UI
+        document_types настроил кастомную инструкцию для своего типа
+        документа. Backend сам решает, как использовать override —
+        обычно: «вставить как system prompt, к нему прилепить text+schema».
+        """
         ...
 
     @abstractmethod

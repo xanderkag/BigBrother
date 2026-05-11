@@ -31,6 +31,13 @@ export type ParserOverride = {
   expectedFields?: readonly string[];
   regexFallbackThreshold?: number;
   llmSchema?: Record<string, unknown>;
+  /**
+   * Кастомная инструкция для LLM-агента, заданная админом в Document
+   * Type Registry. Парсер пробрасывает её в `LlmClient.extract` как
+   * `promptOverride`. Если не задано — inference-service использует
+   * встроенный prompt для этого типа.
+   */
+  llmPrompt?: string;
 };
 
 export interface DocumentParser {

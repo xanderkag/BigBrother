@@ -975,9 +975,16 @@ function renderEditorForm(t, isCreate) {
     <!-- Agent instruction (llm_prompt) -->
     <div class="card card-body space-y-2">
       <h3 class="card-title">Инструкция для LLM-агента</h3>
-      <p class="text-xs text-slate-500 dark:text-slate-400">Что показывать модели вместе с текстом документа. Пусто = использовать default-prompt из inference-service (<code class="font-mono">prompts/extract.py</code>).</p>
+      <p class="text-xs text-slate-500 dark:text-slate-400">
+        Что показывать модели вместе с текстом документа. <strong>Активно</strong> —
+        runtime пробрасывает её в inference-service на каждый <code class="font-mono">/v1/extract</code>,
+        backend подменяет ею встроенный prompt. Технический контракт ответа (валидный JSON
+        c полями <code class="font-mono">extracted / confidence / issues</code>) добавляется
+        автоматически — пишите только продуктовую часть.
+        Пусто = builtin prompt для типа.
+      </p>
       <textarea id="f-llm_prompt" rows="8" class="code-editor"
-        placeholder="Ты — парсер транспортной накладной. Извлеки поля строго по JSON Schema...">${escapeHtml(t.llm_prompt || '')}</textarea>
+        placeholder="Ты — парсер транспортной накладной. Извлеки поля строго по JSON Schema. Все суммы — числами. ИНН — 10 или 12 цифр.">${escapeHtml(t.llm_prompt || '')}</textarea>
     </div>
 
     <!-- LLM schema -->

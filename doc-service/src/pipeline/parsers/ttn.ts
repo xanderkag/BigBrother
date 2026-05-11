@@ -27,6 +27,7 @@ export class TtnParser implements DocumentParser {
       override?.llmSchema ?? DOCUMENT_JSON_SCHEMAS.TTN,
       'TTN',
       override?.expectedFields ?? EXPECTED_FIELDS.TTN,
+      override?.llmPrompt,
     );
   }
 }

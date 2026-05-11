@@ -90,8 +90,11 @@ class QwenVlBackend(ModelBackend):
         text: str,
         schema: dict[str, Any],
         hint: str | None,
+        prompt_override: str | None = None,
     ) -> ExtractResponse:
-        prompt = extract_prompts.build(text=text, schema=schema, hint=hint)
+        prompt = extract_prompts.build(
+            text=text, schema=schema, hint=hint, prompt_override=prompt_override
+        )
         raw = await self._generate_text(prompt)
         data = _parse_json(raw) or {}
         extracted = data.get("extracted") if isinstance(data.get("extracted"), dict) else {}

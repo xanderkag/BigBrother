@@ -41,6 +41,12 @@ export type ResolvedTypeConfig = {
   validators: string[];
   /** JSON Schema sent to LLM /v1/extract. Defaults to builtin per type. */
   llmSchema: Record<string, unknown>;
+  /**
+   * Кастомная инструкция для LLM-агента из `document_types.llm_prompt`.
+   * Если не задана админом — `null`, и inference-service использует
+   * встроенный prompt для этого типа.
+   */
+  llmPrompt: string | null;
   /** Whether this config was DB-sourced or fully built from fallbacks. */
   source: 'db' | 'fallback';
 };
@@ -151,6 +157,7 @@ export function resolveConfigFromRow(
       expectedFields: [...fallbackFields],
       validators: [],
       llmSchema: fallbackSchema as Record<string, unknown>,
+      llmPrompt: null,
       source: 'fallback',
     };
   }
@@ -168,6 +175,9 @@ export function resolveConfigFromRow(
     expectedFields: row.expected_fields.length > 0 ? [...row.expected_fields] : [...fallbackFields],
     validators: [...row.validators],
     llmSchema: (row.llm_schema ?? fallbackSchema) as Record<string, unknown>,
+    // Пустую строку трактуем как «не задан» — в форме админ может Save'нуть
+    // textarea с одними пробелами; не разваливаем prompt.
+    llmPrompt: row.llm_prompt && row.llm_prompt.trim().length > 0 ? row.llm_prompt : null,
     source: 'db',
   };
 }

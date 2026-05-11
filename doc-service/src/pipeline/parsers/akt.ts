@@ -23,6 +23,7 @@ export class AktParser implements DocumentParser {
       override?.llmSchema ?? DOCUMENT_JSON_SCHEMAS.AKT,
       'AKT',
       override?.expectedFields ?? EXPECTED_FIELDS.AKT,
+      override?.llmPrompt,
     );
   }
 }

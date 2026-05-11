@@ -21,6 +21,7 @@ export async function llmExtract(
   schema: Record<string, unknown>,
   hint: DocumentTypeSlug,
   expectedFields: readonly string[],
+  promptOverride?: string,
 ): Promise<ParseResult> {
   if (!llm.isAvailable()) {
     return {
@@ -30,7 +31,7 @@ export async function llmExtract(
     };
   }
 
-  const result = await llm.extract({ text: rawText, schema, hint });
+  const result = await llm.extract({ text: rawText, schema, hint, promptOverride });
   const extracted = result.extracted ?? {};
   const present = new Set(Object.keys(extracted));
   const missing = expectedFields.filter((f) => {

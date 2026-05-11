@@ -289,6 +289,10 @@ export async function runDocumentPipeline(
       expectedFields: typeConfig.expectedFields,
       regexFallbackThreshold: typeConfig.regexFallbackThreshold,
       llmSchema: typeConfig.llmSchema,
+      // Кастомная инструкция админа (если задана) → пробрасывается
+      // парсером в LLM-клиент → попадает как `prompt_override` в
+      // inference-service → заменяет builtin prompt для этого типа.
+      llmPrompt: typeConfig.llmPrompt ?? undefined,
     });
     extracted = result.extracted;
     parserConfidence = result.confidence;

@@ -14,4 +14,9 @@ async def extract(
     _: None = Depends(require_api_key),
     backend: ModelBackend = Depends(get_backend),
 ) -> ExtractResponse:
-    return await backend.extract(text=body.text, schema=body.schema_, hint=body.hint)
+    return await backend.extract(
+        text=body.text,
+        schema=body.schema_,
+        hint=body.hint,
+        prompt_override=body.prompt_override,
+    )
