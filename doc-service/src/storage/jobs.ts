@@ -34,6 +34,11 @@ export type JobRow = {
   finished_at: Date | null;
   idempotency_key: string | null;
   last_llm_call: LlmCallTrace | null;
+  /** Tenant scope — заполняется при create, обязательное поле в БД. */
+  organization_id: string;
+  project_id: string;
+  /** Пользователь-инициатор. Может быть null для legacy job'ов до миграции 008. */
+  created_by_user_id: string | null;
 };
 
 export type CreateJobInput = {
@@ -45,6 +50,11 @@ export type CreateJobInput = {
   webhookUrl: string | null;
   metadata: unknown;
   idempotencyKey?: string | null;
+  /** Tenant scope. Если не задан — caller (route) использует default. */
+  organizationId: string;
+  projectId: string;
+  /** Кто создал job. Опционально (для системных sweeper'ов = null). */
+  createdByUserId?: string | null;
 };
 
 export type ListFilters = {
@@ -52,6 +62,9 @@ export type ListFilters = {
   document_type?: DocumentTypeSlug;
   from?: string;
   to?: string;
+  /** Tenant-фильтр. Если не задан — super_admin видит всё. */
+  organization_id?: string;
+  project_id?: string;
   limit: number;
   offset: number;
 };
@@ -75,8 +88,12 @@ export type ProcessingUpdate = {
 class JobsRepo {
   async create(input: CreateJobInput): Promise<JobRow> {
     const { rows } = await db.query<JobRow>(
-      `INSERT INTO jobs (file_name, file_path, file_size, mime_type, document_hint, webhook_url, metadata, idempotency_key)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+      `INSERT INTO jobs (
+         file_name, file_path, file_size, mime_type,
+         document_hint, webhook_url, metadata, idempotency_key,
+         organization_id, project_id, created_by_user_id
+       )
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
        RETURNING *`,
       [
         input.fileName,
@@ -87,6 +104,9 @@ class JobsRepo {
         input.webhookUrl,
         input.metadata == null ? null : JSON.stringify(input.metadata),
         input.idempotencyKey ?? null,
+        input.organizationId,
+        input.projectId,
+        input.createdByUserId ?? null,
       ],
     );
     return rows[0]!;
@@ -363,6 +383,14 @@ class JobsRepo {
       params.push(filters.document_type);
       where.push(`document_type = $${params.length}`);
     }
+    if (filters.organization_id) {
+      params.push(filters.organization_id);
+      where.push(`organization_id = $${params.length}`);
+    }
+    if (filters.project_id) {
+      params.push(filters.project_id);
+      where.push(`project_id = $${params.length}`);
+    }
     if (filters.from) {
       params.push(filters.from);
       where.push(`created_at >= $${params.length}`);
@@ -408,6 +436,9 @@ class JobsRepo {
       file_size: Number(row.file_size),
       error: row.error,
       last_llm_call: row.last_llm_call,
+      organization_id: row.organization_id,
+      project_id: row.project_id,
+      created_by_user_id: row.created_by_user_id,
       created_at: row.created_at.toISOString(),
       updated_at: row.updated_at.toISOString(),
       finished_at: row.finished_at ? row.finished_at.toISOString() : null,

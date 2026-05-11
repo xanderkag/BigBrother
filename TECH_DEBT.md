@@ -59,6 +59,82 @@
 - ✅ **B5 file magic-bytes validation** — пакет `file-type ^19.6`. После сохранения файла читаются magic bytes; если детектируется не из `ACCEPTED_DOCUMENT_MIMES` (PDF/JPEG/PNG/BMP/TIFF/WebP) — 400 и удаление файла. Если detected mime ≠ declared multipart Content-Type — detected становится authoritative (логируется warning). Защита от exe-под-видом-PDF, расширения vs реальный формат, и подобного.
 - ✅ Тесты: `tests/idempotency.spec.ts` (header parsing, unique-violation detector), `tests/magic-bytes.spec.ts` (PDF/PNG/JPEG/BMP/WebP по реальным magic bytes, рейект plaintext/exe, обнаружение mislabelled PDF).
 
+### Phase 3 Day 17 — Multi-tenant фундамент (фаза 1) (2026-05-13)
+
+Заложена структура под обслуживание нескольких клиентов. Минимальный
+вариант из спецификации: таблицы + scope на jobs + дефолтный tenant +
+базовые API/UI. Реальный per-user auth и enforcement ролей —
+отдельные волны, заложено архитектурно.
+
+Структура БД (миграция 008):
+- ✅ `organizations` — корневой tenant (type: internal_division /
+  external_company / test / system).
+- ✅ `projects` — рабочее пространство внутри организации, `settings`
+  JSONB резерв под project-level конфиг.
+- ✅ `users` — пользователи с глобальной ролью (super_admin / org_admin /
+  manager / viewer). Поле `api_token_hash` заложено под personal access
+  tokens (NULL пока единый Bearer API_KEY).
+- ✅ `user_project_access` — N:M user × project с проектной ролью
+  (admin / manager / viewer). UNIQUE по (user, project).
+- ✅ `jobs.organization_id`, `jobs.project_id`, `jobs.created_by_user_id` —
+  scope-колонки, NOT NULL. Существующие job-ы backfill'ятся к SYSTEM-org/
+  Default-проекту через DO-блок в той же миграции.
+- ✅ `audit_log.organization_id`, `audit_log.actor_user_id` — nullable,
+  чтобы системные операции писались без user-контекста.
+- ✅ Seed: System-org, Default-проект, System-user (super_admin) с
+  стабильными UUID-константами (см. `tenant-constants.ts`).
+
+Backend:
+- ✅ Repos: organizationsRepo / projectsRepo / usersRepo с CRUD'ом и
+  toApi масками.
+- ✅ Auth: `req.user` контекст заполняется в `bearerAuthHook` — сейчас
+  всегда системный super_admin. Под будущие personal tokens / OAuth.
+  Экспортированы `SYSTEM_DEFAULT_ORG_ID` / `SYSTEM_DEFAULT_PROJECT_ID`.
+- ✅ Routes под `/api/v1/`:
+  - GET/POST/PUT `/organizations`, `/organizations/:id`
+  - GET/POST/PUT `/projects`, `/projects/:id` (с фильтром `?organization_id`)
+  - GET/POST/PUT `/users`, `/users/:id` (с фильтром `?organization_id`)
+  - GET/POST/DELETE `/users/access` (grant/revoke role в проекте, upsert по UNIQUE)
+- ✅ POST `/jobs`: новые multipart-поля `project_id` и `organization_id`
+  (опц.). Если не заданы — фоллбэк на default scope пользователя.
+- ✅ GET `/jobs`: query-фильтры `organization_id` и `project_id`. Свободные
+  для super_admin'а.
+
+UI:
+- ✅ Новый nav-link «Tenants» в sidebar. Страница со тремя таблицами
+  (orgs/projects/users) и inline-формами создания. Дропдауны связаны:
+  при создании проекта выбор организации из реального списка; при
+  создании user'а — то же + дефолт «без организации» для super_admin'ов.
+- ✅ В job detail показывается `org ХХХХХХ · proj ХХХХХХ` (короткие
+  префиксы id) — видно к какому scope принадлежит документ.
+
+⏸ Открытое (следующие волны, спецификация это допускает):
+- **Реальный per-user auth.** Сейчас единый Bearer = system super_admin.
+  Personal access tokens (sha256-хэши уже в схеме) + sessions для UI —
+  отдельная фича.
+- **Enforcement ролей в endpoint'ах.** Сегодня все эндпоинты работают
+  как super_admin. Когда придут реальные юзеры — добавим guard'ы:
+  org_admin видит только свою org, manager — только проекты из
+  user_project_access, viewer — read-only.
+- **Workspace switcher в UI.** Сейчас super_admin видит всё одним
+  списком. Дропдаун «текущий проект» (с persist в localStorage)
+  ограничит фильтры в job list.
+- **Tenant'инг document_types и provider_settings.** Сейчас глобальные.
+  Когда первый клиент захочет «свои типы» — добавим nullable
+  `organization_id` в эти таблицы и UI для override.
+- **Audit log scope-фильтры в UI.** Бэкенд готов, в UI пока не
+  фильтруется по org.
+
+Acceptance criteria из спецификации:
+- ✅ Каждый document_job связан с organization_id и project_id.
+- ✅ Default org и project для совместимости со старой логикой.
+- ✅ История фильтруется по org/project (бэкенд).
+- ✅ super_admin видит все документы.
+- ⏸ Обычный пользователь не видит чужие документы — пока всё под
+  super_admin (enforcement в следующей волне).
+- ✅ Архитектура позволяет позже подключать внешних клиентов без
+  переделки.
+
 ### Phase 3 Day 16 — LLM call trace в job detail (2026-05-13)
 
 Закрыт последний пробел debug-петли: теперь видно ЧТО реально

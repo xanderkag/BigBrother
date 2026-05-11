@@ -22,6 +22,8 @@ import { bearerAuthHook } from '../auth.js';
 import { validateExtractedWithResolver } from '../pipeline/validation/index.js';
 import { runDocumentPipeline } from '../pipeline/orchestrator.js';
 import { combineConfidence } from '../pipeline/quality.js';
+import { projectsRepo } from '../storage/projects.js';
+import { SYSTEM_DEFAULT_ORG_ID, SYSTEM_DEFAULT_PROJECT_ID } from '../auth.js';
 
 function isValidWebhookUrl(value: string): boolean {
   try {
@@ -146,6 +148,10 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
       let webhookUrl: string | undefined;
       let documentHint: string | undefined;
       let metadata: unknown;
+      // Tenant scope от клиента — опциональные multipart-поля. Если не заданы,
+      // ниже падёт в default project текущего пользователя.
+      let projectId: string | undefined;
+      let organizationId: string | undefined;
 
       for await (const part of req.parts()) {
         if (part.type === 'file' && part.fieldname === 'file') {
@@ -158,6 +164,8 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
           const value = typeof part.value === 'string' ? part.value : '';
           if (part.fieldname === 'webhook_url') webhookUrl = value;
           else if (part.fieldname === 'document_hint') documentHint = value;
+          else if (part.fieldname === 'project_id') projectId = value;
+          else if (part.fieldname === 'organization_id') organizationId = value;
           else if (part.fieldname === 'metadata') {
             // Pre-parse size cap — protects against pinning huge blobs to
             // every job row in JSONB. Check raw bytes since the parsed
@@ -235,6 +243,26 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         };
       }
 
+      // --- Резолвим tenant scope ---
+      // Если клиент явно указал project_id — используем его (валидируя
+      // что проект существует). Иначе берём default из user-контекста
+      // (SYSTEM_DEFAULT_PROJECT_ID для super_admin'а).
+      let scopeOrgId: string;
+      let scopeProjectId: string;
+      if (projectId) {
+        const project = await projectsRepo.findById(projectId);
+        if (!project) {
+          await unlink(savedFile.absolutePath).catch(() => undefined);
+          reply.code(400);
+          return { error: `project ${projectId} not found` };
+        }
+        scopeOrgId = organizationId ?? project.organization_id;
+        scopeProjectId = project.id;
+      } else {
+        scopeOrgId = organizationId ?? SYSTEM_DEFAULT_ORG_ID;
+        scopeProjectId = req.user?.default_project_id ?? SYSTEM_DEFAULT_PROJECT_ID;
+      }
+
       let job;
       try {
         job = await jobsRepo.create({
@@ -246,6 +274,9 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
           webhookUrl: webhookUrl ?? null,
           metadata: metadata ?? null,
           idempotencyKey,
+          organizationId: scopeOrgId,
+          projectId: scopeProjectId,
+          createdByUserId: req.user?.id ?? null,
         });
       } catch (err) {
         // Idempotency-Key race: another request inserted the same key

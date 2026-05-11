@@ -313,7 +313,8 @@ function route() {
       (target === 'jobs' && h.startsWith('jobs')) ||
       (target === 'document-types' && h.startsWith('document-types')) ||
       (target === 'providers' && h.startsWith('providers')) ||
-      (target === 'audit-log' && h.startsWith('audit-log'));
+      (target === 'audit-log' && h.startsWith('audit-log')) ||
+      (target === 'tenants' && h.startsWith('tenants'));
     el.classList.toggle('active', isActive);
   });
 
@@ -327,6 +328,7 @@ function route() {
   if (h === 'providers/new') return renderProviderEditor(null);
   if (h.startsWith('providers/')) return renderProviderEditor(h.slice('providers/'.length));
   if (h === 'audit-log') return renderAuditLog();
+  if (h === 'tenants') return renderTenants();
   if (h === 'settings') return renderSettings();
   location.hash = '#jobs';
 }
@@ -492,6 +494,7 @@ async function renderJobDetail(jobId) {
               <span>${escapeHtml(job.job_id)}</span>
               <span>${(job.file_size / 1024).toFixed(1)} KB</span>
               <span>${escapeHtml(job.mime_type)}</span>
+              <span title="organization / project">org ${escapeHtml(job.organization_id.slice(0, 8))} · proj ${escapeHtml(job.project_id.slice(0, 8))}</span>
             </div>
           </div>
           <div class="text-right shrink-0">
@@ -1871,6 +1874,214 @@ function formatDiffValue(value) {
   if (value === null || value === undefined) return '—';
   if (typeof value === 'object') return JSON.stringify(value);
   return String(value);
+}
+
+// ============================================================
+// Tenants: organizations / projects / users (admin)
+// ============================================================
+//
+// Минимальная сводная страница multi-tenant фундамента: три таблицы и
+// inline-формы создания/редактирования. Сегодня доступно super_admin'у
+// (это совпадает с единственным юзером, привязанным к API_KEY).
+// Полноценный workspace switcher и granular role enforcement —
+// следующая волна.
+
+async function renderTenants() {
+  setView(`
+    <div class="page">
+      ${pageHeader({
+        title: 'Tenants',
+        subtitle: 'Организации, проекты и пользователи. Сейчас доступно super_admin\'у.',
+      })}
+
+      <div class="info-banner mb-4">
+        Эти таблицы — фундамент multi-tenant платформы. <strong>System</strong> /
+        <strong>Default</strong> — встроенные дефолты (нельзя удалить).
+        Все существующие job-ы привязаны к ним. Новые job-ы без явного
+        <code class="font-mono">project_id</code> тоже падают сюда. Role-based
+        фильтрация в UI/API сейчас работает как super_admin (видно всё) —
+        per-user enforcement подключим следующей волной вместе с personal access tokens.
+      </div>
+
+      <div id="tenants-orgs" class="mb-6">${loadingState()}</div>
+      <div id="tenants-projects" class="mb-6">${loadingState()}</div>
+      <div id="tenants-users">${loadingState()}</div>
+    </div>
+  `);
+
+  let orgs, projects, users;
+  try {
+    [orgs, projects, users] = await Promise.all([
+      apiJson('/organizations'),
+      apiJson('/projects'),
+      apiJson('/users'),
+    ]);
+  } catch (err) {
+    document.getElementById('tenants-orgs').innerHTML = errorState(err.message);
+    return;
+  }
+
+  document.getElementById('tenants-orgs').innerHTML = renderOrgsTable(orgs.items);
+  document.getElementById('tenants-projects').innerHTML = renderProjectsTable(projects.items, orgs.items);
+  document.getElementById('tenants-users').innerHTML = renderUsersTable(users.items, orgs.items);
+
+  // Org create form
+  document.getElementById('org-create-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = new FormData(e.target);
+    try {
+      await apiJson('/organizations', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: String(form.get('name') ?? '').trim(),
+          type: String(form.get('type') ?? 'external_company'),
+        }),
+      });
+      renderTenants();
+    } catch (err) { alert(err.message); }
+  });
+
+  // Project create form
+  document.getElementById('project-create-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = new FormData(e.target);
+    try {
+      await apiJson('/projects', {
+        method: 'POST',
+        body: JSON.stringify({
+          organization_id: String(form.get('organization_id')),
+          name: String(form.get('name') ?? '').trim(),
+          description: String(form.get('description') ?? '').trim() || null,
+        }),
+      });
+      renderTenants();
+    } catch (err) { alert(err.message); }
+  });
+
+  // User create form
+  document.getElementById('user-create-form')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = new FormData(e.target);
+    const orgVal = String(form.get('organization_id') ?? '');
+    try {
+      await apiJson('/users', {
+        method: 'POST',
+        body: JSON.stringify({
+          display_name: String(form.get('display_name') ?? '').trim(),
+          email: String(form.get('email') ?? '').trim() || undefined,
+          role: String(form.get('role') ?? 'manager'),
+          organization_id: orgVal === '' ? null : orgVal,
+        }),
+      });
+      renderTenants();
+    } catch (err) { alert(err.message); }
+  });
+}
+
+function renderOrgsTable(items) {
+  const rows = items.map((o) => `
+    <tr>
+      <td class="font-mono text-xs text-slate-500">${escapeHtml(o.id.slice(0, 8))}</td>
+      <td class="font-medium">${escapeHtml(o.name)}</td>
+      <td><span class="badge badge-slate">${escapeHtml(o.type)}</span></td>
+      <td>${o.status === 'active' ? '<span class="badge badge-emerald">active</span>' : '<span class="badge badge-slate">archived</span>'}</td>
+      <td class="text-xs text-slate-500" title="${escapeHtml(o.created_at)}">${escapeHtml(relativeTime(o.created_at))}</td>
+    </tr>`).join('');
+  return `
+    <div class="card overflow-hidden">
+      <div class="card-header">
+        <h3 class="card-title">Organizations <span class="text-sm font-normal text-slate-500">(${items.length})</span></h3>
+      </div>
+      <table class="data-table">
+        <thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Status</th><th>Created</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <form id="org-create-form" class="card-body border-t border-slate-200 dark:border-slate-800 grid grid-cols-1 md:grid-cols-[1fr_12rem_auto] gap-2 items-end">
+        <div class="form-row"><label class="form-label text-xs">Имя организации</label><input name="name" type="text" required class="form-input" placeholder="ООО Ромашка" /></div>
+        <div class="form-row"><label class="form-label text-xs">Тип</label>
+          <select name="type" class="form-select">
+            <option value="external_company">external_company</option>
+            <option value="internal_division">internal_division</option>
+            <option value="test">test</option>
+          </select>
+        </div>
+        <button class="btn-primary btn-md">Создать</button>
+      </form>
+    </div>`;
+}
+
+function renderProjectsTable(items, orgs) {
+  const orgName = (id) => orgs.find((o) => o.id === id)?.name ?? id.slice(0, 8);
+  const rows = items.map((p) => `
+    <tr>
+      <td class="font-mono text-xs text-slate-500">${escapeHtml(p.id.slice(0, 8))}</td>
+      <td class="font-medium">${escapeHtml(p.name)}</td>
+      <td>${escapeHtml(orgName(p.organization_id))}</td>
+      <td class="text-xs text-slate-500 truncate max-w-[16rem]">${escapeHtml(p.description ?? '')}</td>
+      <td>${p.status === 'active' ? '<span class="badge badge-emerald">active</span>' : '<span class="badge badge-slate">archived</span>'}</td>
+    </tr>`).join('');
+  const orgOptions = orgs.map((o) => `<option value="${o.id}">${escapeHtml(o.name)}</option>`).join('');
+  return `
+    <div class="card overflow-hidden">
+      <div class="card-header">
+        <h3 class="card-title">Projects <span class="text-sm font-normal text-slate-500">(${items.length})</span></h3>
+      </div>
+      <table class="data-table">
+        <thead><tr><th>ID</th><th>Name</th><th>Organization</th><th>Description</th><th>Status</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <form id="project-create-form" class="card-body border-t border-slate-200 dark:border-slate-800 grid grid-cols-1 md:grid-cols-[14rem_1fr_1fr_auto] gap-2 items-end">
+        <div class="form-row"><label class="form-label text-xs">Организация</label><select name="organization_id" class="form-select" required>${orgOptions}</select></div>
+        <div class="form-row"><label class="form-label text-xs">Имя проекта</label><input name="name" type="text" required class="form-input" placeholder="Бухгалтерия" /></div>
+        <div class="form-row"><label class="form-label text-xs">Описание</label><input name="description" type="text" class="form-input" /></div>
+        <button class="btn-primary btn-md">Создать</button>
+      </form>
+    </div>`;
+}
+
+function renderUsersTable(items, orgs) {
+  const orgName = (id) => id ? (orgs.find((o) => o.id === id)?.name ?? id.slice(0, 8)) : '—';
+  const roleBadge = (role) => {
+    const variant =
+      role === 'super_admin' ? 'badge-rose' :
+      role === 'org_admin' ? 'badge-indigo' :
+      role === 'manager' ? 'badge-sky' :
+      'badge-slate';
+    return `<span class="badge ${variant}">${escapeHtml(role)}</span>`;
+  };
+  const rows = items.map((u) => `
+    <tr>
+      <td class="font-medium">${escapeHtml(u.display_name)}</td>
+      <td class="font-mono text-xs text-slate-500">${escapeHtml(u.email ?? '—')}</td>
+      <td>${escapeHtml(orgName(u.organization_id))}</td>
+      <td>${roleBadge(u.role)}</td>
+      <td>${u.status === 'active' ? '<span class="badge badge-emerald">active</span>' : '<span class="badge badge-rose">blocked</span>'}</td>
+    </tr>`).join('');
+  const orgOptions = '<option value="">(super_admin без организации)</option>' + orgs.map((o) => `<option value="${o.id}">${escapeHtml(o.name)}</option>`).join('');
+  return `
+    <div class="card overflow-hidden">
+      <div class="card-header">
+        <h3 class="card-title">Users <span class="text-sm font-normal text-slate-500">(${items.length})</span></h3>
+      </div>
+      <table class="data-table">
+        <thead><tr><th>Name</th><th>Email</th><th>Organization</th><th>Role</th><th>Status</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <form id="user-create-form" class="card-body border-t border-slate-200 dark:border-slate-800 grid grid-cols-1 md:grid-cols-[1fr_1fr_14rem_10rem_auto] gap-2 items-end">
+        <div class="form-row"><label class="form-label text-xs">Имя</label><input name="display_name" type="text" required class="form-input" /></div>
+        <div class="form-row"><label class="form-label text-xs">Email</label><input name="email" type="email" class="form-input" /></div>
+        <div class="form-row"><label class="form-label text-xs">Организация</label><select name="organization_id" class="form-select">${orgOptions}</select></div>
+        <div class="form-row"><label class="form-label text-xs">Роль</label>
+          <select name="role" class="form-select">
+            <option value="manager">manager</option>
+            <option value="viewer">viewer</option>
+            <option value="org_admin">org_admin</option>
+            <option value="super_admin">super_admin</option>
+          </select>
+        </div>
+        <button class="btn-primary btn-md">Создать</button>
+      </form>
+    </div>`;
 }
 
 // ============================================================

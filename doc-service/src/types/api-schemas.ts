@@ -75,6 +75,9 @@ export const Job = z
       .describe(
         'Дебаг-трасса последнего LLM-вызова при обработке этого job: финальный prompt и сырой ответ модели до парсинга. Заполнено только если парсер реально ходил в LLM.',
       ),
+    organization_id: z.string().uuid(),
+    project_id: z.string().uuid(),
+    created_by_user_id: z.string().uuid().nullable(),
     file_name: z.string(),
     mime_type: z.string(),
     file_size: z.number().int().nonnegative().describe('Размер исходного файла в байтах'),
@@ -104,6 +107,8 @@ export const ExtractedPatchBody = z
 export const ListJobsQuery = z.object({
   status: z.enum(JOB_STATUSES).optional(),
   document_type: DocumentTypeSlugSchema.optional(),
+  organization_id: z.string().uuid().optional(),
+  project_id: z.string().uuid().optional(),
   from: z.string().datetime().optional().describe('ISO 8601, нижняя граница created_at'),
   to: z.string().datetime().optional().describe('ISO 8601, верхняя граница created_at'),
   limit: z.coerce.number().int().min(1).max(200).default(50),

@@ -20,6 +20,7 @@ import { metricsRoutes } from './routes/metrics.js';
 import { settingsRoutes } from './routes/settings.js';
 import { providerSettingsRoutes } from './routes/provider-settings.js';
 import { auditLogRoutes } from './routes/audit-log.js';
+import { tenantRoutes } from './routes/tenants.js';
 import { closeDb } from './db.js';
 import { closeQueue } from './queue.js';
 
@@ -89,6 +90,7 @@ async function main() {
         { name: 'document-types', description: 'Реестр типов документов (CRUD + конфиг парсинга/валидации)' },
         { name: 'provider-settings', description: 'Ключи и URL-ы LLM/OCR провайдеров (Anthropic, OpenAI, Yandex, локальные)' },
         { name: 'audit-log', description: 'История админ-изменений document_types и provider_settings' },
+        { name: 'tenants', description: 'Multi-tenant: organizations / projects / users / access' },
         { name: 'settings', description: 'Снимок настроек и статус LLM-провайдеров' },
         { name: 'health', description: 'Liveness/readiness пробники' },
       ],
@@ -136,6 +138,18 @@ async function main() {
                     description:
                       'JSON-строка, echo обратно в ответе и webhook. Должен парситься JSON.parse.',
                   },
+                  project_id: {
+                    type: 'string',
+                    format: 'uuid',
+                    description:
+                      'Проект, к которому относится этот job. Если не задан — используется default-проект пользователя (для super_admin = System / Default).',
+                  },
+                  organization_id: {
+                    type: 'string',
+                    format: 'uuid',
+                    description:
+                      'Организация. Обычно резолвится из project_id; задавайте явно только если хотите переопределить.',
+                  },
                 },
               },
             },
@@ -164,6 +178,7 @@ async function main() {
   await app.register(documentTypesRoutes, { prefix: '/api/v1' });
   await app.register(providerSettingsRoutes, { prefix: '/api/v1' });
   await app.register(auditLogRoutes, { prefix: '/api/v1' });
+  await app.register(tenantRoutes, { prefix: '/api/v1' });
 
   // --- Operator UI: static files at /ui, redirect / → /ui/ ---
   //
