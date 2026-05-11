@@ -70,7 +70,7 @@ async function main() {
     openapi: {
       openapi: '3.1.0',
       info: {
-        title: 'Big Brother',
+        title: 'parsdocs',
         description:
           'Платформа обработки документов: OCR + извлечение структурированных данных по конфигурируемым типам. Multi-tenant, с локальными и облачными LLM-провайдерами.',
         version: '0.1.0',

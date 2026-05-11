@@ -436,24 +436,39 @@ async function renderJobsList() {
         </a>`,
       })}
 
-      <div class="flex flex-wrap items-center gap-3 mb-4">
-        <select id="filter-status" class="form-select" style="width: auto;">
-          <option value="">Все статусы</option>
-          <option value="pending">Pending</option>
-          <option value="processing">Processing</option>
-          <option value="done">Done</option>
-          <option value="needs_review">Needs review</option>
-          <option value="failed">Failed</option>
-        </select>
-        <select id="filter-type" class="form-select" style="width: auto;">
-          <option value="">Все типы</option>
-          <option value="invoice">invoice</option>
-          <option value="factInvoice">factInvoice</option>
-          <option value="UPD">UPD</option>
-          <option value="TTN">TTN</option>
-          <option value="CMR">CMR</option>
-          <option value="AKT">AKT</option>
-        </select>
+      <div class="flex flex-wrap items-end gap-3 mb-4">
+        <div class="form-row">
+          <label class="form-label text-xs" for="filter-status">Статус</label>
+          <select id="filter-status" class="form-select" style="width: 12rem;">
+            <option value="">Все статусы</option>
+            <option value="pending">Pending</option>
+            <option value="processing">Processing</option>
+            <option value="done">Done</option>
+            <option value="needs_review">Needs review</option>
+            <option value="failed">Failed</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label class="form-label text-xs" for="filter-type">Тип документа</label>
+          <select id="filter-type" class="form-select" style="width: 14rem;">
+            <option value="">Все типы</option>
+            <option value="invoice">invoice — счёт</option>
+            <option value="factInvoice">factInvoice — счёт-фактура</option>
+            <option value="UPD">UPD — УПД</option>
+            <option value="TTN">TTN — транспортная накладная</option>
+            <option value="CMR">CMR — международная</option>
+            <option value="AKT">AKT — акт услуг</option>
+            <option value="payment_order">payment_order — платёжка</option>
+            <option value="commercial_invoice">commercial_invoice</option>
+            <option value="packing_list">packing_list</option>
+            <option value="bill_of_lading">bill_of_lading</option>
+            <option value="customs_declaration">customs_declaration — ГТД</option>
+            <option value="cash_receipt">cash_receipt — кассовый чек</option>
+            <option value="contract">contract — договор</option>
+            <option value="contract_specification">contract_specification</option>
+            <option value="contract_addendum">contract_addendum</option>
+          </select>
+        </div>
         <button id="refresh-btn" class="btn-secondary btn-sm">Обновить</button>
         <span id="auto-refresh-indicator" class="text-xs text-slate-400 hidden">auto-refresh on</span>
       </div>
@@ -2559,6 +2574,12 @@ function renderOcrCard(settings) {
   return `
     <div class="card card-body">
       <h3 class="card-title mb-3">OCR pipeline</h3>
+      <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">
+        Confidence-пороги (от 0.0 до 1.0). Если уверенность OCR-движка выше
+        порога — результат принимается, цепочка останавливается; иначе пробуется
+        следующий движок. <code class="font-mono">needs_review</code> — финальный
+        порог: ниже него job уходит на ручную проверку.
+      </p>
       <dl class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
         <div class="kv-row"><dt class="kv-key">pdf-parse accept</dt><dd class="kv-value">${t.pdf_text}</dd></div>
         <div class="kv-row"><dt class="kv-key">tesseract accept</dt><dd class="kv-value">${t.tesseract}</dd></div>
