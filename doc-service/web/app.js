@@ -15,6 +15,26 @@ const API = '/api/v1';
 const STORAGE = {
   token: 'parsdocs.token',
   dark: 'parsdocs.dark',
+  workspace: 'parsdocs.workspace',  // {organization_id, project_id}
+};
+
+/**
+ * Workspace context — текущий выбранный проект пользователя.
+ * Шарится между views: jobs list использует для фильтра, upload — как
+ * дефолт project_id, document_types и providers пока глобальные.
+ *
+ * Хранится в localStorage и инициализируется при логине из списка
+ * доступных пользователю проектов.
+ */
+const workspace = {
+  get current() {
+    try { return JSON.parse(localStorage.getItem(STORAGE.workspace) ?? 'null'); }
+    catch { return null; }
+  },
+  set current(v) {
+    if (v) localStorage.setItem(STORAGE.workspace, JSON.stringify(v));
+    else localStorage.removeItem(STORAGE.workspace);
+  },
 };
 
 // ============================================================
@@ -132,6 +152,15 @@ function relativeTime(iso) {
   if (diff < 3600) return `${Math.round(diff / 60)}m ago`;
   if (diff < 86400) return `${Math.round(diff / 3600)}h ago`;
   return `${Math.round(diff / 86400)}d ago`;
+}
+
+async function copyToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function escapeHtml(s) {
@@ -284,6 +313,7 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
       return;
     }
     hideLogin();
+    void initWorkspace();
     if (!location.hash) location.hash = '#jobs';
     else route();
   } catch (err) {
@@ -294,10 +324,66 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
 
 document.getElementById('logout-btn').addEventListener('click', () => {
   auth.token = null;
+  workspace.current = null;
   showLogin();
 });
 
 document.getElementById('dark-toggle').addEventListener('click', toggleTheme);
+
+/**
+ * Загружает доступные пользователю проекты и инициализирует workspace
+ * switcher. Если проектов >1 — показывает дропдаун в sidebar. Если
+ * один (типичный manager) — прячет, но устанавливает в storage.
+ * Если ноль — оставляет default System/Default.
+ */
+async function initWorkspace() {
+  let projects;
+  try {
+    const res = await apiJson('/projects');
+    projects = res.items;
+  } catch {
+    return;
+  }
+  if (!projects || projects.length === 0) return;
+
+  const switcher = document.getElementById('workspace-switcher');
+  const select = document.getElementById('workspace-select');
+  if (!switcher || !select) return;
+
+  const current = workspace.current;
+  // Если ничего не выбрано — берём первый из списка как default.
+  if (!current) {
+    workspace.current = {
+      organization_id: projects[0].organization_id,
+      project_id: projects[0].id,
+    };
+  } else if (!projects.find((p) => p.id === current.project_id)) {
+    // Пользователь больше не имеет доступа к сохранённому проекту.
+    workspace.current = {
+      organization_id: projects[0].organization_id,
+      project_id: projects[0].id,
+    };
+  }
+
+  select.innerHTML = projects.map((p) => `
+    <option value="${p.id}" data-org="${p.organization_id}" ${p.id === workspace.current?.project_id ? 'selected' : ''}>${escapeHtml(p.name)}</option>
+  `).join('');
+
+  // Показываем дропдаун только если есть выбор.
+  if (projects.length > 1) {
+    switcher.classList.remove('hidden');
+  }
+
+  select.addEventListener('change', () => {
+    const opt = select.options[select.selectedIndex];
+    workspace.current = {
+      organization_id: opt.dataset.org,
+      project_id: opt.value,
+    };
+    // Перерендериваем текущую view, чтобы фильтр применился.
+    route();
+  });
+}
 
 // ============================================================
 // Router
@@ -386,6 +472,10 @@ async function renderJobsList() {
     const params = new URLSearchParams();
     if (statusEl.value) params.set('status', statusEl.value);
     if (typeEl.value) params.set('document_type', typeEl.value);
+    // Применяем workspace-фильтр если выбран. super_admin без switcher'а
+    // (workspace=null) увидит всё.
+    const ws = workspace.current;
+    if (ws?.project_id) params.set('project_id', ws.project_id);
     params.set('limit', '50');
     try {
       const data = await apiJson(`/jobs?${params.toString()}`);
@@ -759,6 +849,10 @@ function renderUpload() {
     const metaText = formData.get('metadata')?.toString().trim();
     if (hint) form.append('document_hint', hint);
     if (webhook) form.append('webhook_url', webhook);
+    // Workspace из switcher'а → project_id для job'а.
+    const ws = workspace.current;
+    if (ws?.project_id) form.append('project_id', ws.project_id);
+    if (ws?.organization_id) form.append('organization_id', ws.organization_id);
     if (metaText) {
       try { JSON.parse(metaText); }
       catch {
@@ -1958,6 +2052,37 @@ async function renderTenants() {
     } catch (err) { alert(err.message); }
   });
 
+  // Token: generate/rotate. Plaintext возвращается ОДИН РАЗ — показываем
+  // в модальном prompt'е, после закрытия его не вернуть.
+  document.querySelectorAll('[data-token-gen]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const userId = btn.dataset.tokenGen;
+      if (!confirm('Сгенерировать новый токен? Старый перестанет работать.')) return;
+      try {
+        const res = await apiJson(`/users/${encodeURIComponent(userId)}/token`, { method: 'POST' });
+        // Plaintext виден ровно один раз — показываем юзеру с инструкцией скопировать.
+        const copied = await copyToClipboard(res.plaintext);
+        alert(
+          `Personal access token создан${copied ? ' и скопирован в буфер обмена' : ''}:\n\n${res.plaintext}\n\n` +
+          'Сохраните его сейчас — после закрытия этого окна вы его НЕ увидите. ' +
+          'В заголовке Authorization: Bearer <token>.',
+        );
+        renderTenants();
+      } catch (err) { alert(err.message); }
+    });
+  });
+  document.querySelectorAll('[data-token-revoke]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const userId = btn.dataset.tokenRevoke;
+      if (!confirm('Отозвать токен пользователя? После этого его API-запросы будут отклоняться.')) return;
+      try {
+        const res = await api(`/users/${encodeURIComponent(userId)}/token`, { method: 'DELETE' });
+        if (!res.ok && res.status !== 204) throw new Error(`HTTP ${res.status}`);
+        renderTenants();
+      } catch (err) { alert(err.message); }
+    });
+  });
+
   // User create form
   document.getElementById('user-create-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -2056,6 +2181,15 @@ function renderUsersTable(items, orgs) {
       <td>${escapeHtml(orgName(u.organization_id))}</td>
       <td>${roleBadge(u.role)}</td>
       <td>${u.status === 'active' ? '<span class="badge badge-emerald">active</span>' : '<span class="badge badge-rose">blocked</span>'}</td>
+      <td>
+        ${u.has_api_token
+          ? '<span class="badge badge-emerald">token set</span>'
+          : '<span class="badge badge-slate">no token</span>'}
+      </td>
+      <td class="flex gap-1">
+        <button class="btn-secondary btn-xs" data-token-gen="${escapeHtml(u.id)}" title="Сгенерировать новый personal access token">⟳ token</button>
+        ${u.has_api_token ? `<button class="btn-ghost btn-xs" data-token-revoke="${escapeHtml(u.id)}" title="Отозвать">×</button>` : ''}
+      </td>
     </tr>`).join('');
   const orgOptions = '<option value="">(super_admin без организации)</option>' + orgs.map((o) => `<option value="${o.id}">${escapeHtml(o.name)}</option>`).join('');
   return `
@@ -2064,7 +2198,7 @@ function renderUsersTable(items, orgs) {
         <h3 class="card-title">Users <span class="text-sm font-normal text-slate-500">(${items.length})</span></h3>
       </div>
       <table class="data-table">
-        <thead><tr><th>Name</th><th>Email</th><th>Organization</th><th>Role</th><th>Status</th></tr></thead>
+        <thead><tr><th>Name</th><th>Email</th><th>Organization</th><th>Role</th><th>Status</th><th>Token</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
       <form id="user-create-form" class="card-body border-t border-slate-200 dark:border-slate-800 grid grid-cols-1 md:grid-cols-[1fr_1fr_14rem_10rem_auto] gap-2 items-end">
@@ -2280,6 +2414,7 @@ function renderSessionCard() {
 applyTheme();
 if (auth.isAuthed()) {
   hideLogin();
+  void initWorkspace();
   if (!location.hash) location.hash = '#jobs';
   route();
 } else {

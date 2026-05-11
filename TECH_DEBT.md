@@ -59,6 +59,76 @@
 - ✅ **B5 file magic-bytes validation** — пакет `file-type ^19.6`. После сохранения файла читаются magic bytes; если детектируется не из `ACCEPTED_DOCUMENT_MIMES` (PDF/JPEG/PNG/BMP/TIFF/WebP) — 400 и удаление файла. Если detected mime ≠ declared multipart Content-Type — detected становится authoritative (логируется warning). Защита от exe-под-видом-PDF, расширения vs реальный формат, и подобного.
 - ✅ Тесты: `tests/idempotency.spec.ts` (header parsing, unique-violation detector), `tests/magic-bytes.spec.ts` (PDF/PNG/JPEG/BMP/WebP по реальным magic bytes, рейект plaintext/exe, обнаружение mislabelled PDF).
 
+### Phase 3 Day 18 — Multi-tenant фаза 2: tokens + authz + switcher (2026-05-13)
+
+Закрыт spec multi-tenant. Реальные пользовательские токены, гарды ролей,
+переключатель рабочего пространства. Теперь два менеджера в одной
+инсталляции реально не видят документы друг друга.
+
+Personal access tokens:
+- ✅ `users.api_token_hash` с UNIQUE-индексом (миграция 009).
+- ✅ Формат plaintext: `pdpat_<base64url-32-bytes>`. В БД лежит только
+  sha-256 хэш. Plaintext возвращается ровно один раз при генерации.
+- ✅ `POST /users/:id/token` — выдать/ротировать; `DELETE /users/:id/token` —
+  отозвать. Право: super_admin кому угодно, org_admin своим юзерам,
+  пользователь — себе.
+- ✅ `auth.ts` rewriten: bearerAuthHook принимает `API_KEY` (root → system
+  super_admin) ИЛИ personal token (lookup по хэшу). `req.user` —
+  полный контекст с row из БД для downstream authz.
+
+Authorization (`authz.ts`):
+- ✅ Гард-функции: requireSuperAdmin, requireOrgAdmin, requireOrgAccess,
+  requireProjectAccess, requireProjectWrite. Возвращают boolean —
+  caller прерывается по false (статус уже отправлен).
+- ✅ getEffectiveScope — резолвит auto-фильтр по user'у: super_admin
+  видит всё, org_admin — свою орг, manager/viewer — свои проекты.
+
+Routes guards:
+- ✅ Jobs:
+  - POST /jobs → requireProjectWrite (нужен manager+admin к проекту).
+  - GET /jobs/:id → requireProjectAccess (read).
+  - PATCH /jobs/:id/extracted, POST /jobs/:id/reprocess → requireProjectWrite.
+  - GET /jobs → автоматически фильтрует по scope'у пользователя.
+- ✅ Tenants:
+  - GET /organizations, /projects, /users — фильтруются по scope'у.
+  - POST /organizations → requireSuperAdmin.
+  - POST/PUT /projects → requireOrgAdmin своей орг.
+  - POST/PUT /users → super_admin или org_admin своей орг
+    (org_admin не может создать super_admin'а).
+- ✅ Document Types и Provider Settings: write-операции — только super_admin.
+  Read остаётся доступным всем аутентифицированным.
+
+UI:
+- ✅ Workspace switcher в sidebar — дропдаун доступных проектов.
+  Persist в localStorage (`parsdocs.workspace`). При выборе route()
+  перерисовывается — jobs list автоматически фильтруется, новые
+  job'ы создаются с выбранным project_id. Для одного проекта
+  switcher скрыт (нечего переключать).
+- ✅ Token management в Tenants → Users: кнопки «⟳ token» и «×» рядом
+  с каждым юзером. Plaintext-токен попадает в буфер обмена + alert
+  с явным предупреждением «сохраните сейчас, потом не увидите».
+- ✅ Колонка «Token» с badge'ом set / no token.
+
+Acceptance criteria из спеки multi-tenant полностью закрыты:
+- ✅ Каждый document_job связан с organization_id и project_id.
+- ✅ Default org/project для совместимости.
+- ✅ История фильтруется по org/project (бэкенд auto-scope + UI switcher).
+- ✅ super_admin видит все документы.
+- ✅ **Обычный пользователь не видит чужие документы** — теперь enforce'ится.
+- ✅ Архитектура позволяет подключать внешних клиентов: создаём org через UI,
+  добавляем org_admin'а, выдаём ему токен, дальше он сам управляет своими
+  проектами/пользователями.
+
+Открытое (можно отложить, не блокер):
+- Audit log в UI не имеет scope-фильтра по org (бэкенд готов).
+- document_types и provider_settings всё ещё глобальные. Tenant'ить
+  их когда первому клиенту понадобятся свои типы / свой Claude-ключ.
+- Login form не показывает «как залогиниться personal token'ом» —
+  работает прозрачно (тот же ввод bearer), но UX подсказки нет.
+- Tokens не имеют label'а и срока годности — однотокенная модель.
+  Когда понадобится «несколько токенов на одного юзера» (CI vs обычный)
+  — отдельная таблица personal_access_tokens.
+
 ### Phase 3 Day 17 — Multi-tenant фундамент (фаза 1) (2026-05-13)
 
 Заложена структура под обслуживание нескольких клиентов. Минимальный

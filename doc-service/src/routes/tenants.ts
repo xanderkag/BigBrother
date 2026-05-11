@@ -6,6 +6,12 @@ import { projectsRepo } from '../storage/projects.js';
 import { usersRepo } from '../storage/users.js';
 import { ErrorResponse } from '../types/api-schemas.js';
 import { bearerAuthHook } from '../auth.js';
+import {
+  requireSuperAdmin,
+  requireOrgAdmin,
+  requireOrgAccess,
+  getEffectiveScope,
+} from '../authz.js';
 
 /**
  * Multi-tenant API: organizations / projects / users / access.
@@ -153,9 +159,32 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
         response: { 200: OrganizationListResponse, 401: ErrorResponse },
       },
     },
-    async () => {
+    async (req) => {
+      // Видимость организаций: super_admin → все; org_admin → только своя;
+      // manager/viewer → объединение организаций из их проектов.
+      const scope = await getEffectiveScope(req);
       const rows = await organizationsRepo.list();
-      return { items: rows.map((r) => organizationsRepo.toApi(r)) };
+      if (scope.kind === 'all') {
+        return { items: rows.map((r) => organizationsRepo.toApi(r)) };
+      }
+      if (scope.kind === 'org') {
+        return {
+          items: rows
+            .filter((r) => r.id === scope.orgId)
+            .map((r) => organizationsRepo.toApi(r)),
+        };
+      }
+      // projects-scope: достанем org_id из доступных проектов
+      const allowedOrgIds = new Set<string>();
+      if (scope.projectIds.size > 0) {
+        const projs = await projectsRepo.list();
+        for (const p of projs) {
+          if (scope.projectIds.has(p.id)) allowedOrgIds.add(p.organization_id);
+        }
+      }
+      return {
+        items: rows.filter((r) => allowedOrgIds.has(r.id)).map((r) => organizationsRepo.toApi(r)),
+      };
     },
   );
 
@@ -167,10 +196,11 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
         summary: 'Создать организацию (только super_admin)',
         security: [{ bearerAuth: [] }],
         body: OrganizationCreate,
-        response: { 201: OrganizationApi, 401: ErrorResponse },
+        response: { 201: OrganizationApi, 401: ErrorResponse, 403: ErrorResponse },
       },
     },
     async (req, reply) => {
+      if (!requireSuperAdmin(req, reply)) return reply;
       const row = await organizationsRepo.create(req.body);
       reply.code(201);
       return organizationsRepo.toApi(row);
@@ -182,14 +212,15 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
     {
       schema: {
         tags: ['tenants'],
-        summary: 'Изменить организацию',
+        summary: 'Изменить организацию (super_admin или org_admin своей)',
         security: [{ bearerAuth: [] }],
         params: OrgIdParam,
         body: OrganizationPatch,
-        response: { 200: OrganizationApi, 401: ErrorResponse, 404: ErrorResponse },
+        response: { 200: OrganizationApi, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse },
       },
     },
     async (req, reply) => {
+      if (!requireOrgAdmin(req, reply, req.params.id)) return reply;
       const row = await organizationsRepo.update(req.params.id, req.body);
       if (!row) {
         reply.code(404);
@@ -212,7 +243,13 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
       },
     },
     async (req) => {
-      const rows = await projectsRepo.list(req.query.organization_id);
+      const scope = await getEffectiveScope(req);
+      let rows = await projectsRepo.list(req.query.organization_id);
+      if (scope.kind === 'org') {
+        rows = rows.filter((r) => r.organization_id === scope.orgId);
+      } else if (scope.kind === 'projects') {
+        rows = rows.filter((r) => scope.projectIds.has(r.id));
+      }
       return { items: rows.map((r) => projectsRepo.toApi(r)) };
     },
   );
@@ -222,14 +259,14 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
     {
       schema: {
         tags: ['tenants'],
-        summary: 'Создать проект',
+        summary: 'Создать проект (super_admin или org_admin своей орг)',
         security: [{ bearerAuth: [] }],
         body: ProjectCreate,
-        response: { 201: ProjectApi, 400: ErrorResponse, 401: ErrorResponse },
+        response: { 201: ProjectApi, 400: ErrorResponse, 401: ErrorResponse, 403: ErrorResponse },
       },
     },
     async (req, reply) => {
-      // Проверяем что org существует — иначе FK-error будет невнятный.
+      if (!requireOrgAdmin(req, reply, req.body.organization_id)) return reply;
       const org = await organizationsRepo.findById(req.body.organization_id);
       if (!org) {
         reply.code(400);
@@ -250,10 +287,17 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
         security: [{ bearerAuth: [] }],
         params: ProjectIdParam,
         body: ProjectPatch,
-        response: { 200: ProjectApi, 401: ErrorResponse, 404: ErrorResponse },
+        response: { 200: ProjectApi, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse },
       },
     },
     async (req, reply) => {
+      // org_admin своего org может править проект; super_admin — любой.
+      const existing = await projectsRepo.findById(req.params.id);
+      if (!existing) {
+        reply.code(404);
+        return { error: 'project not found' };
+      }
+      if (!requireOrgAdmin(req, reply, existing.organization_id)) return reply;
       const row = await projectsRepo.update(req.params.id, req.body);
       if (!row) {
         reply.code(404);
@@ -276,7 +320,14 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
       },
     },
     async (req) => {
-      const rows = await usersRepo.list(req.query.organization_id);
+      const scope = await getEffectiveScope(req);
+      let rows = await usersRepo.list(req.query.organization_id);
+      if (scope.kind === 'org') {
+        rows = rows.filter((r) => r.organization_id === scope.orgId);
+      } else if (scope.kind === 'projects') {
+        // manager/viewer не должен видеть юзеров вообще — это admin-функция
+        rows = [];
+      }
       return { items: rows.map((r) => usersRepo.toApi(r)) };
     },
   );
@@ -286,15 +337,31 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
     {
       schema: {
         tags: ['tenants'],
-        summary: 'Создать пользователя',
+        summary: 'Создать пользователя (super_admin или org_admin)',
         description:
-          'Создаёт пользователя в БД. Per-user-токены не выдаются автоматически в этой фазе — единый Bearer API_KEY всё ещё маппится в системного super_admin. Поле api_token_hash готово к будущей реализации personal access tokens.',
+          'super_admin может создать кого угодно. org_admin может создать только пользователя своей организации (с ролью не выше org_admin).',
         security: [{ bearerAuth: [] }],
         body: UserCreate,
-        response: { 201: UserApi, 401: ErrorResponse },
+        response: { 201: UserApi, 401: ErrorResponse, 403: ErrorResponse },
       },
     },
     async (req, reply) => {
+      const user = req.user;
+      if (!user) {
+        reply.code(401);
+        return { error: 'auth required' };
+      }
+      // super_admin → всё. org_admin → только своя орг + роль не super_admin.
+      if (!user.isSuperAdmin) {
+        if (user.role !== 'org_admin' || user.organization_id !== req.body.organization_id) {
+          reply.code(403);
+          return { error: 'org_admin of target organization required' };
+        }
+        if (req.body.role === 'super_admin') {
+          reply.code(403);
+          return { error: 'cannot create super_admin' };
+        }
+      }
       const row = await usersRepo.create(req.body);
       reply.code(201);
       return usersRepo.toApi(row);
@@ -310,10 +377,27 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
         security: [{ bearerAuth: [] }],
         params: UserIdParam,
         body: UserPatch,
-        response: { 200: UserApi, 401: ErrorResponse, 404: ErrorResponse },
+        response: { 200: UserApi, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse },
       },
     },
     async (req, reply) => {
+      const existing = await usersRepo.findById(req.params.id);
+      if (!existing) {
+        reply.code(404);
+        return { error: 'user not found' };
+      }
+      const user = req.user;
+      if (!user) {
+        reply.code(401);
+        return { error: 'auth required' };
+      }
+      // super_admin меняет всех. org_admin — только своих юзеров.
+      if (!user.isSuperAdmin) {
+        if (user.role !== 'org_admin' || existing.organization_id !== user.organization_id) {
+          reply.code(403);
+          return { error: 'cannot edit user of another organization' };
+        }
+      }
       const row = await usersRepo.update(req.params.id, req.body);
       if (!row) {
         reply.code(404);
@@ -361,6 +445,99 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
       const row = await usersRepo.grantAccess(req.body);
       reply.code(201);
       return usersRepo.toAccessApi(row);
+    },
+  );
+
+  // --- Personal access tokens ---
+
+  const TokenRegenerateResponse = z.object({
+    plaintext: z.string().describe('Plaintext-токен. Виден ровно один раз — сохраните его.'),
+    user_id: z.string().uuid(),
+  });
+
+  r.post(
+    '/users/:id/token',
+    {
+      schema: {
+        tags: ['tenants'],
+        summary: 'Сгенерировать или ротировать personal access token',
+        description:
+          'Возвращает plaintext-токен ровно ОДИН РАЗ. После ответа сервер хранит только sha-256 хэш. ' +
+          'Если у юзера уже был токен — он автоматически инвалидируется. Использовать так: ' +
+          '`Authorization: Bearer pdpat_...` в API-запросах.',
+        security: [{ bearerAuth: [] }],
+        params: UserIdParam,
+        response: {
+          200: TokenRegenerateResponse,
+          401: ErrorResponse,
+          403: ErrorResponse,
+          404: ErrorResponse,
+        },
+      },
+    },
+    async (req, reply) => {
+      const existing = await usersRepo.findById(req.params.id);
+      if (!existing) {
+        reply.code(404);
+        return { error: 'user not found' };
+      }
+      const me = req.user;
+      if (!me) {
+        reply.code(401);
+        return { error: 'auth required' };
+      }
+      // Право выдать токен: super_admin кому угодно; org_admin — своим
+      // юзерам; обычный юзер — только себе.
+      const canIssue =
+        me.isSuperAdmin ||
+        (me.role === 'org_admin' && existing.organization_id === me.organization_id) ||
+        me.id === existing.id;
+      if (!canIssue) {
+        reply.code(403);
+        return { error: 'cannot issue token for this user' };
+      }
+      const result = await usersRepo.regenerateToken(req.params.id);
+      if (!result) {
+        reply.code(404);
+        return { error: 'user not found' };
+      }
+      return { plaintext: result.plaintext, user_id: result.user.id };
+    },
+  );
+
+  r.delete(
+    '/users/:id/token',
+    {
+      schema: {
+        tags: ['tenants'],
+        summary: 'Отозвать personal access token (если был)',
+        security: [{ bearerAuth: [] }],
+        params: UserIdParam,
+        response: { 204: z.null(), 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse },
+      },
+    },
+    async (req, reply) => {
+      const existing = await usersRepo.findById(req.params.id);
+      if (!existing) {
+        reply.code(404);
+        return { error: 'user not found' };
+      }
+      const me = req.user;
+      if (!me) {
+        reply.code(401);
+        return { error: 'auth required' };
+      }
+      const canRevoke =
+        me.isSuperAdmin ||
+        (me.role === 'org_admin' && existing.organization_id === me.organization_id) ||
+        me.id === existing.id;
+      if (!canRevoke) {
+        reply.code(403);
+        return { error: 'cannot revoke token for this user' };
+      }
+      await usersRepo.clearToken(req.params.id);
+      reply.code(204);
+      return null;
     },
   );
 

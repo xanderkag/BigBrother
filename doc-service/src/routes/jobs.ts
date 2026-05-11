@@ -24,6 +24,11 @@ import { runDocumentPipeline } from '../pipeline/orchestrator.js';
 import { combineConfidence } from '../pipeline/quality.js';
 import { projectsRepo } from '../storage/projects.js';
 import { SYSTEM_DEFAULT_ORG_ID, SYSTEM_DEFAULT_PROJECT_ID } from '../auth.js';
+import {
+  getEffectiveScope,
+  requireProjectAccess,
+  requireProjectWrite,
+} from '../authz.js';
 
 function isValidWebhookUrl(value: string): boolean {
   try {
@@ -263,6 +268,12 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         scopeProjectId = req.user?.default_project_id ?? SYSTEM_DEFAULT_PROJECT_ID;
       }
 
+      // --- Authz: проверяем что у пользователя есть write-доступ к проекту ---
+      if (!(await requireProjectWrite(req, reply, scopeProjectId))) {
+        await unlink(savedFile.absolutePath).catch(() => undefined);
+        return reply;
+      }
+
       let job;
       try {
         job = await jobsRepo.create({
@@ -333,6 +344,7 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         reply.code(404);
         return { error: 'job not found' };
       }
+      if (!(await requireProjectAccess(req, reply, job.project_id))) return reply;
       return jobsRepo.toApi(job);
     },
   );
@@ -367,6 +379,7 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         reply.code(404);
         return { error: 'job not found' };
       }
+      if (!(await requireProjectWrite(req, reply, job.project_id))) return reply;
 
       const sanitizedBody: Record<string, unknown> = { ...req.body };
       delete sanitizedBody._issues;
@@ -423,6 +436,7 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         reply.code(404);
         return { error: 'job not found' };
       }
+      if (!(await requireProjectWrite(req, reply, job.project_id))) return reply;
       // Нельзя перепрогонять in-flight — параллельный воркер может писать
       // в те же поля. Возвращаем 409 чтобы пользователь подождал.
       if (job.status === 'pending' || job.status === 'processing') {
@@ -505,7 +519,35 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
       },
     },
     async (req) => {
-      const items = await jobsRepo.list(req.query);
+      // Автоматический tenant-скоуп: super_admin видит всё (или то, что
+      // явно зафильтровано client'ом), org_admin — только своя орг,
+      // manager/viewer — только свои проекты. Клиентский фильтр (если
+      // задан query-параметром) пересекается со scope'ом юзера —
+      // нельзя «попросить чужой проект» в обход authz.
+      const scope = await getEffectiveScope(req);
+      const filters = { ...req.query };
+      if (scope.kind === 'org') {
+        filters.organization_id = filters.organization_id ?? scope.orgId;
+        // Защита от попытки спросить другую организацию.
+        if (filters.organization_id !== scope.orgId) {
+          return { items: [], limit: req.query.limit, offset: req.query.offset };
+        }
+      } else if (scope.kind === 'projects') {
+        if (scope.projectIds.size === 0) {
+          return { items: [], limit: req.query.limit, offset: req.query.offset };
+        }
+        // Если клиент уточнил project_id — проверяем что он в whitelist'е.
+        if (filters.project_id && !scope.projectIds.has(filters.project_id)) {
+          return { items: [], limit: req.query.limit, offset: req.query.offset };
+        }
+        // Если без уточнения — берём первый из доступных (компромисс:
+        // на manager'е без явного project_id показываем «один проект»;
+        // workspace switcher на UI выберет нужный).
+        if (!filters.project_id) {
+          filters.project_id = scope.projectIds.values().next().value as string;
+        }
+      }
+      const items = await jobsRepo.list(filters);
       return {
         items: items.map((j) => jobsRepo.toApi(j)),
         limit: req.query.limit,

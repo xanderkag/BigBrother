@@ -7,6 +7,7 @@ import { auditLogRepo } from '../storage/audit-log.js';
 import { dynamicLlm } from '../pipeline/llm/provider-resolver.js';
 import { ErrorResponse } from '../types/api-schemas.js';
 import { bearerAuthHook } from '../auth.js';
+import { requireSuperAdmin } from '../authz.js';
 import { config } from '../config.js';
 
 /**
@@ -147,6 +148,7 @@ export async function providerSettingsRoutes(app: FastifyInstance): Promise<void
       },
     },
     async (req, reply) => {
+      if (!requireSuperAdmin(req, reply)) return reply;
       const before = await providerSettingsRepo.findById(req.body.id);
       const body = {
         ...req.body,
@@ -185,6 +187,7 @@ export async function providerSettingsRoutes(app: FastifyInstance): Promise<void
       },
     },
     async (req, reply) => {
+      if (!requireSuperAdmin(req, reply)) return reply;
       const before = await providerSettingsRepo.findById(req.params.id);
       if (!before) {
         reply.code(404);
@@ -226,6 +229,7 @@ export async function providerSettingsRoutes(app: FastifyInstance): Promise<void
       },
     },
     async (req, reply) => {
+      if (!requireSuperAdmin(req, reply)) return reply;
       const before = await providerSettingsRepo.findById(req.params.id);
       if (!before) {
         reply.code(404);

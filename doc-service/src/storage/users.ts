@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from 'node:crypto';
 import { db } from '../db.js';
 
 /**
@@ -175,6 +176,120 @@ class UsersRepo {
     return (rowCount ?? 0) > 0;
   }
 
+  // --- Personal access tokens ---
+  //
+  // Однотокенная модель: у каждого пользователя ровно один personal access
+  // token (сохраняется хэш в users.api_token_hash, plaintext возвращается
+  // вызывающему ровно один раз). Если нужно ротировать — генерируется
+  // новый и старый автоматически перестаёт работать.
+  //
+  // Формат plaintext: `pdpat_<base64url-32-bytes>`. Префикс `pdpat_`
+  // (parsdocs personal access token) даёт визуальный маркер «это наш
+  // токен», помогает в логах и не конфликтует с глобальным API_KEY.
+
+  /**
+   * Сгенерировать новый токен для пользователя. Возвращает plaintext —
+   * это единственный момент, когда он виден; следующий запрос увидит
+   * только хэш.
+   */
+  async regenerateToken(userId: string): Promise<{ plaintext: string; user: UserRow } | null> {
+    const plaintext = `pdpat_${randomBytes(32).toString('base64url')}`;
+    const hash = hashToken(plaintext);
+    const { rows } = await db.query<UserRow>(
+      `UPDATE users SET api_token_hash = $1 WHERE id = $2 RETURNING *`,
+      [hash, userId],
+    );
+    if (rows.length === 0) return null;
+    return { plaintext, user: rows[0]! };
+  }
+
+  /** Полностью очистить токен (revoke). */
+  async clearToken(userId: string): Promise<UserRow | null> {
+    const { rows } = await db.query<UserRow>(
+      `UPDATE users SET api_token_hash = NULL WHERE id = $1 RETURNING *`,
+      [userId],
+    );
+    return rows[0] ?? null;
+  }
+
+  /** Найти юзера по plaintext-токену (через хэш). null если токен невалиден. */
+  async findByToken(plaintext: string): Promise<UserRow | null> {
+    const hash = hashToken(plaintext);
+    const { rows } = await db.query<UserRow>(
+      `SELECT * FROM users WHERE api_token_hash = $1 AND status = 'active'`,
+      [hash],
+    );
+    return rows[0] ?? null;
+  }
+
+  /** Bump last_seen_at — называется из auth-хука после успешной аутентификации. */
+  async touchLastSeen(userId: string): Promise<void> {
+    await db.query(`UPDATE users SET last_seen_at = now() WHERE id = $1`, [userId]);
+  }
+
+  // --- Access scope резолверы (для guards в routes) ---
+
+  /**
+   * Полный набор project_id, к которым у пользователя есть доступ.
+   * Для super_admin возвращает `null` (sentinel = «все проекты»).
+   * Для org_admin — все проекты его организации.
+   * Для manager/viewer — то что лежит в user_project_access.
+   */
+  async getAccessibleProjectIds(user: UserRow): Promise<Set<string> | null> {
+    if (user.role === 'super_admin') return null;
+    if (user.role === 'org_admin' && user.organization_id) {
+      const { rows } = await db.query<{ id: string }>(
+        `SELECT id FROM projects WHERE organization_id = $1`,
+        [user.organization_id],
+      );
+      return new Set(rows.map((r) => r.id));
+    }
+    const { rows } = await db.query<{ project_id: string }>(
+      `SELECT project_id FROM user_project_access WHERE user_id = $1`,
+      [user.id],
+    );
+    return new Set(rows.map((r) => r.project_id));
+  }
+
+  /**
+   * Доступные организации. super_admin → null (все); org_admin → его одна;
+   * остальные — собирается из их project-доступов через JOIN.
+   */
+  async getAccessibleOrgIds(user: UserRow): Promise<Set<string> | null> {
+    if (user.role === 'super_admin') return null;
+    if (user.organization_id) return new Set([user.organization_id]);
+    const { rows } = await db.query<{ organization_id: string }>(
+      `SELECT DISTINCT organization_id FROM user_project_access WHERE user_id = $1`,
+      [user.id],
+    );
+    return new Set(rows.map((r) => r.organization_id));
+  }
+
+  /**
+   * Проектная роль (admin/manager/viewer) текущего пользователя в
+   * конкретном проекте. Возвращает null если доступа нет.
+   * super_admin/org_admin (на своём org'е) считаются 'admin'.
+   */
+  async getProjectRole(
+    user: UserRow,
+    projectId: string,
+  ): Promise<ProjectAccessRole | null> {
+    if (user.role === 'super_admin') return 'admin';
+    if (user.role === 'org_admin' && user.organization_id) {
+      const { rows } = await db.query<{ organization_id: string }>(
+        `SELECT organization_id FROM projects WHERE id = $1`,
+        [projectId],
+      );
+      if (rows[0]?.organization_id === user.organization_id) return 'admin';
+      return null;
+    }
+    const { rows } = await db.query<{ role: ProjectAccessRole }>(
+      `SELECT role FROM user_project_access WHERE user_id = $1 AND project_id = $2`,
+      [user.id, projectId],
+    );
+    return rows[0]?.role ?? null;
+  }
+
   toApi(row: UserRow) {
     return {
       id: row.id,
@@ -200,6 +315,11 @@ class UsersRepo {
       created_at: row.created_at.toISOString(),
     };
   }
+}
+
+/** sha-256 over plaintext token. Хэш — то что лежит в БД. */
+export function hashToken(plaintext: string): string {
+  return createHash('sha256').update(plaintext).digest('hex');
 }
 
 export const usersRepo = new UsersRepo();

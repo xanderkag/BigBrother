@@ -7,6 +7,7 @@ import { jobsRepo } from '../storage/jobs.js';
 import { documentTypeResolver } from '../pipeline/document-type-resolver.js';
 import { ErrorResponse, Job } from '../types/api-schemas.js';
 import { bearerAuthHook } from '../auth.js';
+import { requireSuperAdmin } from '../authz.js';
 
 /**
  * Document Type Registry — admin CRUD.
@@ -152,6 +153,7 @@ export async function documentTypesRoutes(app: FastifyInstance): Promise<void> {
       },
     },
     async (req, reply) => {
+      if (!requireSuperAdmin(req, reply)) return reply;
       const existing = await documentTypesRepo.findBySlug(req.body.slug);
       if (existing) {
         reply.code(409);
@@ -193,6 +195,7 @@ export async function documentTypesRoutes(app: FastifyInstance): Promise<void> {
       },
     },
     async (req, reply) => {
+      if (!requireSuperAdmin(req, reply)) return reply;
       const before = await documentTypesRepo.findBySlug(req.params.slug);
       if (!before) {
         reply.code(404);
@@ -239,6 +242,7 @@ export async function documentTypesRoutes(app: FastifyInstance): Promise<void> {
       },
     },
     async (req, reply) => {
+      if (!requireSuperAdmin(req, reply)) return reply;
       const row = await documentTypesRepo.findBySlug(req.params.slug);
       if (!row) {
         reply.code(404);

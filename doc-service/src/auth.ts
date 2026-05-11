@@ -1,38 +1,38 @@
 import type { FastifyReply, FastifyRequest, onRequestHookHandler } from 'fastify';
 import { config } from './config.js';
 import { SYSTEM_ORG_ID, SYSTEM_USER_ID, DEFAULT_PROJECT_ID } from './storage/tenant-constants.js';
-import type { UserRole } from './storage/users.js';
+import { usersRepo, type UserRole, type UserRow } from './storage/users.js';
 
 /**
- * Fastify `onRequest` hook что enforce'ит Bearer-token auth и заполняет
- * `req.user` — контекст текущего пользователя для downstream-кода.
+ * Auth + req.user. Multi-tenant фаза 2:
  *
- * Сегодня (фаза 1 multi-tenant):
- *   - Один общий Bearer-токен (`API_KEY` из env) маппится в системного
- *     super_admin (`SYSTEM_USER_ID`). Этот пользователь видит всё.
- *   - В dev (`API_KEY` пустой) auth полностью выключен, но `req.user`
- *     всё равно проставляется в системный — чтобы downstream-логика
- *     scope'инга работала единообразно.
+ *   1. Глобальный `API_KEY` из env (если задан) маппится в системного
+ *      super_admin'а (SYSTEM_USER_ID). Это «root key» оператора платформы.
+ *      Полезен при разворачивании, миграциях, recovery — не зависит от БД
+ *      и работает даже если все personal tokens случайно удалили.
  *
- * Что планируется в следующих фазах:
- *   - Personal access tokens: каждый user имеет свой токен (sha256 хэш
- *     в `users.api_token_hash`). Текущий API_KEY останется как root-ключ
- *     для super_admin'а.
- *   - Session cookies + login form для UI.
- *   - OAuth для интеграций (Google Workspace, Azure AD).
+ *   2. Personal access tokens пользователей. Plaintext начинается с
+ *      `pdpat_`; хэш sha-256 лежит в `users.api_token_hash`. Auth-хук
+ *      ищет user'а по хэшу.
  *
- * Mounted on `/api/v1/*`. `/health`, `/ready`, `/metrics` — публичные.
+ *   3. Если `API_KEY` пустой и токена нет — dev-mode: req.user = system
+ *      super_admin (auth выключен).
+ *
+ * Что в req.user:
+ *   - id, role, organization_id, default_project_id, isSuperAdmin —
+ *     базовый контекст для downstream.
+ *   - row — полная пользовательская запись (если из БД); полезна для
+ *     authz-проверок дальше (getAccessibleProjectIds и т.п.).
  */
 
 export type AuthUser = {
   id: string;
   role: UserRole;
-  /** Организация пользователя; для super_admin — null. */
   organization_id: string | null;
-  /** Дефолтный проект — куда падают job'ы без явного указания project_id. */
   default_project_id: string;
-  /** Шорткат для downstream-проверок: `if (req.user.isSuperAdmin) ...` */
   isSuperAdmin: boolean;
+  /** Полная row из БД (null для системного fallback'а). */
+  row: UserRow | null;
 };
 
 declare module 'fastify' {
@@ -41,22 +41,30 @@ declare module 'fastify' {
   }
 }
 
-/**
- * Системный пользователь — единственный известный «реальный» юзер сейчас.
- * Когда мы реализуем personal tokens, эта функция вернёт **резолверного**
- * юзера (по token hash или session cookie), а не константу.
- */
-function getCurrentUser(_req: FastifyRequest): AuthUser {
+/** Виртуальный системный super_admin для fallback'ов и API_KEY-аутентификации. */
+function systemSuperAdmin(row: UserRow | null = null): AuthUser {
   return {
     id: SYSTEM_USER_ID,
     role: 'super_admin',
-    organization_id: null, // super_admin не привязан к одной org
+    organization_id: null,
     default_project_id: DEFAULT_PROJECT_ID,
     isSuperAdmin: true,
+    row,
   };
 }
 
-/** Default project для job'ов / эндпоинтов без явного project_id. */
+function userToAuth(row: UserRow): AuthUser {
+  return {
+    id: row.id,
+    role: row.role,
+    organization_id: row.organization_id,
+    default_project_id: DEFAULT_PROJECT_ID, // TODO: вывести из user_project_access или сохранить как preference
+    isSuperAdmin: row.role === 'super_admin',
+    row,
+  };
+}
+
+/** Default project для job'ов без явного scope. */
 export const SYSTEM_DEFAULT_PROJECT_ID = DEFAULT_PROJECT_ID;
 export const SYSTEM_DEFAULT_ORG_ID = SYSTEM_ORG_ID;
 
@@ -64,29 +72,47 @@ export const bearerAuthHook: onRequestHookHandler = async (
   req: FastifyRequest,
   reply: FastifyReply,
 ): Promise<void> => {
+  const provided = extractBearerToken(req.headers.authorization);
   const expected = config.apiKey;
+
+  // dev-mode без auth — req.user = system super_admin
   if (!expected) {
-    // dev mode — auth выключен, но контекст пользователя проставляем
-    // (чтобы scope-логика на downstream была однотипной).
-    req.user = getCurrentUser(req);
+    req.user = systemSuperAdmin();
     return;
   }
 
-  const provided = extractBearerToken(req.headers.authorization);
   if (provided === null) {
     reply.code(401).send({ error: 'Authorization: Bearer <token> required' });
     return;
   }
-  if (!constantTimeEqual(provided, expected)) {
-    reply.code(401).send({ error: 'invalid api key' });
+
+  // Path 1: глобальный API_KEY → super_admin
+  if (constantTimeEqual(provided, expected)) {
+    req.user = systemSuperAdmin();
     return;
   }
 
-  // Авторизация прошла — заполняем user context.
-  req.user = getCurrentUser(req);
+  // Path 2: personal access token. Префикс pdpat_ обязателен — это
+  // защита от case'а когда у админа просто опечатка в API_KEY и мы
+  // случайно начали бы хэшировать и искать в users каждый чужой запрос.
+  if (provided.startsWith('pdpat_')) {
+    try {
+      const user = await usersRepo.findByToken(provided);
+      if (user) {
+        req.user = userToAuth(user);
+        // Touch last_seen асинхронно — не ждём, незачем блокировать запрос.
+        void usersRepo.touchLastSeen(user.id).catch(() => undefined);
+        return;
+      }
+    } catch (err) {
+      req.log.warn({ err }, 'personal token lookup failed');
+      // fallthrough → 401
+    }
+  }
+
+  reply.code(401).send({ error: 'invalid api key' });
 };
 
-/** Returns the raw token after `Bearer `, or `null` if the header is absent/malformed. */
 export function extractBearerToken(header: string | string[] | undefined): string | null {
   if (typeof header !== 'string') return null;
   const m = /^Bearer\s+(\S.*)$/i.exec(header);
