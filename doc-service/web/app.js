@@ -755,24 +755,37 @@ async function renderJobDetail(jobId) {
 // Upload
 // ============================================================
 
+/**
+ * Bulk upload — кидаем папку или сразу N файлов, грузим параллельно с
+ * ограничением в 3 одновременно. Каждый файл — своя per-row строка с
+ * прогрессом / статусом / ссылкой на созданный job.
+ *
+ * Под капотом: один common-формы (hint / webhook / metadata) применяется
+ * ко всем файлам, project_id берётся из workspace switcher'а. Если
+ * админ загружает 50 счетов одного типа на тест prompt'а — это самый
+ * быстрый способ собрать данные для Field coverage.
+ */
+const UPLOAD_CONCURRENCY = 3;
+
 function renderUpload() {
   setView(`
     <div class="page-narrow">
-      ${pageHeader({ title: 'Upload', subtitle: 'Загрузить документ на обработку' })}
+      ${pageHeader({ title: 'Upload', subtitle: 'Загрузить один или несколько документов на обработку' })}
 
-      <form id="upload-form" class="space-y-5">
+      <div class="space-y-5">
         <div class="card card-body-lg">
           <div id="dropzone" class="dropzone border-2 border-dashed border-slate-300 dark:border-slate-700 rounded-xl p-10 text-center cursor-pointer hover:border-indigo-400 dark:hover:border-indigo-600 transition">
-            <input type="file" id="file-input" class="hidden" accept=".pdf,.jpg,.jpeg,.png,.bmp,.tif,.tiff" />
+            <input type="file" id="file-input" class="hidden" multiple accept=".pdf,.jpg,.jpeg,.png,.bmp,.tif,.tiff" />
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-12 h-12 mx-auto mb-3 text-slate-400"><path d="M11.47 1.72a.75.75 0 0 1 1.06 0l3 3a.75.75 0 0 1-1.06 1.06l-1.72-1.72V7.5h-1.5V4.06L9.53 5.78a.75.75 0 0 1-1.06-1.06l3-3ZM11.25 7.5V15a.75.75 0 0 0 1.5 0V7.5h3.75a3 3 0 0 1 3 3v9a3 3 0 0 1-3 3h-9a3 3 0 0 1-3-3v-9a3 3 0 0 1 3-3h3.75Z"/></svg>
             <p id="dropzone-text" class="text-sm text-slate-600 dark:text-slate-400">
-              Перетащи файл сюда или <span class="text-indigo-600 dark:text-indigo-400 font-medium">кликни чтобы выбрать</span>
+              Перетащи один или несколько файлов (или папку) сюда или <span class="text-indigo-600 dark:text-indigo-400 font-medium">кликни чтобы выбрать</span>
             </p>
-            <p class="text-xs text-slate-400 mt-1">PDF, JPG, PNG, BMP, TIFF · до 50 МБ</p>
+            <p class="text-xs text-slate-400 mt-1">PDF, JPG, PNG, BMP, TIFF · до 50 МБ на файл · до ${UPLOAD_CONCURRENCY} параллельно</p>
           </div>
         </div>
 
-        <div class="card card-body-lg">
+        <form id="upload-form" class="card card-body-lg space-y-4">
+          <p class="text-xs text-slate-500 dark:text-slate-400">Общие параметры применяются ко всем выбранным файлам.</p>
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div class="form-row">
               <label class="form-label">Document hint <span class="text-slate-400 font-normal">(опционально)</span></label>
@@ -784,6 +797,15 @@ function renderUpload() {
                 <option value="TTN">TTN</option>
                 <option value="CMR">CMR</option>
                 <option value="AKT">AKT</option>
+                <option value="payment_order">payment_order</option>
+                <option value="commercial_invoice">commercial_invoice</option>
+                <option value="packing_list">packing_list</option>
+                <option value="bill_of_lading">bill_of_lading</option>
+                <option value="customs_declaration">customs_declaration</option>
+                <option value="cash_receipt">cash_receipt</option>
+                <option value="contract">contract</option>
+                <option value="contract_specification">contract_specification</option>
+                <option value="contract_addendum">contract_addendum</option>
               </select>
             </div>
             <div class="form-row">
@@ -792,40 +814,185 @@ function renderUpload() {
             </div>
           </div>
 
-          <div class="form-row mt-4">
+          <div class="form-row">
             <label class="form-label">Metadata JSON <span class="text-slate-400 font-normal">(опционально)</span></label>
-            <textarea name="metadata" rows="3" placeholder='{"my_id": "X-123"}' class="form-textarea"></textarea>
-            <p class="form-help">Произвольный JSON; вернётся как есть в результате и webhook'е. Макс 64 KB.</p>
+            <textarea name="metadata" rows="2" placeholder='{"batch": "test-2026-05"}' class="form-textarea"></textarea>
+            <p class="form-help">Применяется ко всем файлам. Echo обратно в job result и webhook.</p>
           </div>
+        </form>
+
+        <!-- Очередь файлов -->
+        <div id="queue-section" class="card overflow-hidden hidden">
+          <div class="card-header">
+            <h3 class="card-title">Файлы <span id="queue-counter" class="text-sm font-normal text-slate-500"></span></h3>
+            <div class="flex items-center gap-2">
+              <button id="clear-done-btn" class="btn-ghost btn-xs" style="display:none">Убрать готовые</button>
+              <button id="start-btn" type="button" class="btn-primary btn-sm">Загрузить</button>
+            </div>
+          </div>
+          <div id="queue-list"></div>
         </div>
 
         <p id="upload-error" class="hidden form-error"></p>
-
-        <div class="flex items-center justify-end">
-          <button id="submit-btn" type="submit" disabled class="btn-primary btn-md">Загрузить</button>
-        </div>
-      </form>
+      </div>
     </div>
   `);
 
   const dropzone = document.getElementById('dropzone');
   const fileInput = document.getElementById('file-input');
   const dropzoneText = document.getElementById('dropzone-text');
-  const submitBtn = document.getElementById('submit-btn');
+  const queueSection = document.getElementById('queue-section');
+  const queueList = document.getElementById('queue-list');
+  const queueCounter = document.getElementById('queue-counter');
+  const startBtn = document.getElementById('start-btn');
+  const clearDoneBtn = document.getElementById('clear-done-btn');
   const errEl = document.getElementById('upload-error');
-  let selectedFile = null;
 
-  function showFile(f) {
-    selectedFile = f;
-    dropzoneText.innerHTML = `
-      <span class="text-slate-700 dark:text-slate-300 font-medium">${escapeHtml(f.name)}</span><br>
-      <span class="text-xs text-slate-500">${(f.size / 1024).toFixed(1)} KB · ${escapeHtml(f.type || 'unknown')}</span>`;
-    submitBtn.disabled = false;
+  // Очередь: каждый item = { id, file, status, jobId?, error? }
+  // status: 'queued' | 'uploading' | 'done' | 'failed'
+  const queue = [];
+  let nextId = 1;
+
+  const ACCEPTED_EXT = /\.(pdf|jpg|jpeg|png|bmp|tif|tiff)$/i;
+
+  function addFiles(files) {
+    let added = 0;
+    for (const f of files) {
+      if (!ACCEPTED_EXT.test(f.name)) continue; // молча пропускаем .docx, .xlsx и пр.
+      queue.push({ id: nextId++, file: f, status: 'queued' });
+      added += 1;
+    }
+    if (added > 0) {
+      queueSection.classList.remove('hidden');
+      renderQueue();
+    }
   }
 
+  function renderQueue() {
+    const total = queue.length;
+    const done = queue.filter((q) => q.status === 'done').length;
+    const failed = queue.filter((q) => q.status === 'failed').length;
+    const inflight = queue.filter((q) => q.status === 'uploading').length;
+    queueCounter.textContent = `(${total}: ${done} готово${failed ? `, ${failed} с ошибкой` : ''}${inflight ? `, ${inflight} в работе` : ''})`;
+
+    queueList.innerHTML = queue.map((q) => {
+      const statusLabel = {
+        queued: '<span class="badge badge-slate">в очереди</span>',
+        uploading: '<span class="badge badge-indigo badge-pulse">загрузка</span>',
+        done: `<a href="#jobs/${escapeHtml(q.jobId ?? '')}" class="badge badge-emerald hover:underline">done →</a>`,
+        failed: `<span class="badge badge-rose" title="${escapeHtml(q.error ?? '')}">ошибка</span>`,
+      }[q.status];
+      return `
+        <div class="grid grid-cols-[1fr_8rem_4rem_2rem] gap-3 px-4 py-2 border-b border-slate-100 dark:border-slate-800 last:border-b-0 items-center text-sm">
+          <span class="truncate" title="${escapeHtml(q.file.name)}">${escapeHtml(q.file.name)}</span>
+          <span>${statusLabel}</span>
+          <span class="text-xs text-slate-500 font-mono tabular-nums">${(q.file.size / 1024).toFixed(0)} KB</span>
+          ${q.status === 'queued'
+            ? `<button class="text-slate-400 hover:text-rose-500" data-remove-id="${q.id}" title="Убрать из очереди">×</button>`
+            : '<span></span>'}
+        </div>`;
+    }).join('');
+
+    queueList.querySelectorAll('[data-remove-id]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const id = Number(el.dataset.removeId);
+        const idx = queue.findIndex((q) => q.id === id);
+        if (idx >= 0) queue.splice(idx, 1);
+        if (queue.length === 0) queueSection.classList.add('hidden');
+        else renderQueue();
+      });
+    });
+
+    clearDoneBtn.style.display = done + failed > 0 ? '' : 'none';
+    const hasQueued = queue.some((q) => q.status === 'queued');
+    startBtn.disabled = !hasQueued;
+    startBtn.textContent = hasQueued ? `Загрузить (${queue.filter((q) => q.status === 'queued').length})` : 'Загрузить';
+  }
+
+  clearDoneBtn.addEventListener('click', () => {
+    for (let i = queue.length - 1; i >= 0; i -= 1) {
+      if (queue[i].status === 'done' || queue[i].status === 'failed') queue.splice(i, 1);
+    }
+    if (queue.length === 0) queueSection.classList.add('hidden');
+    else renderQueue();
+  });
+
+  // Чтение common-полей формы и валидация. Один раз перед стартом батча.
+  function readCommonFields() {
+    const formEl = document.getElementById('upload-form');
+    const formData = new FormData(formEl);
+    const hint = formData.get('document_hint')?.toString() ?? '';
+    const webhook = formData.get('webhook_url')?.toString() ?? '';
+    const metaText = formData.get('metadata')?.toString().trim() ?? '';
+    if (metaText) {
+      try { JSON.parse(metaText); }
+      catch {
+        return { error: 'Metadata: невалидный JSON' };
+      }
+    }
+    return { hint, webhook, metaText };
+  }
+
+  // Параллельная очередь с ограничением — N worker-промисов разбирают
+  // pending-items пока они есть. Каждый uploadOne обновляет UI через
+  // renderQueue, так что батч можно наблюдать в реальном времени.
+  async function uploadOne(item, common) {
+    item.status = 'uploading';
+    renderQueue();
+    const form = new FormData();
+    form.append('file', item.file);
+    if (common.hint) form.append('document_hint', common.hint);
+    if (common.webhook) form.append('webhook_url', common.webhook);
+    if (common.metaText) form.append('metadata', common.metaText);
+    const ws = workspace.current;
+    if (ws?.project_id) form.append('project_id', ws.project_id);
+    if (ws?.organization_id) form.append('organization_id', ws.organization_id);
+
+    try {
+      const res = await api('/jobs', { method: 'POST', body: form });
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      const data = await res.json();
+      item.status = 'done';
+      item.jobId = data.job_id;
+    } catch (err) {
+      item.status = 'failed';
+      item.error = err.message;
+    } finally {
+      renderQueue();
+    }
+  }
+
+  startBtn.addEventListener('click', async () => {
+    errEl.classList.add('hidden');
+    const common = readCommonFields();
+    if (common.error) {
+      errEl.textContent = common.error;
+      errEl.classList.remove('hidden');
+      return;
+    }
+    const pending = queue.filter((q) => q.status === 'queued');
+    if (pending.length === 0) return;
+    startBtn.disabled = true;
+
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < pending.length) {
+        const idx = cursor++;
+        await uploadOne(pending[idx], common);
+      }
+    };
+    await Promise.all(Array.from({ length: UPLOAD_CONCURRENCY }, worker));
+    startBtn.disabled = false;
+    renderQueue();
+  });
+
+  // Dropzone — file picker + drag&drop. У <input multiple> — массив files.
   dropzone.addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', () => {
-    if (fileInput.files[0]) showFile(fileInput.files[0]);
+    if (fileInput.files && fileInput.files.length > 0) {
+      addFiles(Array.from(fileInput.files));
+      fileInput.value = ''; // позволяем повторно выбрать те же файлы
+    }
   });
   ['dragenter', 'dragover'].forEach((ev) => {
     dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
@@ -833,49 +1000,41 @@ function renderUpload() {
   ['dragleave', 'drop'].forEach((ev) => {
     dropzone.addEventListener(ev, (e) => { e.preventDefault(); dropzone.classList.remove('dragover'); });
   });
-  dropzone.addEventListener('drop', (e) => {
-    if (e.dataTransfer.files[0]) showFile(e.dataTransfer.files[0]);
-  });
-
-  document.getElementById('upload-form').addEventListener('submit', async (e) => {
+  // Папка: e.dataTransfer.items → entry.isDirectory → рекурсивный обход.
+  dropzone.addEventListener('drop', async (e) => {
     e.preventDefault();
-    errEl.classList.add('hidden');
-    if (!selectedFile) return;
-    const form = new FormData();
-    form.append('file', selectedFile);
-    const formData = new FormData(e.target);
-    const hint = formData.get('document_hint');
-    const webhook = formData.get('webhook_url');
-    const metaText = formData.get('metadata')?.toString().trim();
-    if (hint) form.append('document_hint', hint);
-    if (webhook) form.append('webhook_url', webhook);
-    // Workspace из switcher'а → project_id для job'а.
-    const ws = workspace.current;
-    if (ws?.project_id) form.append('project_id', ws.project_id);
-    if (ws?.organization_id) form.append('organization_id', ws.organization_id);
-    if (metaText) {
-      try { JSON.parse(metaText); }
-      catch {
-        errEl.textContent = 'Metadata: невалидный JSON';
-        errEl.classList.remove('hidden');
-        return;
+    dropzone.classList.remove('dragover');
+    const items = e.dataTransfer?.items;
+    if (items && items.length > 0 && items[0].webkitGetAsEntry) {
+      const collected = [];
+      const promises = [];
+      for (const it of items) {
+        const entry = it.webkitGetAsEntry?.();
+        if (entry) promises.push(readEntryRecursive(entry, collected));
       }
-      form.append('metadata', metaText);
-    }
-    submitBtn.disabled = true;
-    submitBtn.textContent = 'Загрузка...';
-    try {
-      const res = await api('/jobs', { method: 'POST', body: form });
-      if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
-      const data = await res.json();
-      location.hash = `#jobs/${data.job_id}`;
-    } catch (err) {
-      errEl.textContent = err.message;
-      errEl.classList.remove('hidden');
-      submitBtn.disabled = false;
-      submitBtn.textContent = 'Загрузить';
+      await Promise.all(promises);
+      addFiles(collected);
+    } else if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
+      // fallback — браузер не дал items API, берём files как плоский список
+      addFiles(Array.from(e.dataTransfer.files));
     }
   });
+}
+
+/** Рекурсивный обход dropped entry: одиночный файл или директория. */
+async function readEntryRecursive(entry, out) {
+  if (entry.isFile) {
+    const file = await new Promise((res, rej) => entry.file(res, rej));
+    out.push(file);
+  } else if (entry.isDirectory) {
+    const reader = entry.createReader();
+    // readEntries returns batches; читаем пока пусто
+    let batch;
+    do {
+      batch = await new Promise((res, rej) => reader.readEntries(res, rej));
+      for (const sub of batch) await readEntryRecursive(sub, out);
+    } while (batch.length > 0);
+  }
 }
 
 // ============================================================
