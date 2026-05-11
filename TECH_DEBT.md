@@ -59,6 +59,37 @@
 - ✅ **B5 file magic-bytes validation** — пакет `file-type ^19.6`. После сохранения файла читаются magic bytes; если детектируется не из `ACCEPTED_DOCUMENT_MIMES` (PDF/JPEG/PNG/BMP/TIFF/WebP) — 400 и удаление файла. Если detected mime ≠ declared multipart Content-Type — detected становится authoritative (логируется warning). Защита от exe-под-видом-PDF, расширения vs реальный формат, и подобного.
 - ✅ Тесты: `tests/idempotency.spec.ts` (header parsing, unique-violation detector), `tests/magic-bytes.spec.ts` (PDF/PNG/JPEG/BMP/WebP по реальным magic bytes, рейект plaintext/exe, обнаружение mislabelled PDF).
 
+### Phase 3 Day 20 — metadata sanitization (2026-05-14)
+
+Закрыт security-долг: client-supplied `metadata` теперь фильтруется на
+секреты перед записью в БД и эхо-возвратом в webhook.
+
+- ✅ `storage/metadata-sanitizer.ts` — рекурсивный walk с двумя
+  стратегиями редакции:
+  1. По имени ключа: `password / token / api_key / secret /
+     authorization / private_key / access_key / refresh_token /
+     client_secret` (case-insensitive) — значение всегда заменяется
+     на `[REDACTED: key=<имя>]`.
+  2. По префиксу значения: `sk-ant-`, `sk-`, `AKIA[0-9A-Z]{16}`,
+     `ya29.`, `ghp_`, `github_pat_`, `pdpat_`, `xox[abp]-`,
+     `pk_/rk_(live|test)_` и пр. — `[REDACTED: <reason>]`.
+- ✅ MAX_DEPTH=8 защита от циклов / атак-на-глубину.
+- ✅ `POST /jobs` применяет sanitize перед `jobsRepo.create`; если
+  что-то редакти'ли — warn в лог с количеством редакций (оператор
+  видит «вот тут клиент попытался передать секрет»).
+- ✅ Числа/boolean/null проходят как есть; нестрого по value-pattern
+  (требует ≥20 chars подходящего символьного набора), чтобы не
+  закрашивать нормальные строки типа `sk-short`.
+- ✅ Тесты: 20+ кейсов via it.each — все имена ключей, все префиксы,
+  вложенные объекты, массивы, recursion-limit, edge-cases с null.
+
+Дальнейшее (если понадобится):
+- Добавить allowlist через env (для случаев когда клиент ДОЛЖЕН
+  слать что-то выглядящее как ключ — например, hash коммита).
+- Расширить детекцию: длинные base64 / hex строки без known-префикса.
+  Сейчас консервативно — лучше пропустить экзотический секрет, чем
+  закрасить обычное значение.
+
 ### Phase 3 Day 19 — Rotate master-ключа secrets (2026-05-14)
 
 Закрыт открытый пункт из «secrets at rest» — теперь смена

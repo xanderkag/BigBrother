@@ -24,6 +24,7 @@ import { validateExtractedWithResolver } from '../pipeline/validation/index.js';
 import { runDocumentPipeline } from '../pipeline/orchestrator.js';
 import { combineConfidence } from '../pipeline/quality.js';
 import { projectsRepo } from '../storage/projects.js';
+import { sanitizeMetadata } from '../storage/metadata-sanitizer.js';
 import { SYSTEM_DEFAULT_ORG_ID, SYSTEM_DEFAULT_PROJECT_ID } from '../auth.js';
 import {
   getEffectiveScope,
@@ -275,6 +276,23 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         return reply;
       }
 
+      // Sanitize client-supplied metadata: редактируем значения, похожие
+      // на секреты (по имени ключа: password/token/api_key/...; по
+      // префиксу значения: sk-ant-/sk-/AKIA/...). Без этого клиент по
+      // ошибке мог бы положить в metadata свой токен — и тот попал бы
+      // в БД и webhook'и третьим лицам.
+      let sanitizedMetadata: unknown = null;
+      if (metadata !== undefined && metadata !== null) {
+        const result = sanitizeMetadata(metadata);
+        sanitizedMetadata = result.sanitized;
+        if (result.redactionsCount > 0) {
+          req.log.warn(
+            { redactions: result.redactionsCount },
+            'metadata contained values that look like secrets; redacted before storage',
+          );
+        }
+      }
+
       let job;
       try {
         job = await jobsRepo.create({
@@ -284,7 +302,7 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
           mimeType: savedFile.mimeType,
           documentHint: documentHint ?? null,
           webhookUrl: webhookUrl ?? null,
-          metadata: metadata ?? null,
+          metadata: sanitizedMetadata,
           idempotencyKey,
           organizationId: scopeOrgId,
           projectId: scopeProjectId,
