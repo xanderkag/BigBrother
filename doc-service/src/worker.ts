@@ -16,16 +16,30 @@ const log = pino({ level: config.logLevel, name: 'worker' });
 const worker = new Worker<DocJobPayload>(
   QUEUE_NAME,
   async (job) => {
-    // Per-job child logger binds the trace ids once; every subsequent log
-    // inside processJob carries `request_id`, `job_id`, `bull_id`.
+    const attempt = job.attemptsMade + 1;
     const jobLog = log.child({
       request_id: job.data.requestId,
       job_id: job.data.jobId,
       bull_id: job.id,
-      attempt: job.attemptsMade + 1,
+      attempt,
     });
-    jobLog.info('job received');
-    await processJob(job.data.jobId, jobLog);
+
+    // Retry-событие — отдельным сообщением, чтобы log-агрегатор
+    // мог построить отдельную метрику ретраев. attemptsMade=0 →
+    // первая попытка, не retry.
+    if (job.attemptsMade > 0) {
+      jobLog.warn(
+        {
+          attempt,
+          previous_error: job.failedReason ?? null,
+        },
+        'job retry',
+      );
+    } else {
+      jobLog.info('job received');
+    }
+
+    await processJob(job.data.jobId, jobLog, { attempt });
   },
   {
     connection: redisConnection,
@@ -33,16 +47,19 @@ const worker = new Worker<DocJobPayload>(
   },
 );
 
+// BullMQ-level подтверждение — не дублирует rich-логи из orchestrator,
+// помечено отдельным msg ('bullmq completed') чтобы парсер логов не
+// путал с основным 'job completed'.
 worker.on('completed', (job) =>
   log.info(
     { request_id: job.data.requestId, job_id: job.data.jobId, bull_id: job.id },
-    'job completed',
+    'bullmq completed',
   ),
 );
 worker.on('failed', (job, err) =>
   log.error(
     { request_id: job?.data.requestId, job_id: job?.data.jobId, bull_id: job?.id, err },
-    'job failed',
+    'bullmq failed',
   ),
 );
 

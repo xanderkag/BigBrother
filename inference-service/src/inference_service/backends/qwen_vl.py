@@ -16,6 +16,7 @@ import io
 import json
 import logging
 import re
+import time
 from typing import Any
 
 from PIL import Image
@@ -97,13 +98,21 @@ class QwenVlBackend(ModelBackend):
         prompt = extract_prompts.build(
             text=text, schema=schema, hint=hint, prompt_override=prompt_override
         )
+        started = time.monotonic()
         raw = await self._generate_text(prompt)
+        duration_ms = int((time.monotonic() - started) * 1000)
         data = _parse_json(raw) or {}
         extracted = data.get("extracted") if isinstance(data.get("extracted"), dict) else {}
         confidence = float(data.get("confidence", 0.0) or 0.0)
         issues = data.get("issues") if isinstance(data.get("issues"), list) else []
         debug = (
-            ExtractDebug(prompt=prompt, raw_response=raw, model=self.model_id, backend=self.name)
+            ExtractDebug(
+                prompt=prompt,
+                raw_response=raw,
+                model=self.model_id,
+                backend=self.name,
+                duration_ms=duration_ms,
+            )
             if include_debug
             else None
         )

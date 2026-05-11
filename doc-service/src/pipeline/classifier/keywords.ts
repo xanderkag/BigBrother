@@ -61,32 +61,41 @@ export class KeywordClassifier implements Classifier {
         confidence: dbBest.confidence,
         source: 'keyword',
         matched: dbBest.matched,
+        candidatesCount: dbBest.candidatesCount,
       };
     }
 
     // --- Stage 2: hardcoded fallback ---
     let best: { type: DocumentTypeSlug; confidence: number; matched: string } | null = null;
+    let candidates = 0;
     for (const rule of FALLBACK_RULES) {
       const m = rule.pattern.exec(haystack);
       if (!m) continue;
+      candidates += 1;
       if (this.beats(best, rule.weight, m[0])) {
         best = { type: rule.type, confidence: rule.weight, matched: m[0] };
       }
     }
 
-    if (!best) return { type: null, confidence: 0, source: 'keyword' };
-    return { type: best.type, confidence: best.confidence, source: 'keyword', matched: best.matched };
+    if (!best) return { type: null, confidence: 0, source: 'keyword', candidatesCount: 0 };
+    return {
+      type: best.type,
+      confidence: best.confidence,
+      source: 'keyword',
+      matched: best.matched,
+      candidatesCount: candidates,
+    };
   }
 
   private async classifyByDbRules(
     haystack: string,
-  ): Promise<{ type: DocumentTypeSlug; confidence: number; matched: string } | null> {
+  ): Promise<
+    | { type: DocumentTypeSlug; confidence: number; matched: string; candidatesCount: number }
+    | null
+  > {
     const rows = await documentTypeResolver.listActive();
     if (rows.length === 0) return null;
 
-    // Compile keyword strings into RegExp'ы. Невалидные паттерны (плохой
-    // regex в БД) тихо пропускаем — иначе одна опечатка в админке вешает
-    // всю классификацию. В будущем — лог через pino + метрика.
     const compiled: CompiledRule[] = [];
     for (const row of rows) {
       const weight = this.weightFromMetadata(row.metadata) ?? 1.0;
@@ -101,14 +110,17 @@ export class KeywordClassifier implements Classifier {
     if (compiled.length === 0) return null;
 
     let best: { type: DocumentTypeSlug; confidence: number; matched: string } | null = null;
+    let candidates = 0;
     for (const rule of compiled) {
       const m = rule.pattern.exec(haystack);
       if (!m) continue;
+      candidates += 1;
       if (this.beats(best, rule.weight, m[0])) {
         best = { type: rule.type, confidence: rule.weight, matched: m[0] };
       }
     }
-    return best;
+    if (!best) return null;
+    return { ...best, candidatesCount: candidates };
   }
 
   /** Per-rule весов в UI ещё нет — можно класть в metadata.classification_weight. */

@@ -47,11 +47,19 @@ class ExtractRequest(BaseModel):
 
 class ExtractDebug(BaseModel):
     """Отладочный след extract-вызова. Прозрачно для нашей бизнес-логики,
-    нужно админу для понимания «что мы попросили / что модель ответила»."""
+    нужно админу для понимания «что мы попросили / что модель ответила»
+    + минимум метрик для log-агрегатора (latency/cost)."""
     prompt: str
     raw_response: str
     model: str
     backend: str
+    # Метрики вызова. duration_ms — собственно время API-ответа модели
+    # (без сетевой обвязки doc-service). Tokens — usage-данные от
+    # backend'а, доступны не всегда: OpenAI-compat и Claude дают; Qwen-VL
+    # через transformers и stub — None.
+    duration_ms: int = 0
+    prompt_tokens: int | None = None
+    output_tokens: int | None = None
 
 
 class ExtractResponse(BaseModel):

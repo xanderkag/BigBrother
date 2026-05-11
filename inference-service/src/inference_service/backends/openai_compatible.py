@@ -194,13 +194,24 @@ class OpenAICompatibleBackend(ModelBackend):
         prompt = extract_prompts.build(
             text=text, schema=schema, hint=hint, prompt_override=prompt_override
         )
-        raw = await self._complete_text(prompt, json_mode=True)
+        started = time.monotonic()
+        # Версия _complete_text с usage: возвращает (text, usage_dict | None).
+        raw, usage = await self._complete_text_with_usage(prompt, json_mode=True)
+        duration_ms = int((time.monotonic() - started) * 1000)
         data = _parse_json(raw) or {}
         extracted = data.get("extracted") if isinstance(data.get("extracted"), dict) else {}
         confidence = float(data.get("confidence", 0.0) or 0.0)
         issues = data.get("issues") if isinstance(data.get("issues"), list) else []
         debug = (
-            ExtractDebug(prompt=prompt, raw_response=raw, model=self.model_id, backend=self.name)
+            ExtractDebug(
+                prompt=prompt,
+                raw_response=raw,
+                model=self.model_id,
+                backend=self.name,
+                duration_ms=duration_ms,
+                prompt_tokens=usage.get("prompt_tokens") if usage else None,
+                output_tokens=usage.get("completion_tokens") if usage else None,
+            )
             if include_debug
             else None
         )
@@ -243,7 +254,16 @@ class OpenAICompatibleBackend(ModelBackend):
     # --- Generation primitives ---
 
     async def _complete_text(self, prompt: str, json_mode: bool = False) -> str:
-        return await self._complete(
+        text, _ = await self._complete_with_usage(
+            [{"role": "user", "content": prompt}],
+            json_mode=json_mode,
+        )
+        return text
+
+    async def _complete_text_with_usage(
+        self, prompt: str, json_mode: bool = False
+    ) -> tuple[str, dict[str, int] | None]:
+        return await self._complete_with_usage(
             [{"role": "user", "content": prompt}],
             json_mode=json_mode,
         )
@@ -267,6 +287,14 @@ class OpenAICompatibleBackend(ModelBackend):
         messages: list[dict[str, Any]],
         json_mode: bool,
     ) -> str:
+        text, _ = await self._complete_with_usage(messages, json_mode)
+        return text
+
+    async def _complete_with_usage(
+        self,
+        messages: list[dict[str, Any]],
+        json_mode: bool,
+    ) -> tuple[str, dict[str, int] | None]:
         # json_mode = response_format={"type": "json_object"} — поддерживают
         # все современные OpenAI-compat серверы (OpenAI, vLLM, Ollama 0.5+,
         # LM Studio). Если backend не поддерживает — упадёт 400; ловим и
@@ -293,9 +321,20 @@ class OpenAICompatibleBackend(ModelBackend):
 
         choice = response.choices[0] if response.choices else None
         if choice is None or choice.message is None:
-            return ""
-        content = choice.message.content or ""
-        return content.strip()
+            return "", None
+        content = (choice.message.content or "").strip()
+        usage_obj = getattr(response, "usage", None)
+        usage = None
+        if usage_obj is not None:
+            prompt_t = getattr(usage_obj, "prompt_tokens", None)
+            completion_t = getattr(usage_obj, "completion_tokens", None)
+            if prompt_t is not None or completion_t is not None:
+                usage = {}
+                if prompt_t is not None:
+                    usage["prompt_tokens"] = int(prompt_t)
+                if completion_t is not None:
+                    usage["completion_tokens"] = int(completion_t)
+        return content, usage
 
 
 def _looks_like_json_mode_not_supported(err: Exception) -> bool:

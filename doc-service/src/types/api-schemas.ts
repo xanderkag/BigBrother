@@ -70,6 +70,9 @@ export const Job = z
         raw_response: z.string(),
         model: z.string(),
         backend: z.string(),
+        duration_ms: z.number().optional(),
+        prompt_tokens: z.number().optional(),
+        output_tokens: z.number().optional(),
       })
       .nullable()
       .describe(

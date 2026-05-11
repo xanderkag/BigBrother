@@ -10,6 +10,11 @@ export type LlmExtractDebug = {
   raw_response: string;
   model: string;
   backend: string;
+  /** Время самого API-вызова к модели (без doc-service overhead'а). */
+  duration_ms?: number;
+  /** Usage от backend'а где доступно (Claude / OpenAI-compat). */
+  prompt_tokens?: number;
+  output_tokens?: number;
 };
 
 export type LlmExtractResult = {

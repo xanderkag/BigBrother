@@ -50,6 +50,35 @@ export type PipelineRunResult = {
 };
 
 /**
+ * Per-step timings, накапливаются в течение processJob'а.
+ * Используются для (а) bottleneck-определения в slow-job warning,
+ * (б) для сводного `job completed` события в лог-агрегатор.
+ */
+type StepTimings = {
+  ocr_ms: number;
+  classify_ms: number;
+  extract_ms: number;
+  validate_ms: number;
+};
+
+function pickBottleneck(t: StepTimings): keyof StepTimings {
+  let best: keyof StepTimings = 'ocr_ms';
+  let bestVal = t.ocr_ms;
+  (['classify_ms', 'extract_ms', 'validate_ms'] as const).forEach((k) => {
+    if (t[k] > bestVal) {
+      best = k;
+      bestVal = t[k];
+    }
+  });
+  return best;
+}
+
+function roundConf(c: number | null | undefined): number | null {
+  if (c === null || c === undefined) return null;
+  return Math.round(c * 1000) / 1000;
+}
+
+/**
  * Process a job end-to-end. Called from the BullMQ worker.
  *
  * Thin wrapper around the pure pipeline functions: pulls input from DB,
@@ -57,7 +86,11 @@ export type PipelineRunResult = {
  * pure functions (`runOcrChain`, `runDocumentPipeline`) are exported so
  * the smoke CLI and integration tests can reuse them without DB plumbing.
  */
-export async function processJob(jobId: string, log: Logger): Promise<void> {
+export async function processJob(
+  jobId: string,
+  log: Logger,
+  opts: { attempt?: number } = {},
+): Promise<void> {
   const job = await jobsRepo.findById(jobId);
   if (!job) {
     log.error({ jobId }, 'job not found');
@@ -69,19 +102,25 @@ export async function processJob(jobId: string, log: Logger): Promise<void> {
   let ocr: OcrResult | null = null;
   let documentType: DocumentTypeSlug | null = job.document_hint ?? null;
 
+  // Per-step timings — для bottleneck-определения и сводного `job completed`.
+  const timings: StepTimings = { ocr_ms: 0, classify_ms: 0, extract_ms: 0, validate_ms: 0 };
+
   // Metrics: end-to-end timer. `started` is "worker pickup" — close enough
   // to user-perceived latency for a fire-and-forget API. Label values are
   // resolved at finalize time (we don't know status/type up front).
   const startedAt = Date.now();
 
   try {
+    const ocrStart = Date.now();
     ocr = await runOcrChain({ filePath: job.file_path, mimeType: job.mime_type }, log);
+    timings.ocr_ms = Date.now() - ocrStart;
 
     const post = await runDocumentPipeline(
       ocr.text,
       { hint: documentType ?? undefined },
       log,
       { jobId },
+      timings,
     );
     documentType = post.documentType;
 
@@ -131,13 +170,58 @@ export async function processJob(jobId: string, log: Logger): Promise<void> {
     // be null (unclassified) — coerce to a stable label value to keep
     // cardinality bounded and avoid leaking "undefined" buckets.
     const dtLabel = documentType ?? 'unknown';
+    const totalDurationMs = Date.now() - startedAt;
     jobsTotal.inc({ status, document_type: dtLabel });
     jobsDurationSeconds.observe(
       { document_type: dtLabel, outcome: status },
-      (Date.now() - startedAt) / 1000,
+      totalDurationMs / 1000,
     );
 
-    log.info({ jobId, status, engine: ocr.engine, confidence: overall }, 'job finalized');
+    // Single rich событие — каждое поле полезно для log-агрегатора (Loki/
+    // Datadog/...): построить гистограмму latency по типу документа,
+    // алертить на confidence-деградацию, видеть когда модель сменилась.
+    log.info(
+      {
+        job_id: jobId,
+        status,
+        document_type: dtLabel,
+        ocr_engine: ocr.engine,
+        confidence: roundConf(overall),
+        validation_issues_count: post.validationIssues.length,
+        total_duration_ms: totalDurationMs,
+        ocr_duration_ms: timings.ocr_ms,
+        classify_duration_ms: timings.classify_ms,
+        extract_duration_ms: timings.extract_ms,
+        validate_duration_ms: timings.validate_ms,
+        file_size_bytes: Number(job.file_size),
+        mime_type: job.mime_type,
+        attempt: opts.attempt ?? 1,
+        llm_called: !!post.llmCall,
+        llm_provider: post.llmCall?.backend ?? null,
+        llm_model: post.llmCall?.model ?? null,
+        llm_duration_ms: post.llmCall?.duration_ms ?? null,
+        prompt_tokens: post.llmCall?.prompt_tokens ?? null,
+        output_tokens: post.llmCall?.output_tokens ?? null,
+      },
+      'job completed',
+    );
+
+    // Slow-job: ищем bottleneck-шаг (макс из per-step timing'а) и пишем
+    // warn'кой. Алерт-правило в Grafana / Datadog ловит по level=warn +
+    // msg='slow job', тегирует bottleneck-полем.
+    if (totalDurationMs > config.slowJobThresholdMs) {
+      const bottleneck = pickBottleneck(timings);
+      log.warn(
+        {
+          job_id: jobId,
+          total_duration_ms: totalDurationMs,
+          threshold_ms: config.slowJobThresholdMs,
+          bottleneck,
+          ...timings,
+        },
+        'slow job',
+      );
+    }
 
     if (updated && updated.webhook_url) {
       await deliverWebhook(
@@ -158,7 +242,21 @@ export async function processJob(jobId: string, log: Logger): Promise<void> {
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    log.error({ jobId, err: errMsg }, 'job failed');
+    const totalDurationMs = Date.now() - startedAt;
+    log.error(
+      {
+        job_id: jobId,
+        err: errMsg,
+        attempt: opts.attempt ?? 1,
+        total_duration_ms: totalDurationMs,
+        ocr_duration_ms: timings.ocr_ms,
+        classify_duration_ms: timings.classify_ms,
+        extract_duration_ms: timings.extract_ms,
+        validate_duration_ms: timings.validate_ms,
+        document_type: documentType ?? 'unknown',
+      },
+      'job failed',
+    );
     await jobsRepo.finalize(jobId, {
       status: 'failed',
       error: errMsg,
@@ -173,7 +271,7 @@ export async function processJob(jobId: string, log: Logger): Promise<void> {
     jobsTotal.inc({ status: 'failed', document_type: dtLabel });
     jobsDurationSeconds.observe(
       { document_type: dtLabel, outcome: 'failed' },
-      (Date.now() - startedAt) / 1000,
+      totalDurationMs / 1000,
     );
     throw err; // let BullMQ apply its retry policy
   }
@@ -196,29 +294,43 @@ export async function runOcrChain(
   }
 
   let best: OcrResult | null = null;
-  for (const engine of chain) {
+  for (let i = 0; i < chain.length; i += 1) {
+    const engine = chain[i]!;
     try {
       const r = await engine.run(input);
+      const accepted = r.confidence >= engine.acceptanceThreshold;
       log.info(
-        { engine: engine.name, confidence: r.confidence, durationMs: r.durationMs },
+        {
+          engine: engine.name,
+          confidence: roundConf(r.confidence),
+          duration_ms: r.durationMs,
+          text_length_chars: r.text.length,
+          text_lines: r.text ? r.text.split('\n').length : 0,
+          accepted,
+          skipped: false,
+        },
         'ocr engine result',
       );
-      // Engine reports its own internal duration; record per-engine + outcome.
-      // outcome=accepted when this engine's result is "good enough" to stop;
-      // rejected when we fall through to the next.
-      const accepted = r.confidence >= engine.acceptanceThreshold;
       ocrEngineDurationSeconds.observe(
         { engine: engine.name, outcome: accepted ? 'accepted' : 'rejected' },
         r.durationMs / 1000,
       );
       if (!best || r.confidence > best.confidence) best = r;
-      if (accepted) return r;
+      if (accepted) {
+        // Логируем все оставшиеся движки как skipped — даёт log-агрегатору
+        // видимость «pdf-text справился, tesseract и vision-llm даже не
+        // тронули». Без этого факт пропуска незаметен.
+        for (let j = i + 1; j < chain.length; j += 1) {
+          log.info(
+            { engine: chain[j]!.name, skipped: true, reason: `${engine.name} accepted` },
+            'ocr engine result',
+          );
+        }
+        return r;
+      }
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
-      log.warn({ engine: engine.name, err: errMsg }, 'ocr engine failed');
-      // Engine threw — no duration available, but the failure itself is
-      // worth counting. Observe 0 to bump the count without skewing the
-      // histogram much; alternatively could be a separate counter.
+      log.warn({ engine: engine.name, err: errMsg, skipped: false }, 'ocr engine failed');
       ocrEngineDurationSeconds.observe({ engine: engine.name, outcome: 'error' }, 0);
     }
   }
@@ -239,6 +351,8 @@ export async function runDocumentPipeline(
   options: { hint?: DocumentTypeSlug },
   log: Logger,
   context: Record<string, unknown> = {},
+  /** Опц. mutable timings — заполняются по ходу выполнения шагов. */
+  timings?: StepTimings,
 ): Promise<{
   documentType: DocumentTypeSlug | null;
   classificationSource: 'hint' | 'keyword';
@@ -262,10 +376,24 @@ export async function runDocumentPipeline(
   let classificationMatch: string | undefined;
 
   if (!documentType) {
+    const tClassify = Date.now();
     const cls = await classifier.classify(rawText);
+    const classifyMs = Date.now() - tClassify;
+    if (timings) timings.classify_ms = classifyMs;
     documentType = cls.type;
     classificationMatch = cls.matched;
-    log.info({ ...context, type: cls.type, source: cls.source, matched: cls.matched }, 'classified');
+    log.info(
+      {
+        ...context,
+        type: cls.type,
+        source: cls.source,
+        matched: cls.matched,
+        classify_duration_ms: classifyMs,
+        candidates_count: cls.candidatesCount ?? null,
+        llm_classify_used: false, // KeywordClassifier пока не использует LLM
+      },
+      'classified',
+    );
   }
 
   let extracted: Record<string, unknown> = {};
@@ -289,6 +417,7 @@ export async function runDocumentPipeline(
     // custom slug → GenericLlmParser (всё извлечение через LLM с
     // DB-резолвленной схемой/полями).
     const parser = parsersFactory.get(documentType);
+    const tParser = Date.now();
     const result = await parser.parse(rawText, {
       expectedFields: typeConfig.expectedFields,
       regexFallbackThreshold: typeConfig.regexFallbackThreshold,
@@ -298,14 +427,57 @@ export async function runDocumentPipeline(
       // inference-service → заменяет builtin prompt для этого типа.
       llmPrompt: typeConfig.llmPrompt ?? undefined,
     });
+    const parserMs = Date.now() - tParser;
+    if (timings) timings.extract_ms = parserMs;
     extracted = result.extracted;
     parserConfidence = result.confidence;
     parserMissing = result.missing;
     llmCall = result.llmCall;
-    if (result.missing.length > 0) {
-      log.info({ ...context, type: documentType, missing: result.missing }, 'parser missing fields');
+
+    // Структурный лог: одно `parser result` событие со всей картиной
+    // итога парсинга — confidence, поля, fallback. Заменяет старое
+    // `parser missing fields` (теперь missing-список — поле в этом
+    // событии, не отдельный лог).
+    const fieldsTotal = typeConfig.expectedFields.length;
+    log.info(
+      {
+        ...context,
+        type: documentType,
+        parser: typeConfig.source === 'db' ? typeConfig.slug : `builtin:${typeConfig.slug}`,
+        confidence: roundConf(result.confidence),
+        fields_extracted: Math.max(0, fieldsTotal - result.missing.length),
+        fields_missing: result.missing.length,
+        missing: result.missing,
+        llm_fallback_triggered: !!result.llmCall,
+        duration_ms: parserMs,
+      },
+      'parser result',
+    );
+
+    // Отдельный `llm call` event — детали реального вызова к модели для
+    // мониторинга latency/cost. Метрики в Prometheus уже есть; в логах
+    // удобнее коррелировать с конкретным job_id.
+    if (result.llmCall) {
+      log.info(
+        {
+          ...context,
+          endpoint: 'extract',
+          provider: result.llmCall.backend,
+          model: result.llmCall.model,
+          duration_ms: result.llmCall.duration_ms ?? null,
+          prompt_chars: result.llmCall.prompt.length,
+          response_chars: result.llmCall.raw_response.length,
+          prompt_tokens: result.llmCall.prompt_tokens ?? null,
+          output_tokens: result.llmCall.output_tokens ?? null,
+          status: 'ok',
+        },
+        'llm call',
+      );
     }
+
+    const tValidate = Date.now();
     validationIssues = await validateExtractedWithResolver(extracted, documentType, log);
+    if (timings) timings.validate_ms = Date.now() - tValidate;
   }
 
   return {

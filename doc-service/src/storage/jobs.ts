@@ -6,6 +6,9 @@ export type LlmCallTrace = {
   raw_response: string;
   model: string;
   backend: string;
+  duration_ms?: number;
+  prompt_tokens?: number;
+  output_tokens?: number;
 };
 
 export type JobRow = {

@@ -39,6 +39,12 @@ const ConfigSchema = z.object({
   // arbitrary blobs to every job row.
   maxMetadataBytes: numberFromEnv(64 * 1024),
 
+  // Порог «slow job» — в логе появляется warn-событие `slow job` с
+  // указанием bottleneck-шага (ocr / classify / extract / validate).
+  // Дефолт 60s — типичный LLM-extract документа на средней локальной
+  // модели; настраивать под клиентское железо.
+  slowJobThresholdMs: numberFromEnv(60_000),
+
   sweepers: z.object({
     // How often the pending-job sweeper looks for rows that were inserted
     // into `jobs` but never made it into BullMQ (e.g. Redis hiccup between
@@ -108,6 +114,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     secretsEncryptionKey: env.SECRETS_ENCRYPTION_KEY ?? '',
     workerConcurrency: env.WORKER_CONCURRENCY,
     maxMetadataBytes: env.MAX_METADATA_BYTES,
+    slowJobThresholdMs: env.SLOW_JOB_THRESHOLD_MS,
     sweepers: {
       pendingIntervalMs: env.PENDING_SWEEPER_INTERVAL_MS,
       pendingGraceSeconds: env.PENDING_SWEEPER_GRACE_SECONDS,

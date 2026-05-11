@@ -12,6 +12,12 @@ export type ClassificationResult = {
   // Trace which keyword/rule fired — useful for debugging and dataset building.
   source: 'keyword' | 'llm' | 'hint';
   matched?: string;
+  /**
+   * Сколько правил сматчилось в текст (best wins). Для лога и метрик —
+   * помогает понять «классификатор уверенно выбрал из 1» vs «выбрал
+   * один из 5 кандидатов».
+   */
+  candidatesCount?: number;
 };
 
 export interface Classifier {

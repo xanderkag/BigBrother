@@ -20,6 +20,7 @@ import io
 import json
 import logging
 import re
+import time
 from typing import Any
 
 from PIL import Image
@@ -97,13 +98,23 @@ class ClaudeBackend(ModelBackend):
         prompt = extract_prompts.build(
             text=text, schema=schema, hint=hint, prompt_override=prompt_override
         )
-        raw = await self._complete_text(prompt)
+        started = time.monotonic()
+        raw, usage = await self._complete_with_usage([{"role": "user", "content": prompt}])
+        duration_ms = int((time.monotonic() - started) * 1000)
         data = _parse_json(raw) or {}
         extracted = data.get("extracted") if isinstance(data.get("extracted"), dict) else {}
         confidence = float(data.get("confidence", 0.0) or 0.0)
         issues = data.get("issues") if isinstance(data.get("issues"), list) else []
         debug = (
-            ExtractDebug(prompt=prompt, raw_response=raw, model=self.model_id, backend=self.name)
+            ExtractDebug(
+                prompt=prompt,
+                raw_response=raw,
+                model=self.model_id,
+                backend=self.name,
+                duration_ms=duration_ms,
+                prompt_tokens=usage.get("input_tokens") if usage else None,
+                output_tokens=usage.get("output_tokens") if usage else None,
+            )
             if include_debug
             else None
         )
@@ -174,25 +185,36 @@ class ClaudeBackend(ModelBackend):
         )
 
     async def _complete(self, messages: list[dict[str, Any]]) -> str:
+        text, _ = await self._complete_with_usage(messages)
+        return text
+
+    async def _complete_with_usage(
+        self, messages: list[dict[str, Any]]
+    ) -> tuple[str, dict[str, int] | None]:
         # The Anthropic SDK is sync; we run it in a thread executor so we don't
         # block FastAPI's event loop on long generations. For higher throughput
         # under load, swap to the async client (`AsyncAnthropic`) — keeping
         # sync here for simpler error handling in the scaffold.
         import asyncio
 
-        def _call() -> str:
+        def _call() -> tuple[str, dict[str, int] | None]:
             response = self._client.messages.create(
                 model=self.model_id,
                 max_tokens=self.max_tokens,
                 messages=messages,
             )
-            # Response content is a list of blocks; for text-only generation
-            # it's typically one text block. Concatenate just in case.
             parts: list[str] = []
             for block in response.content:
                 if getattr(block, "type", None) == "text":
                     parts.append(getattr(block, "text", ""))
-            return "".join(parts).strip()
+            usage = None
+            usage_obj = getattr(response, "usage", None)
+            if usage_obj is not None:
+                usage = {
+                    "input_tokens": int(getattr(usage_obj, "input_tokens", 0)),
+                    "output_tokens": int(getattr(usage_obj, "output_tokens", 0)),
+                }
+            return "".join(parts).strip(), usage
 
         return await asyncio.to_thread(_call)
 
