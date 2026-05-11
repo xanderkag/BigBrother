@@ -69,6 +69,8 @@ const SettingsResponse = z.object({
     pending_grace_seconds: z.number(),
     file_cleanup_interval_ms: z.number(),
     file_retention_days: z.number(),
+    audit_log_interval_ms: z.number(),
+    audit_log_retention_days: z.number(),
   }),
   limits: z.object({
     max_upload_mb: z.number(),
@@ -152,6 +154,8 @@ export async function settingsRoutes(app: FastifyInstance): Promise<void> {
         pending_grace_seconds: config.sweepers.pendingGraceSeconds,
         file_cleanup_interval_ms: config.sweepers.fileCleanupIntervalMs,
         file_retention_days: config.sweepers.fileRetentionDays,
+        audit_log_interval_ms: config.sweepers.auditLogIntervalMs,
+        audit_log_retention_days: config.sweepers.auditLogRetentionDays,
       },
       limits: {
         max_upload_mb: config.maxUploadMb,

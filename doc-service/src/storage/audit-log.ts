@@ -99,6 +99,29 @@ class AuditLogRepo {
     return rows[0]!;
   }
 
+  /**
+   * Удалить строки старше N дней. Возвращает количество удалённых.
+   * Используется фоновым AuditLogSweeper'ом — без чистки таблица
+   * растёт линейно от частоты админских правок: при ~1000 правок в
+   * день и снимках before/after по 5-20 KB через год выходит 5-20 GB.
+   *
+   * `daysAgo` берётся из retention-конфига (по умолчанию 365). Безопасное
+   * значение — рассчитайте регуляторные требования клиента: для типового
+   * IT-change-audit 1-2 года достаточно, для финансовых операций
+   * нужны 5-7 лет (но тут аудитятся не сами документы, а изменения
+   * конфигурации, поэтому требования слабее).
+   */
+  async deleteOlderThan(daysAgo: number): Promise<number> {
+    if (daysAgo < 0) {
+      throw new Error('deleteOlderThan: daysAgo must be non-negative');
+    }
+    const { rowCount } = await db.query(
+      `DELETE FROM audit_log WHERE at < now() - ($1 || ' days')::interval`,
+      [String(daysAgo)],
+    );
+    return rowCount ?? 0;
+  }
+
   async list(opts: {
     entity?: AuditEntity;
     entity_id?: string;

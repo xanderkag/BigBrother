@@ -53,6 +53,13 @@ const ConfigSchema = z.object({
     // state. The DB row itself is kept (audit trail), only the blob on
     // disk is removed and `file_path` is NULLed.
     fileRetentionDays: numberFromEnv(30),
+    // How often the audit_log retention sweeper runs. Default daily —
+    // частота не важна, ведь удаления редкие; раз в сутки достаточно.
+    auditLogIntervalMs: numberFromEnv(24 * 60 * 60 * 1000),
+    // Retention для admin-audit (changes на document_types и provider_settings).
+    // По умолчанию 365 дней — типичный IT-change audit. Под регуляторные
+    // требования (5-7 лет в финансовом контексте) поднимайте через env.
+    auditLogRetentionDays: numberFromEnv(365),
   }),
 
   thresholds: z.object({
@@ -106,6 +113,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       pendingGraceSeconds: env.PENDING_SWEEPER_GRACE_SECONDS,
       fileCleanupIntervalMs: env.FILE_CLEANUP_INTERVAL_MS,
       fileRetentionDays: env.FILE_RETENTION_DAYS,
+      auditLogIntervalMs: env.AUDIT_LOG_SWEEP_INTERVAL_MS,
+      auditLogRetentionDays: env.AUDIT_LOG_RETENTION_DAYS,
     },
     thresholds: {
       pdfText: env.PDF_TEXT_ACCEPT_THRESHOLD,

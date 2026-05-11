@@ -1561,6 +1561,12 @@ async function renderAuditLog() {
         subtitle: 'История админ-изменений document_types и provider_settings',
       })}
 
+      <div class="info-banner mb-4">
+        Срок хранения — настраивается через <code class="font-mono">AUDIT_LOG_RETENTION_DAYS</code>
+        (дефолт 365 дней). Старые записи фоново удаляются раз в сутки;
+        текущее значение видно в <a href="#settings" class="font-medium underline">Settings → Storage &amp; sweepers</a>.
+      </div>
+
       <div class="flex flex-wrap items-center gap-3 mb-4">
         <select id="audit-entity" class="form-select" style="width: auto;">
           <option value="" ${filterEntity === '' ? 'selected' : ''}>Всё</option>
@@ -1815,6 +1821,7 @@ function renderStorageCard(settings) {
         <div class="kv-row"><dt class="kv-key">worker concurrency</dt><dd class="kv-value">${settings.worker.concurrency}</dd></div>
         <div class="kv-row"><dt class="kv-key">pending sweep</dt><dd class="kv-value">${settings.sweepers.pending_interval_ms / 1000}s (grace ${settings.sweepers.pending_grace_seconds}s)</dd></div>
         <div class="kv-row"><dt class="kv-key">cleanup sweep</dt><dd class="kv-value">${settings.sweepers.file_cleanup_interval_ms / 60000} min</dd></div>
+        <div class="kv-row"><dt class="kv-key">audit retention</dt><dd class="kv-value">${settings.sweepers.audit_log_retention_days} days (sweep every ${Math.round(settings.sweepers.audit_log_interval_ms / 3600000)}h)</dd></div>
       </dl>
     </div>`;
 }

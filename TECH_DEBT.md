@@ -59,6 +59,44 @@
 - ✅ **B5 file magic-bytes validation** — пакет `file-type ^19.6`. После сохранения файла читаются magic bytes; если детектируется не из `ACCEPTED_DOCUMENT_MIMES` (PDF/JPEG/PNG/BMP/TIFF/WebP) — 400 и удаление файла. Если detected mime ≠ declared multipart Content-Type — detected становится authoritative (логируется warning). Защита от exe-под-видом-PDF, расширения vs реальный формат, и подобного.
 - ✅ Тесты: `tests/idempotency.spec.ts` (header parsing, unique-violation detector), `tests/magic-bytes.spec.ts` (PDF/PNG/JPEG/BMP/WebP по реальным magic bytes, рейект plaintext/exe, обнаружение mislabelled PDF).
 
+### Phase 3 Day 10 — Audit log retention (2026-05-13)
+
+Закрыт операционный долг: `audit_log` теперь не растёт бесконтрольно.
+
+- ✅ `auditLogRepo.deleteOlderThan(days)` — single-query DELETE по
+  интервалу. Защита от негативного аргумента (иначе админ случайно
+  снёс бы всю таблицу).
+- ✅ `src/workers/audit-log-sweeper.ts` — фоновый sweeper в стиле
+  существующих (file-cleanup, pending-job). Re-entrancy guard,
+  graceful error handling (БД лежит → лог + продолжаем), `runOnce()`
+  для тестов и потенциальной админ-кнопки.
+- ✅ Конфиг через env: `AUDIT_LOG_SWEEP_INTERVAL_MS` (дефолт 24ч),
+  `AUDIT_LOG_RETENTION_DAYS` (дефолт 365). Под финансовые регуляторные
+  требования (5-7 лет хранения) поднимается одной строкой.
+- ✅ Регистрация в `worker.ts` рядом с другими sweeper'ами; стопается
+  на SIGTERM/SIGINT.
+- ✅ `/api/v1/settings` экспонирует новые поля
+  `sweepers.audit_log_retention_days` / `audit_log_interval_ms`.
+  UI в Settings → Storage & sweepers показывает их строкой
+  «audit retention X days (sweep every Yh)».
+- ✅ В Audit log странице info-banner объясняет retention и кидает
+  ссылку на Settings.
+- ✅ `.env.example` обновлён с пояснением «при 1000 правок/день за
+  3-5 лет — 5-20 GB».
+- ✅ Тесты: `tests/audit-log-sweeper.spec.ts` — 4 кейса (runOnce
+  передаёт правильный retention, graceful error, re-entrancy guard,
+  stop()). Плюс input-validation на repo-методе.
+- ⏸ Открытое:
+  - **Партицирование по месяцам** — для очень крупных установок
+    DELETE миллионов строк по `at` будет медленным. Альтернатива:
+    `audit_log` как partitioned table, DROP PARTITION вместо DELETE.
+    Не нужно сейчас, обозначим если столкнёмся.
+  - **Архивирование вместо удаления** — для регуляторных кейсов где
+    «нельзя удалять, но и держать оперативно тоже»: дамп в S3-like
+    cold storage. Делается под клиента.
+  - **Аудит самого аудита** — если кто-то «забыл выключить sweeper»,
+    деление невидимо. Метрика `audit_log_rows_deleted_total` — TODO.
+
 ### Phase 3 Day 9 — Шифрование секретов в БД (2026-05-13)
 
 Закрыт security-блокер: pg_dump / реплика / SQL-injection больше не
