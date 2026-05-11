@@ -16,6 +16,7 @@
     "migrate": "tsx src/scripts/migrate.ts up",
     "migrate:down": "tsx src/scripts/migrate.ts down",
     "migrate:create": "tsx src/scripts/migrate.ts create",
+    "migrate:secrets": "tsx src/scripts/migrate-secrets.ts",
     "smoke": "tsx src/scripts/smoke.ts",
     "test": "vitest run",
     "test:watch": "vitest"

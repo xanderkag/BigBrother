@@ -19,6 +19,15 @@ const ConfigSchema = z.object({
   // Applies to all /api/v1/* routes; /health and /ready are always public.
   apiKey: z.string().default(''),
 
+  // Master key для envelope-шифрования секретов в БД (api_key провайдеров).
+  // Формат: 64-символьная hex-строка (= 32 байта). Сгенерировать:
+  //   openssl rand -hex 32
+  // В production переменная обязательна; пустая в dev → используется
+  // deterministic dev-default (см. src/storage/secrets.ts).
+  // ВНИМАНИЕ: смена ключа делает ранее зашифрованные секреты нечитаемыми.
+  // Процедура ротации — отдельная миграция (см. TECH_DEBT).
+  secretsEncryptionKey: z.string().default(''),
+
   // Number of jobs the BullMQ worker processes in parallel. Tesseract is
   // CPU-bound and single-threaded — bumping past 1 doesn't speed up
   // tesseract-heavy workloads on a single CPU core. Increase only when the
@@ -89,6 +98,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     redisUrl: env.REDIS_URL,
     storageDir: env.STORAGE_DIR,
     apiKey: env.API_KEY ?? '',
+    secretsEncryptionKey: env.SECRETS_ENCRYPTION_KEY ?? '',
     workerConcurrency: env.WORKER_CONCURRENCY,
     maxMetadataBytes: env.MAX_METADATA_BYTES,
     sweepers: {

@@ -1,4 +1,5 @@
 import { db } from '../db.js';
+import { encryptSecret, decryptSecret } from './secrets.js';
 
 /**
  * Provider Settings repository.
@@ -14,11 +15,20 @@ import { db } from '../db.js';
  *     (clear other defaults of the same kind, then set this one). This
  *     avoids a brief inconsistent window where two rows are default.
  *
- * Secrets policy: api_key is stored in plaintext on the MVP. Production
- * deployments must wrap the column with envelope encryption (KMS or
- * pgcrypto-extension) — tracked in TECH_DEBT. All API responses go
- * through `toApi()` which returns a masked stub (`••••1234`), never the
- * plaintext.
+ * Secrets policy: `api_key` шифруется envelope-схемой (AES-256-GCM)
+ * до записи в БД и расшифровывается на чтении. Дамп БД, репликация,
+ * SQL-injection — всё видит непрозрачный `v1:...` envelope, без
+ * мастер-ключа из env он бесполезен. Подробнее в `./secrets.ts`.
+ *
+ * Lazy-миграция: если в БД лежит старый plaintext (до развёртывания
+ * фичи), `decryptSecret` возвращает его как есть. После следующего
+ * write строка автоматически становится encrypted-envelope'ом. Можно
+ * принудительно прогнать всё через `npm run migrate:secrets`.
+ *
+ * API-responses ВСЕГДА маскированы (`••••1234`), plaintext-ключ не
+ * утекает через `toApi()`. Внутри hot-path'а (DynamicLlmClient) ключ
+ * сначала расшифровывается через `findById/findDefault` и передаётся
+ * в HTTP-Authorization уже в открытом виде.
  */
 
 export type ProviderKind = 'llm' | 'ocr';
@@ -60,11 +70,21 @@ function maskKey(key: string | null): string | null {
 }
 
 class ProviderSettingsRepo {
+  /**
+   * Hot-path row → расшифровка api_key. Все методы чтения проходят
+   * через этот хелпер, чтобы downstream (DynamicLlmClient, audit,
+   * toApi) видел уже plaintext или legacy-значение.
+   */
+  private decryptRow(row: ProviderSettingRow): ProviderSettingRow {
+    if (row.api_key === null) return row;
+    return { ...row, api_key: decryptSecret(row.api_key) };
+  }
+
   async list(): Promise<ProviderSettingRow[]> {
     const { rows } = await db.query<ProviderSettingRow>(
       `SELECT * FROM provider_settings ORDER BY kind, display_name`,
     );
-    return rows;
+    return rows.map((r) => this.decryptRow(r));
   }
 
   async findById(id: string): Promise<ProviderSettingRow | null> {
@@ -72,7 +92,7 @@ class ProviderSettingsRepo {
       `SELECT * FROM provider_settings WHERE id = $1`,
       [id],
     );
-    return rows[0] ?? null;
+    return rows[0] ? this.decryptRow(rows[0]) : null;
   }
 
   /** Returns the (at most one) default provider for the given kind. */
@@ -81,7 +101,7 @@ class ProviderSettingsRepo {
       `SELECT * FROM provider_settings WHERE kind = $1 AND is_default = true AND is_active = true LIMIT 1`,
       [kind],
     );
-    return rows[0] ?? null;
+    return rows[0] ? this.decryptRow(rows[0]) : null;
   }
 
   /** Create-or-replace by id. Default flag is never set via this method — use `setDefault`. */
@@ -106,13 +126,16 @@ class ProviderSettingsRepo {
         input.display_name,
         input.description ?? null,
         input.base_url ?? null,
-        input.api_key ?? null,
+        // api_key шифруется ДО записи. null/'' проходят как есть.
+        encryptSecret(input.api_key ?? null),
         input.model ?? null,
         input.is_active ?? true,
         input.extra ?? null,
       ],
     );
-    return rows[0]!;
+    // Возвращаем уже расшифрованную row, чтобы вызывающий код не натолкнулся
+    // на envelope при логировании / маскировке.
+    return this.decryptRow(rows[0]!);
   }
 
   /**
@@ -132,7 +155,8 @@ class ProviderSettingsRepo {
     if (patch.display_name !== undefined) push('display_name', patch.display_name);
     if (patch.description !== undefined) push('description', patch.description);
     if (patch.base_url !== undefined) push('base_url', patch.base_url);
-    if (patch.api_key !== undefined) push('api_key', patch.api_key);
+    // api_key шифруется на write. `null` (явная очистка) проходит как есть.
+    if (patch.api_key !== undefined) push('api_key', encryptSecret(patch.api_key));
     if (patch.model !== undefined) push('model', patch.model);
     if (patch.is_active !== undefined) push('is_active', patch.is_active);
     if (patch.extra !== undefined) push('extra', patch.extra);
@@ -143,7 +167,7 @@ class ProviderSettingsRepo {
       `UPDATE provider_settings SET ${sets.join(', ')} WHERE id = $${i} RETURNING *`,
       values,
     );
-    return rows[0] ?? null;
+    return rows[0] ? this.decryptRow(rows[0]) : null;
   }
 
   /**
@@ -173,7 +197,7 @@ class ProviderSettingsRepo {
         [id],
       );
       await client.query('COMMIT');
-      return rows[0] ?? null;
+      return rows[0] ? this.decryptRow(rows[0]) : null;
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
@@ -187,7 +211,7 @@ class ProviderSettingsRepo {
       `DELETE FROM provider_settings WHERE id = $1 RETURNING *`,
       [id],
     );
-    return rows[0] ?? null;
+    return rows[0] ? this.decryptRow(rows[0]) : null;
   }
 
   /**

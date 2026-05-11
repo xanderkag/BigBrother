@@ -59,6 +59,58 @@
 - ✅ **B5 file magic-bytes validation** — пакет `file-type ^19.6`. После сохранения файла читаются magic bytes; если детектируется не из `ACCEPTED_DOCUMENT_MIMES` (PDF/JPEG/PNG/BMP/TIFF/WebP) — 400 и удаление файла. Если detected mime ≠ declared multipart Content-Type — detected становится authoritative (логируется warning). Защита от exe-под-видом-PDF, расширения vs реальный формат, и подобного.
 - ✅ Тесты: `tests/idempotency.spec.ts` (header parsing, unique-violation detector), `tests/magic-bytes.spec.ts` (PDF/PNG/JPEG/BMP/WebP по реальным magic bytes, рейект plaintext/exe, обнаружение mislabelled PDF).
 
+### Phase 3 Day 9 — Шифрование секретов в БД (2026-05-13)
+
+Закрыт security-блокер: pg_dump / реплика / SQL-injection больше не
+открывают плейнтекст API-ключей провайдеров. Стандартное envelope-
+шифрование AES-256-GCM, master-ключ в env.
+
+- ✅ `src/storage/secrets.ts` — модуль `encryptSecret/decryptSecret/isEncrypted`.
+  AES-256-GCM с 12-байт случайным IV и 16-байт auth tag'ом, упакованным
+  в base64 c префиксом `v1:`. Префикс версионный — поменяем алгоритм без
+  break'а старых строк.
+- ✅ `config.secretsEncryptionKey` — читается из env `SECRETS_ENCRYPTION_KEY`
+  (формат: 64-символьная hex-строка). В production пустое значение —
+  hard error на старте; в dev — deterministic SHA-256 от константы с
+  loud warning'ом (чтобы можно было `docker compose up` без ручной
+  настройки на чужой машине).
+- ✅ `providerSettingsRepo`:
+  - `upsert/patch` теперь шифруют `api_key` перед INSERT/UPDATE;
+  - все методы чтения (`list/findById/findDefault/setDefault/delete`)
+    проходят через приватный `decryptRow` → downstream code (`DynamicLlmClient`,
+    `audit_log`, `toApi`) видит уже plaintext или legacy-значение.
+  - `toApi()` не изменился — он и раньше маскировал; API-ответы по-прежнему
+    `api_key_masked: '••••XXXX'`.
+- ✅ Lazy-миграция: `decryptSecret` принимает И envelope с `v1:`, И сырой
+  plaintext (возвращает как есть). После следующего write строка
+  автоматически становится encrypted. Старые dev-стенды продолжают
+  работать без принудительной миграции.
+- ✅ Принудительная миграция: `npm run migrate:secrets` (dry-run по
+  умолчанию) и `npm run migrate:secrets -- --apply` для боевого прогона.
+  Транзакция, rollback при ошибке.
+- ✅ `.env.example` обновлён с инструкцией по генерации ключа (`openssl rand
+  -hex 32`) и предупреждением о смене ключа.
+- ✅ UI-подсказка над списком провайдеров переписана: раньше говорила
+  «Ключи хранятся в БД, в ответах маскируются», теперь — «шифруются
+  AES-256-GCM перед записью, расшифровываются master-ключом из env только
+  в момент использования».
+- ✅ Тесты: `tests/secrets.spec.ts` (15 кейсов) — roundtrip, разные
+  envelope при одинаковом plaintext (random IV), unicode/длинные,
+  null/empty edge-cases, legacy plaintext без префикса, GCM tamper
+  detection, обрезанный envelope, key-rotation поведение.
+- ⏸ Открытое:
+  - **Rotate-скрипт**: смена master-ключа без потери данных. Сейчас при
+    смене все старые envelope'ы становятся нечитаемыми — нужно отдельно
+    `npm run rotate:secrets --from=OLD --to=NEW` (раз-два часа работы).
+  - **KMS-интеграция**: для prod в крупных компаниях env-key недостаточно —
+    нужен AWS KMS / HashiCorp Vault c автомиграцией. Добавим под конкретного
+    клиента, когда понадобится.
+  - **Другие секреты в БД**: пока шифруем только `provider_settings.api_key`.
+    `jobs.metadata` иногда содержит API-токены клиента (хотя по контракту
+    не должна) — продумать sanitization.
+  - **Webhook HMAC** всё ещё в env. Per-tenant webhook'и потребуют переезда
+    в БД и аналогичного шифрования.
+
 ### Phase 3 Day 8 — llm_prompt override доходит до модели (2026-05-13)
 
 Закрыт долг «UI обманывает»: в админ-форме типа документа есть поле

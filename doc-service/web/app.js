@@ -1197,7 +1197,7 @@ async function renderProvidersList() {
       })}
 
       <div class="info-banner mb-4">
-        Ключи хранятся в БД; в ответах API маскируются (••••XXXX). Активный по умолчанию для каждого kind помечается флагом <strong>default</strong>. Изменения подхватываются hot-path'ом без рестарта (TTL 30s).
+        Ключи шифруются (AES-256-GCM) перед записью в БД и расшифровываются мастер-ключом из <code class="font-mono">SECRETS_ENCRYPTION_KEY</code> только в момент использования. В API возвращается только маска <code class="font-mono">••••XXXX</code>. Активный по умолчанию для каждого kind помечается флагом <strong>default</strong>. Изменения подхватываются hot-path'ом без рестарта (TTL 30s).
       </div>
 
       <div id="providers-list" class="space-y-3">${loadingState()}</div>
