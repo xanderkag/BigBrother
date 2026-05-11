@@ -20,60 +20,60 @@ process.env.REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
 process.env.STORAGE_DIR = process.env.STORAGE_DIR ?? '/tmp/docsvc-test';
 process.env.WEBHOOK_HMAC_SECRET = process.env.WEBHOOK_HMAC_SECRET ?? 'test';
 
-const MIGRATION_PATH = resolve(
-  __dirname,
-  '..',
-  'migrations',
-  '20260514000005_extended_document_types.sql',
-);
-
-const RAW = readFileSync(MIGRATION_PATH, 'utf8');
+const MIGRATIONS: Array<{ path: string; slugs: string[] }> = [
+  {
+    path: '20260514000005_extended_document_types.sql',
+    slugs: [
+      'payment_order',
+      'commercial_invoice',
+      'packing_list',
+      'bill_of_lading',
+      'customs_declaration',
+      'cash_receipt',
+    ],
+  },
+  {
+    path: '20260515000006_contracts_and_addendums.sql',
+    slugs: ['contract', 'contract_specification', 'contract_addendum'],
+  },
+];
 
 /** Извлекаем каждый INSERT'нутый row как объект `{ slug, json_schema, ...}`.
- *  Простой regex-парсер; миграция стабильна — формат «(...VALUES (...) ...)». */
+ *  Простой regex-парсер; миграции стабильны — формат «(...VALUES (...) ...)». */
 function extractRows(): Array<{ slug: string; jsonSchemaRaw: string; classificationKeywords: string[]; expectedFields: string[]; validators: string[] }> {
-  // Каждый row — `( 'slug', 'display_name', 'description', true, true, 'llm_extract', ARRAY[...], ARRAY[...], ARRAY[...], NULL, NULL, '{...}'::jsonb, ... )`
-  // Парсим по slug'ам — гарантированные первые токены.
-  const slugs = [
-    'payment_order',
-    'commercial_invoice',
-    'packing_list',
-    'bill_of_lading',
-    'customs_declaration',
-    'cash_receipt',
-  ];
   const out: ReturnType<typeof extractRows> = [];
-  for (const slug of slugs) {
-    // Локализуем блок начиная с открывающей скобки перед slug'ом до соответствующего ')\n,'
-    const slugIdx = RAW.indexOf(`'${slug}'`);
-    expect(slugIdx, `slug ${slug} should appear in migration`).toBeGreaterThan(0);
-    // Берём блок до следующего slug'а или до ON CONFLICT.
-    const nextSlugIdx = slugs
-      .filter((s) => s !== slug)
-      .map((s) => RAW.indexOf(`'${s}'`, slugIdx + 1))
-      .filter((i) => i > slugIdx)
-      .reduce<number>((min, i) => (min === -1 || i < min ? i : min), -1);
-    const blockEnd = nextSlugIdx > 0 ? nextSlugIdx : RAW.indexOf('ON CONFLICT', slugIdx);
-    const block = RAW.slice(slugIdx, blockEnd);
 
-    // expected_fields: первый ARRAY[...] после slug'а
-    const arrays = [...block.matchAll(/ARRAY\[([\s\S]*?)\]/g)].map((m) => m[1] ?? '');
-    expect(arrays.length, `${slug}: должно быть минимум 3 ARRAY[] секции (expected_fields, validators, classification_keywords)`).toBeGreaterThanOrEqual(3);
-    const expectedFields = parseStringArray(arrays[0]!);
-    const validators = parseStringArray(arrays[1]!);
-    const classificationKeywords = parseStringArray(arrays[2]!);
+  for (const { path, slugs } of MIGRATIONS) {
+    const raw = readFileSync(resolve(__dirname, '..', 'migrations', path), 'utf8');
 
-    // jsonb-схема: между '{' и '}'::jsonb
-    const jsonbMatch = block.match(/'(\{[\s\S]*?\})'::jsonb/);
-    expect(jsonbMatch, `${slug}: должна быть JSON-схема в формате '{...}'::jsonb`).toBeTruthy();
+    for (const slug of slugs) {
+      const slugIdx = raw.indexOf(`'${slug}'`);
+      expect(slugIdx, `slug ${slug} should appear in ${path}`).toBeGreaterThan(0);
+      const nextSlugIdx = slugs
+        .filter((s) => s !== slug)
+        .map((s) => raw.indexOf(`'${s}'`, slugIdx + 1))
+        .filter((i) => i > slugIdx)
+        .reduce<number>((min, i) => (min === -1 || i < min ? i : min), -1);
+      const blockEnd = nextSlugIdx > 0 ? nextSlugIdx : raw.indexOf('ON CONFLICT', slugIdx);
+      const block = raw.slice(slugIdx, blockEnd);
 
-    out.push({
-      slug,
-      jsonSchemaRaw: jsonbMatch![1]!,
-      classificationKeywords,
-      expectedFields,
-      validators,
-    });
+      const arrays = [...block.matchAll(/ARRAY\[([\s\S]*?)\]/g)].map((m) => m[1] ?? '');
+      expect(arrays.length, `${slug}: должно быть минимум 3 ARRAY[] секции`).toBeGreaterThanOrEqual(3);
+      const expectedFields = parseStringArray(arrays[0]!);
+      const validators = parseStringArray(arrays[1]!);
+      const classificationKeywords = parseStringArray(arrays[2]!);
+
+      const jsonbMatch = block.match(/'(\{[\s\S]*?\})'::jsonb/);
+      expect(jsonbMatch, `${slug}: должна быть JSON-схема в формате '{...}'::jsonb`).toBeTruthy();
+
+      out.push({
+        slug,
+        jsonSchemaRaw: jsonbMatch![1]!,
+        classificationKeywords,
+        expectedFields,
+        validators,
+      });
+    }
   }
   return out;
 }
@@ -86,7 +86,7 @@ function parseStringArray(content: string): string[] {
 describe('migration 005: extended document types seed', () => {
   const rows = extractRows();
 
-  it('содержит 6 новых типов', () => {
+  it('содержит все 9 типов из двух миграций (CP5 + contracts)', () => {
     expect(rows.map((r) => r.slug)).toEqual([
       'payment_order',
       'commercial_invoice',
@@ -94,7 +94,37 @@ describe('migration 005: extended document types seed', () => {
       'bill_of_lading',
       'customs_declaration',
       'cash_receipt',
+      'contract',
+      'contract_specification',
+      'contract_addendum',
     ]);
+  });
+
+  // Защита от регресса: «Договор» как слово встречается в счетах и счёт-фактурах,
+  // классификатор должен сработать только на полном паттерне, не на упоминании.
+  it('contract: classification keywords требуют контекста (не просто слово «Договор»)', () => {
+    const contractRow = rows.find((r) => r.slug === 'contract')!;
+    for (const kw of contractRow.classificationKeywords) {
+      // Каждый паттерн ДОЛЖЕН содержать ещё что-то помимо одиночного слова «Договор».
+      // Например, «ДОГОВОР № » или «Предмет договора» — но не голое «Договор».
+      const re = new RegExp(kw, 'i');
+      expect(re.test('Договор'), `keyword "${kw}" не должен срабатывать на голое слово «Договор»`).toBe(false);
+      expect(re.test('Оплата по Договору № 5'), `keyword "${kw}" не должен срабатывать на упоминание в платёжке`).toBe(false);
+    }
+  });
+
+  // Приложение и допсоглашение должны явно различаться от основного договора.
+  it('contract_specification и contract_addendum имеют непересекающиеся ключевые слова', () => {
+    const spec = rows.find((r) => r.slug === 'contract_specification')!;
+    const add = rows.find((r) => r.slug === 'contract_addendum')!;
+    for (const kw of spec.classificationKeywords) {
+      const re = new RegExp(kw, 'i');
+      expect(re.test('Дополнительное соглашение № 2 к Договору'), `spec keyword "${kw}" не должен ловить допсоглашение`).toBe(false);
+    }
+    for (const kw of add.classificationKeywords) {
+      const re = new RegExp(kw, 'i');
+      expect(re.test('Спецификация № 1 к Договору'), `addendum keyword "${kw}" не должен ловить спецификацию`).toBe(false);
+    }
   });
 
   it.each(rows.map((r) => [r.slug, r] as const))(
