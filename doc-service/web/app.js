@@ -525,6 +525,7 @@ async function renderJobDetail(jobId) {
           <h3 class="card-title">Extracted data</h3>
           <div class="flex items-center gap-2">
             <button id="copy-json-btn" class="btn-secondary btn-xs">Copy</button>
+            <button id="reprocess-btn" class="btn-secondary btn-xs" title="Перепрогнать через текущий prompt/схему типа (без новой OCR)">Перепрогнать</button>
             <button id="edit-btn" class="btn-accent-outline btn-xs">Edit</button>
           </div>
         </div>
@@ -565,6 +566,27 @@ async function renderJobDetail(jobId) {
       editing = true;
       if (pollTimer) clearTimeout(pollTimer);
       renderEditor(extracted);
+    });
+
+    // Перепрогнать: вызывает POST /jobs/:id/reprocess. OCR не повторяется,
+    // обрабатывает только пост-OCR этап с актуальным prompt/схемой.
+    const reprocessBtn = document.getElementById('reprocess-btn');
+    reprocessBtn.addEventListener('click', async () => {
+      reprocessBtn.disabled = true;
+      reprocessBtn.textContent = 'Перепрогон…';
+      try {
+        await apiJson(`/jobs/${encodeURIComponent(jobId)}/reprocess`, { method: 'POST' });
+        reprocessBtn.textContent = 'Готово ✓';
+        setTimeout(() => {
+          reprocessBtn.textContent = 'Перепрогнать';
+          reprocessBtn.disabled = false;
+        }, 1500);
+        await load();
+      } catch (err) {
+        reprocessBtn.textContent = 'Перепрогнать';
+        reprocessBtn.disabled = false;
+        alert(`Не удалось перепрогнать: ${err.message}`);
+      }
     });
   }
 

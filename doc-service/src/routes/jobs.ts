@@ -20,6 +20,8 @@ import {
 } from '../types/api-schemas.js';
 import { bearerAuthHook } from '../auth.js';
 import { validateExtractedWithResolver } from '../pipeline/validation/index.js';
+import { runDocumentPipeline } from '../pipeline/orchestrator.js';
+import { combineConfidence } from '../pipeline/quality.js';
 
 function isValidWebhookUrl(value: string): boolean {
   try {
@@ -352,6 +354,102 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         reply.code(404);
         return { error: 'job not found' };
       }
+      return jobsRepo.toApi(updated);
+    },
+  );
+
+  // POST /jobs/:id/reprocess — перепрогнать уже-распознанный текст
+  // через АКТУАЛЬНУЮ конфигурацию типа (новый prompt / схема / валидаторы).
+  // Главный use-case: цикл тюнинга prompt'а — поменяли инструкцию в админ-UI,
+  // нажали reprocess на job'е, через 5-15 секунд увидели результат.
+  // OCR не повторяется (берём raw_text из БД), это экономит главную часть времени.
+  r.post(
+    '/jobs/:id/reprocess',
+    {
+      schema: {
+        tags: ['jobs'],
+        summary: 'Перепрогнать job под текущую конфигурацию типа',
+        description:
+          'Берёт сохранённый `raw_text`, прогоняет через classify+parse+validate с актуальной ' +
+          'конфигурацией из document_types (новый prompt/схема/валидаторы — то, что админ только ' +
+          'что отредактировал в UI). OCR заново не делается — только пост-обработка. Перезаписывает ' +
+          'extracted, confidence, validation_issues. Не работает на jobs без raw_text (например, ' +
+          'если OCR упала или job ещё in-flight).',
+        security: [{ bearerAuth: [] }],
+        params: JobIdParam,
+        response: {
+          200: Job,
+          400: ErrorResponse,
+          401: ErrorResponse,
+          404: ErrorResponse,
+          409: ErrorResponse,
+        },
+      },
+    },
+    async (req, reply) => {
+      const job = await jobsRepo.findById(req.params.id);
+      if (!job) {
+        reply.code(404);
+        return { error: 'job not found' };
+      }
+      // Нельзя перепрогонять in-flight — параллельный воркер может писать
+      // в те же поля. Возвращаем 409 чтобы пользователь подождал.
+      if (job.status === 'pending' || job.status === 'processing') {
+        reply.code(409);
+        return { error: `cannot reprocess job in status "${job.status}", wait for terminal state` };
+      }
+      if (!job.raw_text) {
+        reply.code(400);
+        return {
+          error:
+            'job has no raw_text (OCR did not complete or job was failed before extraction). ' +
+            'Re-upload the document instead.',
+        };
+      }
+
+      // Прогоняем тот же pipeline что и в воркере, но без OCR-фазы.
+      // hint — текущий documentType (или document_hint, если type ещё не определён).
+      const hint = job.document_type ?? job.document_hint ?? undefined;
+      const post = await runDocumentPipeline(job.raw_text, { hint }, req.log, {
+        jobId: job.id,
+        reprocess: true,
+      });
+
+      // OCR confidence сохраняем как было — он не менялся. Парсер-сторону пересчитываем.
+      const previousOcrConfidence =
+        job.confidence === null ? 0 : Number(job.confidence);
+      const overall = combineConfidence(previousOcrConfidence, post.parserConfidence);
+
+      const confidenceThreshold =
+        post.typeConfig?.confidenceThreshold ?? config.thresholds.needsReview;
+      const hasIssues = post.validationIssues.length > 0;
+      const lowConfidence = overall < confidenceThreshold;
+      const status: 'done' | 'needs_review' =
+        lowConfidence || hasIssues ? 'needs_review' : 'done';
+
+      const { _issues: _ignore, ...extractedClean } = post.extracted as {
+        _issues?: unknown;
+      } & Record<string, unknown>;
+      const extractedToStore: Record<string, unknown> = { ...extractedClean };
+      if (post.validationIssues.length > 0) {
+        extractedToStore._issues = post.validationIssues;
+      }
+
+      const updated = await jobsRepo.finalize(req.params.id, {
+        status,
+        documentType: post.documentType,
+        extracted: extractedToStore,
+        confidence: overall,
+        error: null,
+      });
+      if (!updated) {
+        reply.code(404);
+        return { error: 'job vanished during reprocess' };
+      }
+      req.log.info(
+        { jobId: req.params.id, status, parser_conf: post.parserConfidence, overall },
+        'job reprocessed',
+      );
       return jobsRepo.toApi(updated);
     },
   );

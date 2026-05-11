@@ -59,6 +59,26 @@
 - ✅ **B5 file magic-bytes validation** — пакет `file-type ^19.6`. После сохранения файла читаются magic bytes; если детектируется не из `ACCEPTED_DOCUMENT_MIMES` (PDF/JPEG/PNG/BMP/TIFF/WebP) — 400 и удаление файла. Если detected mime ≠ declared multipart Content-Type — detected становится authoritative (логируется warning). Защита от exe-под-видом-PDF, расширения vs реальный формат, и подобного.
 - ✅ Тесты: `tests/idempotency.spec.ts` (header parsing, unique-violation detector), `tests/magic-bytes.spec.ts` (PDF/PNG/JPEG/BMP/WebP по реальным magic bytes, рейект plaintext/exe, обнаружение mislabelled PDF).
 
+### Phase 3 Day 15 — Reprocess: перепрогнать job без новой OCR (2026-05-13)
+
+Замкнут цикл тюнинга prompt'а. Раньше: поменял `llm_prompt` в админ-UI
+→ чтобы проверить эффект, нужно было заново загружать тот же документ
+(минута OCR + минута extract). Теперь: кнопка «Перепрогнать» на job'е
+вызывает `POST /jobs/:id/reprocess` который берёт сохранённый
+`raw_text`, гонит через классификатор+парсер+валидатор с актуальной
+конфигурацией типа и обновляет `extracted` / `confidence` /
+`validation_issues`. OCR не повторяется — экономия главной части времени.
+
+Защиты:
+- 409 для in-flight (pending/processing) — параллельный воркер не должен
+  затоптать результаты.
+- 400 для jobs без raw_text (OCR упала / job failed раньше extract'а) —
+  предлагаем перезагрузить документ.
+
+Полный цикл тюнинга теперь:
+  правка prompt'а в UI → resolver кэш сбрасывается → reprocess
+  на job'е → 5-15 секунд (LLM-only) → новый extracted рядом с предыдущим.
+
 ### Phase 3 Day 14 — Каталог: договоры и приложения (2026-05-13)
 
 Каталог 12 → 15 типов. Добавлен юридический пласт.
