@@ -16,6 +16,7 @@ import { NullLlmClient } from './llm/null-client.js';
 import type { LlmClient } from './llm/types.js';
 import type { DocumentType } from '../types/documents.js';
 import { validateExtracted } from './validation/index.js';
+import { jobsDurationSeconds, jobsTotal, ocrEngineDurationSeconds } from '../metrics.js';
 
 // --- Wire dependencies once at module load. The pipeline is stateless beyond this.
 
@@ -71,6 +72,11 @@ export async function processJob(jobId: string, log: Logger): Promise<void> {
   let ocr: OcrResult | null = null;
   let documentType: DocumentType | null = (job.document_hint as DocumentType | null) ?? null;
 
+  // Metrics: end-to-end timer. `started` is "worker pickup" — close enough
+  // to user-perceived latency for a fire-and-forget API. Label values are
+  // resolved at finalize time (we don't know status/type up front).
+  const startedAt = Date.now();
+
   try {
     ocr = await runOcrChain({ filePath: job.file_path, mimeType: job.mime_type }, log);
 
@@ -116,6 +122,16 @@ export async function processJob(jobId: string, log: Logger): Promise<void> {
       error: null,
     });
 
+    // Metrics: terminal counter + duration histogram. `document_type` may
+    // be null (unclassified) — coerce to a stable label value to keep
+    // cardinality bounded and avoid leaking "undefined" buckets.
+    const dtLabel = documentType ?? 'unknown';
+    jobsTotal.inc({ status, document_type: dtLabel });
+    jobsDurationSeconds.observe(
+      { document_type: dtLabel, outcome: status },
+      (Date.now() - startedAt) / 1000,
+    );
+
     log.info({ jobId, status, engine: ocr.engine, confidence: overall }, 'job finalized');
 
     if (updated && updated.webhook_url) {
@@ -146,6 +162,14 @@ export async function processJob(jobId: string, log: Logger): Promise<void> {
       confidence: ocr?.confidence ?? null,
       documentType,
     });
+    // Metrics: count failures and record their duration too — long failures
+    // (e.g. timeouts) are interesting separately from quick rejects.
+    const dtLabel = documentType ?? 'unknown';
+    jobsTotal.inc({ status: 'failed', document_type: dtLabel });
+    jobsDurationSeconds.observe(
+      { document_type: dtLabel, outcome: 'failed' },
+      (Date.now() - startedAt) / 1000,
+    );
     throw err; // let BullMQ apply its retry policy
   }
 }
@@ -174,11 +198,23 @@ export async function runOcrChain(
         { engine: engine.name, confidence: r.confidence, durationMs: r.durationMs },
         'ocr engine result',
       );
+      // Engine reports its own internal duration; record per-engine + outcome.
+      // outcome=accepted when this engine's result is "good enough" to stop;
+      // rejected when we fall through to the next.
+      const accepted = r.confidence >= engine.acceptanceThreshold;
+      ocrEngineDurationSeconds.observe(
+        { engine: engine.name, outcome: accepted ? 'accepted' : 'rejected' },
+        r.durationMs / 1000,
+      );
       if (!best || r.confidence > best.confidence) best = r;
-      if (r.confidence >= engine.acceptanceThreshold) return r;
+      if (accepted) return r;
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       log.warn({ engine: engine.name, err: errMsg }, 'ocr engine failed');
+      // Engine threw — no duration available, but the failure itself is
+      // worth counting. Observe 0 to bump the count without skewing the
+      // histogram much; alternatively could be a separate counter.
+      ocrEngineDurationSeconds.observe({ engine: engine.name, outcome: 'error' }, 0);
     }
   }
   if (!best) throw new Error('all OCR engines failed');

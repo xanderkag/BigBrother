@@ -8,6 +8,7 @@ import type {
   LlmVisionResult,
 } from './types.js';
 import type { DocumentType } from '../../types/documents.js';
+import { llmCallDurationSeconds, llmCallsTotal } from '../../metrics.js';
 
 export type HttpLlmClientOptions = {
   baseUrl: string;
@@ -54,21 +55,41 @@ export class HttpLlmClient implements LlmClient {
 
   private async post<T>(path: string, body: unknown): Promise<T> {
     const url = new URL(path, this.opts.baseUrl).toString();
-    const res = await request(url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        ...(this.opts.apiKey ? { authorization: `Bearer ${this.opts.apiKey}` } : {}),
-      },
-      body: JSON.stringify(body),
-      headersTimeout: this.opts.timeoutMs,
-      bodyTimeout: this.opts.timeoutMs,
-    });
+    const startedAt = Date.now();
+    // `path` carries the leading slash; strip it for cleaner Prometheus labels.
+    const endpointLabel = path.replace(/^\/+/, '');
 
-    if (res.statusCode >= 400) {
-      const text = await res.body.text();
-      throw new Error(`LLM ${path} ${res.statusCode}: ${text.slice(0, 500)}`);
+    try {
+      const res = await request(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(this.opts.apiKey ? { authorization: `Bearer ${this.opts.apiKey}` } : {}),
+        },
+        body: JSON.stringify(body),
+        headersTimeout: this.opts.timeoutMs,
+        bodyTimeout: this.opts.timeoutMs,
+      });
+
+      const elapsed = (Date.now() - startedAt) / 1000;
+      llmCallDurationSeconds.observe({ endpoint: endpointLabel }, elapsed);
+
+      if (res.statusCode >= 400) {
+        llmCallsTotal.inc({ endpoint: endpointLabel, outcome: 'error' });
+        const text = await res.body.text();
+        throw new Error(`LLM ${path} ${res.statusCode}: ${text.slice(0, 500)}`);
+      }
+      llmCallsTotal.inc({ endpoint: endpointLabel, outcome: 'success' });
+      return (await res.body.json()) as T;
+    } catch (err) {
+      // Network / timeout — already counted above when the response came
+      // back with a >=400 status. Here we only count the path where the
+      // request threw before completing (e.g. ECONNREFUSED, timeout).
+      // Use a distinct outcome to differentiate from HTTP-error path.
+      if (!(err instanceof Error && err.message.startsWith('LLM '))) {
+        llmCallsTotal.inc({ endpoint: endpointLabel, outcome: 'error' });
+      }
+      throw err;
     }
-    return (await res.body.json()) as T;
   }
 }

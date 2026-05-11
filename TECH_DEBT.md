@@ -59,6 +59,20 @@
 - ✅ **B5 file magic-bytes validation** — пакет `file-type ^19.6`. После сохранения файла читаются magic bytes; если детектируется не из `ACCEPTED_DOCUMENT_MIMES` (PDF/JPEG/PNG/BMP/TIFF/WebP) — 400 и удаление файла. Если detected mime ≠ declared multipart Content-Type — detected становится authoritative (логируется warning). Защита от exe-под-видом-PDF, расширения vs реальный формат, и подобного.
 - ✅ Тесты: `tests/idempotency.spec.ts` (header parsing, unique-violation detector), `tests/magic-bytes.spec.ts` (PDF/PNG/JPEG/BMP/WebP по реальным magic bytes, рейект plaintext/exe, обнаружение mislabelled PDF).
 
+### Phase 2 Day 3 — Prometheus metrics (2026-05-11)
+
+- ✅ **I4 `/metrics` endpoints** на обоих сервисах. Public (Prometheus scrape без Bearer); защита — на уровне корп.nginx.
+- ✅ doc-service: `prom-client` + default Node-метрики. Кастомные:
+  - `docservice_jobs_total{status,document_type}` — терминальный счётчик
+  - `docservice_jobs_duration_seconds{document_type,outcome}` — end-to-end histogram
+  - `docservice_ocr_engine_duration_seconds{engine,outcome}` — per-engine latency (accepted / rejected / error)
+  - `docservice_llm_calls_total{endpoint,outcome}` + `docservice_llm_call_duration_seconds{endpoint}`
+  - `docservice_webhook_attempts_total{outcome}` (success / client_error / server_error / network_error)
+- ✅ inference-service: `prometheus-client` + middleware который автоматом снимает каждый HTTP-запрос:
+  - `inference_requests_total{endpoint,backend,outcome}`
+  - `inference_request_duration_seconds{endpoint,backend}` — buckets от 50ms (stub) до 2 минут (Qwen cold)
+- ✅ Settings UI получил ссылку на `/metrics` в Endpoints карточке.
+
 ---
 
 ## 🔴 Critical (блочит пилотный запуск)
@@ -121,18 +135,27 @@
 
 ---
 
-### I4. Нет наблюдаемости
+### ~~I4. Нет наблюдаемости~~ — ✅ закрыто 2026-05-11 (частично)
 
-**Где:** оба сервиса
+Реализованы `/metrics` endpoints на обоих сервисах. См. «Phase 2 Day 3» в шапке. **Grafana board ещё не настроен** — задача на следующую итерацию (`I4b`).
 
-**Симптом:** На вопросы «% задач в needs_review», «медиана OCR», «сколько раз LLM упал» — ответ только grep'ом по логам.
+---
 
-**Лечение:** `/metrics` ручка на обоих сервисах:
-- doc-service: `prom-client` + кастомные счётчики (`jobs_total{status}`, `jobs_duration_seconds{stage}`, `ocr_engine_duration_seconds{engine}`, `llm_calls_total{endpoint,outcome}`).
-- inference-service: `prometheus_client` + аналогично.
-- Grafana board с базовыми панелями.
+### I4b. Grafana dashboard для собранных метрик
 
-**Оценка:** день на оба сервиса + дашборд.
+**Где:** отдельный артефакт (JSON dashboard + provisioning), вероятно в `monitoring/`
+
+**Симптом:** Метрики собираются (`/metrics` на обоих сервисах отдают данные), но дашборд для оператора ещё не построен. Чтобы увидеть KPI «% needs_review», «median OCR latency by engine», «LLM error rate» нужно либо ходить на raw `/metrics`, либо ручками сложить запрос в Prometheus.
+
+**Лечение:** JSON dashboard для Grafana с панелями:
+- Jobs throughput (rate of `docservice_jobs_total` by status)
+- OCR latency p50/p95/p99 per engine
+- LLM call success rate + latency by endpoint
+- Webhook delivery success rate
+- Queue depth (нужен ещё один gauge — sample BullMQ `getJobCounts()` периодически)
+- Inference-service: requests/sec by backend, latency p95
+
+**Оценка:** день на дашборд + provisioning через docker-compose. Можно отложить до момента когда метрики начнут реально нужны (после первого продакшен-инцидента или жалобы на скорость).
 
 ---
 

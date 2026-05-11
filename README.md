@@ -143,9 +143,11 @@ docker compose -f docker-compose.doc-platform.yml up -d --build
 | doc-service Swagger UI | `http://localhost:3000/docs` | интерактивная документация |
 | doc-service OpenAPI JSON | `http://localhost:3000/docs/json` | для кодогенерации клиентов |
 | doc-service health | `http://localhost:3000/ready` | пробник: Postgres + Redis + storage |
+| doc-service metrics | `http://localhost:3000/metrics` | Prometheus scrape (Node runtime + кастомные счётчики) |
 | inference-service API | `http://localhost:8000` | LLM-инференс |
 | inference-service Swagger | `http://localhost:8000/docs` | авто из FastAPI |
 | inference-service ReDoc | `http://localhost:8000/redoc` | альтернативный UI |
+| inference-service metrics | `http://localhost:8000/metrics` | Prometheus scrape (Python runtime + HTTP histograms) |
 
 В `doc-service/.env` прописать связь:
 

@@ -826,6 +826,7 @@ function renderEndpointsCard() {
         <div class="flex justify-between"><dt class="text-slate-500">OpenAPI JSON</dt><dd><a href="/docs/json" class="text-indigo-600 hover:underline" target="_blank">/docs/json</a></dd></div>
         <div class="flex justify-between"><dt class="text-slate-500">Health</dt><dd><a href="/health" class="text-indigo-600 hover:underline" target="_blank">/health</a></dd></div>
         <div class="flex justify-between"><dt class="text-slate-500">Ready</dt><dd><a href="/ready" class="text-indigo-600 hover:underline" target="_blank">/ready</a></dd></div>
+        <div class="flex justify-between"><dt class="text-slate-500">Metrics</dt><dd><a href="/metrics" class="text-indigo-600 hover:underline" target="_blank">/metrics</a></dd></div>
       </dl>
     </div>`;
 }

@@ -1,11 +1,13 @@
 import logging
+import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 
 from .config import settings
 from .deps import get_backend
-from .routes import classify, extract, providers, verify, vision
+from .metrics import request_duration_seconds, requests_total
+from .routes import classify, extract, metrics as metrics_route, providers, verify, vision
 
 logging.basicConfig(level=settings.log_level.upper())
 log = logging.getLogger("inference-service")
@@ -30,6 +32,43 @@ app = FastAPI(
 )
 
 
+@app.middleware("http")
+async def prometheus_middleware(request: Request, call_next):
+    """Auto-instrument every HTTP request with a histogram + counter.
+
+    `endpoint` label uses the route path template (`/v1/classify`) rather
+    than the raw URL so label cardinality stays bounded — even if every
+    job has a unique id, all GET /jobs/<uuid> calls collapse to a single
+    bucket.
+
+    `backend` is the currently active backend, captured at request time
+    (not at boot) so a runtime backend swap shows up correctly.
+    """
+    # Skip metrics endpoint itself — recursive observation is noisy.
+    path = request.url.path
+    if path in ("/metrics", "/health", "/ready"):
+        return await call_next(request)
+
+    backend = getattr(app.state, "backend", None)
+    backend_name = backend.name if backend else "unknown"
+    # Use the matched route template if available, raw path otherwise.
+    route = request.scope.get("route")
+    endpoint = getattr(route, "path", path) if route else path
+
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+        outcome = "success" if response.status_code < 400 else "error"
+        return response
+    except Exception:
+        outcome = "exception"
+        raise
+    finally:
+        elapsed = time.perf_counter() - started
+        request_duration_seconds.labels(endpoint=endpoint, backend=backend_name).observe(elapsed)
+        requests_total.labels(endpoint=endpoint, backend=backend_name, outcome=outcome).inc()
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -48,3 +87,4 @@ app.include_router(extract.router, prefix="/v1", tags=["extract"])
 app.include_router(vision.router, prefix="/v1", tags=["vision"])
 app.include_router(verify.router, prefix="/v1", tags=["verify"])
 app.include_router(providers.router, prefix="/v1", tags=["providers"])
+app.include_router(metrics_route.router)  # exposed at /metrics, no prefix

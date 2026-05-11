@@ -15,6 +15,7 @@ import {
 import { config } from './config.js';
 import { jobsRoutes } from './routes/jobs.js';
 import { healthRoutes } from './routes/health.js';
+import { metricsRoutes } from './routes/metrics.js';
 import { settingsRoutes } from './routes/settings.js';
 import { closeDb } from './db.js';
 import { closeQueue } from './queue.js';
@@ -148,6 +149,7 @@ async function main() {
   });
 
   await app.register(healthRoutes);
+  await app.register(metricsRoutes);
   await app.register(jobsRoutes, { prefix: '/api/v1' });
   await app.register(settingsRoutes, { prefix: '/api/v1' });
 

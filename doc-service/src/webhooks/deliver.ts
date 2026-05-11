@@ -3,6 +3,7 @@ import { request } from 'undici';
 import { setTimeout as delay } from 'node:timers/promises';
 import { config } from '../config.js';
 import { jobsRepo } from '../storage/jobs.js';
+import { webhookAttemptsTotal } from '../metrics.js';
 import type { Logger } from 'pino';
 
 export type WebhookPayload = {
@@ -48,6 +49,7 @@ export async function deliverWebhook(
 
       if (res.statusCode >= 200 && res.statusCode < 300) {
         await jobsRepo.recordWebhookAttempt(jobId, true, null);
+        webhookAttemptsTotal.inc({ outcome: 'success' });
         log.info({ jobId, attempt, status: res.statusCode }, 'webhook delivered');
         // Drain body to free the socket.
         await res.body.dump();
@@ -57,15 +59,18 @@ export async function deliverWebhook(
       const errText = (await res.body.text()).slice(0, 500);
       const errMsg = `HTTP ${res.statusCode}: ${errText}`;
       await jobsRepo.recordWebhookAttempt(jobId, false, errMsg);
+      // 4xx (excluding 408/429) = client_error; 5xx and 408/429 = server_error.
+      // Lets dashboards separate "their bug" from "their downtime".
+      const isClientError =
+        res.statusCode >= 400 && res.statusCode < 500 && res.statusCode !== 408 && res.statusCode !== 429;
+      webhookAttemptsTotal.inc({ outcome: isClientError ? 'client_error' : 'server_error' });
       log.warn({ jobId, attempt, status: res.statusCode }, 'webhook non-2xx');
 
-      // 4xx (other than 408/429) are unlikely to recover — bail early.
-      if (res.statusCode >= 400 && res.statusCode < 500 && res.statusCode !== 408 && res.statusCode !== 429) {
-        return;
-      }
+      if (isClientError) return;
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : String(err);
       await jobsRepo.recordWebhookAttempt(jobId, false, errMsg);
+      webhookAttemptsTotal.inc({ outcome: 'network_error' });
       log.warn({ jobId, attempt, err: errMsg }, 'webhook attempt failed');
     }
 
