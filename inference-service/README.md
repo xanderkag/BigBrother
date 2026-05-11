@@ -10,7 +10,34 @@
 - Pydantic v2 для схем запросов/ответов
 - Backend (model adapter) выбирается через `BACKEND` env:
   - `stub` (по умолчанию) — детерминированные ответы по эвристикам, без ML-зависимостей; для dev/CI.
-  - `qwen` — Qwen2.5-VL через transformers; нужен GPU (≥8GB VRAM для 3B, ≥16GB для 7B).
+  - `claude` — Anthropic Claude через SDK; нужен `ANTHROPIC_API_KEY`.
+  - `openai` — облачный OpenAI через `openai` SDK; нужен `OPENAI_API_KEY`.
+  - **`openai_compat`** — универсальный клиент к любому OpenAI-API-совместимому серверу (Ollama / vLLM / llama.cpp / LM Studio). Рекомендуемый путь для локальных моделей. См. [MODELS.md](MODELS.md).
+  - `qwen` — Qwen2.5-VL напрямую через transformers; нужен GPU (≥8GB VRAM для 3B, ≥16GB для 7B). Для большинства задач лучше `openai_compat` + Ollama/vLLM (быстрее, меньше зависимостей).
+
+## Локальные модели за 3 минуты
+
+```bash
+# 1. поднимаем Ollama + parsdocs стек
+docker network create ai-platform 2>/dev/null || true
+docker compose -f ../docker-compose.doc-platform.yml -f ../docker-compose.local-models.yml up -d
+
+# 2. модель скачается автоматически (qwen2.5vl:7b по умолчанию)
+# чтобы поменять — установите OLLAMA_PULL=llama3.2-vision:11b в .env
+
+# 3. переключаем inference-service на openai_compat
+cat >> .env <<'EOF'
+BACKEND=openai_compat
+OPENAI_BASE_URL=http://ollama:11434/v1
+OPENAI_MODEL=qwen2.5vl:7b
+EOF
+docker compose restart inference
+
+# 4. проверяем
+curl http://localhost:8000/v1/providers/status
+```
+
+Подробнее о выборе модели, требованиях к железу и трейдоффах — [MODELS.md](MODELS.md).
 
 ## Документация API
 

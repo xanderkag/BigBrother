@@ -157,6 +157,25 @@ LLM_INFERENCE_URL=http://inference:8000
 
 Без этой строки `vision-llm` ступень OCR-цепочки выпадает и Phase 2 парсеры (ТТН/CMR/АКТ) деградируют до `needs_review`.
 
+### С локальной open-source моделью (Ollama)
+
+Если нет облачного API-ключа или хочется экономии — поднимаем Ollama рядом со стеком:
+
+```bash
+docker network create ai-platform     # один раз
+docker compose -f docker-compose.doc-platform.yml -f docker-compose.local-models.yml up -d
+```
+
+По умолчанию подтянется `qwen2.5vl:7b` (~6 GB). Поменять модель — переменная окружения `OLLAMA_PULL` (например `llama3.2-vision:11b`). Затем в `inference-service/.env`:
+
+```
+BACKEND=openai_compat
+OPENAI_BASE_URL=http://ollama:11434/v1
+OPENAI_MODEL=qwen2.5vl:7b
+```
+
+Полное сравнение моделей, требования к VRAM/CPU и рекомендации по сценариям (dev / prod GPU / air-gapped / самое дешёвое) — [inference-service/MODELS.md](inference-service/MODELS.md).
+
 ### Только doc-service (без LLM)
 
 Если нет GPU и Phase 2 не нужен прямо сейчас:

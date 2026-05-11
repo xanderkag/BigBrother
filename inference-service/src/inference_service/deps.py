@@ -8,8 +8,9 @@ from .config import settings
 def get_backend() -> ModelBackend:
     """Lazy-loaded singleton backend.
 
-    Heavy backends (Qwen weights, future OpenAI) import their SDKs inside
-    the branch so the stub container can run without those deps at all.
+    Heavy backends (Qwen weights, OpenAI-compat connecting to remote
+    server) import their SDKs inside the branch so the stub container can
+    run without those deps at all.
     """
     if settings.backend == "stub":
         from .backends.stub import StubBackend
@@ -27,8 +28,30 @@ def get_backend() -> ModelBackend:
         )
 
     if settings.backend == "openai":
-        # Placeholder — OpenAI backend lands in Phase 3.
-        raise RuntimeError("openai backend not implemented yet; see TECH_DEBT")
+        # `openai` == cloud OpenAI без `base_url`. Используется тот же
+        # OpenAICompatibleBackend — без base_url он ходит на api.openai.com.
+        from .backends.openai_compatible import OpenAICompatibleBackend
+
+        return OpenAICompatibleBackend(
+            base_url="",
+            model_id=settings.openai_model,
+            api_key=settings.openai_api_key,
+            max_tokens=settings.openai_max_tokens,
+            timeout_seconds=settings.openai_timeout_seconds,
+        )
+
+    if settings.backend == "openai_compat":
+        # Локальный или альтернативный OpenAI-совместимый сервер
+        # (Ollama, vLLM, llama.cpp, LM Studio, SGLang, TGI, etc).
+        from .backends.openai_compatible import OpenAICompatibleBackend
+
+        return OpenAICompatibleBackend(
+            base_url=settings.openai_base_url,
+            model_id=settings.openai_model,
+            api_key=settings.openai_api_key,
+            max_tokens=settings.openai_max_tokens,
+            timeout_seconds=settings.openai_timeout_seconds,
+        )
 
     if settings.backend == "qwen":
         from .backends.qwen_vl import QwenVlBackend
@@ -54,6 +77,10 @@ def get_providers_status() -> dict[str, object]:
     No SDK initialisation here — this endpoint must respond in
     milliseconds even when Qwen would take minutes to load.
     """
+    # openai_compat считается configured, если задан и base_url, и model.
+    # base_url пустой → это «облачный OpenAI», его освещает запись
+    # `openai`. Так что openai_compat = только локальные/альтернативные.
+    openai_compat_configured = bool(settings.openai_base_url and settings.openai_model)
     return {
         "active": settings.backend,
         "available": {
@@ -68,14 +95,28 @@ def get_providers_status() -> dict[str, object]:
                 "description": "Anthropic Claude via API. Requires ANTHROPIC_API_KEY.",
             },
             "openai": {
-                "configured": bool(settings.openai_api_key),
-                "model": None,
-                "description": "OpenAI (placeholder — backend not implemented yet).",
+                "configured": bool(settings.openai_api_key) and not settings.openai_base_url,
+                "model": settings.openai_model if settings.openai_api_key else None,
+                "description": (
+                    "OpenAI cloud (api.openai.com). Requires OPENAI_API_KEY. "
+                    "Если задан OPENAI_BASE_URL — конфиг попадёт в openai_compat вместо."
+                ),
+            },
+            "openai_compat": {
+                "configured": openai_compat_configured,
+                "model": settings.openai_model if openai_compat_configured else None,
+                "description": (
+                    "OpenAI-совместимый локальный сервер: Ollama / vLLM / llama.cpp / LM Studio. "
+                    "Требует OPENAI_BASE_URL + OPENAI_MODEL. Лучший путь для локальных моделей."
+                ),
             },
             "qwen": {
                 "configured": True,  # weights resolved at runtime; no API key needed
                 "model": settings.qwen_model_id,
-                "description": "Local Qwen-VL via transformers. Requires GPU + [qwen] extras.",
+                "description": (
+                    "Qwen-VL напрямую через transformers. Требует GPU + [qwen] extras. "
+                    "Для большинства задач предпочтительнее backend=openai_compat + Ollama/vLLM."
+                ),
             },
         },
     }

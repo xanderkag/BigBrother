@@ -8,3 +8,8 @@ pydantic-settings>=2.6
 pillow>=10.4
 python-multipart>=0.0.20
 prometheus-client>=0.21
+
+# OpenAI Python SDK — используется обоими бэкендами `openai` (облачный)
+# и `openai_compat` (локальные OpenAI-API-совместимые серверы: Ollama,
+# vLLM, llama.cpp, LM Studio). Чистый Python без heavy ML-deps, ~1 MB.
+openai>=1.50

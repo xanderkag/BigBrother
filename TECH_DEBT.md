@@ -59,6 +59,56 @@
 - ✅ **B5 file magic-bytes validation** — пакет `file-type ^19.6`. После сохранения файла читаются magic bytes; если детектируется не из `ACCEPTED_DOCUMENT_MIMES` (PDF/JPEG/PNG/BMP/TIFF/WebP) — 400 и удаление файла. Если detected mime ≠ declared multipart Content-Type — detected становится authoritative (логируется warning). Защита от exe-под-видом-PDF, расширения vs реальный формат, и подобного.
 - ✅ Тесты: `tests/idempotency.spec.ts` (header parsing, unique-violation detector), `tests/magic-bytes.spec.ts` (PDF/PNG/JPEG/BMP/WebP по реальным magic bytes, рейект plaintext/exe, обнаружение mislabelled PDF).
 
+### Phase 3 Day 7 — OpenAI-compat backend для локальных моделей (2026-05-13)
+
+Чтобы не тащить torch внутрь нашего контейнера и не писать новый backend
+под каждую модель — добавлен **универсальный** OpenAI-API клиент. Все
+популярные локальные inference-серверы (Ollama, vLLM, llama.cpp, LM Studio,
+SGLang, TGI) выставляют OpenAI Chat Completions API; теперь parsdocs
+работает со всеми ими разом, меняя только `OPENAI_BASE_URL`.
+
+- ✅ `inference_service/backends/openai_compatible.py` — async-клиент через
+  официальный `openai>=1.50` SDK. Поддерживает text-only chat,
+  vision (data URL image input), `response_format=json_object` с graceful
+  fallback'ом для серверов без JSON-mode (старый llama.cpp).
+- ✅ `config.py`: новые поля `openai_base_url / openai_model / openai_api_key
+  / openai_max_tokens / openai_timeout_seconds`. Поле `backend` расширено
+  значениями `openai` (cloud) и `openai_compat` (локальный). `openai`
+  раньше падал `RuntimeError("not implemented")` — теперь использует тот
+  же класс с пустым base_url (→ api.openai.com).
+- ✅ `deps.get_providers_status()` показывает обе ветки — `openai`
+  (cloud, по `openai_api_key` + пустой base_url) и `openai_compat`
+  (по `base_url+model`). Удобно для UI «Provider Keys».
+- ✅ `requirements.txt`: добавлен `openai>=1.50` (~1 MB, без heavy ML).
+- ✅ `docker-compose.local-models.yml` — отдельный профиль с Ollama:
+  основной контейнер + одноразовый `ollama-bootstrap`, который тянет
+  модели из переменной `OLLAMA_PULL` через REST API. По умолчанию
+  скачивает `qwen2.5vl:7b`. Раскомментируемая секция GPU passthrough.
+- ✅ `inference-service/MODELS.md` — сравнительная таблица 9 моделей
+  (Qwen2.5-VL 3B/7B, Llama 3.2 Vision, MiniCPM-V, InternVL3, Granite-Vision,
+  Gemma 3, Qwen3, Saiga/Vikhr) с расходом VRAM в fp16/q4 и оценками по
+  RU classify/extract/vision. Рекомендации для 4 сценариев: dev /
+  prod GPU / air-gapped / самое дешёвое.
+- ✅ `tests/test_openai_compat_backend.py` — 9 кейсов на mocked
+  AsyncOpenAI: classify передаёт json_mode, extract парсит markdown-
+  обёрнутый JSON, vision_ocr шлёт image_url data URL без json_mode,
+  graceful fallback при `response_format not supported`, propagate
+  для всех других ошибок, is_ready() с пустым model_id = false.
+- ✅ README — раздел «Quick Start → С локальной open-source моделью»
+  + ссылка на MODELS.md.
+- ⏸ Открытое:
+  - **Per-job провайдер**: `provider_settings` в doc-service всё ещё не
+    пробрасывается в inference-service по запросу — выбор остаётся
+    на уровне env `BACKEND=`. Когда понадобится мультитенантность
+    «клиент A на Ollama, клиент B на Claude» — нужна доп. API.
+  - **vLLM compose-профиль** для prod GPU. Требует CUDA-base image и
+    конкретного GPU.
+  - **Golden set + benchmark скрипт** — без него «качество» в MODELS.md
+    остаётся экспертной оценкой.
+  - **Удаление `qwen` backend'а?** Технически дублирует `openai_compat`
+    при том же Qwen через Ollama. Оставлен для custom-fine-tune-сценариев,
+    но в README указано «лучше openai_compat».
+
 ### Phase 3 Day 6 — Runtime читает DB-конфиг end-to-end (2026-05-13)
 
 Раньше админ-UI правил конфиг, но runtime его не подхватывал — классификатор и парсеры были захардкожены под шесть builtin-типов. Теперь пользовательский тип, заведённый через UI, **реально работает** в pipeline'е:
