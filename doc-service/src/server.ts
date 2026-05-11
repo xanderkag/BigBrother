@@ -70,9 +70,9 @@ async function main() {
     openapi: {
       openapi: '3.1.0',
       info: {
-        title: 'doc-service',
+        title: 'Big Brother',
         description:
-          'Универсальный сервис обработки транспортных и бухгалтерских документов: OCR + извлечение структурированных данных.',
+          'Платформа обработки документов: OCR + извлечение структурированных данных по конфигурируемым типам. Multi-tenant, с локальными и облачными LLM-провайдерами.',
         version: '0.1.0',
       },
       servers: [{ url: `http://localhost:${config.port}`, description: 'local' }],
@@ -167,6 +167,25 @@ async function main() {
       docExpansion: 'list',
       deepLinking: true,
       persistAuthorization: true,
+      // Сортировка для предсказуемого визуального порядка.
+      tagsSorter: 'alpha',
+      operationsSorter: 'method',
+      // Прячем секцию «Schemas» внизу страницы — нашему пользователю
+      // нужны endpoint'ы, не сырые JSON Schema.
+      defaultModelsExpandDepth: -1,
+      // Отключаем встроенный validator badge с Swagger.io — внешний
+      // запрос наружу не нужен и пугает security-аудиторов.
+      validatorUrl: null,
+    },
+    // Прячем верхний бар (логотип Fastify + URL-input + «Explore») —
+    // ничего полезного в нём нет, только захламляет.
+    theme: {
+      css: [
+        {
+          filename: 'no-topbar.css',
+          content: '.swagger-ui .topbar { display: none; }',
+        },
+      ],
     },
     staticCSP: true,
   });
