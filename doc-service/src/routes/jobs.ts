@@ -9,7 +9,6 @@ import {
 } from '../storage/files.js';
 import { jobsRepo } from '../storage/jobs.js';
 import { docQueue } from '../queue.js';
-import { DOCUMENT_TYPES } from '../types/documents.js';
 import {
   CreateJobResponse,
   ErrorResponse,
@@ -21,7 +20,6 @@ import {
 } from '../types/api-schemas.js';
 import { bearerAuthHook } from '../auth.js';
 import { validateExtractedWithResolver } from '../pipeline/validation/index.js';
-import type { DocumentType } from '../types/documents.js';
 
 function isValidWebhookUrl(value: string): boolean {
   try {
@@ -223,12 +221,16 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         return { error: 'webhook_url must be http(s) URL' };
       }
 
-      if (
-        documentHint &&
-        !DOCUMENT_TYPES.includes(documentHint as (typeof DOCUMENT_TYPES)[number])
-      ) {
+      // Хинт от клиента может быть любым slug'ом — builtin (один из шести)
+      // или пользовательский тип из Document Type Registry. Валидируем
+      // только формат, наличие проверять в БД не делаем (это лишний
+      // round-trip; если slug не найдётся, оркестратор спокойно
+      // деградирует к классификации/generic-парсеру).
+      if (documentHint && !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(documentHint)) {
         reply.code(400);
-        return { error: `document_hint must be one of ${DOCUMENT_TYPES.join(', ')}` };
+        return {
+          error: 'document_hint must be 1-64 chars, [A-Za-z0-9_-], starting with alphanumeric',
+        };
       }
 
       let job;
@@ -238,7 +240,7 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
           filePath: savedFile.absolutePath,
           fileSize: savedFile.size,
           mimeType: savedFile.mimeType,
-          documentHint: (documentHint as (typeof DOCUMENT_TYPES)[number]) ?? null,
+          documentHint: documentHint ?? null,
           webhookUrl: webhookUrl ?? null,
           metadata: metadata ?? null,
           idempotencyKey,
@@ -339,7 +341,7 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
       if (job.document_type) {
         const issues = await validateExtractedWithResolver(
           sanitizedBody,
-          job.document_type as DocumentType,
+          job.document_type,
           req.log,
         );
         if (issues.length > 0) sanitizedBody._issues = issues;

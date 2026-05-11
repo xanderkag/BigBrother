@@ -1,4 +1,5 @@
-import type { DocumentType } from '../../types/documents.js';
+import type { DocumentTypeSlug, BuiltinDocumentType } from '../../types/documents.js';
+import { isBuiltinDocumentType } from '../../types/documents.js';
 import type { LlmClient } from '../llm/types.js';
 import type { DocumentParser } from './types.js';
 import { InvoiceParser } from './invoice.js';
@@ -6,6 +7,7 @@ import { UpdParser } from './upd.js';
 import { TtnParser } from './ttn.js';
 import { CmrParser } from './cmr.js';
 import { AktParser } from './akt.js';
+import { GenericLlmParser } from './generic-llm.js';
 
 export type ParsersOptions = {
   /**
@@ -17,21 +19,66 @@ export type ParsersOptions = {
 };
 
 /**
- * Build the parser registry. Every parser receives the LlmClient — Phase 1
- * parsers use it as a fallback when their regex confidence is low; Phase 2
- * parsers delegate extraction to it entirely.
+ * ParsersFactory — диспатчер парсеров.
+ *
+ * Зачем factory вместо `Record<DocumentType, Parser>`:
+ *   - **Builtin slug'и** (шесть классов: invoice, factInvoice, UPD, TTN,
+ *     CMR, AKT) обслуживаются типизированными парсерами, как и раньше.
+ *   - **Пользовательские slug'и** (всё, что админ создал через UI) не
+ *     знают своего типа на этапе компиляции — для них фабрика отдаёт
+ *     `GenericLlmParser`, который берёт JSON-схему и список полей из
+ *     `ParserOverride` (DB row через resolver).
+ *
+ * Generic-парсеры мемоизируются по slug — повторное обращение возвращает
+ * тот же инстанс. Builtin'ы строятся один раз в конструкторе.
+ */
+export class ParsersFactory {
+  private readonly builtins: Record<BuiltinDocumentType, DocumentParser>;
+  private readonly genericCache = new Map<string, DocumentParser>();
+
+  constructor(
+    private readonly llm: LlmClient,
+    options: ParsersOptions = {},
+  ) {
+    const fallback = options.regexFallbackThreshold ?? 0.7;
+    this.builtins = {
+      invoice: new InvoiceParser(llm, fallback),
+      factInvoice: new UpdParser(llm, 'factInvoice', fallback),
+      UPD: new UpdParser(llm, 'UPD', fallback),
+      TTN: new TtnParser(llm),
+      CMR: new CmrParser(llm),
+      AKT: new AktParser(llm),
+    };
+  }
+
+  get(slug: DocumentTypeSlug): DocumentParser {
+    if (isBuiltinDocumentType(slug)) {
+      return this.builtins[slug];
+    }
+    const cached = this.genericCache.get(slug);
+    if (cached) return cached;
+    const parser = new GenericLlmParser(this.llm, slug);
+    this.genericCache.set(slug, parser);
+    return parser;
+  }
+}
+
+/**
+ * Сохраняем экспорт `buildParsers` для обратной совместимости с тестами,
+ * которые ожидают `Record<BuiltinDocumentType, Parser>`. Новый код
+ * (orchestrator) использует `ParsersFactory` напрямую.
  */
 export function buildParsers(
   llm: LlmClient,
   options: ParsersOptions = {},
-): Record<DocumentType, DocumentParser> {
-  const fallback = options.regexFallbackThreshold ?? 0.7;
+): Record<BuiltinDocumentType, DocumentParser> {
+  const factory = new ParsersFactory(llm, options);
   return {
-    invoice: new InvoiceParser(llm, fallback),
-    factInvoice: new UpdParser(llm, 'factInvoice', fallback),
-    UPD: new UpdParser(llm, 'UPD', fallback),
-    TTN: new TtnParser(llm),
-    CMR: new CmrParser(llm),
-    AKT: new AktParser(llm),
+    invoice: factory.get('invoice'),
+    factInvoice: factory.get('factInvoice'),
+    UPD: factory.get('UPD'),
+    TTN: factory.get('TTN'),
+    CMR: factory.get('CMR'),
+    AKT: factory.get('AKT'),
   };
 }

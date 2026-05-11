@@ -59,6 +59,24 @@
 - ✅ **B5 file magic-bytes validation** — пакет `file-type ^19.6`. После сохранения файла читаются magic bytes; если детектируется не из `ACCEPTED_DOCUMENT_MIMES` (PDF/JPEG/PNG/BMP/TIFF/WebP) — 400 и удаление файла. Если detected mime ≠ declared multipart Content-Type — detected становится authoritative (логируется warning). Защита от exe-под-видом-PDF, расширения vs реальный формат, и подобного.
 - ✅ Тесты: `tests/idempotency.spec.ts` (header parsing, unique-violation detector), `tests/magic-bytes.spec.ts` (PDF/PNG/JPEG/BMP/WebP по реальным magic bytes, рейект plaintext/exe, обнаружение mislabelled PDF).
 
+### Phase 3 Day 6 — Runtime читает DB-конфиг end-to-end (2026-05-13)
+
+Раньше админ-UI правил конфиг, но runtime его не подхватывал — классификатор и парсеры были захардкожены под шесть builtin-типов. Теперь пользовательский тип, заведённый через UI, **реально работает** в pipeline'е:
+
+- ✅ **Classifier from DB.** `KeywordClassifier` берёт активные типы через `documentTypeResolver.listActive()` (TTL 60s, инвалидируется на каждый CRUD-write document_types), компилирует `classification_keywords` в RegExp'ы и выбирает лучший матч. Если БД пустая или ничего не совпало — деградирует к hardcoded fallback'у на шесть builtin'ов. Опционально per-type weight через `metadata.classification_weight` (0..1).
+- ✅ **GenericLlmParser** для не-builtin slug'ов. Берёт `llm_schema` и `expected_fields` из `ParserOverride` (= DB row через resolver). Если LLM offline — пустой результат без падения.
+- ✅ **ParsersFactory.** Builtin slug → типизированный парсер (мемо). Custom slug → `GenericLlmParser` с кэшем по slug. Старый `buildParsers` оставлен для обратной совместимости с тестами.
+- ✅ **Тип-сигнатуры расширены.** Введены `BuiltinDocumentType` (= алиас старого `DocumentType`) и `DocumentTypeSlug = string` (что приходит из БД / classifier'а / API). Hot-path и storage переведены на `DocumentTypeSlug`; hardcoded мапы (`DOCUMENT_JSON_SCHEMAS`, parser switch'и) остались на `BuiltinDocumentType`. Type guard `isBuiltinDocumentType()` на границе.
+- ✅ **API.** `document_hint` и `document_type` в zod-схемах теперь свободный slug-формат (`^[A-Za-z0-9][A-Za-z0-9_-]*$`, 1-64 символа). Swagger описание обновлено.
+- ✅ Тесты:
+  - `tests/parser-dispatch.spec.ts` (10 кейсов): isBuiltinDocumentType, ParsersFactory memoization, GenericLlmParser с LLM/без LLM/без override, type-property.
+  - `tests/classifier-from-db.spec.ts` (7 кейсов): DB keyword matching, hardcoded fallback при пустой БД, bad-regex tolerance, metadata.classification_weight, mock через `vi.spyOn(documentTypesRepo, 'listActive')`.
+  - `tests/classifier.spec.ts` обновлён: добавлен env-сетап (теперь classifier транзитивно тянет config через resolver).
+- ⏸ Открытое:
+  - **llm_prompt override до inference-service**: админ-настроенный prompt пока остаётся в БД и не пробрасывается per-request. Требует расширения /v1/extract API (доп. поле `prompt_override`).
+  - **Per-job confidence weighting**: классификатор-weight из metadata.classification_weight есть в коде, но в UI отдельного поля для него нет — лежит в JSON-textarea metadata.
+  - **Validators для custom-типов без записи в БД** возвращают пустой массив (раньше hardcoded fallback покрывал builtin'ы; для custom — нет). Это правильно: custom-тип без DB row некорректен по определению.
+
 ### Phase 3 Day 5 — Admin Layer: CRUD + Provider keys + Audit (2026-05-13)
 
 - ✅ **CP4 Admin layer для document_types** — `POST /document-types`, `PATCH /document-types/:slug`, `DELETE /document-types/:slug`. Builtin защищён от DELETE (можно деактивировать через PATCH). Каждый write: → запись в `audit_log` (before/after/diff) → `documentTypeResolver.invalidate(slug)` → следующий job подхватывает изменения без рестарта.

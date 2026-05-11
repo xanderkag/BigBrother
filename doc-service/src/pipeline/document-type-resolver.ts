@@ -17,7 +17,7 @@
 import { config } from '../config.js';
 import { documentTypesRepo, type DocumentTypeRow } from '../storage/document-types.js';
 import { DOCUMENT_JSON_SCHEMAS, EXPECTED_FIELDS } from '../types/document-json-schemas.js';
-import type { DocumentType } from '../types/documents.js';
+import type { DocumentTypeSlug } from '../types/documents.js';
 
 const DEFAULT_TTL_MS = 60_000;
 
@@ -30,7 +30,7 @@ const DEFAULT_TTL_MS = 60_000;
  * schemas, etc.).
  */
 export type ResolvedTypeConfig = {
-  slug: DocumentType;
+  slug: DocumentTypeSlug;
   /** Effective needs-review threshold for the combined OCR + parser confidence. */
   confidenceThreshold: number;
   /** Below this regex confidence, Phase 1 parsers fall through to the LLM. */
@@ -47,8 +47,31 @@ export type ResolvedTypeConfig = {
 
 export class DocumentTypeResolver {
   private cache = new Map<string, { row: DocumentTypeRow | null; at: number }>();
+  /** Кэш для listActive() — отдельный, потому что инвалидируется широко (любой write). */
+  private listCache: { rows: DocumentTypeRow[]; at: number } | null = null;
 
   constructor(private readonly ttlMs: number = DEFAULT_TTL_MS) {}
+
+  /**
+   * Список всех активных типов (для classifier'а и UI dropdown'ов). Один
+   * DB round-trip на ttl; при любом CRUD-write на document_types вызовите
+   * `invalidate()` без аргумента — это сбросит и список, и per-slug кэш.
+   */
+  async listActive(): Promise<DocumentTypeRow[]> {
+    if (this.listCache && Date.now() - this.listCache.at < this.ttlMs) {
+      return this.listCache.rows;
+    }
+    let rows: DocumentTypeRow[];
+    try {
+      rows = await documentTypesRepo.listActive();
+    } catch {
+      // DB hiccup — не отравляем кэш. Возвращаем пустой список, классификатор
+      // деградирует к hardcoded fallback'у.
+      return [];
+    }
+    this.listCache = { rows, at: Date.now() };
+    return rows;
+  }
 
   /**
    * Get the config for a slug. Returns `null` (cached) when the slug
@@ -75,13 +98,15 @@ export class DocumentTypeResolver {
   }
 
   /**
-   * Drop a single slug or the entire cache. Called by future PUT/POST
-   * handlers in document-types route so admins see their edits
-   * reflected immediately, not at next TTL boundary.
+   * Drop a single slug or the entire cache. Called by PUT/POST/DELETE
+   * handlers in document-types route so admins see their edits reflected
+   * immediately, not at next TTL boundary. Also clears the listActive()
+   * cache — состав активных типов мог поменяться.
    */
   invalidate(slug?: string): void {
     if (slug === undefined) this.cache.clear();
     else this.cache.delete(slug);
+    this.listCache = null;
   }
 
   /**
@@ -91,7 +116,7 @@ export class DocumentTypeResolver {
    * caller whether the values came from DB (admin can change them)
    * or from fallback (need to seed the DB).
    */
-  async resolveConfig(slug: DocumentType): Promise<ResolvedTypeConfig> {
+  async resolveConfig(slug: DocumentTypeSlug): Promise<ResolvedTypeConfig> {
     const row = await this.get(slug);
     return resolveConfigFromRow(slug, row);
   }
@@ -106,11 +131,17 @@ export const documentTypeResolver = new DocumentTypeResolver();
  * the cache/db plumbing.
  */
 export function resolveConfigFromRow(
-  slug: DocumentType,
+  slug: DocumentTypeSlug,
   row: DocumentTypeRow | null,
 ): ResolvedTypeConfig {
-  const fallbackSchema = DOCUMENT_JSON_SCHEMAS[slug] ?? {};
-  const fallbackFields = EXPECTED_FIELDS[slug] ?? [];
+  // Hardcoded fallback'и есть только для шести builtin-slug'ов. Для
+  // пользовательских типов индексация вернёт undefined — ловим через
+  // `??` и подсовываем пустые дефолты. Custom-type без row в БД =
+  // ничего не парсим (вряд ли осмысленный кейс, но не падаем).
+  const schemas = DOCUMENT_JSON_SCHEMAS as Record<string, Record<string, unknown> | undefined>;
+  const fields = EXPECTED_FIELDS as Record<string, string[] | undefined>;
+  const fallbackSchema = schemas[slug] ?? {};
+  const fallbackFields = fields[slug] ?? [];
 
   if (!row) {
     return {

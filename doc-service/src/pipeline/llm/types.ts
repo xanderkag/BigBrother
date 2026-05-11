@@ -1,7 +1,7 @@
-import type { DocumentType } from '../../types/documents.js';
+import type { DocumentTypeSlug } from '../../types/documents.js';
 
 export type LlmClassifyResult = {
-  type: DocumentType | null;
+  type: DocumentTypeSlug | null;
   confidence: number;
 };
 
@@ -34,7 +34,7 @@ export interface LlmClient {
   extract(input: {
     text: string;
     schema: Record<string, unknown>;
-    hint?: DocumentType;
+    hint?: DocumentTypeSlug;
   }): Promise<LlmExtractResult>;
   visionOcr(input: { imagePath: string; prompt?: string }): Promise<LlmVisionResult>;
   verify(input: {

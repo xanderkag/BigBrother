@@ -1,4 +1,4 @@
-import type { DocumentType } from '../../types/documents.js';
+import type { DocumentTypeSlug } from '../../types/documents.js';
 import type { LlmClient } from '../llm/types.js';
 import type { ParseResult } from './types.js';
 
@@ -19,7 +19,7 @@ export async function llmExtract(
   llm: LlmClient,
   rawText: string,
   schema: Record<string, unknown>,
-  hint: DocumentType,
+  hint: DocumentTypeSlug,
   expectedFields: readonly string[],
 ): Promise<ParseResult> {
   if (!llm.isAvailable()) {

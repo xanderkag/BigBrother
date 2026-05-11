@@ -64,6 +64,18 @@ class DocumentTypesRepo {
     return rows;
   }
 
+  /**
+   * Active types only — для classifier'а и dropdown'ов выбора типа.
+   * is_active=false скрыты из user-facing surface, но остаются в БД для
+   * аудита и быстрого включения обратно.
+   */
+  async listActive(): Promise<DocumentTypeRow[]> {
+    const { rows } = await db.query<DocumentTypeRow>(
+      `SELECT * FROM document_types WHERE is_active = true ORDER BY display_name`,
+    );
+    return rows;
+  }
+
   /** Single type by slug. Returns `null` when missing — lets routes 404 cleanly. */
   async findBySlug(slug: string): Promise<DocumentTypeRow | null> {
     const { rows } = await db.query<DocumentTypeRow>(

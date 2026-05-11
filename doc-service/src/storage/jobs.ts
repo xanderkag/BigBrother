@@ -1,5 +1,5 @@
 import { db } from '../db.js';
-import type { DocumentType, JobStatus, OcrEngineName } from '../types/documents.js';
+import type { DocumentTypeSlug, JobStatus, OcrEngineName } from '../types/documents.js';
 
 export type JobRow = {
   id: string;
@@ -8,8 +8,8 @@ export type JobRow = {
   file_path: string;
   file_size: string; // pg BIGINT comes back as string
   mime_type: string;
-  document_hint: DocumentType | null;
-  document_type: DocumentType | null;
+  document_hint: DocumentTypeSlug | null;
+  document_type: DocumentTypeSlug | null;
   ocr_engine: OcrEngineName | null;
   raw_text: string | null;
   confidence: string | null; // NUMERIC -> string
@@ -33,7 +33,7 @@ export type CreateJobInput = {
   filePath: string;
   fileSize: number;
   mimeType: string;
-  documentHint: DocumentType | null;
+  documentHint: DocumentTypeSlug | null;
   webhookUrl: string | null;
   metadata: unknown;
   idempotencyKey?: string | null;
@@ -41,7 +41,7 @@ export type CreateJobInput = {
 
 export type ListFilters = {
   status?: JobStatus;
-  document_type?: DocumentType;
+  document_type?: DocumentTypeSlug;
   from?: string;
   to?: string;
   limit: number;
@@ -50,7 +50,7 @@ export type ListFilters = {
 
 export type ProcessingUpdate = {
   status: JobStatus;
-  documentType?: DocumentType | null;
+  documentType?: DocumentTypeSlug | null;
   ocrEngine?: OcrEngineName | null;
   rawText?: string | null;
   confidence?: number | null;

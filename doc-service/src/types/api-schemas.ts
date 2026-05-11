@@ -13,7 +13,20 @@
  */
 
 import { z } from 'zod';
-import { DOCUMENT_TYPES, JOB_STATUSES, OCR_ENGINES } from './documents.js';
+import { JOB_STATUSES, OCR_ENGINES } from './documents.js';
+
+/**
+ * document_type / document_hint раньше были z.enum из шести builtin'ов.
+ * После того, как платформа стала принимать произвольные пользовательские
+ * типы (Document Type Registry в БД), API принимает любой непустой
+ * slug-string. Формат проверяется тем же regex'ом, что и в роуте jobs.ts
+ * для входящих хинтов.
+ */
+const DocumentTypeSlugSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
 
 // --- Shared building blocks ---
 
@@ -33,8 +46,8 @@ export const Job = z
   .object({
     job_id: z.string().uuid(),
     status: z.enum(JOB_STATUSES),
-    document_type: z.enum(DOCUMENT_TYPES).nullable(),
-    document_hint: z.enum(DOCUMENT_TYPES).nullable(),
+    document_type: DocumentTypeSlugSchema.nullable(),
+    document_hint: DocumentTypeSlugSchema.nullable(),
     confidence: z.number().min(0).max(1).nullable(),
     ocr_engine: z.enum(OCR_ENGINES).nullable(),
     raw_text: z.string().nullable().describe('Распознанный текст; null до завершения OCR'),
@@ -79,7 +92,7 @@ export const ExtractedPatchBody = z
 
 export const ListJobsQuery = z.object({
   status: z.enum(JOB_STATUSES).optional(),
-  document_type: z.enum(DOCUMENT_TYPES).optional(),
+  document_type: DocumentTypeSlugSchema.optional(),
   from: z.string().datetime().optional().describe('ISO 8601, нижняя граница created_at'),
   to: z.string().datetime().optional().describe('ISO 8601, верхняя граница created_at'),
   limit: z.coerce.number().int().min(1).max(200).default(50),

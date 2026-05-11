@@ -10,10 +10,10 @@ import { YandexVisionEngine } from './ocr/yandex.js';
 import { selectOcrChain } from './router.js';
 import { KeywordClassifier } from './classifier/keywords.js';
 import { combineConfidence } from './quality.js';
-import { buildParsers } from './parsers/index.js';
+import { ParsersFactory } from './parsers/index.js';
 import { dynamicLlm } from './llm/provider-resolver.js';
 import type { LlmClient } from './llm/types.js';
-import type { DocumentType } from '../types/documents.js';
+import type { DocumentTypeSlug } from '../types/documents.js';
 import { validateExtractedWithResolver } from './validation/index.js';
 import { documentTypeResolver, type ResolvedTypeConfig } from './document-type-resolver.js';
 import { jobsDurationSeconds, jobsTotal, ocrEngineDurationSeconds } from '../metrics.js';
@@ -33,14 +33,14 @@ const engines: readonly OcrEngine[] = [
 ];
 
 const classifier = new KeywordClassifier();
-const parsers = buildParsers(llm, {
+const parsersFactory = new ParsersFactory(llm, {
   regexFallbackThreshold: config.thresholds.regexFallback,
 });
 
 /** Combined output of the full file → structured data run. */
 export type PipelineRunResult = {
   ocr: OcrResult;
-  documentType: DocumentType | null;
+  documentType: DocumentTypeSlug | null;
   classificationSource: 'hint' | 'keyword';
   classificationMatch?: string;
   extracted: Record<string, unknown>;
@@ -67,7 +67,7 @@ export async function processJob(jobId: string, log: Logger): Promise<void> {
   await jobsRepo.markProcessing(jobId);
 
   let ocr: OcrResult | null = null;
-  let documentType: DocumentType | null = (job.document_hint as DocumentType | null) ?? null;
+  let documentType: DocumentTypeSlug | null = job.document_hint ?? null;
 
   // Metrics: end-to-end timer. `started` is "worker pickup" — close enough
   // to user-perceived latency for a fire-and-forget API. Label values are
@@ -235,11 +235,11 @@ export async function runOcrChain(
  */
 export async function runDocumentPipeline(
   rawText: string,
-  options: { hint?: DocumentType },
+  options: { hint?: DocumentTypeSlug },
   log: Logger,
   context: Record<string, unknown> = {},
 ): Promise<{
-  documentType: DocumentType | null;
+  documentType: DocumentTypeSlug | null;
   classificationSource: 'hint' | 'keyword';
   classificationMatch?: string;
   extracted: Record<string, unknown>;
@@ -254,7 +254,7 @@ export async function runDocumentPipeline(
    */
   typeConfig: ResolvedTypeConfig | null;
 }> {
-  let documentType: DocumentType | null = options.hint ?? null;
+  let documentType: DocumentTypeSlug | null = options.hint ?? null;
   let classificationSource: 'hint' | 'keyword' = documentType ? 'hint' : 'keyword';
   let classificationMatch: string | undefined;
 
@@ -281,7 +281,10 @@ export async function runDocumentPipeline(
     //     needs_review threshold.
     typeConfig = await documentTypeResolver.resolveConfig(documentType);
 
-    const parser = parsers[documentType];
+    // Factory диспатчит: builtin slug → типизированный парсер,
+    // custom slug → GenericLlmParser (всё извлечение через LLM с
+    // DB-резолвленной схемой/полями).
+    const parser = parsersFactory.get(documentType);
     const result = await parser.parse(rawText, {
       expectedFields: typeConfig.expectedFields,
       regexFallbackThreshold: typeConfig.regexFallbackThreshold,

@@ -7,7 +7,7 @@ import type {
   LlmVerifyResult,
   LlmVisionResult,
 } from './types.js';
-import type { DocumentType } from '../../types/documents.js';
+import type { DocumentTypeSlug } from '../../types/documents.js';
 import { llmCallDurationSeconds, llmCallsTotal } from '../../metrics.js';
 
 export type HttpLlmClientOptions = {
@@ -30,7 +30,7 @@ export class HttpLlmClient implements LlmClient {
   async extract(input: {
     text: string;
     schema: Record<string, unknown>;
-    hint?: DocumentType;
+    hint?: DocumentTypeSlug;
   }): Promise<LlmExtractResult> {
     return this.post<LlmExtractResult>('/v1/extract', input);
   }

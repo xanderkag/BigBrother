@@ -1,4 +1,4 @@
-import type { DocumentType } from '../../types/documents.js';
+import type { DocumentTypeSlug } from '../../types/documents.js';
 
 export type ParseResult = {
   extracted: Record<string, unknown>;
@@ -34,7 +34,12 @@ export type ParserOverride = {
 };
 
 export interface DocumentParser {
-  readonly type: DocumentType;
+  /**
+   * Slug этого парсера. Для builtin-парсеров — один из шести
+   * (`'invoice'`, `'UPD'`, …). Для generic LLM-парсера — slug
+   * пользовательского типа из БД (любая строка).
+   */
+  readonly type: DocumentTypeSlug;
   /**
    * Async to support LLM-backed parsers. Sync regex parsers wrap their
    * result in `Promise.resolve` (see Phase 1 parsers).

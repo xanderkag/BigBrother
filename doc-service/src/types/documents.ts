@@ -1,7 +1,34 @@
 import { z } from 'zod';
 
+/**
+ * Шесть встроенных типов документов, для которых у нас есть hardcoded JSON
+ * schemas, regex-парсеры и валидаторы. Платформа дополнительно умеет
+ * обрабатывать любые **пользовательские** типы (DocumentTypeSlug = string)
+ * через generic LLM-парсер; они конфигурируются админом в Document Type
+ * Registry.
+ *
+ * Соглашение по типам:
+ *   - `BuiltinDocumentType` — алиас для одного из шести.
+ *   - `DocumentTypeSlug` — то, что приходит из БД / classifier'а / API
+ *     (`document_hint`). Любая строка.
+ *   - `DocumentType` — синоним BuiltinDocumentType. Оставлен для обратной
+ *     совместимости с местами, где код жёстко завязан на шесть builtin'ов
+ *     (validation hardcoded fallback, document-json-schemas). В новом коде
+ *     предпочитайте `DocumentTypeSlug` либо `BuiltinDocumentType`.
+ */
 export const DOCUMENT_TYPES = ['invoice', 'factInvoice', 'UPD', 'TTN', 'CMR', 'AKT'] as const;
-export type DocumentType = (typeof DOCUMENT_TYPES)[number];
+export type BuiltinDocumentType = (typeof DOCUMENT_TYPES)[number];
+export type DocumentType = BuiltinDocumentType;
+export type DocumentTypeSlug = string;
+
+/**
+ * Type guard: вернёт true, если slug совпадает с одним из шести встроенных.
+ * Использовать на границе runtime ↔ DB-конфиг для решения «использовать
+ * типизированный парсер или generic LLM-парсер».
+ */
+export function isBuiltinDocumentType(slug: string): slug is BuiltinDocumentType {
+  return (DOCUMENT_TYPES as readonly string[]).includes(slug);
+}
 
 export const JOB_STATUSES = ['pending', 'processing', 'done', 'failed', 'needs_review'] as const;
 export type JobStatus = (typeof JOB_STATUSES)[number];

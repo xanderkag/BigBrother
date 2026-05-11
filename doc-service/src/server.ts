@@ -22,7 +22,6 @@ import { providerSettingsRoutes } from './routes/provider-settings.js';
 import { auditLogRoutes } from './routes/audit-log.js';
 import { closeDb } from './db.js';
 import { closeQueue } from './queue.js';
-import { DOCUMENT_TYPES } from './types/documents.js';
 
 async function main() {
   const app = Fastify({
@@ -127,9 +126,10 @@ async function main() {
                   },
                   document_hint: {
                     type: 'string',
-                    enum: [...DOCUMENT_TYPES],
+                    pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$',
                     description:
-                      'Подсказка типа документа. Если задана — пропускается шаг классификации.',
+                      'Подсказка типа документа. Если задана — пропускается шаг классификации. ' +
+                      'Принимается любой slug из Document Type Registry (builtin или пользовательский).',
                   },
                   metadata: {
                     type: 'string',

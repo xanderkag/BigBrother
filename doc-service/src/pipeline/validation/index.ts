@@ -19,7 +19,8 @@
  * `./registry.ts`.
  */
 
-import type { DocumentType } from '../../types/documents.js';
+import type { DocumentTypeSlug } from '../../types/documents.js';
+import { isBuiltinDocumentType } from '../../types/documents.js';
 import {
   validateCountryCode,
   validateDate,
@@ -71,7 +72,7 @@ function push(into: string[], msg: string | null): void {
  */
 export async function validateExtractedWithResolver(
   extracted: Bag,
-  type: DocumentType,
+  type: DocumentTypeSlug,
   log?: WarnLogger,
 ): Promise<string[]> {
   const typeConfig = await documentTypeResolver.get(type);
@@ -82,9 +83,13 @@ export async function validateExtractedWithResolver(
       },
     });
   }
-  // No DB entry → keep validating with the legacy hardcoded composer so
-  // a fresh DB or a deliberately-removed type doesn't lose coverage.
-  return validateExtracted(extracted, type);
+  // No DB entry → keep validating with the legacy hardcoded composer for
+  // builtin types so a fresh DB doesn't lose coverage. Для custom slug'а
+  // без записи в БД — нечего проверять, возвращаем пустой массив.
+  if (isBuiltinDocumentType(type)) {
+    return validateExtracted(extracted, type);
+  }
+  return [];
 }
 
 /**
