@@ -81,7 +81,10 @@ function iso(y: number, m: number, d: number): string {
  * equally; missing the document number/date is the strongest signal of
  * a bad extraction.
  */
-export function scoreCompleteness(found: Record<string, unknown>, expected: string[]): {
+export function scoreCompleteness(
+  found: Record<string, unknown>,
+  expected: readonly string[],
+): {
   confidence: number;
   missing: string[];
 } {

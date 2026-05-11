@@ -59,6 +59,16 @@
 - ✅ **B5 file magic-bytes validation** — пакет `file-type ^19.6`. После сохранения файла читаются magic bytes; если детектируется не из `ACCEPTED_DOCUMENT_MIMES` (PDF/JPEG/PNG/BMP/TIFF/WebP) — 400 и удаление файла. Если detected mime ≠ declared multipart Content-Type — detected становится authoritative (логируется warning). Защита от exe-под-видом-PDF, расширения vs реальный формат, и подобного.
 - ✅ Тесты: `tests/idempotency.spec.ts` (header parsing, unique-violation detector), `tests/magic-bytes.spec.ts` (PDF/PNG/JPEG/BMP/WebP по реальным magic bytes, рейект plaintext/exe, обнаружение mislabelled PDF).
 
+### Phase 3 Day 3 — CP1 продолжение: per-type thresholds + override-протокол парсеров (2026-05-12)
+
+- ✅ **`ResolvedTypeConfig`** + `resolveConfigFromRow` — чистый builder, складывает DB-значения с env/hardcoded fallback'ами и репортит источник (`db` vs `fallback`). Resolver-singleton получил метод `resolveConfig(slug)`.
+- ✅ **ParserOverride API**: `DocumentParser.parse(text, override?)`. Override-параметры: `expectedFields`, `regexFallbackThreshold`, `llmSchema`. Все 5 парсеров (Invoice/UPD/TTN/CMR/AKT) подхватывают. Без override — старое поведение (тесты остались зелёными).
+- ✅ **Orchestrator резолвит конфиг once per job** и:
+  - передаёт override в `parser.parse(...)` — `expected_fields`, `regex_fallback_threshold`, `llm_schema` из БД теперь живые;
+  - читает `typeConfig.confidenceThreshold` для решения needs_review (вместо глобального `NEEDS_REVIEW_THRESHOLD`).
+- ✅ Тесты: `tests/resolve-config.spec.ts` (null row → fallback, DB row → override, частичный fallback по null-колонкам, immutability массивов), `tests/parsers.spec.ts` дополнен 5 кейсами на override-семантику.
+- ⏸ Осталось из CP1: классификатор всё ещё читает захардкоженные keywords; parser_kind в БД не используется для диспатча (`buildParsers` возвращает фиксированный мапинг); llm_prompt override не пробрасывается в inference-service (нужно расширение API).
+
 ### Phase 3 Day 2 — Validator Registry + первый runtime-шаг (2026-05-12)
 
 - ✅ **CP3 Validator Registry** — `pipeline/validation/registry.ts`. Парсер строковых спецификаций (`inn_checksum:seller.inn`, `parties_differ:seller.inn,buyer.inn`, `vat_consistency`, ...) с резолюцией в builtin-функции и dot-path-доступом к полям. 9 builtin'ов: inn_checksum, kpp_format, vehicle_plate, country_code, date_range, money_sanity, vat_consistency, parties_differ, weight_nett_le_gross. Unknown specs логируются и пропускаются — не падает пайплайн.
@@ -122,18 +132,19 @@
 **Симптом:** Сейчас pipeline использует захардкоженные значения. Конфиг в БД — informational only.
 
 **Прогресс:**
-- ✅ `DocumentTypeResolver` (кэш + invalidate hook) — готов.
+- ✅ `DocumentTypeResolver` (кэш + invalidate hook + `resolveConfig`) — готов.
 - ✅ Валидация читает `validators[]` из БД через resolver — готово. Hardcoded composer оставлен как fallback.
+- ✅ Парсеры принимают `ParserOverride` с `expected_fields`/`regex_fallback_threshold`/`llm_schema` — orchestrator передаёт.
+- ✅ `confidence_threshold` per-type работает — orchestrator берёт из resolved config (fallback на env).
+- ✅ `regex_fallback_threshold` per-type работает — пробрасывается в Phase 1 парсеры через override.
+- ✅ `llm_schema` per-type работает — пробрасывается в /v1/extract.
 - ⏸ Классификатор всё ещё читает захардкоженные keywords (хотя seed в БД совпадает).
-- ⏸ Парсеры не используют `expected_fields[]` из БД — продолжают использовать хардкод.
-- ⏸ `confidence_threshold` per-type не применяется — глобальный `NEEDS_REVIEW_THRESHOLD` всегда.
-- ⏸ `regex_fallback_threshold` per-type не применяется.
-- ⏸ `parser_kind` поле есть, но не диспатчит парсера — определяет TS-импорты.
-- ⏸ `llm_prompt`/`llm_schema` overrides не работают (передаются в inference-service со стандартными значениями).
+- ⏸ `parser_kind` поле есть, но не диспатчит парсера — определяет TS-импорты в `buildParsers`.
+- ⏸ `llm_prompt` override не пробрасывается в inference-service (нужно расширение `/v1/extract` API чтобы принимать prompt override).
 
-**Лечение оставшегося:** Continue passing resolved type config through the pipeline. Parsers accept a `DocumentTypeConfig` object instead of being self-contained.
+**Лечение оставшегося:** (а) классификатор → async-метод с резолюцией keywords из БД (агрегация по всем активным типам); (b) `parser_kind` диспатч — если в БД написано `llm_extract` для бывшего regex-типа, парсер должен использовать LLM-only; (c) llm_prompt override — расширение API inference-service.
 
-**Оценка:** 1-2 дня на оставшееся.
+**Оценка:** 1 день на оставшееся.
 
 ---
 

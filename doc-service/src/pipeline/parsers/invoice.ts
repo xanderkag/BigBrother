@@ -1,7 +1,7 @@
 import { DOCUMENT_JSON_SCHEMAS, EXPECTED_FIELDS } from '../../types/document-json-schemas.js';
 import type { LlmClient } from '../llm/types.js';
 import { llmExtract } from './llm-extractor.js';
-import type { DocumentParser, ParseResult } from './types.js';
+import type { DocumentParser, ParseResult, ParserOverride } from './types.js';
 import {
   findDocNumber,
   findDate,
@@ -10,6 +10,8 @@ import {
   findVatRate,
   scoreCompleteness,
 } from './common.js';
+
+const DEFAULT_REGEX_EXPECTED_FIELDS: readonly string[] = ['number', 'date', 'total'];
 
 /**
  * Phase 1 invoice parser. Strategy:
@@ -24,6 +26,10 @@ import {
  * Bills only on the documents that actually need help: well-formed text
  * PDFs with the standard "Счёт № X от Y / Итого / НДС" pattern stay on
  * the regex path and never call the LLM.
+ *
+ * Parameters from `ParserOverride` (passed by the orchestrator from the
+ * resolved Document Type Registry) take precedence over constructor
+ * defaults. Without an override, behaviour is identical to pre-CP1.
  */
 export class InvoiceParser implements DocumentParser {
   readonly type = 'invoice' as const;
@@ -33,10 +39,13 @@ export class InvoiceParser implements DocumentParser {
     private readonly fallbackThreshold: number = 0.7,
   ) {}
 
-  async parse(rawText: string): Promise<ParseResult> {
-    const regex = this.parseWithRegex(rawText);
+  async parse(rawText: string, override?: ParserOverride): Promise<ParseResult> {
+    const expectedFields = override?.expectedFields ?? DEFAULT_REGEX_EXPECTED_FIELDS;
+    const fallbackThreshold = override?.regexFallbackThreshold ?? this.fallbackThreshold;
 
-    if (regex.confidence >= this.fallbackThreshold || !this.llm.isAvailable()) {
+    const regex = this.parseWithRegex(rawText, expectedFields);
+
+    if (regex.confidence >= fallbackThreshold || !this.llm.isAvailable()) {
       return regex;
     }
 
@@ -45,9 +54,9 @@ export class InvoiceParser implements DocumentParser {
       llm = await llmExtract(
         this.llm,
         rawText,
-        DOCUMENT_JSON_SCHEMAS.invoice,
+        override?.llmSchema ?? DOCUMENT_JSON_SCHEMAS.invoice,
         'invoice',
-        EXPECTED_FIELDS.invoice,
+        override?.expectedFields ?? EXPECTED_FIELDS.invoice,
       );
     } catch {
       // LLM glitch — silently fall back to regex. The orchestrator will
@@ -58,7 +67,7 @@ export class InvoiceParser implements DocumentParser {
     return llm.confidence > regex.confidence ? llm : regex;
   }
 
-  private parseWithRegex(rawText: string): ParseResult {
+  private parseWithRegex(rawText: string, expectedFields: readonly string[]): ParseResult {
     const number = findDocNumber(rawText, 'счёт|счет');
     const date = findDate(rawText);
     const total = findMoney(rawText, 'Итого\\s+к\\s+оплате', 'Всего\\s+к\\s+оплате', 'Итого');
@@ -83,11 +92,10 @@ export class InvoiceParser implements DocumentParser {
       // positions[] на regex не извлечь — ждём LLM-fallback.
     };
 
-    const { confidence, missing } = scoreCompleteness(extracted as Record<string, unknown>, [
-      'number',
-      'date',
-      'total',
-    ]);
+    const { confidence, missing } = scoreCompleteness(
+      extracted as Record<string, unknown>,
+      expectedFields,
+    );
 
     return { extracted, confidence, missing };
   }

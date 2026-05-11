@@ -16,6 +16,7 @@ import { NullLlmClient } from './llm/null-client.js';
 import type { LlmClient } from './llm/types.js';
 import type { DocumentType } from '../types/documents.js';
 import { validateExtractedWithResolver } from './validation/index.js';
+import { documentTypeResolver, type ResolvedTypeConfig } from './document-type-resolver.js';
 import { jobsDurationSeconds, jobsTotal, ocrEngineDurationSeconds } from '../metrics.js';
 
 // --- Wire dependencies once at module load. The pipeline is stateless beyond this.
@@ -90,9 +91,16 @@ export async function processJob(jobId: string, log: Logger): Promise<void> {
 
     const overall = combineConfidence(ocr.confidence, post.parserConfidence);
 
+    // Per-type confidence threshold: when the type's row in document_types
+    // has `confidence_threshold` set, that value overrides the global env
+    // default. Lets admins tighten (or loosen) review for specific types
+    // — e.g. contracts always reviewed, low-stakes invoices auto-pass.
+    const confidenceThreshold =
+      post.typeConfig?.confidenceThreshold ?? config.thresholds.needsReview;
+
     // A document with hard validation failures (e.g., INN checksum mismatch)
     // should always be reviewed by a human, regardless of OCR confidence.
-    const lowConfidence = overall < config.thresholds.needsReview;
+    const lowConfidence = overall < confidenceThreshold;
     const hasIssues = post.validationIssues.length > 0;
     const status: 'done' | 'needs_review' = lowConfidence || hasIssues ? 'needs_review' : 'done';
 
@@ -242,6 +250,13 @@ export async function runDocumentPipeline(
   parserConfidence?: number;
   parserMissing: string[];
   validationIssues: string[];
+  /**
+   * Resolved per-type config used for this run. Returned so the caller
+   * (processJob) can apply per-type `confidenceThreshold` for the
+   * needs_review decision without re-resolving. `null` when no type was
+   * classified — caller falls back to global env threshold.
+   */
+  typeConfig: ResolvedTypeConfig | null;
 }> {
   let documentType: DocumentType | null = options.hint ?? null;
   let classificationSource: 'hint' | 'keyword' = documentType ? 'hint' : 'keyword';
@@ -258,10 +273,24 @@ export async function runDocumentPipeline(
   let parserConfidence: number | undefined;
   let parserMissing: string[] = [];
   let validationIssues: string[] = [];
+  let typeConfig: ResolvedTypeConfig | null = null;
 
   if (documentType) {
+    // Resolve the DB-backed config snapshot ONCE per job. Passed to:
+    //   - the parser as `ParserOverride` (regex_fallback_threshold,
+    //     expected_fields, llm_schema)
+    //   - the validator (already does its own resolver lookup; one more
+    //     cache hit is cheap)
+    //   - the caller as `typeConfig.confidenceThreshold` for the
+    //     needs_review threshold.
+    typeConfig = await documentTypeResolver.resolveConfig(documentType);
+
     const parser = parsers[documentType];
-    const result = await parser.parse(rawText);
+    const result = await parser.parse(rawText, {
+      expectedFields: typeConfig.expectedFields,
+      regexFallbackThreshold: typeConfig.regexFallbackThreshold,
+      llmSchema: typeConfig.llmSchema,
+    });
     extracted = result.extracted;
     parserConfidence = result.confidence;
     parserMissing = result.missing;
@@ -279,5 +308,6 @@ export async function runDocumentPipeline(
     parserConfidence,
     parserMissing,
     validationIssues,
+    typeConfig,
   };
 }

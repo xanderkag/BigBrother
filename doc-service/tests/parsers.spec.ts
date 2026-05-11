@@ -165,3 +165,64 @@ describe('Phase 1 parsers — LLM fallback', () => {
     expect(callArg.hint).toBe('factInvoice');
   });
 });
+
+describe('ParserOverride — CP1 runtime config injection', () => {
+  it('regexFallbackThreshold=0 from override disables LLM even on weak regex', async () => {
+    // Constructor default would normally trigger LLM (default=0.7).
+    // Override forces fallback off ⇒ regex result returned untouched,
+    // LLM never called.
+    const llm = mockLlm({ number: 'override-leaked' }, 0.99);
+    const parser = new InvoiceParser(llm /* default 0.7 */);
+    await parser.parse('Счёт ??? broken', { regexFallbackThreshold: 0 });
+    expect(llm.extract).not.toHaveBeenCalled();
+  });
+
+  it('regexFallbackThreshold=1 from override forces LLM even on perfect regex', async () => {
+    // Default threshold 0.7 would let a high-confidence regex skip LLM.
+    // Override raises the bar to 1 ⇒ regex is "never good enough" ⇒
+    // parser must consult LLM.
+    const llm = mockLlm({ number: '999', date: '2026-05-01', total: 100 }, 0.95);
+    const parser = new InvoiceParser(llm);
+    const goodText = `Счёт № 100 от 01.05.2026\nИНН 7712345678\nИтого: 50000`;
+    await parser.parse(goodText, { regexFallbackThreshold: 1.0 });
+    expect(llm.extract).toHaveBeenCalledTimes(1);
+  });
+
+  it('expectedFields override changes the missing[] accounting', async () => {
+    const llm = new NullLlmClient();
+    const parser = new InvoiceParser(llm);
+    const goodText = `Счёт № 100 от 01.05.2026 г.`;
+    // Override demands more fields than the parser would normally check.
+    const r = await parser.parse(goodText, {
+      expectedFields: ['number', 'date', 'total', 'extra_required_field'],
+    });
+    expect(r.missing).toContain('extra_required_field');
+  });
+
+  it('llmSchema override is forwarded to LLM /extract', async () => {
+    const llm = mockLlm({ number: 'x' }, 0.5);
+    const parser = new InvoiceParser(llm);
+    const customSchema = { type: 'object', properties: { custom_field: { type: 'string' } } };
+    await parser.parse('Счёт ??? garbled', {
+      llmSchema: customSchema,
+      regexFallbackThreshold: 1.0, // force LLM call
+    });
+    const callArg = (llm.extract as ReturnType<typeof vi.fn>).mock.calls[0]![0];
+    expect(callArg.schema).toEqual(customSchema);
+  });
+
+  it('Phase 2 parser (TtnParser) honours llmSchema override', async () => {
+    // We can verify TtnParser uses override by checking what gets passed
+    // to llm.extract. Re-using the mockLlm pattern.
+    const { TtnParser } = await import('../src/pipeline/parsers/ttn.js');
+    const llm = mockLlm({ number: 'T-1' }, 0.8);
+    const customSchema = { type: 'object', properties: { route_code: { type: 'string' } } };
+    await new TtnParser(llm).parse('any text', {
+      llmSchema: customSchema,
+      expectedFields: ['number', 'route_code'],
+    });
+    const callArg = (llm.extract as ReturnType<typeof vi.fn>).mock.calls[0]![0];
+    expect(callArg.schema).toEqual(customSchema);
+    expect(callArg.hint).toBe('TTN');
+  });
+});

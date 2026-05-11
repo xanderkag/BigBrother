@@ -14,9 +14,36 @@
  * Вызывающий код тогда падает в hardcoded fallback (см. validation/index.ts).
  */
 
+import { config } from '../config.js';
 import { documentTypesRepo, type DocumentTypeRow } from '../storage/document-types.js';
+import { DOCUMENT_JSON_SCHEMAS, EXPECTED_FIELDS } from '../types/document-json-schemas.js';
+import type { DocumentType } from '../types/documents.js';
 
 const DEFAULT_TTL_MS = 60_000;
+
+/**
+ * Snapshot of "everything the runtime needs to process a job of this
+ * document type". Resolves DB-supplied values where present and falls
+ * back to env/hardcoded defaults where not. The runtime never sees the
+ * raw `DocumentTypeRow` — only this normalised view, which simplifies
+ * downstream consumers (they don't deal with null thresholds, missing
+ * schemas, etc.).
+ */
+export type ResolvedTypeConfig = {
+  slug: DocumentType;
+  /** Effective needs-review threshold for the combined OCR + parser confidence. */
+  confidenceThreshold: number;
+  /** Below this regex confidence, Phase 1 parsers fall through to the LLM. */
+  regexFallbackThreshold: number;
+  /** Field names the parser is expected to populate; used for `missing[]`. */
+  expectedFields: string[];
+  /** Validator specs run after extraction. Empty array → no domain checks. */
+  validators: string[];
+  /** JSON Schema sent to LLM /v1/extract. Defaults to builtin per type. */
+  llmSchema: Record<string, unknown>;
+  /** Whether this config was DB-sourced or fully built from fallbacks. */
+  source: 'db' | 'fallback';
+};
 
 export class DocumentTypeResolver {
   private cache = new Map<string, { row: DocumentTypeRow | null; at: number }>();
@@ -56,7 +83,60 @@ export class DocumentTypeResolver {
     if (slug === undefined) this.cache.clear();
     else this.cache.delete(slug);
   }
+
+  /**
+   * Resolve the runtime-facing config for a slug. Always returns a
+   * fully-populated `ResolvedTypeConfig` — caller doesn't have to
+   * handle null thresholds or missing schemas. `source` tells the
+   * caller whether the values came from DB (admin can change them)
+   * or from fallback (need to seed the DB).
+   */
+  async resolveConfig(slug: DocumentType): Promise<ResolvedTypeConfig> {
+    const row = await this.get(slug);
+    return resolveConfigFromRow(slug, row);
+  }
 }
 
 /** Process-wide singleton used by the pipeline. */
 export const documentTypeResolver = new DocumentTypeResolver();
+
+/**
+ * Pure builder: given a slug and optional row, fold in env/hardcoded
+ * defaults. Extracted so tests can exercise the fallback logic without
+ * the cache/db plumbing.
+ */
+export function resolveConfigFromRow(
+  slug: DocumentType,
+  row: DocumentTypeRow | null,
+): ResolvedTypeConfig {
+  const fallbackSchema = DOCUMENT_JSON_SCHEMAS[slug] ?? {};
+  const fallbackFields = EXPECTED_FIELDS[slug] ?? [];
+
+  if (!row) {
+    return {
+      slug,
+      confidenceThreshold: config.thresholds.needsReview,
+      regexFallbackThreshold: config.thresholds.regexFallback,
+      expectedFields: [...fallbackFields],
+      validators: [],
+      llmSchema: fallbackSchema as Record<string, unknown>,
+      source: 'fallback',
+    };
+  }
+
+  return {
+    slug,
+    confidenceThreshold:
+      row.confidence_threshold === null
+        ? config.thresholds.needsReview
+        : Number(row.confidence_threshold),
+    regexFallbackThreshold:
+      row.regex_fallback_threshold === null
+        ? config.thresholds.regexFallback
+        : Number(row.regex_fallback_threshold),
+    expectedFields: row.expected_fields.length > 0 ? [...row.expected_fields] : [...fallbackFields],
+    validators: [...row.validators],
+    llmSchema: (row.llm_schema ?? fallbackSchema) as Record<string, unknown>,
+    source: 'db',
+  };
+}
