@@ -1,5 +1,5 @@
 import { Queue, type ConnectionOptions } from 'bullmq';
-import IORedis from 'ioredis';
+import { Redis as IORedis } from 'ioredis';
 import { config } from './config.js';
 
 export const QUEUE_NAME = 'doc-jobs';

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { access, constants } from 'node:fs/promises';
-import IORedis from 'ioredis';
+import { Redis as IORedis } from 'ioredis';
 import { config } from '../config.js';
 import { db } from '../db.js';
 import { HealthResponse, ReadyResponse } from '../types/api-schemas.js';

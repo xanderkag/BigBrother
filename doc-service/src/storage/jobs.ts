@@ -248,7 +248,7 @@ class JobsRepo {
    * `extracted` JSONB to avoid a schema migration; on the way out we lift
    * them into a top-level `validation_issues` field for clean API ergonomics.
    */
-  toApi(row: JobRow): Record<string, unknown> {
+  toApi(row: JobRow) {
     const { extracted, issues } = splitExtractedAndIssues(row.extracted);
     return {
       job_id: row.id,

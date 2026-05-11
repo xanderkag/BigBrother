@@ -18,7 +18,7 @@
 
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import runner from 'node-pg-migrate';
+import nodePgMigrate from 'node-pg-migrate';
 import { config } from '../config.js';
 
 type Direction = 'up' | 'down';
@@ -28,14 +28,15 @@ const here = dirname(fileURLToPath(import.meta.url));
 const migrationsDir = join(here, '..', '..', 'migrations');
 
 async function runDirection(direction: Direction, count: number | undefined): Promise<void> {
-  const applied = await runner({
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const applied = await (nodePgMigrate as any)({
     databaseUrl: config.databaseUrl,
     dir: migrationsDir,
     migrationsTable: 'pgmigrations',
     direction,
     count,
     verbose: true,
-    log: (msg) => process.stdout.write(`${msg}\n`),
+    log: (msg: string) => process.stdout.write(`${msg}\n`),
   });
   if (applied.length === 0) {
     process.stdout.write(direction === 'up' ? 'No pending migrations.\n' : 'Nothing to roll back.\n');

@@ -56,7 +56,7 @@ class DocumentTypesRepo {
    * conversions (e.g. exposing only the active ones via list filters)
    * stay in the route handler so this stays a pure data layer.
    */
-  toApi(row: DocumentTypeRow): Record<string, unknown> {
+  toApi(row: DocumentTypeRow) {
     return {
       slug: row.slug,
       display_name: row.display_name,

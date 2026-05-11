@@ -33,6 +33,7 @@ ENV NODE_ENV=production
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
+COPY migrations ./migrations
 # Operator UI — plain HTML + CDN-loaded Tailwind/Alpine; no build step needed.
 COPY web ./web
 

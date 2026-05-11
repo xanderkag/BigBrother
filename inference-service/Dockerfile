@@ -23,11 +23,10 @@ RUN pip install -r requirements.txt
 COPY requirements-claude.txt ./
 RUN pip install -r requirements-claude.txt
 
-# Heavy ML deps for the Qwen-VL backend. To skip (stub/claude-only image):
-# comment the next two lines and rebuild. The runtime layer below copies
-# site-packages so nothing else needs to change.
-COPY requirements-qwen.txt ./
-RUN pip install -r requirements-qwen.txt
+# Heavy ML deps for the Qwen-VL backend — skipped for local dev (BACKEND=stub/claude).
+# To enable: uncomment the two lines below and set BACKEND=qwen in .env.
+# COPY requirements-qwen.txt ./
+# RUN pip install -r requirements-qwen.txt
 
 # --- Runtime layer ---
 FROM base AS runtime

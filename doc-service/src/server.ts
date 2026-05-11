@@ -96,9 +96,11 @@ async function main() {
     // request shape into the OpenAPI document here. This keeps the
     // Swagger UI file-upload form working without breaking the zod
     // validator at request time.
-    transformObject: ({ openapiObject }) => {
-      const post = (openapiObject as { paths?: Record<string, Record<string, Record<string, unknown>>> })
-        .paths?.['/api/v1/jobs']?.post;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    transformObject: ((doc: any) => {
+      if (!doc.openapiObject) return doc.swaggerObject;
+      const openapi = doc.openapiObject as { paths?: Record<string, Record<string, Record<string, unknown>>> };
+      const post = openapi.paths?.['/api/v1/jobs']?.post;
       if (post && !post.requestBody) {
         post.requestBody = {
           required: true,
@@ -136,8 +138,9 @@ async function main() {
           },
         };
       }
-      return openapiObject;
-    },
+      return doc.openapiObject;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any,
   });
 
   await app.register(swaggerUi, {

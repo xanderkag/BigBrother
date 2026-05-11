@@ -28,7 +28,7 @@ export function findDate(text: string): string | undefined {
   const num = text.match(/(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2,4})/);
   if (num) {
     const [, d, m, y] = num;
-    const year = y.length === 2 ? 2000 + Number(y) : Number(y);
+    const year = y!.length === 2 ? 2000 + Number(y) : Number(y);
     return iso(year, Number(m), Number(d));
   }
 
@@ -36,7 +36,7 @@ export function findDate(text: string): string | undefined {
   const ru = text.match(/(\d{1,2})\s+([а-я]+)\s+(\d{4})/i);
   if (ru) {
     const [, d, monthRaw, y] = ru;
-    const month = MONTHS_RU[monthRaw.toLowerCase()];
+    const month = MONTHS_RU[(monthRaw ?? '').toLowerCase()];
     if (month) return iso(Number(y), month, Number(d));
   }
   return undefined;
@@ -47,7 +47,7 @@ export function findMoney(text: string, ...labels: string[]): number | undefined
     const re = new RegExp(`${label}[^\\d-]{0,20}([0-9][0-9\\s.,]*)`, 'i');
     const m = text.match(re);
     if (m) {
-      const num = parseAmount(m[1]);
+      const num = parseAmount(m[1] ?? '');
       if (num !== undefined) return num;
     }
   }
