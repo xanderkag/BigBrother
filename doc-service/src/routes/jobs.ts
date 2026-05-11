@@ -146,7 +146,15 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         metadata: metadata ?? null,
       });
 
-      await docQueue.add('process', { jobId: job.id }, { jobId: job.id });
+      // Propagate the HTTP request id into the BullMQ payload so the worker
+      // can bind it to its child logger. The BullMQ jobId is the same as our
+      // domain jobId — gives us idempotent enqueue (a retry of POST with the
+      // same row inserted wouldn't create a duplicate Bull job).
+      await docQueue.add(
+        'process',
+        { jobId: job.id, requestId: req.id },
+        { jobId: job.id },
+      );
 
       reply.code(202);
       return { job_id: job.id, status: job.status };

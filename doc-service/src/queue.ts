@@ -13,6 +13,13 @@ export const redisConnection: ConnectionOptions = new IORedis(config.redisUrl, {
 
 export type DocJobPayload = {
   jobId: string;
+  /**
+   * Trace identifier propagated from the HTTP request that created this
+   * job (or from a re-enqueue by the pending-job sweeper). The worker
+   * binds it to its child logger so logs from the worker can be joined
+   * back to the originating request in observability tools.
+   */
+  requestId?: string;
 };
 
 export const docQueue = new Queue<DocJobPayload>(QUEUE_NAME, {

@@ -30,6 +30,22 @@ const ConfigSchema = z.object({
   // arbitrary blobs to every job row.
   maxMetadataBytes: numberFromEnv(64 * 1024),
 
+  sweepers: z.object({
+    // How often the pending-job sweeper looks for rows that were inserted
+    // into `jobs` but never made it into BullMQ (e.g. Redis hiccup between
+    // INSERT and queue.add). Lower = faster recovery, more DB chatter.
+    pendingIntervalMs: numberFromEnv(60_000),
+    // A pending row younger than this is left alone — gives the normal
+    // enqueue path time to land before the sweeper second-guesses it.
+    pendingGraceSeconds: numberFromEnv(60),
+    // How often we sweep finished jobs to delete their on-disk file.
+    fileCleanupIntervalMs: numberFromEnv(60 * 60 * 1000), // hourly
+    // Retain uploaded files for N days after the job reaches a terminal
+    // state. The DB row itself is kept (audit trail), only the blob on
+    // disk is removed and `file_path` is NULLed.
+    fileRetentionDays: numberFromEnv(30),
+  }),
+
   thresholds: z.object({
     pdfText: numberFromEnv(0.9),
     tesseract: numberFromEnv(0.75),
@@ -75,6 +91,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     apiKey: env.API_KEY ?? '',
     workerConcurrency: env.WORKER_CONCURRENCY,
     maxMetadataBytes: env.MAX_METADATA_BYTES,
+    sweepers: {
+      pendingIntervalMs: env.PENDING_SWEEPER_INTERVAL_MS,
+      pendingGraceSeconds: env.PENDING_SWEEPER_GRACE_SECONDS,
+      fileCleanupIntervalMs: env.FILE_CLEANUP_INTERVAL_MS,
+      fileRetentionDays: env.FILE_RETENTION_DAYS,
+    },
     thresholds: {
       pdfText: env.PDF_TEXT_ACCEPT_THRESHOLD,
       tesseract: env.TESSERACT_ACCEPT_THRESHOLD,

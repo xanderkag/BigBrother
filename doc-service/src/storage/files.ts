@@ -1,6 +1,6 @@
 import { createWriteStream } from 'node:fs';
-import { mkdir, stat } from 'node:fs/promises';
-import { join, basename, extname } from 'node:path';
+import { mkdir, readdir, rmdir, stat, unlink } from 'node:fs/promises';
+import { join, basename, dirname, extname } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { randomUUID } from 'node:crypto';
 import type { Readable } from 'node:stream';
@@ -73,6 +73,37 @@ function guessExt(mime: string): string {
     case 'image/webp': return '.webp';
     default: return '';
   }
+}
+
+/**
+ * Remove a stored file plus its per-upload directory if empty. ENOENT is
+ * treated as success — the sweeper can be retried at any time without
+ * worrying about partial cleanups, and a race with manual deletion is fine.
+ *
+ * Returns `true` if any filesystem state actually changed.
+ */
+export async function removeStoredFile(absolutePath: string): Promise<boolean> {
+  let changed = false;
+  try {
+    await unlink(absolutePath);
+    changed = true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+  // Storage layout is `<base>/uploads/<storageId>/<file>` — the storageId
+  // dir holds exactly one file by construction, so it's safe to rmdir when
+  // empty. We never touch `<base>/uploads/` itself.
+  const dir = dirname(absolutePath);
+  try {
+    const entries = await readdir(dir);
+    if (entries.length === 0) {
+      await rmdir(dir);
+      changed = true;
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+  return changed;
 }
 
 // Default singleton bound to env-configured storage dir.

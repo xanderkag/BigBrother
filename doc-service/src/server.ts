@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import Fastify from 'fastify';
 import multipart from '@fastify/multipart';
 import swagger from '@fastify/swagger';
@@ -19,7 +20,27 @@ async function main() {
   const app = Fastify({
     logger: { level: config.logLevel },
     bodyLimit: config.maxUploadMb * 1024 * 1024,
+    // Honour incoming X-Request-Id from upstream (nginx, client tooling) so a
+    // single id traces a request through external proxies → our HTTP layer →
+    // BullMQ payload → worker logs. If missing, generate a UUID locally.
+    // Fastify exposes the chosen id on req.id and on every child logger
+    // automatically as `reqId` (renamed to request_id below).
+    genReqId: (req) => {
+      const incoming = req.headers['x-request-id'];
+      if (typeof incoming === 'string' && incoming.length > 0 && incoming.length <= 64) {
+        return incoming;
+      }
+      return randomUUID();
+    },
+    requestIdHeader: 'x-request-id',
+    requestIdLogLabel: 'request_id',
   }).withTypeProvider<ZodTypeProvider>();
+
+  // Echo the resolved request id back to the client so they can correlate
+  // their logs with ours. Cheap to do unconditionally.
+  app.addHook('onSend', async (req, reply) => {
+    reply.header('x-request-id', req.id);
+  });
 
   // Make Fastify validate/serialize using zod schemas instead of ajv. Only
   // affects routes that declare zod schemas; routes with raw JSON Schema

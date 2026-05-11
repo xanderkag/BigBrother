@@ -35,22 +35,20 @@
 ### Операционные пробники
 - ✅ **Уровень 7** — `/ready` теперь проверяет: PostgreSQL `SELECT 1`, Redis `PING`, `STORAGE_DIR` writable. Любой провал — 503 со списком в `error`.
 
+### Phase 1 Day 1 — фундамент operational layer (2026-05-11)
+
+- ✅ **C1** Outbox/poller для зависших pending jobs — `src/workers/pending-job-sweeper.ts`. Каждую минуту вычитывает `WHERE status='pending' AND age > grace`, переенки в BullMQ с тем же `jobId` (BullMQ дедупит). Конфиг: `PENDING_SWEEPER_INTERVAL_MS`, `PENDING_SWEEPER_GRACE_SECONDS`.
+- ✅ **C4** TTL cleanup uploaded файлов — `src/workers/file-cleanup.ts`. Раз в час чистит файлы по job'ам в финальном статусе старше `FILE_RETENTION_DAYS` (по умолчанию 30). DB-row сохраняется (audit), файл и пустой каталог удаляются, `file_path` NULL'ится.
+- ✅ Structured logs с `request_id` через весь pipeline — Fastify `genReqId`, propagation в BullMQ payload, worker создаёт child-логгер с привязкой `request_id`/`job_id`/`bull_id`. Заголовок `X-Request-Id` принимается на вход и возвращается клиенту.
+- ✅ Тесты на оба sweeper'а с мок-репо: stale=пусто, multi-row, ошибка enqueue не валит цикл, overlap guard, ошибка unlink не маркирует row deleted.
+
 ---
 
 ## 🔴 Critical (блочит пилотный запуск)
 
-### C1. Гонка между «создать job» и «положить в очередь»
+### ~~C1. Гонка между «создать job» и «положить в очередь»~~ — ✅ закрыто 2026-05-11
 
-**Где:** `doc-service/src/routes/jobs.ts:103-113`
-
-**Симптом:** Если Redis моргнул в момент `docQueue.add`, job создан в Postgres со статусом `pending`, но в очередь не попал → висит навсегда.
-
-**Лечение (на выбор, в порядке усложнения):**
-1. Sweeper-cron в worker'е: каждые 60 секунд `SELECT * WHERE status='pending' AND created_at < now() - interval '1 min'` и переенки.
-2. Outbox pattern: запись в таблицу `job_outbox` транзакционно с `jobs`, отдельный poller перекладывает в очередь.
-3. Idempotent enqueue с retry — после возможного сбоя enqueue ретраится сам.
-
-**Оценка:** 2-4 часа на вариант 1.
+Реализован вариант 1 (sweeper-cron). См. «Phase 1 Day 1» в шапке.
 
 ---
 
@@ -66,15 +64,9 @@
 
 ---
 
-### C4. Нет TTL на загруженные файлы
+### ~~C4. Нет TTL на загруженные файлы~~ — ✅ закрыто 2026-05-11
 
-**Где:** `doc-service/src/storage/files.ts`
-
-**Симптом:** Файлы пишутся в `STORAGE_DIR/uploads/<uuid>/`, никто не подметает. На объёме 1000 документов в день — десятки гигабайт в месяц.
-
-**Лечение:** Cron-таск в worker'е (или отдельный k8s CronJob), удаляющий файлы для job'ов в финальном статусе старше N дней. Плюс сводка `disk_usage` в `/ready`.
-
-**Оценка:** 3-4 часа.
+Реализован file-cleanup sweeper. См. «Phase 1 Day 1» в шапке. Disk-usage в `/ready` пока не добавлен — отдельный мини-таск.
 
 ---
 

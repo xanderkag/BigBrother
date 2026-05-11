@@ -130,6 +130,48 @@ class JobsRepo {
     return rows[0] ?? null;
   }
 
+  /**
+   * Rows that the API created in `pending` but BullMQ never received (or
+   * received and lost). `graceSeconds` ignores fresh rows so the normal
+   * enqueue path isn't second-guessed during its window. `markProcessing`
+   * is the natural boundary: once it sets `started_at`, the row is no
+   * longer a sweeper target.
+   */
+  async findStalePending(graceSeconds: number, limit = 100): Promise<JobRow[]> {
+    const { rows } = await db.query<JobRow>(
+      `SELECT * FROM jobs
+       WHERE status = 'pending'
+         AND created_at < now() - ($1 || ' seconds')::interval
+       ORDER BY created_at ASC
+       LIMIT $2`,
+      [String(graceSeconds), limit],
+    );
+    return rows;
+  }
+
+  /**
+   * Terminal-state jobs (done / failed / needs_review) older than retention
+   * whose source file is still on disk. `file_path IS NOT NULL` is the
+   * "already cleaned up" gate — we NULL it inside `markFileDeleted` so
+   * subsequent sweeps don't keep re-finding the same row.
+   */
+  async findFinishedWithFileOlderThan(retentionDays: number, limit = 500): Promise<JobRow[]> {
+    const { rows } = await db.query<JobRow>(
+      `SELECT * FROM jobs
+       WHERE status IN ('done', 'failed', 'needs_review')
+         AND finished_at < now() - ($1 || ' days')::interval
+         AND file_path IS NOT NULL
+       ORDER BY finished_at ASC
+       LIMIT $2`,
+      [String(retentionDays), limit],
+    );
+    return rows;
+  }
+
+  async markFileDeleted(id: string): Promise<void> {
+    await db.query(`UPDATE jobs SET file_path = NULL WHERE id = $1`, [id]);
+  }
+
   async recordWebhookAttempt(id: string, success: boolean, error: string | null): Promise<void> {
     if (success) {
       await db.query(

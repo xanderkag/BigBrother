@@ -4,15 +4,27 @@ import { config } from './config.js';
 import { QUEUE_NAME, redisConnection, type DocJobPayload, closeQueue } from './queue.js';
 import { closeDb } from './db.js';
 import { processJob } from './pipeline/orchestrator.js';
+import { startPendingJobSweeper } from './workers/pending-job-sweeper.js';
+import { startFileCleanupSweeper } from './workers/file-cleanup.js';
 
-// pino is a transitive dep of fastify; use it directly here so the worker has matching log output.
+// pino directly: matches the Fastify-bound logger format on the API side so
+// log aggregation tools see a single shape. The base bindings (name=worker)
+// are inherited by every child logger we make for individual jobs.
 const log = pino({ level: config.logLevel, name: 'worker' });
 
 const worker = new Worker<DocJobPayload>(
   QUEUE_NAME,
   async (job) => {
-    log.info({ bullId: job.id, jobId: job.data.jobId, attempt: job.attemptsMade + 1 }, 'job received');
-    await processJob(job.data.jobId, log);
+    // Per-job child logger binds the trace ids once; every subsequent log
+    // inside processJob carries `request_id`, `job_id`, `bull_id`.
+    const jobLog = log.child({
+      request_id: job.data.requestId,
+      job_id: job.data.jobId,
+      bull_id: job.id,
+      attempt: job.attemptsMade + 1,
+    });
+    jobLog.info('job received');
+    await processJob(job.data.jobId, jobLog);
   },
   {
     connection: redisConnection,
@@ -20,13 +32,30 @@ const worker = new Worker<DocJobPayload>(
   },
 );
 
-worker.on('completed', (job) => log.info({ bullId: job.id, jobId: job.data.jobId }, 'job completed'));
-worker.on('failed', (job, err) =>
-  log.error({ bullId: job?.id, jobId: job?.data.jobId, err }, 'job failed'),
+worker.on('completed', (job) =>
+  log.info(
+    { request_id: job.data.requestId, job_id: job.data.jobId, bull_id: job.id },
+    'job completed',
+  ),
 );
+worker.on('failed', (job, err) =>
+  log.error(
+    { request_id: job?.data.requestId, job_id: job?.data.jobId, bull_id: job?.id, err },
+    'job failed',
+  ),
+);
+
+// Background sweepers — both run as setInterval inside this same process. With
+// a single worker process per deployment they need no distributed locking; if
+// we ever go horizontal, swap setInterval for BullMQ repeatable jobs so only
+// one instance executes each sweep.
+const pendingSweeper = startPendingJobSweeper({ log });
+const fileSweeper = startFileCleanupSweeper({ log });
 
 const shutdown = async (signal: string) => {
   log.info({ signal }, 'shutting down worker');
+  pendingSweeper.stop();
+  fileSweeper.stop();
   await worker.close();
   await closeQueue();
   await closeDb();

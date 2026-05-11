@@ -93,6 +93,9 @@ src/
 │   ├── files.ts         ← LocalFs за интерфейсом FileStorage
 │   └── jobs.ts          ← репо поверх pg
 ├── webhooks/deliver.ts  ← HMAC-подписанный POST с экспоненциальным backoff
+├── workers/
+│   ├── pending-job-sweeper.ts  ← re-enqueue зависших pending jobs (C1)
+│   └── file-cleanup.ts         ← TTL чистка uploaded файлов (C4)
 ├── types/
 │   ├── documents.ts     ← zod-схемы invoice/TTN/CMR/AKT
 │   ├── api-schemas.ts   ← zod-схемы request/response API
