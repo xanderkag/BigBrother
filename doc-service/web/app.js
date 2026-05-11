@@ -215,6 +215,383 @@ function renderJsonNode(value) {
 }
 
 // ============================================================
+// Extracted: form view — словарь, форматтеры, рендер
+// ============================================================
+//
+// Сырой JSON-tree скрывает структуру документа от оператора. Этот блок
+// превращает `extracted` в человекочитаемую форму: секции по top-level
+// объектам (Плательщик/Получатель/Cargo/...), русские лейблы для известных
+// ключей, специальное форматирование для ИНН/БИК/денег/дат, плашки
+// validation-issues прямо рядом с полем.
+
+/** Русские лейблы для известных ключей. Покрывает 15 builtin-типов. */
+const FIELD_LABELS = {
+  // Reusable / общие
+  number: 'Номер',
+  date: 'Дата',
+  date_charged: 'Дата списания',
+  total: 'Итого',
+  total_amount: 'Сумма',
+  amount: 'Сумма',
+  amount_text: 'Сумма прописью',
+  currency: 'Валюта',
+  vat: 'НДС',
+  vat_rate: 'Ставка НДС',
+  vat_amount: 'Сумма НДС',
+  vat_included: 'НДС включён',
+  payment_terms: 'Условия оплаты',
+  payment_kind: 'Вид платежа',
+  payment_method: 'Способ оплаты',
+  delivery_terms: 'Условия поставки',
+  signed_at_location: 'Место подписания',
+  effective_date: 'Дата вступления в силу',
+  expiration_date: 'Срок действия до',
+  title: 'Заголовок',
+  description: 'Описание',
+  subject: 'Предмет',
+  subject_kind: 'Вид договора',
+  priority: 'Очерёдность',
+  // Banking
+  bic: 'БИК',
+  account: 'Расчётный счёт',
+  correspondent_account: 'Корр. счёт',
+  bank_name: 'Банк',
+  // Party identification
+  inn: 'ИНН',
+  kpp: 'КПП',
+  ogrn: 'ОГРН',
+  tax_id: 'Tax ID',
+  name: 'Наименование',
+  address: 'Адрес',
+  country: 'Страна',
+  role: 'Роль',
+  representative_name: 'Подписант',
+  representative_title: 'Должность',
+  representative_basis: 'На основании',
+  // Parties (top-level keys)
+  payer: 'Плательщик',
+  payee: 'Получатель',
+  seller: 'Продавец',
+  buyer: 'Покупатель',
+  exporter: 'Экспортёр',
+  consignee: 'Получатель',
+  shipper: 'Грузоотправитель',
+  sender: 'Отправитель',
+  recipient: 'Получатель',
+  carrier: 'Перевозчик',
+  notify_party: 'Notify Party',
+  declarant: 'Декларант',
+  merchant: 'Продавец',
+  party_a: 'Сторона А',
+  party_b: 'Сторона Б',
+  // Contracts
+  parent_contract_number: 'Договор №',
+  parent_contract_date: 'Дата договора',
+  changes: 'Изменения',
+  addendum_kind: 'Тип допсоглашения',
+  new_total_amount: 'Новая сумма',
+  new_expiration_date: 'Новый срок',
+  term_description: 'Срок',
+  // Common purpose / subject
+  purpose: 'Назначение платежа',
+  // Transport / cargo
+  cargo: 'Груз',
+  vehicle: 'Транспорт',
+  plate: 'Госномер',
+  driver: 'Водитель',
+  weight: 'Вес',
+  weight_net: 'Вес нетто',
+  weight_nett: 'Вес нетто',
+  weight_gross: 'Вес брутто',
+  places: 'Мест',
+  qty: 'Количество',
+  unit: 'Ед. изм.',
+  unit_price: 'Цена за ед.',
+  price: 'Цена',
+  hs_code: 'Код ТН ВЭД',
+  loading_point: 'Место погрузки',
+  unloading_point: 'Место разгрузки',
+  loading_place: 'Место погрузки',
+  delivery_place: 'Место доставки',
+  port_of_loading: 'Порт погрузки',
+  port_of_discharge: 'Порт выгрузки',
+  place_of_delivery: 'Место доставки',
+  vessel_name: 'Судно',
+  voyage_number: 'Рейс',
+  containers: 'Контейнеры',
+  container_number: 'Номер контейнера',
+  seal_number: 'Пломба',
+  freight_terms: 'Условия фрахта',
+  bl_number: 'B/L №',
+  bl_type: 'Тип B/L',
+  // Customs
+  declaration_number: 'Номер декларации',
+  declaration_type: 'Тип декларации',
+  procedure_code: 'Код процедуры',
+  trading_country: 'Торгующая страна',
+  origin_country: 'Страна происхождения',
+  destination_country: 'Страна назначения',
+  country_of_origin: 'Страна происхождения',
+  transport_mode: 'Вид транспорта',
+  exchange_rate: 'Курс',
+  customs_value: 'Тамож. стоимость',
+  total_value: 'Общая стоимость',
+  invoice_value: 'Сумма по инвойсу',
+  statistical_value: 'Стат. стоимость',
+  duties: 'Платежи',
+  base: 'База',
+  rate: 'Ставка',
+  // Cash receipt
+  check_number: 'Номер чека',
+  shift_number: 'Смена',
+  date_time: 'Дата и время',
+  cashier_name: 'Кассир',
+  fn_number: 'ФН',
+  fd_number: 'ФД',
+  fp: 'ФП',
+  kkt_serial: 'Серийный № ККТ',
+  ofd_name: 'ОФД',
+  check_type: 'Тип чека',
+  payment_cash: 'Наличными',
+  payment_card: 'Картой',
+  store_id: 'Магазин',
+  // Packing
+  package_type: 'Тип упаковки',
+  package_qty: 'Кол-во упаковок',
+  items_per_package: 'Шт. в упаковке',
+  dimensions: 'Габариты',
+  volume: 'Объём',
+  total_packages: 'Всего мест',
+  total_weight_net: 'Вес нетто (всего)',
+  total_weight_gross: 'Вес брутто (всего)',
+  total_volume: 'Общий объём',
+  // Misc
+  incoterms: 'Incoterms',
+  invoice_number: 'Номер инвойса',
+  positions: 'Позиции',
+  services: 'Услуги',
+  signed: 'Подписан',
+  signature_date: 'Дата подписания',
+  packages: 'Места',
+  description_text: 'Описание',
+};
+
+function labelFor(key) {
+  if (FIELD_LABELS[key]) return FIELD_LABELS[key];
+  // Snake_case → Capitalized words.
+  return key
+    .replace(/_/g, ' ')
+    .replace(/^./, (c) => c.toUpperCase());
+}
+
+/** Формат для значения по типу ключа. Возвращает HTML-safe строку. */
+function formatValue(key, value) {
+  if (value === null || value === undefined || value === '') {
+    return '<span class="text-slate-400 italic">—</span>';
+  }
+  // Boolean
+  if (typeof value === 'boolean') {
+    return value
+      ? '<span class="badge badge-emerald">да</span>'
+      : '<span class="badge badge-slate">нет</span>';
+  }
+  // Дата YYYY-MM-DD как есть; другие даты — отдаём как строку
+  if (key === 'date' || key === 'date_charged' || key.endsWith('_date') || key === 'effective_date' || key === 'expiration_date' || key === 'signature_date') {
+    return `<span class="font-mono">${escapeHtml(String(value))}</span>`;
+  }
+  // Деньги — числа с разделителями тысяч. Эвристика: ключи total/amount/price/value/vat/customs_value.
+  if (typeof value === 'number' && /total|amount|price|value|vat|sum|cost/i.test(key) && !/rate/i.test(key)) {
+    const formatted = new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+    return `<span class="font-mono tabular-nums">${escapeHtml(formatted)}</span>`;
+  }
+  // Технические — моноширинно
+  if (key === 'inn' || key === 'kpp' || key === 'ogrn' || key === 'bic' || key === 'account' || key === 'correspondent_account' || key === 'fn_number' || key === 'fd_number' || key === 'fp' || key === 'hs_code' || key === 'container_number' || key === 'bl_number' || key === 'declaration_number' || key === 'plate') {
+    return `<span class="font-mono">${escapeHtml(String(value))}</span>`;
+  }
+  // Country code
+  if (key === 'country' || key === 'country_of_origin' || key === 'origin_country' || key === 'destination_country' || key === 'trading_country' || key === 'currency') {
+    return `<span class="badge badge-sky">${escapeHtml(String(value))}</span>`;
+  }
+  // Числа — выровнять
+  if (typeof value === 'number') {
+    return `<span class="font-mono tabular-nums">${escapeHtml(String(value))}</span>`;
+  }
+  // Длинные строки (>80 символов) — отдельный класс с переносом
+  const s = String(value);
+  if (s.length > 80) {
+    return `<span class="block break-words">${escapeHtml(s)}</span>`;
+  }
+  return escapeHtml(s);
+}
+
+/**
+ * Парсит validation_issues и возвращает Map<dotPath, issue[]>. Issues
+ * могут быть в формате «ИНН 7712345678: невалидная контрольная сумма»
+ * или «КПП 0 имеет некорректный формат» — пытаемся вытащить значение
+ * и сопоставить с конкретным полем в extracted.
+ *
+ * Грубая эвристика: если в issue упоминается ИНН/КПП/etc. + значение,
+ * находим в extracted поле с этим значением и помечаем его. Если
+ * сопоставить не удалось — issue остаётся "общим" и показывается в
+ * банере над формой.
+ */
+function indexIssuesByField(extracted, issues) {
+  const byPath = new Map();
+  const unmatched = [];
+  // Соответствие маркер→ключ. Маркер ищется в начале issue (case-insensitive).
+  const markers = [
+    { rx: /^ИНН\s+(\S+)/i, key: 'inn' },
+    { rx: /^КПП\s+(\S+)/i, key: 'kpp' },
+    { rx: /^ОГРН\s+(\S+)/i, key: 'ogrn' },
+    { rx: /^БИК\s+(\S+)/i, key: 'bic' },
+    { rx: /^Госномер\s+(\S+)/i, key: 'plate' },
+    { rx: /^Дата\s+(\S+)/i, key: 'date' },
+  ];
+
+  for (const issue of issues) {
+    let matched = false;
+    for (const { rx, key } of markers) {
+      const m = rx.exec(issue);
+      if (!m) continue;
+      const v = m[1];
+      // Ищем в extracted top-level или nested-level (1 уровень глубины) поле
+      // с таким ключом и таким значением.
+      const path = findFieldPath(extracted, key, v);
+      if (path) {
+        if (!byPath.has(path)) byPath.set(path, []);
+        byPath.get(path).push(issue);
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) unmatched.push(issue);
+  }
+  return { byPath, unmatched };
+}
+
+function findFieldPath(obj, key, value, prefix = '') {
+  if (!obj || typeof obj !== 'object') return null;
+  for (const [k, v] of Object.entries(obj)) {
+    if (k === key && String(v) === String(value)) {
+      return prefix ? `${prefix}.${k}` : k;
+    }
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      const inner = findFieldPath(v, key, value, prefix ? `${prefix}.${k}` : k);
+      if (inner) return inner;
+    }
+  }
+  return null;
+}
+
+/** Главный рендерер форменного вида. */
+function renderExtractedForm(extracted, issues) {
+  if (!extracted || typeof extracted !== 'object' || Object.keys(extracted).length === 0) {
+    return `<div class="empty-state"><p class="empty-state-text">Нет извлечённых данных</p></div>`;
+  }
+  const { byPath, unmatched } = indexIssuesByField(extracted, issues || []);
+
+  // Группируем top-level ключи:
+  //   - object (с подполями) → секция «Карточка»
+  //   - array → секция со списком
+  //   - primitive → idem верхнеуровневые «реквизиты»
+  const primitives = [];
+  const objectSections = [];
+  const arraySections = [];
+  for (const [k, v] of Object.entries(extracted)) {
+    if (k === '_issues') continue; // служебное
+    if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+      objectSections.push([k, v]);
+    } else if (Array.isArray(v)) {
+      arraySections.push([k, v]);
+    } else {
+      primitives.push([k, v]);
+    }
+  }
+
+  const renderRow = (key, value, pathPrefix = '') => {
+    const path = pathPrefix ? `${pathPrefix}.${key}` : key;
+    const fieldIssues = byPath.get(path) || [];
+    const issueBadge = fieldIssues.length > 0
+      ? `<span class="ml-2 badge badge-amber" title="${escapeHtml(fieldIssues.join('; '))}">⚠ ${fieldIssues.length}</span>`
+      : '';
+    return `
+      <div class="grid grid-cols-[10rem_1fr] gap-3 py-1.5 items-start border-b border-slate-100 dark:border-slate-800 last:border-b-0">
+        <div class="text-xs text-slate-500 dark:text-slate-400 pt-0.5">${escapeHtml(labelFor(key))}</div>
+        <div class="text-sm">${formatValue(key, value)}${issueBadge}</div>
+      </div>`;
+  };
+
+  const renderObjectSection = (sectionKey, obj) => {
+    const entries = Object.entries(obj).filter(([, v]) => v !== null && v !== undefined && v !== '');
+    if (entries.length === 0) {
+      return `
+        <div class="card-section">
+          <h4 class="card-title text-sm mb-1">${escapeHtml(labelFor(sectionKey))}</h4>
+          <p class="text-xs text-slate-400">— не заполнено</p>
+        </div>`;
+    }
+    return `
+      <div class="card-section">
+        <h4 class="card-title text-sm mb-2">${escapeHtml(labelFor(sectionKey))}</h4>
+        ${entries.map(([k, v]) => renderRow(k, v, sectionKey)).join('')}
+      </div>`;
+  };
+
+  const renderArraySection = (sectionKey, arr) => {
+    if (arr.length === 0) {
+      return `
+        <div class="card-section">
+          <h4 class="card-title text-sm mb-1">${escapeHtml(labelFor(sectionKey))}</h4>
+          <p class="text-xs text-slate-400">— пусто</p>
+        </div>`;
+    }
+    // Если элементы массива — объекты, рендерим табличкой.
+    const allObjects = arr.every((it) => it !== null && typeof it === 'object' && !Array.isArray(it));
+    if (allObjects) {
+      const allKeys = Array.from(new Set(arr.flatMap((it) => Object.keys(it))));
+      const headerCells = allKeys.map((k) => `<th class="px-2 py-1 text-left text-xs font-medium text-slate-500 dark:text-slate-400">${escapeHtml(labelFor(k))}</th>`).join('');
+      const rows = arr.map((item, idx) => {
+        const cells = allKeys.map((k) => `<td class="px-2 py-1 align-top">${formatValue(k, item[k])}</td>`).join('');
+        return `<tr class="border-t border-slate-100 dark:border-slate-800"><td class="px-2 py-1 text-xs text-slate-400 align-top">${idx + 1}</td>${cells}</tr>`;
+      }).join('');
+      return `
+        <div class="card-section">
+          <h4 class="card-title text-sm mb-2">${escapeHtml(labelFor(sectionKey))} <span class="text-xs font-normal text-slate-500">(${arr.length})</span></h4>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead><tr><th class="px-2 py-1 text-left text-xs font-medium text-slate-500">#</th>${headerCells}</tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </div>`;
+    }
+    // Иначе — список значений.
+    return `
+      <div class="card-section">
+        <h4 class="card-title text-sm mb-2">${escapeHtml(labelFor(sectionKey))} <span class="text-xs font-normal text-slate-500">(${arr.length})</span></h4>
+        <ul class="list-disc list-inside space-y-1 text-sm">${arr.map((v) => `<li>${escapeHtml(String(v))}</li>`).join('')}</ul>
+      </div>`;
+  };
+
+  return `
+    ${unmatched.length > 0 ? `
+      <div class="card-section warning-banner rounded-none border-0 border-b border-amber-200 dark:border-amber-900">
+        <strong>Общие проблемы валидации:</strong>
+        <ul class="list-disc list-inside text-xs mt-1 space-y-0.5">
+          ${unmatched.map((i) => `<li>${escapeHtml(i)}</li>`).join('')}
+        </ul>
+      </div>` : ''}
+    ${primitives.length > 0 ? `
+      <div class="card-section">
+        <h4 class="card-title text-sm mb-2">Реквизиты</h4>
+        ${primitives.map(([k, v]) => renderRow(k, v)).join('')}
+      </div>` : ''}
+    ${objectSections.map(([k, v]) => renderObjectSection(k, v)).join('')}
+    ${arraySections.map(([k, v]) => renderArraySection(k, v)).join('')}
+  `;
+}
+
+// ============================================================
 // View lifecycle
 // ============================================================
 //
@@ -648,13 +1025,18 @@ async function renderJobDetail(jobId) {
           <div class="card-header">
             <h3 class="card-title">Extracted data</h3>
             <div class="flex items-center gap-2">
+              <div class="inline-flex rounded-md border border-slate-300 dark:border-slate-700 overflow-hidden text-xs">
+                <button id="view-form-btn" class="px-2 py-1 bg-indigo-600 text-white" data-view="form">Форма</button>
+                <button id="view-json-btn" class="px-2 py-1 hover:bg-slate-100 dark:hover:bg-slate-800" data-view="json">JSON</button>
+              </div>
               <button id="copy-json-btn" class="btn-secondary btn-xs">Copy</button>
               <button id="reprocess-btn" class="btn-secondary btn-xs" title="Перепрогнать через текущий prompt/схему типа (без новой OCR)">Перепрогнать</button>
               <button id="edit-btn" class="btn-accent-outline btn-xs">Edit</button>
             </div>
           </div>
-          <div id="extracted-pane" class="card-body">
-            <div class="bg-slate-50 dark:bg-slate-950 rounded-lg p-4 overflow-x-auto">${jsonTree(extracted)}</div>
+          <div id="extracted-pane" class="card-body p-0">
+            <div id="extracted-form-view">${renderExtractedForm(extracted, issues)}</div>
+            <div id="extracted-json-view" class="hidden bg-slate-50 dark:bg-slate-950 p-4 overflow-x-auto">${jsonTree(extracted)}</div>
           </div>
         </div>
       </div>
@@ -707,6 +1089,29 @@ async function renderJobDetail(jobId) {
       copyBtn.textContent = 'Copied!';
       setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1200);
     });
+
+    // View toggle: Форма ↔ JSON. Persist в localStorage чтобы оператор
+    // не переключал каждый раз.
+    const STORAGE_VIEW = 'parsdocs.extractedView';
+    const switchExtractedView = (mode) => {
+      const formView = document.getElementById('extracted-form-view');
+      const jsonView = document.getElementById('extracted-json-view');
+      const formBtn = document.getElementById('view-form-btn');
+      const jsonBtn = document.getElementById('view-json-btn');
+      if (!formView || !jsonView || !formBtn || !jsonBtn) return;
+      const isForm = mode === 'form';
+      formView.classList.toggle('hidden', !isForm);
+      jsonView.classList.toggle('hidden', isForm);
+      formBtn.classList.toggle('bg-indigo-600', isForm);
+      formBtn.classList.toggle('text-white', isForm);
+      jsonBtn.classList.toggle('bg-indigo-600', !isForm);
+      jsonBtn.classList.toggle('text-white', !isForm);
+      localStorage.setItem(STORAGE_VIEW, mode);
+    };
+    const preferred = localStorage.getItem(STORAGE_VIEW);
+    if (preferred === 'json') switchExtractedView('json');
+    document.getElementById('view-form-btn')?.addEventListener('click', () => switchExtractedView('form'));
+    document.getElementById('view-json-btn')?.addEventListener('click', () => switchExtractedView('json'));
 
     document.getElementById('edit-btn').addEventListener('click', () => {
       editing = true;
