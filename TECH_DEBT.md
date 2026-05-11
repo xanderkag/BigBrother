@@ -42,6 +42,23 @@
 - ✅ Structured logs с `request_id` через весь pipeline — Fastify `genReqId`, propagation в BullMQ payload, worker создаёт child-логгер с привязкой `request_id`/`job_id`/`bull_id`. Заголовок `X-Request-Id` принимается на вход и возвращается клиенту.
 - ✅ Тесты на оба sweeper'а с мок-репо: stale=пусто, multi-row, ошибка enqueue не валит цикл, overlap guard, ошибка unlink не маркирует row deleted.
 
+### Phase 1 Day 2 — operator UI (2026-05-11)
+
+- ✅ Полноценный UI на `/` — htmx-friendly HTML + Tailwind v3 Play CDN + Alpine.js, без build-шага. Login по API-токену в localStorage, dark mode, sidebar layout. Views: jobs list (auto-refresh для in-flight, фильтры, status-badges, confidence bars), job detail (JSON-viewer для extracted, validation_issues панель, edit mode → PATCH с перевалидацией, RAW OCR text в `<details>`), upload (drag-and-drop + optional fields), settings (placeholder).
+
+### Phase 2 Day 1 — ClaudeBackend + Settings (2026-05-11)
+
+- ✅ **ClaudeBackend** в inference-service через `anthropic` SDK. Поддерживает classify / extract / vision-ocr / verify. Lazy-import — stub-образу не нужен.
+- ✅ `/v1/providers/status` в inference-service — без leak'а секретов сообщает какие провайдеры настроены, какой активен.
+- ✅ `/api/v1/settings` и `/api/v1/providers/status` в doc-service. Settings возвращает sanitized snapshot (без секретов), providers/status проксируется к inference c graceful degradation.
+- ✅ Settings UI переделан в живой dashboard: LLM providers с active/configured badges, OCR thresholds, engines state (Yandex с ПДн-warning если включён), storage/sweepers/limits/endpoints/session.
+
+### Phase 2 Day 2 — Idempotency-Key + magic-bytes (2026-05-11)
+
+- ✅ **I1 Idempotency-Key** — новая миграция `002_idempotency.sql` (partial unique index, NULL keys не конфликтуют). `POST /jobs` читает заголовок до парсинга multipart'а; если ключ уже использован → HTTP 200 с `Idempotency-Replayed: 1` и существующим job_id. Race condition (две параллельных POST'ов с одним key) ловится unique violation на INSERT и резолвится в SELECT + удаление дублирующего файла. Валидация ключа: 1-64 символа, `[A-Za-z0-9._-]`.
+- ✅ **B5 file magic-bytes validation** — пакет `file-type ^19.6`. После сохранения файла читаются magic bytes; если детектируется не из `ACCEPTED_DOCUMENT_MIMES` (PDF/JPEG/PNG/BMP/TIFF/WebP) — 400 и удаление файла. Если detected mime ≠ declared multipart Content-Type — detected становится authoritative (логируется warning). Защита от exe-под-видом-PDF, расширения vs реальный формат, и подобного.
+- ✅ Тесты: `tests/idempotency.spec.ts` (header parsing, unique-violation detector), `tests/magic-bytes.spec.ts` (PDF/PNG/JPEG/BMP/WebP по реальным magic bytes, рейект plaintext/exe, обнаружение mislabelled PDF).
+
 ---
 
 ## 🔴 Critical (блочит пилотный запуск)
@@ -72,15 +89,9 @@
 
 ## 🟠 Important (укусит при ramp-up)
 
-### I1. Нет идемпотентности на `POST /jobs`
+### ~~I1. Нет идемпотентности на `POST /jobs`~~ — ✅ закрыто 2026-05-11
 
-**Где:** `doc-service/src/routes/jobs.ts`
-
-**Симптом:** Сетевой ретрай клиента → дубль job'а.
-
-**Лечение:** `Idempotency-Key` header → колонка `idempotency_key` с unique-индексом в `jobs`. При совпадении ключа возвращаем существующий job без re-enqueue.
-
-**Оценка:** 3 часа (миграция + роут + тест).
+Реализован header `Idempotency-Key`. См. «Phase 2 Day 2» в шапке.
 
 ---
 
@@ -234,15 +245,9 @@
 
 ## 🟢 Latent code-level
 
-### B5. Уровень 6 — реальная проверка типа файла (magic bytes)
+### ~~B5. Уровень 6 — реальная проверка типа файла (magic bytes)~~ — ✅ закрыто 2026-05-11
 
-**Где:** `doc-service/src/routes/jobs.ts`, `storage/files.ts`
-
-**Симптом:** Сейчас доверяем `Content-Type` из multipart-заголовка. Клиент может прислать `.exe` под видом `image/jpeg`, и сервис покладёт его в storage. На уровне OCR-движков это упадёт безболезненно (tesseract не распознает), но всё равно мусор на диске.
-
-**Лечение:** После сохранения — проверить magic bytes (`%PDF`, `\xFF\xD8\xFF` для JPEG, `\x89PNG` для PNG). Пакет `file-type` это умеет за полминуты установки.
-
-**Оценка:** 2 часа.
+Реализована через пакет `file-type`. См. «Phase 2 Day 2» в шапке.
 
 ---
 

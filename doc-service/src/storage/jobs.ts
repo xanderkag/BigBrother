@@ -25,6 +25,7 @@ export type JobRow = {
   updated_at: Date;
   started_at: Date | null;
   finished_at: Date | null;
+  idempotency_key: string | null;
 };
 
 export type CreateJobInput = {
@@ -35,6 +36,7 @@ export type CreateJobInput = {
   documentHint: DocumentType | null;
   webhookUrl: string | null;
   metadata: unknown;
+  idempotencyKey?: string | null;
 };
 
 export type ListFilters = {
@@ -59,8 +61,8 @@ export type ProcessingUpdate = {
 class JobsRepo {
   async create(input: CreateJobInput): Promise<JobRow> {
     const { rows } = await db.query<JobRow>(
-      `INSERT INTO jobs (file_name, file_path, file_size, mime_type, document_hint, webhook_url, metadata)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
+      `INSERT INTO jobs (file_name, file_path, file_size, mime_type, document_hint, webhook_url, metadata, idempotency_key)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
        RETURNING *`,
       [
         input.fileName,
@@ -70,6 +72,7 @@ class JobsRepo {
         input.documentHint,
         input.webhookUrl,
         input.metadata == null ? null : JSON.stringify(input.metadata),
+        input.idempotencyKey ?? null,
       ],
     );
     return rows[0]!;
@@ -77,6 +80,20 @@ class JobsRepo {
 
   async findById(id: string): Promise<JobRow | null> {
     const { rows } = await db.query<JobRow>(`SELECT * FROM jobs WHERE id = $1`, [id]);
+    return rows[0] ?? null;
+  }
+
+  /**
+   * Look up an existing job by its caller-supplied `Idempotency-Key`.
+   * Used by `POST /api/v1/jobs` to short-circuit retries: if a key is
+   * present and we already have a job for it, return that one instead
+   * of creating a duplicate.
+   */
+  async findByIdempotencyKey(key: string): Promise<JobRow | null> {
+    const { rows } = await db.query<JobRow>(
+      `SELECT * FROM jobs WHERE idempotency_key = $1 LIMIT 1`,
+      [key],
+    );
     return rows[0] ?? null;
   }
 
