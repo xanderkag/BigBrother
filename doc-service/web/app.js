@@ -3,17 +3,12 @@
  *
  * One HTML shell + this module. No bundler, no framework — just hash-based
  * routing, fetch() with a Bearer token from localStorage, and templates
- * inlined as tagged template strings. Plenty for an operational tool, easy
- * to extend, easy to read.
+ * inlined as tagged template strings.
  *
- * Layout:
- *   - Routing: window.location.hash dispatches to renderXxx(). On navigation
- *     hashchange re-renders the main view.
- *   - Auth: token kept in localStorage. Every API call goes through api()
- *     which injects Authorization and resets on 401.
- *   - Views: each returns nothing — they mutate the #view element directly.
- *     Long-poll loops register themselves with the currentView lifecycle
- *     so navigating away cancels them.
+ * Все стили — через design tokens из index.html (`.card`, `.btn-*`,
+ * `.form-*`, `.page-*`, `.badge-*`, etc.). Ad-hoc Tailwind утилиты —
+ * только для локального layout'а (flex, grid, gap). Это держит UI
+ * консистентным между всеми views.
  */
 
 const API = '/api/v1';
@@ -22,7 +17,10 @@ const STORAGE = {
   dark: 'parsdocs.dark',
 };
 
-// ---- Auth ----
+// ============================================================
+// Auth + API
+// ============================================================
+
 const auth = {
   get token() { return localStorage.getItem(STORAGE.token); },
   set token(v) {
@@ -32,7 +30,6 @@ const auth = {
   isAuthed() { return !!this.token; },
 };
 
-// ---- API client ----
 async function api(path, opts = {}) {
   const headers = { ...(opts.headers || {}) };
   if (auth.token) headers['Authorization'] = `Bearer ${auth.token}`;
@@ -65,7 +62,10 @@ async function apiJson(path, opts = {}) {
   return res.json();
 }
 
-// ---- Theme ----
+// ============================================================
+// Theme
+// ============================================================
+
 function applyTheme() {
   const stored = localStorage.getItem(STORAGE.dark);
   const dark =
@@ -80,21 +80,36 @@ function toggleTheme() {
   applyTheme();
 }
 
-// ---- Status badge helper ----
-const STATUS_STYLES = {
-  pending:      { label: 'Pending',       cls: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300' },
-  processing:   { label: 'Processing',    cls: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300 animate-pulse' },
-  done:         { label: 'Done',          cls: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300' },
-  needs_review: { label: 'Needs review',  cls: 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300' },
-  failed:       { label: 'Failed',        cls: 'bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300' },
+// ============================================================
+// Helpers — reused across views
+// ============================================================
+
+const STATUS_BADGE = {
+  pending:      { label: 'Pending',      variant: 'badge-slate' },
+  processing:   { label: 'Processing',   variant: 'badge-indigo badge-pulse' },
+  done:         { label: 'Done',         variant: 'badge-emerald' },
+  needs_review: { label: 'Needs review', variant: 'badge-amber' },
+  failed:       { label: 'Failed',       variant: 'badge-rose' },
 };
 function badge(status) {
-  const s = STATUS_STYLES[status] ?? { label: status, cls: 'bg-slate-100 text-slate-700' };
-  return `<span class="badge ${s.cls}">${s.label}</span>`;
+  const b = STATUS_BADGE[status] ?? { label: status, variant: 'badge-slate' };
+  return `<span class="badge ${b.variant}">${escapeHtml(b.label)}</span>`;
+}
+
+const PARSER_BADGE = {
+  'builtin:invoice_regex': { label: 'regex (invoice)', variant: 'badge-sky' },
+  'builtin:upd_regex':     { label: 'regex (UPD)',     variant: 'badge-sky' },
+  'llm_extract':           { label: 'LLM /extract',    variant: 'badge-violet' },
+};
+function parserKindBadge(kind) {
+  const b = PARSER_BADGE[kind] ?? { label: kind, variant: 'badge-slate' };
+  return `<span class="badge ${b.variant}">${escapeHtml(b.label)}</span>`;
 }
 
 function confidenceBar(confidence) {
-  if (confidence === null || confidence === undefined) return '<span class="text-slate-400 text-xs">—</span>';
+  if (confidence === null || confidence === undefined) {
+    return '<span class="text-slate-400 text-xs">—</span>';
+  }
   const pct = Math.round(confidence * 100);
   const color =
     confidence >= 0.8 ? 'bg-emerald-500' :
@@ -129,14 +144,54 @@ function escapeHtml(s) {
     .replaceAll("'", '&#39;');
 }
 
-// ---- View lifecycle: cancel polls on navigation ----
+/**
+ * Render a JSON value as a collapsible tree using native `<details>` for
+ * expand/collapse (no JS state to manage). Color-coded by type via the
+ * `.json-*` token classes defined in index.html.
+ */
+function jsonTree(value) {
+  return `<div class="json-node">${renderJsonNode(value)}</div>`;
+}
+
+function renderJsonNode(value) {
+  if (value === null) return `<span class="json-null">null</span>`;
+  if (typeof value === 'boolean') return `<span class="json-boolean">${value}</span>`;
+  if (typeof value === 'number') return `<span class="json-number">${value}</span>`;
+  if (typeof value === 'string') return `<span class="json-string">"${escapeHtml(value)}"</span>`;
+  if (Array.isArray(value)) {
+    if (value.length === 0) return `<span class="json-bracket">[]</span>`;
+    const items = value.map((v, i) =>
+      `<div>${renderJsonNode(v)}${i < value.length - 1 ? '<span class="json-bracket">,</span>' : ''}</div>`,
+    ).join('');
+    return `
+      <details open>
+        <summary class="json-bracket cursor-pointer select-none">[ <span class="text-slate-400">${value.length} items</span> ]</summary>
+        <div class="json-indent ml-2 mt-1">${items}</div>
+      </details>`;
+  }
+  if (typeof value === 'object') {
+    const entries = Object.entries(value);
+    if (entries.length === 0) return `<span class="json-bracket">{}</span>`;
+    const rows = entries.map(([k, v], i) => `
+      <div>
+        <span class="json-key">"${escapeHtml(k)}"</span><span class="json-bracket">:</span> ${renderJsonNode(v)}${i < entries.length - 1 ? '<span class="json-bracket">,</span>' : ''}
+      </div>`).join('');
+    return `
+      <details open>
+        <summary class="json-bracket cursor-pointer select-none">{ <span class="text-slate-400">${entries.length} fields</span> }</summary>
+        <div class="json-indent ml-2 mt-1">${rows}</div>
+      </details>`;
+  }
+  return `<span class="json-null">undefined</span>`;
+}
+
+// ============================================================
+// View lifecycle
+// ============================================================
 //
 // setView writes new HTML, replacing the previous view. Before doing so it
 // runs any cleanup registered by the previous view (cancels timers, etc.).
-//
-// Views that attach event listeners or start polls AFTER setView call
-// `registerCleanup` separately — calling setView a second time on the same
-// view would re-render the HTML and wipe their just-attached handlers.
+
 let currentCleanup = null;
 function runCurrentCleanup() {
   if (currentCleanup) {
@@ -149,11 +204,50 @@ function setView(html) {
   document.getElementById('view').innerHTML = html;
 }
 function registerCleanup(fn) {
-  // Replaces (doesn't chain) — each view owns one cleanup hook.
   currentCleanup = fn;
 }
 
-// ---- Login flow ----
+function pageHeader({ title, subtitle, actions }) {
+  return `
+    <header class="page-header">
+      <div>
+        <h2 class="page-title">${escapeHtml(title)}</h2>
+        ${subtitle ? `<p class="page-subtitle">${escapeHtml(subtitle)}</p>` : ''}
+      </div>
+      ${actions ? `<div class="flex items-center gap-2 shrink-0">${actions}</div>` : ''}
+    </header>`;
+}
+
+function backLink(href, label = 'К списку') {
+  return `<a href="${escapeHtml(href)}" class="back-link">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path fill-rule="evenodd" d="M17 10a.75.75 0 0 1-.75.75H5.612l4.158 3.96a.75.75 0 1 1-1.04 1.08l-5.5-5.25a.75.75 0 0 1 0-1.08l5.5-5.25a.75.75 0 1 1 1.04 1.08L5.612 9.25H16.25A.75.75 0 0 1 17 10Z" clip-rule="evenodd"/></svg>
+    ${escapeHtml(label)}
+  </a>`;
+}
+
+function loadingState() {
+  return `
+    <div class="card empty-state">
+      <div class="space-y-2 max-w-sm mx-auto">
+        <div class="skeleton-row w-1/3 mx-auto"></div>
+        <div class="skeleton-row w-2/3 mx-auto"></div>
+        <div class="skeleton-row w-1/2 mx-auto"></div>
+      </div>
+    </div>`;
+}
+
+function errorState(message) {
+  return `
+    <div class="card error-banner">
+      <p class="font-medium">Не удалось загрузить</p>
+      <p class="text-sm mt-1">${escapeHtml(message)}</p>
+    </div>`;
+}
+
+// ============================================================
+// Login
+// ============================================================
+
 function showLogin() {
   document.getElementById('login-screen').classList.remove('hidden');
   document.getElementById('app-shell').classList.add('hidden');
@@ -165,17 +259,11 @@ function hideLogin() {
 }
 
 async function tryLogin(token) {
-  // Verify by hitting /ready — public endpoint, but our app actually wants
-  // to know "does this token unlock /api/v1/*"? So we hit a real authed
-  // endpoint (GET /jobs?limit=1) instead. /ready alone wouldn't catch a
-  // wrong token because it's unauthed.
   auth.token = token;
   try {
     const res = await api('/jobs?limit=1');
     if (res.status === 200) return true;
     if (res.status === 401) return false;
-    // 500-ish — token might be fine but server is sick. Treat as failure
-    // and surface the error to the user.
     throw new Error(`Server responded ${res.status}`);
   } catch (err) {
     auth.token = null;
@@ -211,10 +299,13 @@ document.getElementById('logout-btn').addEventListener('click', () => {
 
 document.getElementById('dark-toggle').addEventListener('click', toggleTheme);
 
-// ---- Router ----
+// ============================================================
+// Router
+// ============================================================
+
 function route() {
   const h = (location.hash || '#jobs').slice(1);
-  // Highlight active nav
+
   document.querySelectorAll('[data-nav]').forEach((el) => {
     const target = el.dataset.nav;
     const isActive =
@@ -230,33 +321,28 @@ function route() {
   if (h === 'document-types') return renderDocumentTypesList();
   if (h.startsWith('document-types/')) return renderDocumentTypeDetail(h.slice('document-types/'.length));
   if (h === 'settings') return renderSettings();
-  // Unknown → default
   location.hash = '#jobs';
 }
 window.addEventListener('hashchange', route);
 
-// ==========================================================
-// Views
-// ==========================================================
+// ============================================================
+// Jobs list
+// ============================================================
 
-// ---- Jobs list ----
 async function renderJobsList() {
   setView(`
-    <div class="p-8 max-w-6xl mx-auto">
-      <div class="flex items-center justify-between mb-6">
-        <div>
-          <h2 class="text-2xl font-semibold">Jobs</h2>
-          <p class="text-sm text-slate-500 dark:text-slate-400 mt-0.5">Последние задачи обработки</p>
-        </div>
-        <a href="#upload" class="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium transition">
+    <div class="page">
+      ${pageHeader({
+        title: 'Jobs',
+        subtitle: 'Последние задачи обработки',
+        actions: `<a href="#upload" class="btn-primary btn-md">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path d="M10.75 4.75a.75.75 0 0 0-1.5 0v4.5h-4.5a.75.75 0 0 0 0 1.5h4.5v4.5a.75.75 0 0 0 1.5 0v-4.5h4.5a.75.75 0 0 0 0-1.5h-4.5v-4.5Z"/></svg>
           New job
-        </a>
-      </div>
+        </a>`,
+      })}
 
-      <!-- Filters -->
       <div class="flex flex-wrap items-center gap-3 mb-4">
-        <select id="filter-status" class="px-3 py-1.5 text-sm rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900">
+        <select id="filter-status" class="form-select" style="width: auto;">
           <option value="">Все статусы</option>
           <option value="pending">Pending</option>
           <option value="processing">Processing</option>
@@ -264,7 +350,7 @@ async function renderJobsList() {
           <option value="needs_review">Needs review</option>
           <option value="failed">Failed</option>
         </select>
-        <select id="filter-type" class="px-3 py-1.5 text-sm rounded-md border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900">
+        <select id="filter-type" class="form-select" style="width: auto;">
           <option value="">Все типы</option>
           <option value="invoice">invoice</option>
           <option value="factInvoice">factInvoice</option>
@@ -273,16 +359,11 @@ async function renderJobsList() {
           <option value="CMR">CMR</option>
           <option value="AKT">AKT</option>
         </select>
-        <button id="refresh-btn" class="px-3 py-1.5 text-sm rounded-md border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition">
-          Обновить
-        </button>
+        <button id="refresh-btn" class="btn-secondary btn-sm">Обновить</button>
         <span id="auto-refresh-indicator" class="text-xs text-slate-400 hidden">auto-refresh on</span>
       </div>
 
-      <!-- Table container — filled by loadJobs -->
-      <div id="jobs-table" class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
-        <div class="p-8 text-center text-slate-400">Загрузка...</div>
-      </div>
+      <div id="jobs-table" class="card overflow-hidden">${loadingState()}</div>
     </div>
   `);
 
@@ -290,6 +371,7 @@ async function renderJobsList() {
   const typeEl = document.getElementById('filter-type');
   const refreshEl = document.getElementById('refresh-btn');
   const autoEl = document.getElementById('auto-refresh-indicator');
+  let pollTimer = null;
 
   async function load() {
     const params = new URLSearchParams();
@@ -299,16 +381,11 @@ async function renderJobsList() {
     try {
       const data = await apiJson(`/jobs?${params.toString()}`);
       renderTable(data.items);
-      // Auto-refresh while there are in-flight jobs.
       const inflight = data.items.some((j) => j.status === 'pending' || j.status === 'processing');
       autoEl.classList.toggle('hidden', !inflight);
       return inflight;
     } catch (err) {
-      document.getElementById('jobs-table').innerHTML = `
-        <div class="p-8 text-center text-rose-600 dark:text-rose-400">
-          <p class="font-medium">Не удалось загрузить</p>
-          <p class="text-sm mt-1">${escapeHtml(err.message)}</p>
-        </div>`;
+      document.getElementById('jobs-table').innerHTML = errorState(err.message);
       return false;
     }
   }
@@ -316,51 +393,43 @@ async function renderJobsList() {
   function renderTable(items) {
     if (items.length === 0) {
       document.getElementById('jobs-table').innerHTML = `
-        <div class="p-12 text-center">
-          <p class="text-slate-500 dark:text-slate-400">Задач пока нет.</p>
-          <a href="#upload" class="inline-block mt-3 text-indigo-600 hover:text-indigo-700 text-sm font-medium">Загрузить первый документ →</a>
+        <div class="empty-state">
+          <p class="empty-state-text">Задач пока нет.</p>
+          <a href="#upload" class="empty-state-cta">Загрузить первый документ →</a>
         </div>`;
       return;
     }
     const rows = items.map((j) => `
-      <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer transition" data-job-id="${escapeHtml(j.job_id)}">
-        <td class="px-4 py-3 font-mono text-xs text-slate-500">${escapeHtml(j.job_id.slice(0, 8))}</td>
-        <td class="px-4 py-3">${badge(j.status)}</td>
-        <td class="px-4 py-3 text-sm">${escapeHtml(j.document_type ?? '—')}</td>
-        <td class="px-4 py-3 text-sm truncate max-w-[12rem]" title="${escapeHtml(j.file_name)}">${escapeHtml(j.file_name)}</td>
-        <td class="px-4 py-3">${confidenceBar(j.confidence)}</td>
-        <td class="px-4 py-3 text-sm">${(j.validation_issues?.length ?? 0) > 0 ? `<span class="text-amber-600 dark:text-amber-400">${j.validation_issues.length}</span>` : '<span class="text-slate-300 dark:text-slate-600">—</span>'}</td>
-        <td class="px-4 py-3 text-xs text-slate-500" title="${escapeHtml(j.created_at)}">${escapeHtml(relativeTime(j.created_at))}</td>
+      <tr class="row-clickable" data-job-id="${escapeHtml(j.job_id)}">
+        <td class="font-mono text-xs text-slate-500">${escapeHtml(j.job_id.slice(0, 8))}</td>
+        <td>${badge(j.status)}</td>
+        <td>${escapeHtml(j.document_type ?? '—')}</td>
+        <td class="truncate max-w-[12rem]" title="${escapeHtml(j.file_name)}">${escapeHtml(j.file_name)}</td>
+        <td>${confidenceBar(j.confidence)}</td>
+        <td>${(j.validation_issues?.length ?? 0) > 0
+          ? `<span class="text-amber-600 dark:text-amber-400 font-medium">${j.validation_issues.length}</span>`
+          : '<span class="text-slate-300 dark:text-slate-600">—</span>'}</td>
+        <td class="text-xs text-slate-500" title="${escapeHtml(j.created_at)}">${escapeHtml(relativeTime(j.created_at))}</td>
       </tr>`).join('');
     document.getElementById('jobs-table').innerHTML = `
-      <table class="w-full">
-        <thead class="bg-slate-50 dark:bg-slate-950/50 text-xs uppercase text-slate-500 dark:text-slate-400">
+      <table class="data-table">
+        <thead>
           <tr>
-            <th class="text-left px-4 py-2.5 font-medium">ID</th>
-            <th class="text-left px-4 py-2.5 font-medium">Status</th>
-            <th class="text-left px-4 py-2.5 font-medium">Type</th>
-            <th class="text-left px-4 py-2.5 font-medium">File</th>
-            <th class="text-left px-4 py-2.5 font-medium">Confidence</th>
-            <th class="text-left px-4 py-2.5 font-medium">Issues</th>
-            <th class="text-left px-4 py-2.5 font-medium">Created</th>
+            <th>ID</th><th>Status</th><th>Type</th><th>File</th>
+            <th>Confidence</th><th>Issues</th><th>Created</th>
           </tr>
         </thead>
-        <tbody class="divide-y divide-slate-100 dark:divide-slate-800">${rows}</tbody>
+        <tbody>${rows}</tbody>
       </table>`;
     document.querySelectorAll('[data-job-id]').forEach((row) => {
       row.addEventListener('click', () => { location.hash = `#jobs/${row.dataset.jobId}`; });
     });
   }
 
-  // Wire interactivity and polling lifecycle.
-  let pollTimer = null;
   async function reloadAndScheduleNext() {
     const inflight = await load();
-    if (inflight) {
-      pollTimer = setTimeout(reloadAndScheduleNext, 5000);
-    } else {
-      pollTimer = null;
-    }
+    if (inflight) pollTimer = setTimeout(reloadAndScheduleNext, 5000);
+    else pollTimer = null;
   }
 
   statusEl.addEventListener('change', () => reloadAndScheduleNext());
@@ -371,17 +440,15 @@ async function renderJobsList() {
   registerCleanup(() => { if (pollTimer) clearTimeout(pollTimer); });
 }
 
-// ---- Job detail ----
+// ============================================================
+// Job detail
+// ============================================================
+
 async function renderJobDetail(jobId) {
   setView(`
-    <div class="p-8 max-w-5xl mx-auto">
-      <a href="#jobs" class="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 mb-4">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path fill-rule="evenodd" d="M17 10a.75.75 0 0 1-.75.75H5.612l4.158 3.96a.75.75 0 1 1-1.04 1.08l-5.5-5.25a.75.75 0 0 1 0-1.08l5.5-5.25a.75.75 0 1 1 1.04 1.08L5.612 9.25H16.25A.75.75 0 0 1 17 10Z" clip-rule="evenodd"/></svg>
-        К списку
-      </a>
-      <div id="job-detail-content" class="space-y-6">
-        <div class="text-slate-400 text-center py-12">Загрузка...</div>
-      </div>
+    <div class="page-narrow">
+      ${backLink('#jobs')}
+      <div id="job-detail-content" class="space-y-4">${loadingState()}</div>
     </div>
   `);
 
@@ -393,120 +460,118 @@ async function renderJobDetail(jobId) {
       const job = await apiJson(`/jobs/${encodeURIComponent(jobId)}`);
       renderDetail(job);
       const inflight = job.status === 'pending' || job.status === 'processing';
-      if (inflight && !editing) {
-        pollTimer = setTimeout(load, 2000);
-      } else {
-        pollTimer = null;
-      }
+      if (inflight && !editing) pollTimer = setTimeout(load, 2000);
+      else pollTimer = null;
     } catch (err) {
-      document.getElementById('job-detail-content').innerHTML = `
-        <div class="p-8 text-center text-rose-600 dark:text-rose-400">
-          <p class="font-medium">Не удалось загрузить</p>
-          <p class="text-sm mt-1">${escapeHtml(err.message)}</p>
-        </div>`;
+      document.getElementById('job-detail-content').innerHTML = errorState(err.message);
     }
   }
 
   function renderDetail(job) {
     const issues = job.validation_issues || [];
-    const extractedJson = JSON.stringify(job.extracted ?? {}, null, 2);
+    const extracted = job.extracted ?? {};
 
     document.getElementById('job-detail-content').innerHTML = `
-      <!-- Header card -->
-      <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-6">
+      <!-- Header -->
+      <div class="card card-body-lg">
         <div class="flex items-start justify-between gap-4">
           <div class="min-w-0">
-            <div class="flex items-center gap-3 mb-2">
+            <div class="flex items-center gap-2 mb-2 flex-wrap">
               ${badge(job.status)}
               ${job.document_type ? `<span class="text-sm text-slate-600 dark:text-slate-400">${escapeHtml(job.document_type)}</span>` : ''}
             </div>
             <h2 class="text-xl font-semibold truncate" title="${escapeHtml(job.file_name)}">${escapeHtml(job.file_name)}</h2>
-            <div class="mt-2 flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400 font-mono">
+            <div class="mt-2 flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400 font-mono flex-wrap">
               <span>${escapeHtml(job.job_id)}</span>
               <span>${(job.file_size / 1024).toFixed(1)} KB</span>
               <span>${escapeHtml(job.mime_type)}</span>
             </div>
           </div>
           <div class="text-right shrink-0">
-            <div class="text-xs text-slate-500 dark:text-slate-400 mb-1">Confidence</div>
+            <div class="text-xs text-slate-500 dark:text-slate-400 mb-1.5">Confidence</div>
             ${confidenceBar(job.confidence)}
             ${job.ocr_engine ? `<div class="text-xs text-slate-400 mt-2">via <span class="font-mono">${escapeHtml(job.ocr_engine)}</span></div>` : ''}
           </div>
         </div>
         ${job.error ? `
-          <div class="mt-4 p-3 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-sm text-rose-700 dark:text-rose-300">
+          <div class="mt-4 error-banner text-sm">
             <strong>Error:</strong> ${escapeHtml(job.error)}
           </div>` : ''}
       </div>
 
-      <!-- Validation issues -->
       ${issues.length > 0 ? `
-        <div class="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 rounded-xl p-5">
-          <div class="flex items-center gap-2 mb-3">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5 text-amber-600 dark:text-amber-400"><path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495ZM10 5a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0v-3.5A.75.75 0 0 1 10 5Zm0 9a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" clip-rule="evenodd"/></svg>
-            <h3 class="font-semibold text-amber-900 dark:text-amber-200">Validation issues (${issues.length})</h3>
+        <div class="card">
+          <div class="warning-banner rounded-xl border-0">
+            <div class="flex items-center gap-2 mb-3">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-5 h-5 text-amber-600 dark:text-amber-400"><path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.516 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495ZM10 5a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0v-3.5A.75.75 0 0 1 10 5Zm0 9a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" clip-rule="evenodd"/></svg>
+              <h3 class="font-semibold">Validation issues (${issues.length})</h3>
+            </div>
+            <ul class="space-y-1.5">
+              ${issues.map((i) => `<li class="text-sm flex gap-2"><span class="text-amber-500">•</span><span class="font-mono">${escapeHtml(i)}</span></li>`).join('')}
+            </ul>
           </div>
-          <ul class="space-y-1.5">
-            ${issues.map((i) => `<li class="text-sm text-amber-800 dark:text-amber-300 flex gap-2"><span class="text-amber-500">•</span><span class="font-mono">${escapeHtml(i)}</span></li>`).join('')}
-          </ul>
         </div>` : ''}
 
       <!-- Extracted -->
-      <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
-        <div class="px-5 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-          <h3 class="font-semibold">Extracted data</h3>
+      <div class="card overflow-hidden">
+        <div class="card-header">
+          <h3 class="card-title">Extracted data</h3>
           <div class="flex items-center gap-2">
-            <button id="copy-json-btn" class="text-xs px-2.5 py-1 rounded border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition">Copy</button>
-            <button id="edit-btn" class="text-xs px-2.5 py-1 rounded border border-indigo-300 dark:border-indigo-700 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-950 transition">Edit</button>
+            <button id="copy-json-btn" class="btn-secondary btn-xs">Copy</button>
+            <button id="edit-btn" class="btn-accent-outline btn-xs">Edit</button>
           </div>
         </div>
-        <div id="extracted-pane" class="p-5">
-          <pre class="json text-xs font-mono bg-slate-50 dark:bg-slate-950 p-4 rounded-lg overflow-x-auto text-slate-800 dark:text-slate-200">${escapeHtml(extractedJson)}</pre>
+        <div id="extracted-pane" class="card-body">
+          <div class="bg-slate-50 dark:bg-slate-950 rounded-lg p-4 overflow-x-auto">${jsonTree(extracted)}</div>
         </div>
       </div>
 
-      <!-- Raw text (collapsed by default) -->
-      <details class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800">
-        <summary class="px-5 py-3 cursor-pointer font-medium text-sm hover:bg-slate-50 dark:hover:bg-slate-800/50">Raw OCR text</summary>
-        <div class="px-5 pb-5">
+      <!-- Raw text (collapsed) -->
+      <details class="card">
+        <summary class="card-header cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 transition list-none">
+          <span class="card-title">Raw OCR text</span>
+        </summary>
+        <div class="card-body">
           <pre class="text-xs font-mono bg-slate-50 dark:bg-slate-950 p-4 rounded-lg whitespace-pre-wrap max-h-96 overflow-y-auto text-slate-700 dark:text-slate-300">${escapeHtml(job.raw_text || '(нет распознанного текста)')}</pre>
         </div>
       </details>
 
-      <!-- Metadata (if any) -->
       ${job.metadata ? `
-        <details class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800">
-          <summary class="px-5 py-3 cursor-pointer font-medium text-sm hover:bg-slate-50 dark:hover:bg-slate-800/50">Client metadata</summary>
-          <div class="px-5 pb-5">
-            <pre class="text-xs font-mono bg-slate-50 dark:bg-slate-950 p-4 rounded-lg overflow-x-auto text-slate-700 dark:text-slate-300">${escapeHtml(JSON.stringify(job.metadata, null, 2))}</pre>
+        <details class="card">
+          <summary class="card-header cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 transition list-none">
+            <span class="card-title">Client metadata</span>
+          </summary>
+          <div class="card-body">
+            <div class="bg-slate-50 dark:bg-slate-950 rounded-lg p-4 overflow-x-auto">${jsonTree(job.metadata)}</div>
           </div>
         </details>` : ''}
     `;
 
-    document.getElementById('copy-json-btn').addEventListener('click', async () => {
-      await navigator.clipboard.writeText(extractedJson);
-      const btn = document.getElementById('copy-json-btn');
-      btn.textContent = 'Copied!';
-      setTimeout(() => { btn.textContent = 'Copy'; }, 1200);
+    const copyBtn = document.getElementById('copy-json-btn');
+    copyBtn.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(JSON.stringify(extracted, null, 2));
+      copyBtn.textContent = 'Copied!';
+      setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1200);
     });
 
     document.getElementById('edit-btn').addEventListener('click', () => {
       editing = true;
       if (pollTimer) clearTimeout(pollTimer);
-      renderEditor(job, extractedJson);
+      renderEditor(extracted);
     });
   }
 
-  function renderEditor(job, currentJson) {
+  function renderEditor(currentExtracted) {
+    const currentJson = JSON.stringify(currentExtracted, null, 2);
     document.getElementById('extracted-pane').innerHTML = `
-      <textarea id="extracted-editor"
-        class="w-full h-96 px-3 py-2 font-mono text-xs rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-        spellcheck="false">${escapeHtml(currentJson)}</textarea>
-      <p id="editor-error" class="hidden mt-2 text-sm text-rose-600 dark:text-rose-400"></p>
+      <div class="form-row">
+        <textarea id="extracted-editor" class="form-textarea" rows="16" spellcheck="false">${escapeHtml(currentJson)}</textarea>
+        <p id="editor-error" class="hidden form-error"></p>
+        <p class="form-help">При сохранении статус станет <code class="font-mono">done</code>, валидация перезапустится автоматически.</p>
+      </div>
       <div class="mt-3 flex items-center gap-2">
-        <button id="save-btn" class="px-3 py-1.5 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium transition">Save</button>
-        <button id="cancel-btn" class="px-3 py-1.5 rounded-md border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-sm transition">Cancel</button>
-        <span class="text-xs text-slate-500 dark:text-slate-400">При сохранении статус станет <code class="font-mono">done</code>, валидация перезапустится.</span>
+        <button id="save-btn" class="btn-primary btn-md">Save</button>
+        <button id="cancel-btn" class="btn-secondary btn-md">Cancel</button>
       </div>
     `;
     document.getElementById('cancel-btn').addEventListener('click', () => {
@@ -543,55 +608,59 @@ async function renderJobDetail(jobId) {
   registerCleanup(() => { if (pollTimer) clearTimeout(pollTimer); });
 }
 
-// ---- Upload ----
+// ============================================================
+// Upload
+// ============================================================
+
 function renderUpload() {
   setView(`
-    <div class="p-8 max-w-3xl mx-auto">
-      <h2 class="text-2xl font-semibold mb-1">Upload</h2>
-      <p class="text-sm text-slate-500 dark:text-slate-400 mb-6">Загрузить документ на обработку</p>
+    <div class="page-narrow">
+      ${pageHeader({ title: 'Upload', subtitle: 'Загрузить документ на обработку' })}
 
       <form id="upload-form" class="space-y-5">
-        <!-- Dropzone -->
-        <div id="dropzone" class="dropzone border-2 border-dashed border-slate-300 dark:border-slate-700 rounded-xl p-10 text-center cursor-pointer hover:border-indigo-400 dark:hover:border-indigo-600 transition">
-          <input type="file" id="file-input" class="hidden" accept=".pdf,.jpg,.jpeg,.png,.bmp,.tif,.tiff" />
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-12 h-12 mx-auto mb-3 text-slate-400"><path d="M11.47 1.72a.75.75 0 0 1 1.06 0l3 3a.75.75 0 0 1-1.06 1.06l-1.72-1.72V7.5h-1.5V4.06L9.53 5.78a.75.75 0 0 1-1.06-1.06l3-3ZM11.25 7.5V15a.75.75 0 0 0 1.5 0V7.5h3.75a3 3 0 0 1 3 3v9a3 3 0 0 1-3 3h-9a3 3 0 0 1-3-3v-9a3 3 0 0 1 3-3h3.75Z"/></svg>
-          <p id="dropzone-text" class="text-sm text-slate-600 dark:text-slate-400">
-            Перетащи файл сюда или <span class="text-indigo-600 dark:text-indigo-400 font-medium">кликни чтобы выбрать</span>
-          </p>
-          <p class="text-xs text-slate-400 mt-1">PDF, JPG, PNG, BMP, TIFF · до 50 МБ</p>
-        </div>
-
-        <!-- Optional fields -->
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label class="block text-sm font-medium mb-1.5">Document hint <span class="text-slate-400 font-normal">(опционально)</span></label>
-            <select name="document_hint" class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm">
-              <option value="">— auto-detect —</option>
-              <option value="invoice">invoice</option>
-              <option value="factInvoice">factInvoice</option>
-              <option value="UPD">UPD</option>
-              <option value="TTN">TTN</option>
-              <option value="CMR">CMR</option>
-              <option value="AKT">AKT</option>
-            </select>
-          </div>
-          <div>
-            <label class="block text-sm font-medium mb-1.5">Webhook URL <span class="text-slate-400 font-normal">(опционально)</span></label>
-            <input name="webhook_url" type="url" placeholder="https://..." class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm" />
+        <div class="card card-body-lg">
+          <div id="dropzone" class="dropzone border-2 border-dashed border-slate-300 dark:border-slate-700 rounded-xl p-10 text-center cursor-pointer hover:border-indigo-400 dark:hover:border-indigo-600 transition">
+            <input type="file" id="file-input" class="hidden" accept=".pdf,.jpg,.jpeg,.png,.bmp,.tif,.tiff" />
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-12 h-12 mx-auto mb-3 text-slate-400"><path d="M11.47 1.72a.75.75 0 0 1 1.06 0l3 3a.75.75 0 0 1-1.06 1.06l-1.72-1.72V7.5h-1.5V4.06L9.53 5.78a.75.75 0 0 1-1.06-1.06l3-3ZM11.25 7.5V15a.75.75 0 0 0 1.5 0V7.5h3.75a3 3 0 0 1 3 3v9a3 3 0 0 1-3 3h-9a3 3 0 0 1-3-3v-9a3 3 0 0 1 3-3h3.75Z"/></svg>
+            <p id="dropzone-text" class="text-sm text-slate-600 dark:text-slate-400">
+              Перетащи файл сюда или <span class="text-indigo-600 dark:text-indigo-400 font-medium">кликни чтобы выбрать</span>
+            </p>
+            <p class="text-xs text-slate-400 mt-1">PDF, JPG, PNG, BMP, TIFF · до 50 МБ</p>
           </div>
         </div>
 
-        <div>
-          <label class="block text-sm font-medium mb-1.5">Metadata JSON <span class="text-slate-400 font-normal">(опционально)</span></label>
-          <textarea name="metadata" rows="3" placeholder='{"my_id": "X-123"}' class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-sm font-mono"></textarea>
-          <p class="mt-1 text-xs text-slate-500">Произвольный JSON; вернётся как есть в результате и webhook'е. Макс 64 KB.</p>
+        <div class="card card-body-lg">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div class="form-row">
+              <label class="form-label">Document hint <span class="text-slate-400 font-normal">(опционально)</span></label>
+              <select name="document_hint" class="form-select">
+                <option value="">— auto-detect —</option>
+                <option value="invoice">invoice</option>
+                <option value="factInvoice">factInvoice</option>
+                <option value="UPD">UPD</option>
+                <option value="TTN">TTN</option>
+                <option value="CMR">CMR</option>
+                <option value="AKT">AKT</option>
+              </select>
+            </div>
+            <div class="form-row">
+              <label class="form-label">Webhook URL <span class="text-slate-400 font-normal">(опционально)</span></label>
+              <input name="webhook_url" type="url" placeholder="https://..." class="form-input" />
+            </div>
+          </div>
+
+          <div class="form-row mt-4">
+            <label class="form-label">Metadata JSON <span class="text-slate-400 font-normal">(опционально)</span></label>
+            <textarea name="metadata" rows="3" placeholder='{"my_id": "X-123"}' class="form-textarea"></textarea>
+            <p class="form-help">Произвольный JSON; вернётся как есть в результате и webhook'е. Макс 64 KB.</p>
+          </div>
         </div>
 
-        <p id="upload-error" class="hidden text-sm text-rose-600 dark:text-rose-400"></p>
+        <p id="upload-error" class="hidden form-error"></p>
 
-        <button id="submit-btn" type="submit" disabled class="w-full md:w-auto px-6 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 disabled:dark:bg-slate-700 disabled:cursor-not-allowed text-white font-medium transition">
-          Загрузить
-        </button>
+        <div class="flex items-center justify-end">
+          <button id="submit-btn" type="submit" disabled class="btn-primary btn-md">Загрузить</button>
+        </div>
       </form>
     </div>
   `);
@@ -605,7 +674,9 @@ function renderUpload() {
 
   function showFile(f) {
     selectedFile = f;
-    dropzoneText.innerHTML = `<span class="text-slate-700 dark:text-slate-300 font-medium">${escapeHtml(f.name)}</span><br><span class="text-xs text-slate-500">${(f.size / 1024).toFixed(1)} KB · ${escapeHtml(f.type || 'unknown')}</span>`;
+    dropzoneText.innerHTML = `
+      <span class="text-slate-700 dark:text-slate-300 font-medium">${escapeHtml(f.name)}</span><br>
+      <span class="text-xs text-slate-500">${(f.size / 1024).toFixed(1)} KB · ${escapeHtml(f.type || 'unknown')}</span>`;
     submitBtn.disabled = false;
   }
 
@@ -636,9 +707,8 @@ function renderUpload() {
     if (hint) form.append('document_hint', hint);
     if (webhook) form.append('webhook_url', webhook);
     if (metaText) {
-      try {
-        JSON.parse(metaText);
-      } catch {
+      try { JSON.parse(metaText); }
+      catch {
         errEl.textContent = 'Metadata: невалидный JSON';
         errEl.classList.remove('hidden');
         return;
@@ -661,42 +731,23 @@ function renderUpload() {
   });
 }
 
-// ---- Document Types: registry browser ----
-//
-// Read-only for this iteration: lists configured types, click → detail
-// page showing parser kind, prompts, schema, validators, thresholds,
-// classification keywords. Editing UI lands when the backend gains
-// PUT/POST and the runtime starts reading from DB instead of hardcoded
-// values.
-
-const PARSER_KIND_LABELS = {
-  'builtin:invoice_regex': { label: 'regex (invoice)', cls: 'bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300' },
-  'builtin:upd_regex':     { label: 'regex (UPD)',     cls: 'bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300' },
-  'llm_extract':           { label: 'LLM /extract',    cls: 'bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300' },
-};
-
-function parserKindBadge(kind) {
-  const s = PARSER_KIND_LABELS[kind] ?? { label: kind, cls: 'bg-slate-100 text-slate-700' };
-  return `<span class="badge ${s.cls}">${escapeHtml(s.label)}</span>`;
-}
+// ============================================================
+// Document types
+// ============================================================
 
 async function renderDocumentTypesList() {
   setView(`
-    <div class="p-8 max-w-6xl mx-auto">
-      <div class="flex items-center justify-between mb-6">
-        <div>
-          <h2 class="text-2xl font-semibold">Document types</h2>
-          <p class="text-sm text-slate-500 dark:text-slate-400 mt-0.5">Конфигурация типов документов: парсеры, поля, валидаторы, пороги</p>
-        </div>
+    <div class="page">
+      ${pageHeader({
+        title: 'Document types',
+        subtitle: 'Конфигурация типов документов: парсеры, поля, валидаторы, пороги',
+      })}
+
+      <div class="warning-banner mb-4">
+        <strong>Read-only.</strong> Runtime читает <em>часть</em> конфигурации из БД (валидаторы, пороги, ожидаемые поля, схемы LLM). Editor UI для правок — следующая фаза.
       </div>
 
-      <div class="mb-4 p-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 text-sm text-amber-800 dark:text-amber-300">
-        <strong>Read-only.</strong> Runtime пока продолжает использовать захардкоженные значения; эта секция показывает, как платформа настроена. Редактор и применение конфигурации из БД — в следующей фазе.
-      </div>
-
-      <div id="dt-list" class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden">
-        <div class="p-8 text-center text-slate-400">Загрузка...</div>
-      </div>
+      <div id="dt-list" class="card overflow-hidden">${loadingState()}</div>
     </div>
   `);
 
@@ -704,71 +755,57 @@ async function renderDocumentTypesList() {
   try {
     data = await apiJson('/document-types');
   } catch (err) {
-    document.getElementById('dt-list').innerHTML = `
-      <div class="p-8 text-center text-rose-600 dark:text-rose-400">
-        <p class="font-medium">Не удалось загрузить</p>
-        <p class="text-sm mt-1">${escapeHtml(err.message)}</p>
-      </div>`;
+    document.getElementById('dt-list').innerHTML = errorState(err.message);
     return;
   }
 
   if (!data.items.length) {
     document.getElementById('dt-list').innerHTML = `
-      <div class="p-12 text-center text-slate-500 dark:text-slate-400">
-        Реестр пустой. Запустите миграцию: <code class="font-mono text-xs">npm run migrate</code>
+      <div class="empty-state">
+        <p class="empty-state-text">Реестр пустой.</p>
+        <p class="text-xs text-slate-400 mt-1">Запусти миграции: <code class="font-mono">npm run migrate</code></p>
       </div>`;
     return;
   }
 
   const rows = data.items.map((t) => {
-    const inactive = !t.is_active ? '<span class="badge bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-400">inactive</span>' : '';
-    const builtin = t.is_builtin ? '<span class="badge bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">builtin</span>' : '';
-    const conf = t.confidence_threshold !== null ? t.confidence_threshold.toFixed(2) : '<span class="text-slate-400">default</span>';
+    const flags = [
+      t.is_builtin ? '<span class="badge badge-emerald">builtin</span>' : '',
+      !t.is_active ? '<span class="badge badge-slate">inactive</span>' : '',
+    ].filter(Boolean).join(' ');
+    const conf = t.confidence_threshold !== null
+      ? `<span class="font-mono">${t.confidence_threshold.toFixed(2)}</span>`
+      : '<span class="text-slate-400 text-xs">default</span>';
     return `
-      <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer transition" data-slug="${escapeHtml(t.slug)}">
-        <td class="px-4 py-3 font-mono text-xs text-slate-500">${escapeHtml(t.slug)}</td>
-        <td class="px-4 py-3 text-sm font-medium">${escapeHtml(t.display_name)}</td>
-        <td class="px-4 py-3">${parserKindBadge(t.parser_kind)}</td>
-        <td class="px-4 py-3 text-xs font-mono">${conf}</td>
-        <td class="px-4 py-3 text-xs">${t.expected_fields.length} fields</td>
-        <td class="px-4 py-3 text-xs">${t.validators.length} validators</td>
-        <td class="px-4 py-3 flex gap-1">${builtin}${inactive}</td>
+      <tr class="row-clickable" data-slug="${escapeHtml(t.slug)}">
+        <td class="font-mono text-xs text-slate-500">${escapeHtml(t.slug)}</td>
+        <td class="font-medium">${escapeHtml(t.display_name)}</td>
+        <td>${parserKindBadge(t.parser_kind)}</td>
+        <td>${conf}</td>
+        <td class="text-xs">${t.expected_fields.length} fields</td>
+        <td class="text-xs">${t.validators.length} validators</td>
+        <td class="flex gap-1 flex-wrap">${flags || '<span class="text-slate-300 dark:text-slate-600">—</span>'}</td>
       </tr>`;
   }).join('');
 
   document.getElementById('dt-list').innerHTML = `
-    <table class="w-full">
-      <thead class="bg-slate-50 dark:bg-slate-950/50 text-xs uppercase text-slate-500 dark:text-slate-400">
-        <tr>
-          <th class="text-left px-4 py-2.5 font-medium">Slug</th>
-          <th class="text-left px-4 py-2.5 font-medium">Display name</th>
-          <th class="text-left px-4 py-2.5 font-medium">Parser</th>
-          <th class="text-left px-4 py-2.5 font-medium">Confidence</th>
-          <th class="text-left px-4 py-2.5 font-medium">Fields</th>
-          <th class="text-left px-4 py-2.5 font-medium">Validators</th>
-          <th class="text-left px-4 py-2.5 font-medium">Flags</th>
-        </tr>
+    <table class="data-table">
+      <thead>
+        <tr><th>Slug</th><th>Display name</th><th>Parser</th><th>Confidence</th><th>Fields</th><th>Validators</th><th>Flags</th></tr>
       </thead>
-      <tbody class="divide-y divide-slate-100 dark:divide-slate-800">${rows}</tbody>
+      <tbody>${rows}</tbody>
     </table>`;
 
   document.querySelectorAll('[data-slug]').forEach((row) => {
-    row.addEventListener('click', () => {
-      location.hash = `#document-types/${row.dataset.slug}`;
-    });
+    row.addEventListener('click', () => { location.hash = `#document-types/${row.dataset.slug}`; });
   });
 }
 
 async function renderDocumentTypeDetail(slug) {
   setView(`
-    <div class="p-8 max-w-4xl mx-auto">
-      <a href="#document-types" class="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 mb-4">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path fill-rule="evenodd" d="M17 10a.75.75 0 0 1-.75.75H5.612l4.158 3.96a.75.75 0 1 1-1.04 1.08l-5.5-5.25a.75.75 0 0 1 0-1.08l5.5-5.25a.75.75 0 1 1 1.04 1.08L5.612 9.25H16.25A.75.75 0 0 1 17 10Z" clip-rule="evenodd"/></svg>
-        К списку
-      </a>
-      <div id="dt-detail" class="space-y-4">
-        <div class="text-slate-400 text-center py-12">Загрузка...</div>
-      </div>
+    <div class="page-narrow">
+      ${backLink('#document-types')}
+      <div id="dt-detail" class="space-y-4">${loadingState()}</div>
     </div>
   `);
 
@@ -776,129 +813,100 @@ async function renderDocumentTypeDetail(slug) {
   try {
     t = await apiJson(`/document-types/${encodeURIComponent(slug)}`);
   } catch (err) {
-    document.getElementById('dt-detail').innerHTML = `
-      <div class="p-8 text-center text-rose-600 dark:text-rose-400">
-        <p class="font-medium">Не удалось загрузить</p>
-        <p class="text-sm mt-1">${escapeHtml(err.message)}</p>
-      </div>`;
+    document.getElementById('dt-detail').innerHTML = errorState(err.message);
     return;
   }
 
-  const validatorRows = t.validators.length
-    ? t.validators.map((v) => `<li class="font-mono text-xs">${escapeHtml(v)}</li>`).join('')
-    : '<li class="text-sm text-slate-400">не настроено</li>';
-
-  const fieldRows = t.expected_fields.length
-    ? t.expected_fields.map((f) => `<li class="font-mono text-xs">${escapeHtml(f)}</li>`).join('')
-    : '<li class="text-sm text-slate-400">не настроено</li>';
-
-  const keywordRows = t.classification_keywords.length
-    ? t.classification_keywords.map((k) => `<li class="font-mono text-xs">${escapeHtml(k)}</li>`).join('')
-    : '<li class="text-sm text-slate-400">не настроено</li>';
+  const listItem = (items, emptyLabel) => items.length
+    ? `<ul class="space-y-1 list-disc list-inside">${items.map((x) => `<li class="font-mono text-xs">${escapeHtml(x)}</li>`).join('')}</ul>`
+    : `<p class="text-sm text-slate-400">${emptyLabel}</p>`;
 
   document.getElementById('dt-detail').innerHTML = `
-    <!-- Header -->
-    <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-6">
-      <div class="flex items-start justify-between gap-4">
-        <div class="min-w-0">
-          <div class="flex items-center gap-2 mb-2">
-            ${parserKindBadge(t.parser_kind)}
-            ${t.is_builtin ? '<span class="badge bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">builtin</span>' : ''}
-            ${!t.is_active ? '<span class="badge bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-400">inactive</span>' : ''}
-          </div>
-          <h2 class="text-xl font-semibold">${escapeHtml(t.display_name)}</h2>
-          <div class="mt-1 font-mono text-xs text-slate-500">${escapeHtml(t.slug)}</div>
-          ${t.description ? `<p class="mt-3 text-sm text-slate-600 dark:text-slate-400">${escapeHtml(t.description)}</p>` : ''}
-        </div>
+    <div class="card card-body-lg">
+      <div class="flex items-center gap-2 mb-2 flex-wrap">
+        ${parserKindBadge(t.parser_kind)}
+        ${t.is_builtin ? '<span class="badge badge-emerald">builtin</span>' : ''}
+        ${!t.is_active ? '<span class="badge badge-slate">inactive</span>' : ''}
       </div>
+      <h2 class="text-xl font-semibold">${escapeHtml(t.display_name)}</h2>
+      <div class="mt-1 font-mono text-xs text-slate-500">${escapeHtml(t.slug)}</div>
+      ${t.description ? `<p class="mt-3 text-sm text-slate-600 dark:text-slate-400">${escapeHtml(t.description)}</p>` : ''}
     </div>
 
-    <!-- Thresholds -->
-    <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
-      <h3 class="font-semibold mb-3">Thresholds</h3>
-      <div class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
-        <div><span class="text-slate-500">confidence_threshold:</span> <span class="font-mono">${t.confidence_threshold !== null ? t.confidence_threshold : '<span class="text-slate-400">default из env</span>'}</span></div>
-        <div><span class="text-slate-500">regex_fallback_threshold:</span> <span class="font-mono">${t.regex_fallback_threshold !== null ? t.regex_fallback_threshold : '<span class="text-slate-400">— (только для regex parser)</span>'}</span></div>
-      </div>
+    <div class="card card-body">
+      <h3 class="card-title mb-3">Thresholds</h3>
+      <dl class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+        <div class="kv-row"><dt class="kv-key">confidence_threshold</dt><dd class="kv-value">${t.confidence_threshold !== null ? t.confidence_threshold : '<span class="text-slate-400">default из env</span>'}</dd></div>
+        <div class="kv-row"><dt class="kv-key">regex_fallback_threshold</dt><dd class="kv-value">${t.regex_fallback_threshold !== null ? t.regex_fallback_threshold : '<span class="text-slate-400">—</span>'}</dd></div>
+      </dl>
     </div>
 
-    <!-- Expected fields -->
-    <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
-      <h3 class="font-semibold mb-3">Expected fields <span class="text-sm font-normal text-slate-500">(${t.expected_fields.length})</span></h3>
-      <p class="text-xs text-slate-500 dark:text-slate-400 mb-2">Парсер обязан попытаться извлечь эти поля. Отсутствие → пометится в <code class="font-mono">missing</code>.</p>
-      <ul class="space-y-1 list-disc list-inside">${fieldRows}</ul>
+    <div class="card card-body">
+      <h3 class="card-title mb-1">Expected fields <span class="text-sm font-normal text-slate-500">(${t.expected_fields.length})</span></h3>
+      <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">Парсер обязан попытаться извлечь эти поля. Не найденное → <code class="font-mono">missing</code>.</p>
+      ${listItem(t.expected_fields, 'не настроено')}
     </div>
 
-    <!-- Validators -->
-    <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
-      <h3 class="font-semibold mb-3">Validators <span class="text-sm font-normal text-slate-500">(${t.validators.length})</span></h3>
-      <p class="text-xs text-slate-500 dark:text-slate-400 mb-2">Доменные проверки, прогоняемые на извлечённых данных. Формат: <code class="font-mono">имя</code> или <code class="font-mono">имя:аргумент</code>.</p>
-      <ul class="space-y-1 list-disc list-inside">${validatorRows}</ul>
+    <div class="card card-body">
+      <h3 class="card-title mb-1">Validators <span class="text-sm font-normal text-slate-500">(${t.validators.length})</span></h3>
+      <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">Доменные проверки на извлечённых данных. Формат: <code class="font-mono">name</code> или <code class="font-mono">name:args</code>.</p>
+      ${listItem(t.validators, 'не настроено')}
     </div>
 
-    <!-- Classification keywords -->
-    <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
-      <h3 class="font-semibold mb-3">Classification keywords <span class="text-sm font-normal text-slate-500">(${t.classification_keywords.length})</span></h3>
-      <p class="text-xs text-slate-500 dark:text-slate-400 mb-2">Регулярки/литералы для keyword-классификатора. Совпадение → этот тип.</p>
-      <ul class="space-y-1 list-disc list-inside">${keywordRows}</ul>
+    <div class="card card-body">
+      <h3 class="card-title mb-1">Classification keywords <span class="text-sm font-normal text-slate-500">(${t.classification_keywords.length})</span></h3>
+      <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">Регулярки для keyword-классификатора. Совпадение → этот тип.</p>
+      ${listItem(t.classification_keywords, 'не настроено')}
     </div>
 
-    <!-- LLM config (when relevant) -->
     ${t.parser_kind === 'llm_extract' ? `
-      <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
-        <h3 class="font-semibold mb-3">LLM extraction config</h3>
-        <div class="mb-3 text-sm">
-          <div class="text-slate-500 mb-1">Prompt override</div>
+      <div class="card card-body">
+        <h3 class="card-title mb-3">LLM extraction config</h3>
+        <div class="mb-4">
+          <div class="kv-key text-sm mb-1">Prompt override</div>
           ${t.llm_prompt
-            ? `<pre class="text-xs font-mono bg-slate-50 dark:bg-slate-950 p-3 rounded overflow-x-auto">${escapeHtml(t.llm_prompt)}</pre>`
-            : '<div class="text-slate-400 text-sm">— не задан, используется default из inference-service prompts/extract.py</div>'}
+            ? `<pre class="text-xs font-mono bg-slate-50 dark:bg-slate-950 p-3 rounded-lg overflow-x-auto">${escapeHtml(t.llm_prompt)}</pre>`
+            : '<p class="text-sm text-slate-400">— не задан, используется default из inference-service prompts/extract.py</p>'}
         </div>
-        <div class="text-sm">
-          <div class="text-slate-500 mb-1">JSON Schema override</div>
+        <div>
+          <div class="kv-key text-sm mb-1">JSON Schema override</div>
           ${t.llm_schema
-            ? `<pre class="text-xs font-mono bg-slate-50 dark:bg-slate-950 p-3 rounded overflow-x-auto max-h-64">${escapeHtml(JSON.stringify(t.llm_schema, null, 2))}</pre>`
-            : '<div class="text-slate-400 text-sm">— не задан, используется default из doc-service document-json-schemas.ts</div>'}
+            ? `<div class="bg-slate-50 dark:bg-slate-950 p-3 rounded-lg overflow-x-auto max-h-64">${jsonTree(t.llm_schema)}</div>`
+            : '<p class="text-sm text-slate-400">— не задан, используется default из doc-service document-json-schemas.ts</p>'}
         </div>
-      </div>
-    ` : ''}
+      </div>` : ''}
 
-    <!-- Metadata -->
-    <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
-      <h3 class="font-semibold mb-3">Bookkeeping</h3>
-      <dl class="space-y-1 text-sm">
-        <div class="flex justify-between"><dt class="text-slate-500">Created</dt><dd class="font-mono text-xs">${escapeHtml(t.created_at)}</dd></div>
-        <div class="flex justify-between"><dt class="text-slate-500">Updated</dt><dd class="font-mono text-xs">${escapeHtml(t.updated_at)}</dd></div>
+    <div class="card card-body">
+      <h3 class="card-title mb-3">Bookkeeping</h3>
+      <dl class="kv">
+        <div class="kv-row"><dt class="kv-key">Created</dt><dd class="kv-value">${escapeHtml(t.created_at)}</dd></div>
+        <div class="kv-row"><dt class="kv-key">Updated</dt><dd class="kv-value">${escapeHtml(t.updated_at)}</dd></div>
       </dl>
     </div>
   `;
 }
 
-// ---- Settings: provider status, thresholds, env snapshot ----
+// ============================================================
+// Settings
+// ============================================================
+
 async function renderSettings() {
   setView(`
-    <div class="p-8 max-w-4xl mx-auto">
-      <h2 class="text-2xl font-semibold mb-1">Settings</h2>
-      <p class="text-sm text-slate-500 dark:text-slate-400 mb-6">Конфигурация сервиса и LLM-провайдеров</p>
-
-      <div id="settings-content" class="space-y-4">
-        <div class="text-slate-400 text-center py-8">Загрузка...</div>
-      </div>
+    <div class="page-narrow">
+      ${pageHeader({ title: 'Settings', subtitle: 'Конфигурация сервиса и LLM-провайдеров' })}
+      <div id="settings-content" class="space-y-4">${loadingState()}</div>
     </div>
   `);
 
-  let settings = null;
-  let providers = null;
+  let settings;
+  let providers;
   try {
     [settings, providers] = await Promise.all([
       apiJson('/settings'),
       apiJson('/providers/status'),
     ]);
   } catch (err) {
-    document.getElementById('settings-content').innerHTML = `
-      <div class="p-6 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-rose-700 dark:text-rose-300">
-        <p class="font-medium">Не удалось загрузить настройки</p>
-        <p class="text-sm mt-1">${escapeHtml(err.message)}</p>
-      </div>`;
+    document.getElementById('settings-content').innerHTML = errorState(err.message);
     return;
   }
 
@@ -911,94 +919,97 @@ async function renderSettings() {
     ${renderSessionCard()}
   `;
 
-  document.getElementById('logout-from-settings').addEventListener('click', () => {
+  document.getElementById('logout-from-settings')?.addEventListener('click', () => {
     auth.token = null;
     showLogin();
   });
 }
 
 function renderProvidersCard(providers) {
-  const upstream = providers.upstream;
-  if (upstream === 'not_configured') {
-    return `
-      <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
-        <h3 class="font-semibold mb-3">LLM Providers</h3>
-        <div class="p-3 rounded-lg bg-slate-50 dark:bg-slate-950/50 border border-slate-200 dark:border-slate-800 text-sm">
-          <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300">not connected</span>
-          <span class="ml-2 text-slate-600 dark:text-slate-400">inference-service не подключён (LLM_INFERENCE_URL пустой). Phase 2 парсеры (ТТН/CMR/АКТ) будут возвращать пустоту.</span>
-        </div>
-      </div>`;
+  const head = (status, body) => `
+    <div class="card card-body">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="card-title">LLM Providers</h3>
+        ${status}
+      </div>
+      ${body}
+    </div>`;
+
+  if (providers.upstream === 'not_configured') {
+    return head(
+      '<span class="badge badge-slate">not connected</span>',
+      `<p class="text-sm text-slate-600 dark:text-slate-400">inference-service не подключён (<code class="font-mono text-xs">LLM_INFERENCE_URL</code> пустой). Phase 2 парсеры (ТТН/CMR/АКТ) деградируют до пустых результатов и needs_review.</p>`,
+    );
   }
-  if (upstream === 'unreachable') {
-    return `
-      <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
-        <h3 class="font-semibold mb-3">LLM Providers</h3>
-        <div class="p-3 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-sm text-rose-700 dark:text-rose-300">
-          <span class="font-medium">inference-service недоступен.</span>
-          ${providers.error ? `<div class="font-mono text-xs mt-1">${escapeHtml(providers.error)}</div>` : ''}
-        </div>
-      </div>`;
+  if (providers.upstream === 'unreachable') {
+    return head(
+      '<span class="badge badge-rose">unreachable</span>',
+      `<div class="error-banner text-sm">
+        <p class="font-medium">inference-service недоступен</p>
+        ${providers.error ? `<p class="font-mono text-xs mt-1">${escapeHtml(providers.error)}</p>` : ''}
+      </div>`,
+    );
   }
+
   const available = providers.available || {};
   const active = providers.active;
   const rows = Object.entries(available).map(([name, info]) => {
     const isActive = name === active;
-    const statusBadge = info.configured
-      ? `<span class="badge bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">configured</span>`
-      : `<span class="badge bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-500">not configured</span>`;
-    const activeBadge = isActive
-      ? `<span class="badge bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300">active</span>`
-      : '';
+    const configBadge = info.configured
+      ? '<span class="badge badge-emerald">configured</span>'
+      : '<span class="badge badge-slate">not configured</span>';
+    const activeBadge = isActive ? '<span class="badge badge-indigo">active</span>' : '';
     return `
       <div class="flex items-start gap-4 p-3 rounded-lg ${isActive ? 'bg-indigo-50/50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-900' : 'bg-slate-50/50 dark:bg-slate-950/30'}">
         <div class="flex-1 min-w-0">
-          <div class="flex items-center gap-2 mb-1">
+          <div class="flex items-center gap-2 mb-1 flex-wrap">
             <span class="font-mono text-sm font-medium">${escapeHtml(name)}</span>
             ${activeBadge}
-            ${statusBadge}
+            ${configBadge}
           </div>
           <div class="text-xs text-slate-500 dark:text-slate-400">${escapeHtml(info.description || '')}</div>
           ${info.model ? `<div class="text-xs text-slate-400 dark:text-slate-500 font-mono mt-0.5">${escapeHtml(info.model)}</div>` : ''}
         </div>
       </div>`;
   }).join('');
-  return `
-    <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
-      <div class="flex items-center justify-between mb-3">
-        <h3 class="font-semibold">LLM Providers</h3>
-        <span class="text-xs text-slate-500">inference-service: <span class="text-emerald-600 dark:text-emerald-400 font-medium">connected</span></span>
-      </div>
-      <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">
-        Активный бэкенд переключается через <code class="font-mono">BACKEND=</code> в env inference-service. Требует рестарта контейнера.
-      </p>
-      <div class="space-y-2">${rows || '<div class="text-sm text-slate-400">провайдеров нет</div>'}</div>
-    </div>`;
+
+  return head(
+    '<span class="badge badge-emerald">connected</span>',
+    `<p class="text-xs text-slate-500 dark:text-slate-400 mb-3">Активный бэкенд переключается через <code class="font-mono">BACKEND=</code> в env inference-service. Требует рестарта контейнера.</p>
+     <div class="space-y-2">${rows || '<p class="text-sm text-slate-400">провайдеров нет</p>'}</div>`,
+  );
 }
 
 function renderOcrCard(settings) {
   const t = settings.thresholds;
   const eng = settings.ocr_engines;
   return `
-    <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
-      <h3 class="font-semibold mb-3">OCR pipeline</h3>
-      <div class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
-        <div><span class="text-slate-500">pdf-parse accept:</span> <span class="font-mono">${t.pdf_text}</span></div>
-        <div><span class="text-slate-500">tesseract accept:</span> <span class="font-mono">${t.tesseract}</span></div>
-        <div><span class="text-slate-500">vision-llm accept:</span> <span class="font-mono">${t.vision_llm}</span></div>
-        <div><span class="text-slate-500">needs_review threshold:</span> <span class="font-mono">${t.needs_review}</span></div>
-        <div><span class="text-slate-500">regex-fallback threshold:</span> <span class="font-mono">${t.regex_fallback}</span></div>
-        <div><span class="text-slate-500">tesseract langs:</span> <span class="font-mono">${escapeHtml(eng.tesseract_langs)}</span></div>
-      </div>
+    <div class="card card-body">
+      <h3 class="card-title mb-3">OCR pipeline</h3>
+      <dl class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+        <div class="kv-row"><dt class="kv-key">pdf-parse accept</dt><dd class="kv-value">${t.pdf_text}</dd></div>
+        <div class="kv-row"><dt class="kv-key">tesseract accept</dt><dd class="kv-value">${t.tesseract}</dd></div>
+        <div class="kv-row"><dt class="kv-key">vision-llm accept</dt><dd class="kv-value">${t.vision_llm}</dd></div>
+        <div class="kv-row"><dt class="kv-key">needs_review threshold</dt><dd class="kv-value">${t.needs_review}</dd></div>
+        <div class="kv-row"><dt class="kv-key">regex-fallback threshold</dt><dd class="kv-value">${t.regex_fallback}</dd></div>
+        <div class="kv-row"><dt class="kv-key">tesseract langs</dt><dd class="kv-value">${escapeHtml(eng.tesseract_langs)}</dd></div>
+      </dl>
       <div class="mt-4 pt-4 border-t border-slate-200 dark:border-slate-800 space-y-2">
-        <div class="flex items-center justify-between">
-          <span class="text-sm"><span class="text-slate-500">vision-llm engine:</span> ${eng.vision_llm.enabled ? '<span class="text-emerald-600 dark:text-emerald-400 font-medium">enabled</span>' : '<span class="text-slate-500">disabled</span>'}</span>
-          ${eng.vision_llm.url ? `<span class="text-xs font-mono text-slate-400">${escapeHtml(eng.vision_llm.url)}</span>` : ''}
+        <div class="kv-row">
+          <span class="kv-key text-sm">vision-llm engine</span>
+          ${eng.vision_llm.enabled
+            ? '<span class="badge badge-emerald">enabled</span>'
+            : '<span class="badge badge-slate">disabled</span>'}
         </div>
-        <div class="flex items-center justify-between">
-          <span class="text-sm"><span class="text-slate-500">yandex-vision engine:</span> ${eng.yandex_vision.enabled ? '<span class="text-amber-600 dark:text-amber-400 font-medium">enabled</span>' : '<span class="text-slate-500">disabled</span>'}</span>
+        ${eng.vision_llm.url ? `<div class="text-xs font-mono text-slate-400">${escapeHtml(eng.vision_llm.url)}</div>` : ''}
+        <div class="kv-row">
+          <span class="kv-key text-sm">yandex-vision engine</span>
+          ${eng.yandex_vision.enabled
+            ? '<span class="badge badge-amber">enabled</span>'
+            : '<span class="badge badge-slate">disabled</span>'}
         </div>
         ${eng.yandex_vision.enabled ? `
-          <div class="p-2.5 rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 text-xs text-amber-800 dark:text-amber-300">
+          <div class="warning-banner text-xs">
             <strong>⚠</strong> ${escapeHtml(eng.yandex_vision.pii_warning)}
           </div>` : ''}
       </div>
@@ -1007,62 +1018,63 @@ function renderOcrCard(settings) {
 
 function renderStorageCard(settings) {
   return `
-    <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
-      <h3 class="font-semibold mb-3">Storage & sweepers</h3>
-      <div class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
-        <div><span class="text-slate-500">backend:</span> <span class="font-mono">${escapeHtml(settings.storage.backend)}</span></div>
-        <div><span class="text-slate-500">dir:</span> <span class="font-mono text-xs">${escapeHtml(settings.storage.dir)}</span></div>
-        <div><span class="text-slate-500">file retention:</span> <span class="font-mono">${settings.storage.retention_days} days</span></div>
-        <div><span class="text-slate-500">worker concurrency:</span> <span class="font-mono">${settings.worker.concurrency}</span></div>
-        <div><span class="text-slate-500">pending sweep:</span> <span class="font-mono">${settings.sweepers.pending_interval_ms / 1000}s (grace ${settings.sweepers.pending_grace_seconds}s)</span></div>
-        <div><span class="text-slate-500">cleanup sweep:</span> <span class="font-mono">${settings.sweepers.file_cleanup_interval_ms / 60000} min</span></div>
-      </div>
+    <div class="card card-body">
+      <h3 class="card-title mb-3">Storage &amp; sweepers</h3>
+      <dl class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+        <div class="kv-row"><dt class="kv-key">backend</dt><dd class="kv-value">${escapeHtml(settings.storage.backend)}</dd></div>
+        <div class="kv-row"><dt class="kv-key">dir</dt><dd class="kv-value">${escapeHtml(settings.storage.dir)}</dd></div>
+        <div class="kv-row"><dt class="kv-key">file retention</dt><dd class="kv-value">${settings.storage.retention_days} days</dd></div>
+        <div class="kv-row"><dt class="kv-key">worker concurrency</dt><dd class="kv-value">${settings.worker.concurrency}</dd></div>
+        <div class="kv-row"><dt class="kv-key">pending sweep</dt><dd class="kv-value">${settings.sweepers.pending_interval_ms / 1000}s (grace ${settings.sweepers.pending_grace_seconds}s)</dd></div>
+        <div class="kv-row"><dt class="kv-key">cleanup sweep</dt><dd class="kv-value">${settings.sweepers.file_cleanup_interval_ms / 60000} min</dd></div>
+      </dl>
     </div>`;
 }
 
 function renderLimitsCard(settings) {
   return `
-    <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
-      <h3 class="font-semibold mb-3">Limits & secrets</h3>
-      <div class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
-        <div><span class="text-slate-500">max upload:</span> <span class="font-mono">${settings.limits.max_upload_mb} MB</span></div>
-        <div><span class="text-slate-500">max metadata:</span> <span class="font-mono">${(settings.limits.max_metadata_bytes / 1024).toFixed(0)} KB</span></div>
-        <div><span class="text-slate-500">API_KEY:</span> ${settings.auth.api_key_configured ? '<span class="text-emerald-600 dark:text-emerald-400">configured</span>' : '<span class="text-rose-600 dark:text-rose-400">not set</span>'}</div>
-        <div><span class="text-slate-500">webhook HMAC:</span> ${settings.webhook.hmac_secret_configured ? '<span class="text-emerald-600 dark:text-emerald-400">configured</span>' : '<span class="text-rose-600 dark:text-rose-400">default (change me)</span>'}</div>
-        <div><span class="text-slate-500">webhook attempts:</span> <span class="font-mono">${settings.webhook.max_attempts}</span></div>
-      </div>
+    <div class="card card-body">
+      <h3 class="card-title mb-3">Limits &amp; secrets</h3>
+      <dl class="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+        <div class="kv-row"><dt class="kv-key">max upload</dt><dd class="kv-value">${settings.limits.max_upload_mb} MB</dd></div>
+        <div class="kv-row"><dt class="kv-key">max metadata</dt><dd class="kv-value">${(settings.limits.max_metadata_bytes / 1024).toFixed(0)} KB</dd></div>
+        <div class="kv-row"><dt class="kv-key">API_KEY</dt><dd>${settings.auth.api_key_configured ? '<span class="badge badge-emerald">configured</span>' : '<span class="badge badge-rose">not set</span>'}</dd></div>
+        <div class="kv-row"><dt class="kv-key">webhook HMAC</dt><dd>${settings.webhook.hmac_secret_configured ? '<span class="badge badge-emerald">configured</span>' : '<span class="badge badge-rose">default (change me)</span>'}</dd></div>
+        <div class="kv-row"><dt class="kv-key">webhook attempts</dt><dd class="kv-value">${settings.webhook.max_attempts}</dd></div>
+      </dl>
     </div>`;
 }
 
 function renderEndpointsCard() {
+  const link = (path) => `<a href="${path}" target="_blank" class="text-indigo-600 dark:text-indigo-400 hover:underline">${path}</a>`;
   return `
-    <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
-      <h3 class="font-semibold mb-3">Endpoints</h3>
-      <dl class="space-y-1 text-sm font-mono">
-        <div class="flex justify-between"><dt class="text-slate-500">API base</dt><dd>${escapeHtml(API)}</dd></div>
-        <div class="flex justify-between"><dt class="text-slate-500">Swagger UI</dt><dd><a href="/docs" class="text-indigo-600 hover:underline" target="_blank">/docs</a></dd></div>
-        <div class="flex justify-between"><dt class="text-slate-500">OpenAPI JSON</dt><dd><a href="/docs/json" class="text-indigo-600 hover:underline" target="_blank">/docs/json</a></dd></div>
-        <div class="flex justify-between"><dt class="text-slate-500">Health</dt><dd><a href="/health" class="text-indigo-600 hover:underline" target="_blank">/health</a></dd></div>
-        <div class="flex justify-between"><dt class="text-slate-500">Ready</dt><dd><a href="/ready" class="text-indigo-600 hover:underline" target="_blank">/ready</a></dd></div>
-        <div class="flex justify-between"><dt class="text-slate-500">Metrics</dt><dd><a href="/metrics" class="text-indigo-600 hover:underline" target="_blank">/metrics</a></dd></div>
+    <div class="card card-body">
+      <h3 class="card-title mb-3">Endpoints</h3>
+      <dl class="kv">
+        <div class="kv-row"><dt class="kv-key">API base</dt><dd class="kv-value">${escapeHtml(API)}</dd></div>
+        <div class="kv-row"><dt class="kv-key">Swagger UI</dt><dd class="kv-value">${link('/docs')}</dd></div>
+        <div class="kv-row"><dt class="kv-key">OpenAPI JSON</dt><dd class="kv-value">${link('/docs/json')}</dd></div>
+        <div class="kv-row"><dt class="kv-key">Health</dt><dd class="kv-value">${link('/health')}</dd></div>
+        <div class="kv-row"><dt class="kv-key">Ready</dt><dd class="kv-value">${link('/ready')}</dd></div>
+        <div class="kv-row"><dt class="kv-key">Metrics</dt><dd class="kv-value">${link('/metrics')}</dd></div>
       </dl>
     </div>`;
 }
 
 function renderSessionCard() {
   return `
-    <div class="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5">
-      <h3 class="font-semibold mb-3">Session</h3>
-      <dl class="space-y-1.5 text-sm">
-        <div class="flex justify-between items-center"><dt class="text-slate-500">Token</dt><dd class="font-mono text-xs">${auth.token ? '••••••••' + escapeHtml(auth.token.slice(-6)) : '—'}</dd></div>
+    <div class="card card-body">
+      <h3 class="card-title mb-3">Session</h3>
+      <dl class="kv mb-4">
+        <div class="kv-row"><dt class="kv-key">Token</dt><dd class="kv-value">${auth.token ? '••••••••' + escapeHtml(auth.token.slice(-6)) : '—'}</dd></div>
       </dl>
-      <button id="logout-from-settings" class="mt-4 px-3 py-1.5 rounded-md border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-sm transition">Выйти</button>
+      <button id="logout-from-settings" class="btn-secondary btn-sm">Выйти</button>
     </div>`;
 }
 
-// ==========================================================
+// ============================================================
 // Boot
-// ==========================================================
+// ============================================================
 applyTheme();
 if (auth.isAuthed()) {
   hideLogin();

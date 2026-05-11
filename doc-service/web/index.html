@@ -5,13 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>parsdocs</title>
 
-  <!-- Inter (UI) + JetBrains Mono (JSON / values) -->
+  <!-- Inter (UI) + JetBrains Mono (значения, JSON) -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 
-  <!-- Tailwind v3 Play CDN — in-browser JIT compile. No build step for scaffold;
-       swap for a precompiled CSS bundle when we care about production weight. -->
+  <!-- Tailwind v3 Play CDN — JIT в браузере. Без build-шага; вернёмся к
+       precompiled CSS когда придёт время оптимизировать вес страницы. -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
     tailwind.config = {
@@ -25,94 +25,212 @@
     };
   </script>
 
-  <!-- Alpine.js for small declarative state (modals, dropdowns, toggles).
-       Big interaction logic lives in app.js. -->
+  <!-- Alpine.js для маленьких локальных состояний (modals, dropdowns). -->
   <script defer src="https://unpkg.com/alpinejs@3.14.1/dist/cdn.min.js"></script>
 
+  <!--
+    Design tokens — единый набор классов для всех views.
+
+    Любые ad-hoc стили в app.js теряют дисциплину и расползаются: разные
+    padding'и у карточек, разные размеры кнопок, разный отступ от
+    заголовка. Чтобы этого не было — определяем все «строительные блоки»
+    здесь, в views используем только их + локальные mods.
+
+    Цветовая шкала: slate-50/950 фон, white/slate-900 поверхности,
+    slate-200/800 границы, indigo акцент, emerald/amber/rose/sky для
+    статусов и валидации.
+  -->
   <style>
-    /* Make rounded-pill status badges look consistent regardless of font size. */
-    .badge { @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium; }
-    /* Decent default for JSON pre blocks. Tailwind classes added inline too. */
-    pre.json { tab-size: 2; }
-    /* Drag-over visual feedback on the upload dropzone. */
+    /* === LAYOUT ============================================== */
+
+    /* Контейнер страницы — единые внешние отступы и максимальная ширина */
+    .page              { @apply p-8 max-w-6xl mx-auto; }
+    .page-narrow       { @apply p-8 max-w-4xl mx-auto; }
+
+    /* Заголовок страницы: title + subtitle + опциональный actions-блок */
+    .page-header       { @apply flex items-start justify-between gap-4 mb-6; }
+    .page-title        { @apply text-2xl font-semibold tracking-tight; }
+    .page-subtitle     { @apply text-sm text-slate-500 dark:text-slate-400 mt-1; }
+
+    /* Ссылка "назад к списку" над заголовком */
+    .back-link         { @apply inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition mb-4; }
+
+    /* === SURFACES (cards) ==================================== */
+
+    .card              { @apply bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm; }
+    .card-body         { @apply p-5; }
+    .card-body-lg      { @apply p-6; }
+    .card-header       { @apply px-5 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3; }
+    .card-title        { @apply text-base font-semibold; }
+    .card-section      { @apply p-5 border-t border-slate-200 dark:border-slate-800 first:border-t-0; }
+
+    /* === BUTTONS ============================================= */
+    /* hierarchy: primary (filled indigo) → secondary (outline) → ghost (бесшумная) */
+
+    .btn               { @apply inline-flex items-center justify-center gap-2 font-medium transition disabled:opacity-50 disabled:cursor-not-allowed; }
+    .btn-md            { @apply px-4 py-2 text-sm rounded-lg; }
+    .btn-sm            { @apply px-3 py-1.5 text-xs rounded-md; }
+    .btn-xs            { @apply px-2.5 py-1 text-xs rounded; }
+
+    .btn-primary       { @apply btn bg-indigo-600 hover:bg-indigo-700 text-white; }
+    .btn-secondary     { @apply btn border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200; }
+    .btn-ghost         { @apply btn text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800; }
+    .btn-danger        { @apply btn bg-rose-600 hover:bg-rose-700 text-white; }
+    .btn-accent-outline { @apply btn border border-indigo-300 dark:border-indigo-700 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-950/50; }
+
+    /* === FORM FIELDS ========================================= */
+
+    .form-row          { @apply space-y-1.5; }
+    .form-label        { @apply block text-sm font-medium text-slate-700 dark:text-slate-200; }
+    .form-input,
+    .form-select,
+    .form-textarea     {
+      @apply w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400;
+      @apply focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500;
+      @apply disabled:bg-slate-50 dark:disabled:bg-slate-900 disabled:cursor-not-allowed;
+    }
+    .form-textarea     { @apply font-mono; }
+    .form-help         { @apply mt-1.5 text-xs text-slate-500 dark:text-slate-400; }
+    .form-error        { @apply mt-1.5 text-sm text-rose-600 dark:text-rose-400; }
+
+    /* === BADGES ============================================== */
+
+    .badge             { @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium; }
+    .badge-slate       { @apply bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300; }
+    .badge-indigo      { @apply bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300; }
+    .badge-emerald     { @apply bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300; }
+    .badge-amber       { @apply bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300; }
+    .badge-rose        { @apply bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300; }
+    .badge-sky         { @apply bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300; }
+    .badge-violet      { @apply bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300; }
+    .badge-pulse       { @apply animate-pulse; }
+
+    /* === STATES ============================================== */
+
+    .empty-state       { @apply p-12 text-center; }
+    .empty-state-text  { @apply text-slate-500 dark:text-slate-400; }
+    .empty-state-cta   { @apply inline-block mt-3 text-indigo-600 hover:text-indigo-700 text-sm font-medium; }
+
+    .skeleton          { @apply bg-slate-200 dark:bg-slate-800 rounded animate-pulse; }
+    .skeleton-row      { @apply h-4 skeleton; }
+
+    .error-banner      { @apply p-4 rounded-lg bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-rose-700 dark:text-rose-300; }
+    .warning-banner    { @apply p-3 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 text-sm text-amber-800 dark:text-amber-300; }
+    .info-banner       { @apply p-3 rounded-lg bg-sky-50 dark:bg-sky-950/30 border border-sky-200 dark:border-sky-900 text-sm text-sky-800 dark:text-sky-300; }
+
+    /* === NAV ================================================= */
+
+    .nav-link          { @apply flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition; }
+    .nav-link.active   { @apply bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300; }
+
+    /* === DATA DISPLAY ======================================== */
+
+    /* Таблицы: единые отступы и оформление header'а */
+    .data-table        { @apply w-full; }
+    .data-table thead  { @apply bg-slate-50 dark:bg-slate-950/50 text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400; }
+    .data-table th     { @apply text-left px-4 py-2.5 font-medium; }
+    .data-table tbody  { @apply divide-y divide-slate-100 dark:divide-slate-800; }
+    .data-table td     { @apply px-4 py-3 text-sm; }
+    .data-table tr.row-clickable { @apply cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 transition; }
+
+    /* Описание ключ/значение в карточке */
+    .kv                { @apply space-y-1.5 text-sm; }
+    .kv-row            { @apply flex justify-between items-center; }
+    .kv-key            { @apply text-slate-500 dark:text-slate-400; }
+    .kv-value          { @apply font-mono text-xs; }
+
+    /* JSON tree node (см. рендер в app.js) */
+    .json-node         { @apply font-mono text-xs leading-relaxed; }
+    .json-key          { @apply text-indigo-700 dark:text-indigo-300; }
+    .json-string       { @apply text-emerald-700 dark:text-emerald-300; }
+    .json-number       { @apply text-violet-700 dark:text-violet-300; }
+    .json-boolean      { @apply text-amber-700 dark:text-amber-300; }
+    .json-null         { @apply text-slate-400 italic; }
+    .json-toggle       { @apply cursor-pointer select-none text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 inline-block w-3 text-center; }
+    .json-bracket      { @apply text-slate-500 dark:text-slate-400; }
+    .json-indent       { @apply pl-4 border-l border-dashed border-slate-200 dark:border-slate-800; }
+
+    /* === MISC =============================================== */
+
     .dropzone.dragover { @apply ring-2 ring-indigo-500 bg-indigo-50 dark:bg-indigo-950/50; }
+
+    /* Sticky header у длинных страниц (используется опционально) */
+    .sticky-header     { @apply sticky top-0 z-10 bg-slate-50/80 dark:bg-slate-950/80 backdrop-blur-sm; }
   </style>
 </head>
 <body class="font-sans antialiased bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 min-h-screen">
 
-  <!-- ========================================================== -->
-  <!-- LOGIN MODAL — full-screen when no token, hidden otherwise   -->
-  <!-- ========================================================== -->
+  <!-- ============================================================ -->
+  <!-- LOGIN — full-screen когда нет токена                         -->
+  <!-- ============================================================ -->
   <div id="login-screen" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-slate-50 dark:bg-slate-950">
-    <div class="w-full max-w-md mx-4 bg-white dark:bg-slate-900 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-800 p-8">
+    <div class="card w-full max-w-md mx-4 p-8 shadow-xl">
       <div class="flex items-center gap-3 mb-6">
         <div class="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center text-white">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-6 h-6"><path d="M5.625 1.5c-1.036 0-1.875.84-1.875 1.875v17.25c0 1.035.84 1.875 1.875 1.875h12.75c1.035 0 1.875-.84 1.875-1.875V12.75A3.75 3.75 0 0 0 16.5 9h-1.875a1.875 1.875 0 0 1-1.875-1.875V5.25A3.75 3.75 0 0 0 9 1.5H5.625Z"/><path d="M12.971 1.816A5.23 5.23 0 0 1 14.25 5.25v1.875c0 .207.168.375.375.375H16.5a5.23 5.23 0 0 1 3.434 1.279 9.768 9.768 0 0 0-6.963-6.963Z"/></svg>
         </div>
         <div>
-          <h1 class="text-xl font-semibold">parsdocs</h1>
+          <h1 class="text-lg font-semibold leading-tight">parsdocs</h1>
           <p class="text-sm text-slate-500 dark:text-slate-400">Document processing</p>
         </div>
       </div>
 
       <form id="login-form" class="space-y-4">
-        <div>
-          <label class="block text-sm font-medium mb-1.5">API token</label>
+        <div class="form-row">
+          <label class="form-label">API token</label>
           <input id="token-input" type="password" autocomplete="off" required
-            class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            placeholder="Вставь API_KEY из .env" />
-          <p class="mt-1.5 text-xs text-slate-500 dark:text-slate-400">Сохраняется в браузере (localStorage). На сервер уходит только в Authorization-заголовке.</p>
+            class="form-input" placeholder="Вставь API_KEY из .env" />
+          <p class="form-help">Сохраняется в браузере (localStorage). На сервер уходит только в Authorization-заголовке.</p>
         </div>
-        <button type="submit" class="w-full py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-medium transition">
-          Войти
-        </button>
-        <p id="login-error" class="hidden text-sm text-rose-600 dark:text-rose-400"></p>
+        <button type="submit" class="btn-primary btn-md w-full">Войти</button>
+        <p id="login-error" class="hidden form-error"></p>
       </form>
     </div>
   </div>
 
-  <!-- ========================================================== -->
-  <!-- APP SHELL — sidebar + main, shown when token present        -->
-  <!-- ========================================================== -->
+  <!-- ============================================================ -->
+  <!-- APP SHELL — sidebar + main, когда токен выставлен            -->
+  <!-- ============================================================ -->
   <div id="app-shell" class="hidden h-screen flex">
-    <!-- Sidebar -->
     <aside class="w-60 shrink-0 flex flex-col bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800">
       <div class="px-5 py-5 flex items-center gap-2.5">
         <div class="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center text-white">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-5 h-5"><path d="M5.625 1.5c-1.036 0-1.875.84-1.875 1.875v17.25c0 1.035.84 1.875 1.875 1.875h12.75c1.035 0 1.875-.84 1.875-1.875V12.75A3.75 3.75 0 0 0 16.5 9h-1.875a1.875 1.875 0 0 1-1.875-1.875V5.25A3.75 3.75 0 0 0 9 1.5H5.625Z"/><path d="M12.971 1.816A5.23 5.23 0 0 1 14.25 5.25v1.875c0 .207.168.375.375.375H16.5a5.23 5.23 0 0 1 3.434 1.279 9.768 9.768 0 0 0-6.963-6.963Z"/></svg>
         </div>
-        <div class="font-semibold">parsdocs</div>
+        <div class="font-semibold leading-tight">parsdocs</div>
       </div>
+
       <nav class="px-3 py-2 space-y-0.5 flex-1">
-        <a href="#jobs"     data-nav="jobs"     class="nav-link"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path fill-rule="evenodd" d="M3 6.5A1.5 1.5 0 0 1 4.5 5h11A1.5 1.5 0 0 1 17 6.5v7a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 13.5v-7Zm2 0v7h10v-7H5Z" clip-rule="evenodd"/></svg> Jobs</a>
-        <a href="#upload"   data-nav="upload"   class="nav-link"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path fill-rule="evenodd" d="M10 1a.75.75 0 0 1 .75.75v9.69l1.95-2.1a.75.75 0 1 1 1.1 1.02l-3.25 3.5a.75.75 0 0 1-1.1 0l-3.25-3.5a.75.75 0 1 1 1.1-1.02l1.95 2.1V1.75A.75.75 0 0 1 10 1ZM4 14.5a.75.75 0 0 1 .75.75V17h10.5v-1.75a.75.75 0 0 1 1.5 0v2A.75.75 0 0 1 16 18H4a.75.75 0 0 1-.75-.75v-2A.75.75 0 0 1 4 14.5Z" clip-rule="evenodd"/></svg> Upload</a>
-        <a href="#document-types" data-nav="document-types" class="nav-link"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path d="M3 4.75A2.75 2.75 0 0 1 5.75 2h8.5A2.75 2.75 0 0 1 17 4.75v10.5A2.75 2.75 0 0 1 14.25 18h-8.5A2.75 2.75 0 0 1 3 15.25V4.75Zm3 .75a.75.75 0 0 0 0 1.5h8a.75.75 0 0 0 0-1.5H6ZM5.25 10A.75.75 0 0 1 6 9.25h8a.75.75 0 0 1 0 1.5H6a.75.75 0 0 1-.75-.75Zm0 3.5a.75.75 0 0 1 .75-.75h5a.75.75 0 0 1 0 1.5H6a.75.75 0 0 1-.75-.75Z"/></svg> Document types</a>
-        <a href="#settings" data-nav="settings" class="nav-link"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path fill-rule="evenodd" d="M7.84 1.804A1 1 0 0 1 8.82 1h2.36a1 1 0 0 1 .98.804l.331 1.652a6.993 6.993 0 0 1 1.929 1.115l1.598-.54a1 1 0 0 1 1.186.447l1.18 2.044a1 1 0 0 1-.205 1.251l-1.267 1.113a7.047 7.047 0 0 1 0 2.228l1.267 1.113a1 1 0 0 1 .206 1.25l-1.18 2.045a1 1 0 0 1-1.187.447l-1.598-.54a6.993 6.993 0 0 1-1.929 1.115l-.33 1.652a1 1 0 0 1-.98.804H8.82a1 1 0 0 1-.98-.804l-.331-1.652a6.993 6.993 0 0 1-1.929-1.115l-1.598.54a1 1 0 0 1-1.186-.447l-1.18-2.044a1 1 0 0 1 .205-1.251l1.267-1.114a7.05 7.05 0 0 1 0-2.227L1.821 7.773a1 1 0 0 1-.206-1.25l1.18-2.045a1 1 0 0 1 1.187-.447l1.598.54A6.992 6.992 0 0 1 7.51 3.456l.33-1.652ZM10 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" clip-rule="evenodd"/></svg> Settings</a>
+        <a href="#jobs"           data-nav="jobs"           class="nav-link">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path fill-rule="evenodd" d="M3 6.5A1.5 1.5 0 0 1 4.5 5h11A1.5 1.5 0 0 1 17 6.5v7a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 13.5v-7Zm2 0v7h10v-7H5Z" clip-rule="evenodd"/></svg>
+          Jobs
+        </a>
+        <a href="#upload"         data-nav="upload"         class="nav-link">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path fill-rule="evenodd" d="M10 1a.75.75 0 0 1 .75.75v9.69l1.95-2.1a.75.75 0 1 1 1.1 1.02l-3.25 3.5a.75.75 0 0 1-1.1 0l-3.25-3.5a.75.75 0 1 1 1.1-1.02l1.95 2.1V1.75A.75.75 0 0 1 10 1ZM4 14.5a.75.75 0 0 1 .75.75V17h10.5v-1.75a.75.75 0 0 1 1.5 0v2A.75.75 0 0 1 16 18H4a.75.75 0 0 1-.75-.75v-2A.75.75 0 0 1 4 14.5Z" clip-rule="evenodd"/></svg>
+          Upload
+        </a>
+        <a href="#document-types" data-nav="document-types" class="nav-link">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path d="M3 4.75A2.75 2.75 0 0 1 5.75 2h8.5A2.75 2.75 0 0 1 17 4.75v10.5A2.75 2.75 0 0 1 14.25 18h-8.5A2.75 2.75 0 0 1 3 15.25V4.75Zm3 .75a.75.75 0 0 0 0 1.5h8a.75.75 0 0 0 0-1.5H6ZM5.25 10A.75.75 0 0 1 6 9.25h8a.75.75 0 0 1 0 1.5H6a.75.75 0 0 1-.75-.75Zm0 3.5a.75.75 0 0 1 .75-.75h5a.75.75 0 0 1 0 1.5H6a.75.75 0 0 1-.75-.75Z"/></svg>
+          Document types
+        </a>
+        <a href="#settings"       data-nav="settings"       class="nav-link">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path fill-rule="evenodd" d="M7.84 1.804A1 1 0 0 1 8.82 1h2.36a1 1 0 0 1 .98.804l.331 1.652a6.993 6.993 0 0 1 1.929 1.115l1.598-.54a1 1 0 0 1 1.186.447l1.18 2.044a1 1 0 0 1-.205 1.251l-1.267 1.113a7.047 7.047 0 0 1 0 2.228l1.267 1.113a1 1 0 0 1 .206 1.25l-1.18 2.045a1 1 0 0 1-1.187.447l-1.598-.54a6.993 6.993 0 0 1-1.929 1.115l-.33 1.652a1 1 0 0 1-.98.804H8.82a1 1 0 0 1-.98-.804l-.331-1.652a6.993 6.993 0 0 1-1.929-1.115l-1.598.54a1 1 0 0 1-1.186-.447l-1.18-2.044a1 1 0 0 1 .205-1.251l1.267-1.114a7.05 7.05 0 0 1 0-2.227L1.821 7.773a1 1 0 0 1-.206-1.25l1.18-2.045a1 1 0 0 1 1.187-.447l1.598.54A6.992 6.992 0 0 1 7.51 3.456l.33-1.652ZM10 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" clip-rule="evenodd"/></svg>
+          Settings
+        </a>
       </nav>
+
       <div class="border-t border-slate-200 dark:border-slate-800 px-3 py-3 flex items-center justify-between gap-2">
-        <button id="dark-toggle" title="Theme" class="p-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition">
-          <svg id="icon-sun" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 hidden dark:block"><path d="M10 2a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 10 2ZM10 15a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 10 15ZM10 7a3 3 0 1 0 0 6 3 3 0 0 0 0-6ZM15.657 5.404a.75.75 0 0 0-1.06-1.06l-1.062 1.06a.75.75 0 0 0 1.06 1.06l1.061-1.06ZM6.464 14.596a.75.75 0 0 0-1.06-1.06l-1.06 1.06a.75.75 0 0 0 1.06 1.06l1.06-1.06ZM18 10a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 18 10ZM5 10a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 5 10ZM14.596 15.657a.75.75 0 0 0 1.06-1.06l-1.06-1.062a.75.75 0 1 0-1.06 1.06l1.06 1.062ZM5.404 6.464a.75.75 0 0 0 1.06-1.06l-1.06-1.06a.75.75 0 0 0-1.06 1.06l1.06 1.06Z"/></svg>
-          <svg id="icon-moon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 dark:hidden"><path fill-rule="evenodd" d="M7.455 2.004a.75.75 0 0 1 .26.77 7 7 0 0 0 9.958 7.967.75.75 0 0 1 1.067.853A8.5 8.5 0 1 1 6.647 1.921a.75.75 0 0 1 .808.083Z" clip-rule="evenodd"/></svg>
+        <button id="dark-toggle" title="Theme" class="btn-ghost btn-sm">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 hidden dark:block"><path d="M10 2a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 10 2ZM10 15a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 10 15ZM10 7a3 3 0 1 0 0 6 3 3 0 0 0 0-6ZM15.657 5.404a.75.75 0 0 0-1.06-1.06l-1.062 1.06a.75.75 0 0 0 1.06 1.06l1.061-1.06ZM6.464 14.596a.75.75 0 0 0-1.06-1.06l-1.06 1.06a.75.75 0 0 0 1.06 1.06l1.06-1.06ZM18 10a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 18 10ZM5 10a.75.75 0 0 1-.75.75h-1.5a.75.75 0 0 1 0-1.5h1.5A.75.75 0 0 1 5 10ZM14.596 15.657a.75.75 0 0 0 1.06-1.06l-1.06-1.062a.75.75 0 1 0-1.06 1.06l1.06 1.062ZM5.404 6.464a.75.75 0 0 0 1.06-1.06l-1.06-1.06a.75.75 0 0 0-1.06 1.06l1.06 1.06Z"/></svg>
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 dark:hidden"><path fill-rule="evenodd" d="M7.455 2.004a.75.75 0 0 1 .26.77 7 7 0 0 0 9.958 7.967.75.75 0 0 1 1.067.853A8.5 8.5 0 1 1 6.647 1.921a.75.75 0 0 1 .808.083Z" clip-rule="evenodd"/></svg>
+          <span>Theme</span>
         </button>
-        <button id="logout-btn" class="text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition">
-          Logout
-        </button>
+        <button id="logout-btn" class="btn-ghost btn-sm">Logout</button>
       </div>
     </aside>
 
-    <!-- Main content area — views inject here -->
     <main id="view" class="flex-1 overflow-y-auto"></main>
   </div>
-
-  <!-- Nav-link Tailwind helpers, attached via JS (avoids duplicate strings) -->
-  <style>
-    .nav-link {
-      @apply flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition;
-    }
-    .nav-link.active {
-      @apply bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300;
-    }
-  </style>
 
   <script type="module" src="/ui/app.js"></script>
 </body>
