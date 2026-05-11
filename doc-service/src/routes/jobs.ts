@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
-import { unlink } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { stat, unlink } from 'node:fs/promises';
 import { config } from '../config.js';
 import {
   ACCEPTED_DOCUMENT_MIMES,
@@ -346,6 +347,63 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
       }
       if (!(await requireProjectAccess(req, reply, job.project_id))) return reply;
       return jobsRepo.toApi(job);
+    },
+  );
+
+  // GET /jobs/:id/file — отдаёт исходный загруженный документ.
+  // Используется UI для preview оригинала рядом с extracted JSON.
+  // После retention-чистки (jobs.file_path NULLed) возвращает 410.
+  r.get(
+    '/jobs/:id/file',
+    {
+      schema: {
+        tags: ['jobs'],
+        summary: 'Скачать оригинал документа',
+        description:
+          'Стримит исходный файл с диска. Content-Type = job.mime_type. ' +
+          'Inline disposition — браузер показывает PDF/картинку прямо в окне. ' +
+          'После окончания retention-периода возвращает 410 Gone (jobs.file_path занулён ' +
+          'sweeper\'ом, файл удалён с диска, восстановить нельзя).',
+        security: [{ bearerAuth: [] }],
+        params: JobIdParam,
+        response: {
+          // Note: response body — binary stream, не JSON; зод-схема не описывает.
+          // Указываем только error responses.
+          401: ErrorResponse,
+          403: ErrorResponse,
+          404: ErrorResponse,
+          410: ErrorResponse,
+        },
+      },
+    },
+    async (req, reply) => {
+      const job = await jobsRepo.findById(req.params.id);
+      if (!job) {
+        reply.code(404);
+        return { error: 'job not found' };
+      }
+      if (!(await requireProjectAccess(req, reply, job.project_id))) return reply;
+      if (!job.file_path) {
+        reply.code(410);
+        return { error: 'file no longer available (retention period elapsed)' };
+      }
+      let size: number;
+      try {
+        const stats = await stat(job.file_path);
+        size = stats.size;
+      } catch {
+        reply.code(410);
+        return { error: 'file missing on disk' };
+      }
+      reply.header('Content-Type', job.mime_type);
+      reply.header('Content-Length', size);
+      // RFC 6266 — для русских имён нужен filename* (RFC 5987 percent-encoding).
+      const fnAscii = job.file_name.replace(/[^\x20-\x7E]/g, '_');
+      reply.header(
+        'Content-Disposition',
+        `inline; filename="${fnAscii}"; filename*=UTF-8''${encodeURIComponent(job.file_name)}`,
+      );
+      return reply.send(createReadStream(job.file_path));
     },
   );
 

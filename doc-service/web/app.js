@@ -544,8 +544,9 @@ async function renderJobsList() {
 // ============================================================
 
 async function renderJobDetail(jobId) {
+  // page-narrow слишком узок для side-by-side; используем .page (шире).
   setView(`
-    <div class="page-narrow">
+    <div class="page">
       ${backLink('#jobs')}
       <div id="job-detail-content" class="space-y-4">${loadingState()}</div>
     </div>
@@ -553,6 +554,9 @@ async function renderJobDetail(jobId) {
 
   let pollTimer = null;
   let editing = false;
+  // Object URL для preview оригинала. Хранится здесь чтобы освободить
+  // в registerCleanup'е — иначе blob висит в памяти до закрытия вкладки.
+  let currentOriginalUrl = null;
 
   async function load() {
     try {
@@ -612,18 +616,31 @@ async function renderJobDetail(jobId) {
           </div>
         </div>` : ''}
 
-      <!-- Extracted -->
-      <div class="card overflow-hidden">
-        <div class="card-header">
-          <h3 class="card-title">Extracted data</h3>
-          <div class="flex items-center gap-2">
-            <button id="copy-json-btn" class="btn-secondary btn-xs">Copy</button>
-            <button id="reprocess-btn" class="btn-secondary btn-xs" title="Перепрогнать через текущий prompt/схему типа (без новой OCR)">Перепрогнать</button>
-            <button id="edit-btn" class="btn-accent-outline btn-xs">Edit</button>
+      <!-- Side-by-side: оригинал + extracted на широких экранах,
+           stacked на узких. PDF/картинка слева, JSON справа. -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div class="card overflow-hidden">
+          <div class="card-header">
+            <h3 class="card-title">Оригинал</h3>
+            <a id="original-open" href="#" target="_blank" class="btn-ghost btn-xs" rel="noopener">Открыть ↗</a>
+          </div>
+          <div id="original-pane" class="card-body p-2 bg-slate-50 dark:bg-slate-950 min-h-[24rem]">
+            ${loadingState()}
           </div>
         </div>
-        <div id="extracted-pane" class="card-body">
-          <div class="bg-slate-50 dark:bg-slate-950 rounded-lg p-4 overflow-x-auto">${jsonTree(extracted)}</div>
+
+        <div class="card overflow-hidden">
+          <div class="card-header">
+            <h3 class="card-title">Extracted data</h3>
+            <div class="flex items-center gap-2">
+              <button id="copy-json-btn" class="btn-secondary btn-xs">Copy</button>
+              <button id="reprocess-btn" class="btn-secondary btn-xs" title="Перепрогнать через текущий prompt/схему типа (без новой OCR)">Перепрогнать</button>
+              <button id="edit-btn" class="btn-accent-outline btn-xs">Edit</button>
+            </div>
+          </div>
+          <div id="extracted-pane" class="card-body">
+            <div class="bg-slate-50 dark:bg-slate-950 rounded-lg p-4 overflow-x-auto">${jsonTree(extracted)}</div>
+          </div>
         </div>
       </div>
 
@@ -680,6 +697,35 @@ async function renderJobDetail(jobId) {
       editing = true;
       if (pollTimer) clearTimeout(pollTimer);
       renderEditor(extracted);
+    });
+
+    // Оригинал документа: подгружается отдельным fetch'ем с Bearer-токеном,
+    // превращается в blob → object URL → <img>/<iframe>. Object URL живёт
+    // до teardown'а view (см. registerCleanup ниже).
+    void loadOriginalFile(jobId, job).then((res) => {
+      const pane = document.getElementById('original-pane');
+      const opener = document.getElementById('original-open');
+      if (!pane) return;
+      if (res.gone) {
+        pane.innerHTML = `<div class="empty-state"><p class="empty-state-text">Файл удалён по retention-политике</p></div>`;
+        if (opener) opener.style.display = 'none';
+        return;
+      }
+      if (res.error) {
+        pane.innerHTML = errorState(res.error);
+        if (opener) opener.style.display = 'none';
+        return;
+      }
+      // <iframe> подходит для PDF (браузер показывает встроенный viewer),
+      // <img> для JPEG/PNG/BMP/TIFF (TIFF поддерживают не все браузеры,
+      // но fallback мы оставляем браузеру — он покажет broken-image).
+      const isPdf = res.mime === 'application/pdf';
+      pane.innerHTML = isPdf
+        ? `<iframe src="${res.url}" class="w-full" style="height:70vh; border:0;"></iframe>`
+        : `<img src="${res.url}" class="w-full h-auto rounded" alt="original document" />`;
+      if (opener) opener.href = res.url;
+      if (currentOriginalUrl) URL.revokeObjectURL(currentOriginalUrl);
+      currentOriginalUrl = res.url;
     });
 
     // Перепрогнать: вызывает POST /jobs/:id/reprocess. OCR не повторяется,
@@ -748,7 +794,40 @@ async function renderJobDetail(jobId) {
   }
 
   await load();
-  registerCleanup(() => { if (pollTimer) clearTimeout(pollTimer); });
+  registerCleanup(() => {
+    if (pollTimer) clearTimeout(pollTimer);
+    if (currentOriginalUrl) {
+      URL.revokeObjectURL(currentOriginalUrl);
+      currentOriginalUrl = null;
+    }
+  });
+}
+
+/**
+ * Подгружает оригинал документа с Bearer-токеном и оборачивает его в
+ * blob: URL — это позволяет показать его в <img>/<iframe> без передачи
+ * токена в URL.
+ *
+ * Returns:
+ *   { gone: true } — 410, файл удалён по retention.
+ *   { error: msg } — другой не-OK статус или network error.
+ *   { url, mime } — готовый object URL и MIME-тип.
+ */
+async function loadOriginalFile(jobId, jobMeta) {
+  try {
+    const res = await api(`/jobs/${encodeURIComponent(jobId)}/file`);
+    if (res.status === 410) return { gone: true };
+    if (!res.ok) {
+      return { error: `HTTP ${res.status}: ${(await res.text()).slice(0, 200)}` };
+    }
+    const blob = await res.blob();
+    // mime_type из job меты надёжнее чем blob.type (некоторые серверы
+    // не выставляют Content-Type на бинарь — blob.type будет ''):
+    const mime = jobMeta?.mime_type || blob.type || 'application/octet-stream';
+    return { url: URL.createObjectURL(blob), mime };
+  } catch (err) {
+    return { error: err.message };
+  }
 }
 
 // ============================================================
