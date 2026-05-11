@@ -25,11 +25,13 @@ data URL) кодируется автоматически. JSON-режим (`res
 retry / показывает админу.
 """
 
+import asyncio
 import base64
 import io
 import json
 import logging
 import re
+import time
 from typing import Any
 
 from PIL import Image
@@ -65,6 +67,11 @@ class OpenAICompatibleBackend(ModelBackend):
 
     name = "openai-compat"
 
+    # Probe TTL — реальный пинг сервера дорогой (HTTP round-trip), часто
+    # дёргать /ready не нужно. 30 секунд достаточно: модель в Ollama не
+    # выгрузится быстрее, а если упала — узнаем в следующем окне.
+    _PROBE_TTL_SECONDS = 30.0
+
     def __init__(
         self,
         base_url: str,
@@ -82,6 +89,9 @@ class OpenAICompatibleBackend(ModelBackend):
         self.timeout_seconds = timeout_seconds
         self._client: Any = None
         self._ready = False
+        # Кэш для probe() — async-результат + момент последнего успеха.
+        self._probe_cache: tuple[bool, str | None, float] | None = None
+        self._probe_lock = asyncio.Lock()
         if model_id:
             self._load()
         else:
@@ -111,7 +121,56 @@ class OpenAICompatibleBackend(ModelBackend):
         )
 
     def is_ready(self) -> bool:
+        """Структурная готовность: задана модель, клиент создан. НЕ говорит
+        о реальном коннекте — для этого probe()."""
         return self._ready
+
+    async def probe(self) -> tuple[bool, str | None]:
+        """Реальный пинг сервера: пытается дёрнуть `models.list()` со
+        своим api_key и base_url. Возвращает (ok, error_message).
+
+        Используется readiness-пробником `/ready`, чтобы клиентский UI и
+        Kubernetes-orchestrator видели не «backend задан», а «модель
+        правда отвечает». Результат кэшируется на 30 секунд.
+
+        Под капотом большинство OpenAI-compat серверов экспонируют
+        `/v1/models` (Ollama, vLLM, llama.cpp ≥0.3, LM Studio).
+        Cтарый llama.cpp может ответить 404 — обрабатываем как failure.
+        """
+        if not self._ready:
+            return False, "backend not configured (empty model_id)"
+
+        now = time.monotonic()
+        if self._probe_cache:
+            ok, err, at = self._probe_cache
+            if now - at < self._PROBE_TTL_SECONDS:
+                return ok, err
+
+        # Lock, чтобы 10 параллельных /ready не дёргали бэкенд 10 раз.
+        async with self._probe_lock:
+            if self._probe_cache:
+                ok, err, at = self._probe_cache
+                if time.monotonic() - at < self._PROBE_TTL_SECONDS:
+                    return ok, err
+
+            try:
+                # Короткий timeout — на проверке здоровья ждать минуту глупо.
+                models = await asyncio.wait_for(self._client.models.list(), timeout=5.0)
+                # Опционально: убедимся, что наша модель есть в списке.
+                # Не делаем этого жёстко: Ollama иногда возвращает странные
+                # имена, OpenAI cloud — сотни моделей с шумом. Достаточно
+                # факта, что сервер ответил.
+                _ = models  # consume
+                self._probe_cache = (True, None, time.monotonic())
+                return True, None
+            except asyncio.TimeoutError:
+                msg = f"probe timeout (5s) — сервер {self.base_url or '<openai>'} не отвечает"
+                self._probe_cache = (False, msg, time.monotonic())
+                return False, msg
+            except Exception as e:  # noqa: BLE001
+                msg = f"probe failed: {type(e).__name__}: {e}"
+                self._probe_cache = (False, msg, time.monotonic())
+                return False, msg
 
     # --- Domain methods ---
 

@@ -59,6 +59,55 @@
 - ✅ **B5 file magic-bytes validation** — пакет `file-type ^19.6`. После сохранения файла читаются magic bytes; если детектируется не из `ACCEPTED_DOCUMENT_MIMES` (PDF/JPEG/PNG/BMP/TIFF/WebP) — 400 и удаление файла. Если detected mime ≠ declared multipart Content-Type — detected становится authoritative (логируется warning). Защита от exe-под-видом-PDF, расширения vs реальный формат, и подобного.
 - ✅ Тесты: `tests/idempotency.spec.ts` (header parsing, unique-violation detector), `tests/magic-bytes.spec.ts` (PDF/PNG/JPEG/BMP/WebP по реальным magic bytes, рейект plaintext/exe, обнаружение mislabelled PDF).
 
+### Phase 3 Day 11 — Готовность к развороту на локальной модели (2026-05-13)
+
+Фаза A из плана «подготовка к боевому развороту»: реальный smoke,
+честный health-check, чеклист развёртывания.
+
+- ✅ **`OpenAICompatibleBackend.probe()`** — асинхронный пинг через
+  `models.list()` с 5s timeout и 30s TTL-кэшем. Lock против гонок —
+  10 параллельных readiness-вызовов = 1 сетевой call. Раньше
+  `is_ready()` возвращал true если в env задан model_id, что
+  фактически врало о готовности модели.
+- ✅ **`/ready`** в inference-service теперь вызывает `probe()` для
+  backend'ов, у которых она есть. Возвращает `{ status, backend,
+  reason }` — `reason` объясняет ПОЧЕМУ не готов (probe failed:
+  ConnectionError; probe timeout 5s; backend.is_ready=false; и т.д.).
+  k8s liveness/readiness теперь честные.
+- ✅ **`/provider-settings/:id/test`** в doc-service: для kind=llm
+  пингаем стандартный `/v1/models` endpoint (поддерживают все:
+  Ollama, vLLM, llama.cpp, LM Studio, OpenAI cloud). Раньше дёргали
+  `/v1/providers/status`, который есть только у нашего inference-сервиса.
+  Нормализация base_url: если задан без `/v1` суффикса — добавляем.
+- ✅ **E2E smoke** (`npm run smoke`) обновлён:
+  - флаг `--ping-inference` — pre-flight проверка `/ready` перед основным
+    прогоном (упасть рано с понятной ошибкой лучше, чем висеть 60s на
+    первом extract'е, пока Ollama грузит weights);
+  - флаг `--out report.json` — сохранить отчёт в файл;
+  - latency раздельно для OCR и post-OCR (классификация + extract +
+    валидация);
+  - hint — теперь любой slug-формат (раньше strict-enum для шести
+    builtin'ов, что было устарелым после CP1);
+  - в отчёте отдельная секция `validation` с issues и source конфига
+    (db vs fallback) — диагностируем «почему вернулось пусто».
+- ✅ **`DEPLOY.md`** — чеклист 30-60 минут от пустой машины до первого
+  распознанного документа. Под Linux и WSL2. Требования к железу для
+  трёх сценариев (smoke / пилот / прод), все обязательные env-переменные
+  с примером генерации, troubleshooting на основные сценарии (probe
+  fail, GPU не виден, JSON-mode не поддерживается, высокая латентность).
+- ✅ Тесты: `inference-service/tests/test_probe.py` — 6 кейсов (ok,
+  TTL-кэш, ConnectionError, timeout, не настроен, concurrent с lock'ом).
+- ⏸ Открытое (Фаза B):
+  - `docker-compose.vllm.yml` — production GPU compose с vLLM. В DEPLOY.md
+    есть placeholder, но реального файла пока нет.
+  - **Hardware sizing guide** конкретными цифрами «модель × железо ×
+    документов/мин». Сейчас в MODELS.md есть оценки VRAM, но нет
+    замеренных throughput'ов.
+  - **Бенчмарк-скрипт** `npm run bench:models` — golden-set из 5-10
+    типовых документов × все настроенные модели, таблица latency × quality.
+  - **Real-life прогон на железе клиента** — DEPLOY.md теоретический,
+    нужна валидация на первом пилотном клиенте.
+
 ### Phase 3 Day 10 — Audit log retention (2026-05-13)
 
 Закрыт операционный долг: `audit_log` теперь не растёт бесконтрольно.

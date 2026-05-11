@@ -292,7 +292,8 @@ export async function providerSettingsRoutes(app: FastifyInstance): Promise<void
         tags: ['provider-settings'],
         summary: 'Проверить связь с провайдером',
         description:
-          'Делает HEAD/GET по `base_url` (для llm — по `/v1/providers/status` если URL указывает на inference-service). ' +
+          'Для kind=llm — GET `<base_url>/models` (стандартный OpenAI Chat Completions endpoint; ' +
+          'поддерживается Ollama, vLLM, llama.cpp, LM Studio, OpenAI). Для kind=ocr — GET `<base_url>/`. ' +
           'Возвращает ok+latency или ok=false+message. Полезно после установки base_url/key.',
         security: [{ bearerAuth: [] }],
         params: IdParam,
@@ -316,8 +317,16 @@ export async function providerSettingsRoutes(app: FastifyInstance): Promise<void
           message: 'не задан base_url и нет LLM_INFERENCE_URL для fallback',
         };
       }
-      const probePath = row.kind === 'llm' ? '/v1/providers/status' : '/';
-      const url = new URL(probePath, target).toString();
+      // Для llm-провайдеров пингуем стандартный OpenAI endpoint `/models`
+      // (поддерживают все: Ollama, vLLM, llama.cpp, LM Studio, OpenAI).
+      // Это даёт честный сигнал «сервер живой И знает наш API». Для ocr —
+      // пингуем корень.
+      const probePath = row.kind === 'llm' ? '/models' : '/';
+      // Если base_url не оканчивается на /v1 — обычно сам сервер хочет именно
+      // /v1/models. Прокладка чуть-чуть умнее URL'a: если в base_url нет
+      // суффикса с версией — добавляем.
+      const normalizedBase = /\/v\d+\/?$/.test(target) ? target : `${target.replace(/\/$/, '')}/v1`;
+      const url = new URL(probePath.replace(/^\//, ''), normalizedBase.replace(/\/?$/, '/')).toString();
       const startedAt = Date.now();
       try {
         const res = await request(url, {

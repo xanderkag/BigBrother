@@ -71,14 +71,39 @@ async def prometheus_middleware(request: Request, call_next):
 
 @app.get("/health")
 async def health() -> dict[str, str]:
+    """Liveness: процесс жив. Не пингует upstream — must быть мгновенным."""
     return {"status": "ok"}
 
 
 @app.get("/ready")
-async def ready() -> dict[str, str]:
+async def ready() -> dict[str, object]:
+    """Readiness: backend сконфигурирован И отвечает.
+
+    Для backend'ов с асинхронным `probe()` (openai_compat) — дёргает
+    его и возвращает реальный статус коннекта к модели. Для остальных
+    (stub, claude, qwen) — структурная проверка `is_ready()`.
+
+    Используется Kubernetes-orchestrator'ом и UI doc-service'а, чтобы
+    отличить cold-start (модель ещё грузится) от нормальной работы.
+    """
     backend = getattr(app.state, "backend", None)
-    if backend is None or not backend.is_ready():
-        return {"status": "not_ready"}
+    if backend is None:
+        return {"status": "not_ready", "reason": "backend not initialised"}
+
+    if not backend.is_ready():
+        return {"status": "not_ready", "backend": backend.name, "reason": "backend.is_ready=false"}
+
+    # Реальный пинг для backend'ов, которые умеют (probe → optional method).
+    probe = getattr(backend, "probe", None)
+    if callable(probe):
+        ok, err = await probe()
+        if not ok:
+            return {
+                "status": "not_ready",
+                "backend": backend.name,
+                "reason": err or "probe failed",
+            }
+
     return {"status": "ready", "backend": backend.name}
 
 
