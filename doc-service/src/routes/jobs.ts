@@ -403,7 +403,8 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         'Content-Disposition',
         `inline; filename="${fnAscii}"; filename*=UTF-8''${encodeURIComponent(job.file_name)}`,
       );
-      return reply.send(createReadStream(job.file_path));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (reply as any).send(createReadStream(job.file_path));
     },
   );
 
