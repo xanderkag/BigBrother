@@ -455,7 +455,7 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
       // Прогоняем тот же pipeline что и в воркере, но без OCR-фазы.
       // hint — текущий documentType (или document_hint, если type ещё не определён).
       const hint = job.document_type ?? job.document_hint ?? undefined;
-      const post = await runDocumentPipeline(job.raw_text, { hint }, req.log, {
+      const post = await runDocumentPipeline(job.raw_text, { hint }, req.log as never, {
         jobId: job.id,
         reprocess: true,
       });
