@@ -19,7 +19,7 @@
  * `./registry.ts`.
  */
 
-import type { DocumentTypeSlug } from '../../types/documents.js';
+import type { DocumentType, DocumentTypeSlug } from '../../types/documents.js';
 import { isBuiltinDocumentType } from '../../types/documents.js';
 import {
   validateCountryCode,
