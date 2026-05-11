@@ -13,7 +13,9 @@
     "build": "tsc",
     "start:api": "node dist/server.js",
     "start:worker": "node dist/worker.js",
-    "migrate": "tsx src/scripts/migrate.ts",
+    "migrate": "tsx src/scripts/migrate.ts up",
+    "migrate:down": "tsx src/scripts/migrate.ts down",
+    "migrate:create": "tsx src/scripts/migrate.ts create",
     "smoke": "tsx src/scripts/smoke.ts",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -29,6 +31,7 @@
     "fastify-type-provider-zod": "^4.0.2",
     "ioredis": "^5.4.1",
     "mime-types": "^2.1.35",
+    "node-pg-migrate": "^7.9.1",
     "node-tesseract-ocr": "^2.2.1",
     "pdf-parse": "^1.1.1",
     "pino": "^9.5.0",

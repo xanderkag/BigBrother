@@ -59,8 +59,9 @@
 - ✅ **B5 file magic-bytes validation** — пакет `file-type ^19.6`. После сохранения файла читаются magic bytes; если детектируется не из `ACCEPTED_DOCUMENT_MIMES` (PDF/JPEG/PNG/BMP/TIFF/WebP) — 400 и удаление файла. Если detected mime ≠ declared multipart Content-Type — detected становится authoritative (логируется warning). Защита от exe-под-видом-PDF, расширения vs реальный формат, и подобного.
 - ✅ Тесты: `tests/idempotency.spec.ts` (header parsing, unique-violation detector), `tests/magic-bytes.spec.ts` (PDF/PNG/JPEG/BMP/WebP по реальным magic bytes, рейект plaintext/exe, обнаружение mislabelled PDF).
 
-### Phase 2 Day 3 — Prometheus metrics (2026-05-11)
+### Phase 2 Day 3 — Prometheus metrics + migration framework (2026-05-11)
 
+- ✅ **C3 Migration framework** — подключен `node-pg-migrate`. Миграции лежат в `migrations/<timestamp>_<slug>.sql` с явными секциями `-- Up Migration` / `-- Down Migration`. Применённые версии трекаются в таблице `pgmigrations`. Команды: `npm run migrate` (up all), `npm run migrate:down` (rollback 1), `npm run migrate:create <name>` (scaffold). В docker-compose добавлен one-shot сервис `migrate`, от которого зависят `api` и `worker` — схема гарантированно актуальна перед стартом трафика. Убран автозагрузочный mount `/docker-entrypoint-initdb.d`.
 - ✅ **I4 `/metrics` endpoints** на обоих сервисах. Public (Prometheus scrape без Bearer); защита — на уровне корп.nginx.
 - ✅ doc-service: `prom-client` + default Node-метрики. Кастомные:
   - `docservice_jobs_total{status,document_type}` — терминальный счётчик
@@ -83,15 +84,9 @@
 
 ---
 
-### C3. Нет нормальной системы миграций
+### ~~C3. Нет нормальной системы миграций~~ — ✅ закрыто 2026-05-11
 
-**Где:** `doc-service/migrations/`, `doc-service/src/scripts/migrate.ts`
-
-**Симптом:** SQL'и применяются один раз на первый старт Postgres-контейнера через `/docker-entrypoint-initdb.d`. `npm run migrate` тупо проигрывает все `.sql` подряд каждый раз. 001 идемпотентен (`IF NOT EXISTS`), но 002, 003 уже не будут.
-
-**Лечение:** Подключить `node-pg-migrate` или `umzug`. Альтернатива — самописная таблица `_migrations(filename, applied_at)` + проверка перед прогоном.
-
-**Оценка:** 4 часа.
+Подключен `node-pg-migrate`. См. «Phase 2 Day 3» в шапке.
 
 ---
 

@@ -1,6 +1,11 @@
--- doc-service: initial schema
--- Loaded automatically by the postgres container via /docker-entrypoint-initdb.d on first boot.
--- For an existing database, run via `npm run migrate`.
+-- doc-service initial schema. Tracked by node-pg-migrate.
+--
+-- Naming convention: <unix-style timestamp>_<short-name>.sql. The
+-- timestamp is monotonic (lexically sortable) and uses a date so a
+-- human can read the file order at a glance. Versions of migrations
+-- already applied are recorded in the `pgmigrations` table.
+
+-- Up Migration
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
@@ -64,3 +69,12 @@ CREATE TRIGGER trg_jobs_updated_at
     BEFORE UPDATE ON jobs
     FOR EACH ROW
     EXECUTE FUNCTION jobs_set_updated_at();
+
+-- Down Migration
+--
+-- WARNING: destructive — drops the jobs table and every row in it.
+-- The `pgcrypto` extension is left in place (other tools may depend on it).
+
+DROP TRIGGER IF EXISTS trg_jobs_updated_at ON jobs;
+DROP FUNCTION IF EXISTS jobs_set_updated_at();
+DROP TABLE IF EXISTS jobs;

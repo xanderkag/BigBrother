@@ -201,13 +201,29 @@ npm run smoke -- ./scan.jpg --hint TTN
 
 Tesseract и `pdftoppm` должны быть доступны в PATH (или гонять внутри Docker-образа: `docker compose run --rm api npm run smoke -- /app/data/uploads/<storage_id>/file.pdf`).
 
+## Миграции БД
+
+Управляются через `node-pg-migrate`. Файлы в `migrations/<timestamp>_<slug>.sql` с явными секциями `-- Up Migration` и `-- Down Migration`. Применённые миграции трекаются в таблице `pgmigrations` — повторный прогон применяет только новые.
+
+В Docker всё происходит автоматически: отдельный one-shot сервис `migrate` стартует после Postgres, прогоняет все pending миграции, и только после его успеха запускаются `api` и `worker`.
+
+Локальные команды:
+
+```bash
+npm run migrate                       # применить все pending миграции
+npm run migrate:down                  # откатить последнюю (destructive)
+npm run migrate:create add_column_x   # создать новый файл-шаблон в migrations/
+```
+
+После `migrate:create` редактируешь созданный файл — добавляешь SQL в `-- Up Migration` (и желательно зеркальный `DROP/ALTER` в `-- Down Migration` для возможности отката).
+
 ## Структура проекта
 
 ```
 doc-service/
 ├── docker-compose.yml         api + worker + postgres + redis
 ├── Dockerfile                 node:22-slim + tesseract + poppler-utils
-├── migrations/001_init.sql    схема jobs
+├── migrations/                node-pg-migrate (Up/Down секции, трекинг в pgmigrations)
 ├── data/                      локальное хранилище (volume)
 └── src/
     ├── server.ts              Fastify entry
