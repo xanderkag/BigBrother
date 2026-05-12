@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join, resolve } from 'node:path';
 import type { DocumentTypeSlug } from '../../types/documents.js';
 import { documentTypeResolver } from '../document-type-resolver.js';
 import type { Classifier, ClassificationResult } from './types.js';
@@ -32,16 +35,41 @@ import type { Classifier, ClassificationResult } from './types.js';
 
 const HEADER_WINDOW = 4000; // первые 4 KB обычно достаточно — header всегда в начале
 
-/** Hardcoded fallback для случая пустой БД. Тот же набор, что был в hardcoded RULES. */
-const FALLBACK_RULES: Array<{ type: DocumentTypeSlug; pattern: RegExp; weight: number }> = [
-  { type: 'UPD', pattern: /универсальный\s+передаточный\s+документ|\bУПД\b/i, weight: 1.0 },
-  { type: 'CMR', pattern: /\bCMR\b|международная\s+товарно-транспортная/i, weight: 1.0 },
-  { type: 'TTN', pattern: /транспортная\s+накладная|товарно-транспортная\s+накладная|\bТТН\b/i, weight: 1.0 },
-  { type: 'factInvoice', pattern: /счет-фактура|счёт-фактура/i, weight: 1.0 },
-  { type: 'AKT', pattern: /\bакт\b\s+(оказанных|выполненных|сдачи)|акт\s+об\s+оказании/i, weight: 0.95 },
-  { type: 'invoice', pattern: /\bсч[её]т\s+на\s+оплату\b|\bсч[её]т\s+№/i, weight: 0.9 },
-  { type: 'invoice', pattern: /\bсч[её]т\b/i, weight: 0.6 },
-];
+// A6: единый источник правил — shared/classifier-rules.json в корне репо.
+// При загрузке из dist/ путь: dist/pipeline/classifier/ → ../../../../shared/
+// При загрузке через ts-node/tsx: src/pipeline/classifier/ → ../../../../shared/
+// Docker-образ doc-service должен включать COPY shared/ /app/shared/ в Dockerfile.
+// При ошибке чтения — fallback к встроенному набору (не ломает деплой).
+type RuleEntry = { slug: string; pattern: string; weight: number };
+
+function loadFallbackRules(): Array<{ type: DocumentTypeSlug; pattern: RegExp; weight: number }> {
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const rulesPath = resolve(__dirname, '../../../../shared/classifier-rules.json');
+  try {
+    const raw = JSON.parse(readFileSync(rulesPath, 'utf-8')) as RuleEntry[];
+    return raw.map((r) => ({
+      type: r.slug as DocumentTypeSlug,
+      pattern: new RegExp(r.pattern, 'i'),
+      weight: r.weight,
+    }));
+  } catch {
+    // File not found (Docker without shared/ mount, or unit test without repo layout).
+    // Return hardcoded list so the classifier still works.
+    return [
+      { type: 'UPD',         pattern: /универсальный\s+передаточный\s+документ|\bУПД\b/i, weight: 1.0 },
+      { type: 'CMR',         pattern: /\bCMR\b|международная\s+товарно-транспортная/i,    weight: 1.0 },
+      { type: 'TTN',         pattern: /транспортная\s+накладная|товарно-транспортная\s+накладная|\bТТН\b/i, weight: 1.0 },
+      { type: 'factInvoice', pattern: /счет-фактура|счёт-фактура/i,                       weight: 1.0 },
+      { type: 'AKT',         pattern: /\bакт\b\s+(оказанных|выполненных|сдачи)|акт\s+об\s+оказании/i, weight: 0.95 },
+      { type: 'invoice',     pattern: /\bсч[её]т\s+на\s+оплату\b|\bсч[её]т\s+№/i,        weight: 0.9 },
+      { type: 'invoice',     pattern: /\bсч[её]т\b/i,                                     weight: 0.6 },
+    ];
+  }
+}
+
+/** Hardcoded fallback для случая пустой БД. Загружается из shared/classifier-rules.json (A6). */
+const FALLBACK_RULES: Array<{ type: DocumentTypeSlug; pattern: RegExp; weight: number }> =
+  loadFallbackRules();
 
 type CompiledRule = {
   type: DocumentTypeSlug;

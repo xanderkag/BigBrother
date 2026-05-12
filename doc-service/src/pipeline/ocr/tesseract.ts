@@ -25,6 +25,9 @@ const IMAGE_MIMES = new Set([
  * confidence, but node-tesseract-ocr returns plain text — so we approximate
  * via output length + recognized-character density. Replace with a finer
  * signal when we move off this wrapper.
+ *
+ * A5: if the orchestrator pre-rasterized the PDF (`input.rasterizedPages`),
+ * we skip our own pdftoppm call and use those pages directly.
  */
 export class TesseractEngine implements OcrEngine {
   readonly name = 'tesseract' as const;
@@ -46,7 +49,7 @@ export class TesseractEngine implements OcrEngine {
     const started = Date.now();
 
     if (PDF_MIMES.has(input.mimeType)) {
-      return this.runOnPdf(input.filePath, started);
+      return this.runOnPdf(input, started);
     }
     return this.runOnImage(input.filePath, started);
   }
@@ -67,44 +70,58 @@ export class TesseractEngine implements OcrEngine {
     };
   }
 
-  private async runOnPdf(filePath: string, started: number): Promise<OcrResult> {
+  private async runOnPdf(input: OcrInput, started: number): Promise<OcrResult> {
+    // A5: use orchestrator-provided pages when available — avoids a second
+    // pdftoppm call on the same file if vision-llm is tried afterwards.
+    if (input.rasterizedPages && input.rasterizedPages.length > 0) {
+      return this.processPages(input.rasterizedPages, started);
+    }
+
+    // Fallback: rasterize independently (e.g., called standalone in tests
+    // or smoke scripts without the orchestrator pre-rasterization).
     const workDir = await mkdtemp(join(tmpdir(), 'docsvc-tess-'));
     try {
       // Rasterize at 200 DPI; balance between OCR accuracy and speed.
       // pdftoppm writes <prefix>-NNN.png for each page.
       const prefix = join(workDir, 'page');
-      await execP(`pdftoppm -png -r 200 "${filePath}" "${prefix}"`, { timeout: 120_000 });
+      await execP(`pdftoppm -png -r 200 "${input.filePath}" "${prefix}"`, { timeout: 120_000 });
 
       const pageFiles = (await readdir(workDir))
         .filter((f) => f.startsWith('page') && f.endsWith('.png'))
-        .sort();
+        .sort()
+        .map((f) => join(workDir, f));
 
-      const pages: Array<{ text: string; confidence: number }> = [];
-      for (const pf of pageFiles) {
-        const pageText = (
-          await tesseract.recognize(join(workDir, pf), {
-            lang: this.languages,
-            oem: 1,
-            psm: 3,
-          })
-        ).trim();
-        pages.push({ text: pageText, confidence: this.scoreText(pageText) });
-      }
-
-      const fullText = pages.map((p) => p.text).join('\n\n');
-      const avgConfidence =
-        pages.length === 0 ? 0 : pages.reduce((a, p) => a + p.confidence, 0) / pages.length;
-
-      return {
-        engine: this.name,
-        text: fullText,
-        confidence: avgConfidence,
-        pages,
-        durationMs: Date.now() - started,
-      };
+      return this.processPages(pageFiles, started);
     } finally {
       await rm(workDir, { recursive: true, force: true });
     }
+  }
+
+  /** Run tesseract on an already-rasterized list of page PNG paths. */
+  private async processPages(pageFiles: string[], started: number): Promise<OcrResult> {
+    const pages: Array<{ text: string; confidence: number }> = [];
+    for (const pf of pageFiles) {
+      const pageText = (
+        await tesseract.recognize(pf, {
+          lang: this.languages,
+          oem: 1,
+          psm: 3,
+        })
+      ).trim();
+      pages.push({ text: pageText, confidence: this.scoreText(pageText) });
+    }
+
+    const fullText = pages.map((p) => p.text).join('\n\n');
+    const avgConfidence =
+      pages.length === 0 ? 0 : pages.reduce((a, p) => a + p.confidence, 0) / pages.length;
+
+    return {
+      engine: this.name,
+      text: fullText,
+      confidence: avgConfidence,
+      pages,
+      durationMs: Date.now() - started,
+    };
   }
 
   /**

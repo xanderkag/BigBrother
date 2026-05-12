@@ -333,6 +333,23 @@ class JobsRepo {
     await db.query(`UPDATE jobs SET file_path = NULL WHERE id = $1`, [id]);
   }
 
+  /**
+   * A4: Сброс счётчика попыток перед ре-доставкой. Вызывается из
+   * POST /jobs/:id/redeliver-webhook перед тем как заново запустить
+   * `deliverWebhook` — иначе счётчик продолжается с последнего значения
+   * и не даёт полных maxAttempts новых попыток.
+   */
+  async resetWebhookAttempts(id: string): Promise<void> {
+    await db.query(
+      `UPDATE jobs SET
+         webhook_attempts = 0,
+         webhook_delivered_at = NULL,
+         webhook_last_error = NULL
+       WHERE id = $1`,
+      [id],
+    );
+  }
+
   async recordWebhookAttempt(id: string, success: boolean, error: string | null): Promise<void> {
     if (success) {
       await db.query(
@@ -744,6 +761,39 @@ class JobsRepo {
       updated_at: row.updated_at.toISOString(),
       finished_at: row.finished_at ? row.finished_at.toISOString() : null,
     };
+  }
+
+  /**
+   * A4 sweeper: jobs у которых webhook не доставлен и последняя попытка
+   * была достаточно давно. Sweeper вызывает deliverWebhook() без сброса
+   * счётчика — попытки накапливаются до hardLimit (жёсткого потолка).
+   *
+   * Условия выборки:
+   *   - webhook_url задан (иначе нечего доставлять)
+   *   - webhook_delivered_at IS NULL (ещё не доставлен)
+   *   - webhook_last_error IS NOT NULL (реально пробовали и упало)
+   *   - webhook_attempts < hardLimit (не превысили суммарный лимит)
+   *   - status IN ('done', 'needs_review') — только терминальные
+   *   - updated_at старше graceMinutes — grace period для backoff-цикла
+   */
+  async listStaleWebhooks(params: {
+    graceMinutes: number;
+    hardLimit: number;
+    limit?: number;
+  }): Promise<JobRow[]> {
+    const { rows } = await db.query<JobRow>(
+      `SELECT * FROM jobs
+       WHERE webhook_url IS NOT NULL
+         AND webhook_delivered_at IS NULL
+         AND webhook_last_error IS NOT NULL
+         AND webhook_attempts < $1
+         AND status IN ('done', 'needs_review')
+         AND updated_at < now() - make_interval(mins => $2)
+       ORDER BY updated_at ASC
+       LIMIT $3`,
+      [params.hardLimit, params.graceMinutes, params.limit ?? 50],
+    );
+    return rows;
   }
 }
 

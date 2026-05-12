@@ -1,8 +1,15 @@
+import { exec } from 'node:child_process';
+import { promisify } from 'node:util';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { Logger } from 'pino';
 import { config } from '../config.js';
 import { jobsRepo } from '../storage/jobs.js';
 import { deliverWebhook } from '../webhooks/deliver.js';
-import type { OcrEngine, OcrResult } from './ocr/types.js';
+import type { OcrEngine, OcrInput, OcrResult } from './ocr/types.js';
+
+const execP = promisify(exec);
 import { PdfTextEngine } from './ocr/pdf-text.js';
 import { TesseractEngine } from './ocr/tesseract.js';
 import { VisionLlmEngine } from './ocr/vision-llm.js';
@@ -17,6 +24,7 @@ import type { DocumentTypeSlug } from '../types/documents.js';
 import { validateExtractedWithResolver } from './validation/index.js';
 import { documentTypeResolver, type ResolvedTypeConfig } from './document-type-resolver.js';
 import { jobsDurationSeconds, jobsTotal, ocrEngineDurationSeconds } from '../metrics.js';
+import { runResolutionPipeline } from '../resolution/pipeline.js';
 
 // --- Wire dependencies once at module load. The pipeline is stateless beyond this.
 //
@@ -223,6 +231,24 @@ export async function processJob(
       );
     }
 
+    // Resolution phase: привязка к справочникам и матчинг номенклатуры.
+    // Запускается после finalize() — результат не влияет на основной статус
+    // (только resolution может дополнительно перевести в needs_review если
+    // on_not_found='needs_review' и сущность не найдена).
+    // Ошибки здесь не бросаются наружу — job уже в финальном статусе.
+    if (updated && post.typeConfig?.resolutionConfig) {
+      const orgId = job.organization_id;
+      void runResolutionPipeline({
+        jobId,
+        organizationId: orgId,
+        extracted: extractedToStore,
+        resolutionConfig: post.typeConfig.resolutionConfig,
+        log,
+      }).catch((err) => {
+        log.warn({ jobId, err }, 'resolution pipeline error (job finalized, continuing)');
+      });
+    }
+
     if (updated && updated.webhook_url) {
       await deliverWebhook(
         jobId,
@@ -282,6 +308,11 @@ export async function processJob(
  * If no engine clears, return the highest-confidence result. Errors from one
  * engine never abort the chain — they are logged and the next engine is tried.
  *
+ * A5: PDFs are rasterized once before the engine loop when more than one engine
+ * is in the chain. Both TesseractEngine and VisionLlmEngine check
+ * `OcrInput.rasterizedPages` and skip their own pdftoppm call when present.
+ * The shared tmpdir is cleaned up in a `finally` block regardless of outcome.
+ *
  * Exported so the smoke CLI can reuse the same engine wiring.
  */
 export async function runOcrChain(
@@ -293,49 +324,87 @@ export async function runOcrChain(
     throw new Error(`no OCR engine available for mime type ${input.mimeType}`);
   }
 
-  let best: OcrResult | null = null;
-  for (let i = 0; i < chain.length; i += 1) {
-    const engine = chain[i]!;
+  // Pre-rasterize PDF once when the chain has multiple engines — avoids a
+  // second pdftoppm call if the first rasterizing engine (tesseract) doesn't
+  // clear its threshold and vision-llm is tried next.
+  let rasterDir: string | undefined;
+  let ocrInput: OcrInput = input;
+  if (input.mimeType === 'application/pdf' && chain.length > 1) {
     try {
-      const r = await engine.run(input);
-      const accepted = r.confidence >= engine.acceptanceThreshold;
-      log.info(
-        {
-          engine: engine.name,
-          confidence: roundConf(r.confidence),
-          duration_ms: r.durationMs,
-          text_length_chars: r.text.length,
-          text_lines: r.text ? r.text.split('\n').length : 0,
-          accepted,
-          skipped: false,
-        },
-        'ocr engine result',
+      rasterDir = await mkdtemp(join(tmpdir(), 'docsvc-raster-'));
+      const prefix = join(rasterDir, 'page');
+      await execP(`pdftoppm -png -r 200 "${input.filePath}" "${prefix}"`, { timeout: 120_000 });
+      const rasterizedPages = (await readdir(rasterDir))
+        .filter((f) => f.startsWith('page') && f.endsWith('.png'))
+        .sort()
+        .map((f) => join(rasterDir!, f));
+      ocrInput = { ...input, rasterizedPages };
+      log.debug(
+        { filePath: input.filePath, page_count: rasterizedPages.length },
+        'pdf pre-rasterized (shared across engines)',
       );
-      ocrEngineDurationSeconds.observe(
-        { engine: engine.name, outcome: accepted ? 'accepted' : 'rejected' },
-        r.durationMs / 1000,
-      );
-      if (!best || r.confidence > best.confidence) best = r;
-      if (accepted) {
-        // Логируем все оставшиеся движки как skipped — даёт log-агрегатору
-        // видимость «pdf-text справился, tesseract и vision-llm даже не
-        // тронули». Без этого факт пропуска незаметен.
-        for (let j = i + 1; j < chain.length; j += 1) {
-          log.info(
-            { engine: chain[j]!.name, skipped: true, reason: `${engine.name} accepted` },
-            'ocr engine result',
-          );
-        }
-        return r;
-      }
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      log.warn({ engine: engine.name, err: errMsg, skipped: false }, 'ocr engine failed');
-      ocrEngineDurationSeconds.observe({ engine: engine.name, outcome: 'error' }, 0);
+      // Pre-rasterization failed (pdftoppm not installed, corrupt PDF, …).
+      // Each engine will fall back to its own rasterization path — same
+      // behaviour as before A5, no data loss.
+      log.warn({ err }, 'pdf pre-rasterization failed, engines will rasterize independently');
+      if (rasterDir) {
+        await rm(rasterDir, { recursive: true, force: true }).catch(() => {});
+        rasterDir = undefined;
+      }
     }
   }
-  if (!best) throw new Error('all OCR engines failed');
-  return best;
+
+  let best: OcrResult | null = null;
+  try {
+    for (let i = 0; i < chain.length; i += 1) {
+      const engine = chain[i]!;
+      try {
+        const r = await engine.run(ocrInput);
+        const accepted = r.confidence >= engine.acceptanceThreshold;
+        log.info(
+          {
+            engine: engine.name,
+            confidence: roundConf(r.confidence),
+            duration_ms: r.durationMs,
+            text_length_chars: r.text.length,
+            text_lines: r.text ? r.text.split('\n').length : 0,
+            accepted,
+            skipped: false,
+          },
+          'ocr engine result',
+        );
+        ocrEngineDurationSeconds.observe(
+          { engine: engine.name, outcome: accepted ? 'accepted' : 'rejected' },
+          r.durationMs / 1000,
+        );
+        if (!best || r.confidence > best.confidence) best = r;
+        if (accepted) {
+          // Логируем все оставшиеся движки как skipped — даёт log-агрегатору
+          // видимость «pdf-text справился, tesseract и vision-llm даже не
+          // тронули». Без этого факт пропуска незаметен.
+          for (let j = i + 1; j < chain.length; j += 1) {
+            log.info(
+              { engine: chain[j]!.name, skipped: true, reason: `${engine.name} accepted` },
+              'ocr engine result',
+            );
+          }
+          return r;
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        log.warn({ engine: engine.name, err: errMsg, skipped: false }, 'ocr engine failed');
+        ocrEngineDurationSeconds.observe({ engine: engine.name, outcome: 'error' }, 0);
+      }
+    }
+    if (!best) throw new Error('all OCR engines failed');
+    return best;
+  } finally {
+    // Cleanup shared raster tmpdir regardless of outcome (accepted, rejected, or thrown).
+    if (rasterDir) {
+      await rm(rasterDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
 }
 
 /**

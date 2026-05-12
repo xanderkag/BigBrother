@@ -3,6 +3,13 @@ import type { OcrEngineName } from '../../types/documents.js';
 export type OcrInput = {
   filePath: string;
   mimeType: string;
+  /**
+   * Pre-rasterized page PNGs for PDF inputs, produced once by the orchestrator
+   * before the engine chain runs. When present, engines skip their own pdftoppm
+   * call and operate directly on these files. The orchestrator owns the tmpdir
+   * and cleans it up after the chain completes (A5 fix — no double rasterization).
+   */
+  rasterizedPages?: string[];
 };
 
 export type OcrResult = {

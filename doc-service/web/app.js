@@ -779,7 +779,8 @@ function route() {
       (target === 'document-types' && h.startsWith('document-types')) ||
       (target === 'providers' && h.startsWith('providers')) ||
       (target === 'audit-log' && h.startsWith('audit-log')) ||
-      (target === 'tenants' && h.startsWith('tenants'));
+      (target === 'tenants' && h.startsWith('tenants')) ||
+      (target === 'reference-lists' && h.startsWith('reference-lists'));
     el.classList.toggle('active', isActive);
   });
 
@@ -797,6 +798,8 @@ function route() {
   if (h === 'audit-log') return renderAuditLog();
   if (h === 'tenants') return renderTenants();
   if (h === 'settings') return renderSettings();
+  if (h === 'reference-lists') return renderReferenceLists();
+  if (h.startsWith('reference-lists/')) return renderReferenceListEntries(h.slice('reference-lists/'.length));
   location.hash = '#dashboard';
 }
 window.addEventListener('hashchange', route);
@@ -1279,9 +1282,179 @@ async function renderJobDetail(jobId) {
       const inflight = job.status === 'pending' || job.status === 'processing';
       if (inflight && !editing) pollTimer = setTimeout(load, 2000);
       else pollTimer = null;
+      // Resolution panel загружается асинхронно после рендера detail
+      void loadResolution(jobId);
     } catch (err) {
       document.getElementById('job-detail-content').innerHTML = errorState(err.message);
     }
+  }
+
+  async function loadResolution(jid) {
+    const panel = document.getElementById('resolution-panel');
+    if (!panel) return;
+    try {
+      const res = await apiJson(`/jobs/${encodeURIComponent(jid)}/resolution`);
+      if (res.entity_links.length === 0 && res.item_matches.length === 0) {
+        panel.innerHTML = ''; // Нет данных резолюции — ничего не показываем
+        return;
+      }
+      panel.innerHTML = renderResolutionPanel(jid, res);
+      // Bind confirm/reject buttons
+      panel.querySelectorAll('[data-confirm-link]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const id = btn.dataset.confirmLink;
+          btn.disabled = true;
+          try {
+            await apiJson(`/job-entity-links/${encodeURIComponent(id)}/confirm`, { method: 'POST', body: '{}' });
+            void loadResolution(jid);
+          } catch (e) { alert(`Ошибка: ${e.message}`); btn.disabled = false; }
+        });
+      });
+      panel.querySelectorAll('[data-reject-link]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const id = btn.dataset.rejectLink;
+          btn.disabled = true;
+          try {
+            await apiJson(`/job-entity-links/${encodeURIComponent(id)}/reject`, { method: 'POST', body: '{}' });
+            void loadResolution(jid);
+          } catch (e) { alert(`Ошибка: ${e.message}`); btn.disabled = false; }
+        });
+      });
+      panel.querySelectorAll('[data-confirm-match]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const id = btn.dataset.confirmMatch;
+          btn.disabled = true;
+          try {
+            await apiJson(`/job-item-matches/${encodeURIComponent(id)}/confirm`, { method: 'POST', body: '{}' });
+            void loadResolution(jid);
+          } catch (e) { alert(`Ошибка: ${e.message}`); btn.disabled = false; }
+        });
+      });
+      panel.querySelectorAll('[data-reject-match]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const id = btn.dataset.rejectMatch;
+          btn.disabled = true;
+          try {
+            await apiJson(`/job-item-matches/${encodeURIComponent(id)}/reject`, { method: 'POST', body: '{}' });
+            void loadResolution(jid);
+          } catch (e) { alert(`Ошибка: ${e.message}`); btn.disabled = false; }
+        });
+      });
+      panel.querySelectorAll('[data-re-resolve]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          btn.disabled = true;
+          btn.textContent = 'Запускаем…';
+          try {
+            await apiJson(`/jobs/${encodeURIComponent(jid)}/re-resolve`, { method: 'POST', body: '{}' });
+            btn.textContent = 'Запущено ✓';
+            setTimeout(() => void loadResolution(jid), 1500);
+          } catch (e) {
+            btn.disabled = false;
+            btn.textContent = 'Re-resolve';
+            alert(`Ошибка: ${e.message}`);
+          }
+        });
+      });
+    } catch (_err) {
+      // Нет resolution_config для этого типа — не показываем панель
+      panel.innerHTML = '';
+    }
+  }
+
+  function resolutionStatusBadge(status) {
+    const map = {
+      suggested: '<span class="badge badge-indigo">Suggested</span>',
+      confirmed:  '<span class="badge badge-emerald">Confirmed</span>',
+      rejected:   '<span class="badge badge-rose">Rejected</span>',
+      not_found:  '<span class="badge badge-amber">Not found</span>',
+    };
+    return map[status] ?? `<span class="badge badge-slate">${escapeHtml(status)}</span>`;
+  }
+
+  function renderResolutionPanel(jid, res) {
+    const { entity_links, item_matches, summary } = res;
+    const summaryBadge = (n, color) =>
+      n > 0 ? `<span class="badge ${color}">${n}</span>` : '';
+
+    const linksHtml = entity_links.map((l) => {
+      const canAct = l.status === 'suggested' || l.status === 'not_found';
+      return `
+        <tr class="border-b border-slate-100 dark:border-slate-800">
+          <td class="px-4 py-3 text-xs font-mono text-slate-500">${escapeHtml(l.list_type_slug)}</td>
+          <td class="px-4 py-3 text-sm">${l.entry ? escapeHtml(l.entry.display_name) : `<span class="text-slate-400 italic">—</span>`}</td>
+          <td class="px-4 py-3 text-xs font-mono text-slate-500">${escapeHtml(l.match_value ?? '—')}</td>
+          <td class="px-4 py-3">${resolutionStatusBadge(l.status)}</td>
+          <td class="px-4 py-3">
+            ${canAct ? `
+              <div class="flex gap-1">
+                <button data-confirm-link="${escapeHtml(l.id)}" class="btn-success btn-xs" ${l.status === 'confirmed' ? 'disabled' : ''}>✓</button>
+                <button data-reject-link="${escapeHtml(l.id)}" class="btn-danger btn-xs" ${l.status === 'rejected' ? 'disabled' : ''}>✕</button>
+              </div>` : ''}
+          </td>
+        </tr>`;
+    }).join('');
+
+    const matchesHtml = item_matches.map((m) => {
+      const canAct = m.status === 'suggested' || m.status === 'not_found';
+      const name = m.item_raw?.name ?? m.item_raw?.description ?? `#${m.item_index}`;
+      return `
+        <tr class="border-b border-slate-100 dark:border-slate-800">
+          <td class="px-4 py-3 text-xs text-slate-500">${m.item_index}</td>
+          <td class="px-4 py-3 text-sm max-w-[16rem] truncate" title="${escapeHtml(String(name))}">${escapeHtml(String(name))}</td>
+          <td class="px-4 py-3 text-sm">${m.entry ? escapeHtml(m.entry.display_name) : `<span class="text-slate-400 italic">—</span>`}</td>
+          <td class="px-4 py-3">${resolutionStatusBadge(m.status)}</td>
+          <td class="px-4 py-3">
+            ${canAct ? `
+              <div class="flex gap-1">
+                <button data-confirm-match="${escapeHtml(m.id)}" class="btn-success btn-xs">✓</button>
+                <button data-reject-match="${escapeHtml(m.id)}" class="btn-danger btn-xs">✕</button>
+              </div>` : ''}
+          </td>
+        </tr>`;
+    }).join('');
+
+    return `
+      <details class="card" open>
+        <summary class="card-header cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 transition list-none">
+          <div class="flex items-center justify-between w-full gap-3">
+            <span class="card-title">Резолюция (привязка)</span>
+            <div class="flex items-center gap-2">
+              ${summaryBadge(summary.links_not_found + summary.items_not_found, 'badge-amber')}
+              ${summaryBadge(summary.links_confirmed + (summary.items_matched - summary.items_not_found), 'badge-emerald')}
+              <button data-re-resolve="${escapeHtml(jid)}" class="btn-secondary btn-xs">Re-resolve</button>
+            </div>
+          </div>
+        </summary>
+
+        ${entity_links.length > 0 ? `
+          <div class="card-section">
+            <div class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Сущности (entity links)</div>
+            <div class="overflow-x-auto">
+              <table class="data-table">
+                <thead><tr>
+                  <th>Справочник</th><th>Запись</th><th>Значение</th><th>Статус</th><th></th>
+                </tr></thead>
+                <tbody>${linksHtml}</tbody>
+              </table>
+            </div>
+          </div>` : ''}
+
+        ${item_matches.length > 0 ? `
+          <div class="card-section">
+            <div class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">
+              Строки документа (item matches) — ${summary.items_matched}/${summary.items_total} найдено
+            </div>
+            <div class="overflow-x-auto">
+              <table class="data-table">
+                <thead><tr>
+                  <th>#</th><th>Строка</th><th>Запись</th><th>Статус</th><th></th>
+                </tr></thead>
+                <tbody>${matchesHtml}</tbody>
+              </table>
+            </div>
+          </div>` : ''}
+      </details>
+    `;
   }
 
   function renderDetail(job) {
@@ -1404,6 +1577,9 @@ async function renderJobDetail(jobId) {
             <div class="bg-slate-50 dark:bg-slate-950 rounded-lg p-4 overflow-x-auto">${jsonTree(job.metadata)}</div>
           </div>
         </details>` : ''}
+
+      <!-- Resolution panel — заполняется асинхронно через loadResolution() -->
+      <div id="resolution-panel"></div>
     `;
 
     const copyBtn = document.getElementById('copy-json-btn');
@@ -3546,6 +3722,177 @@ function renderSessionCard() {
       </dl>
       <button id="logout-from-settings" class="btn-secondary btn-sm">Выйти</button>
     </div>`;
+}
+
+// ============================================================
+// Reference Lists — CRUD для справочников
+// ============================================================
+//
+// Список типов справочников (cargo_units, nomenclature, …) и их записей.
+// Org-scoped: берём organization_id из текущего workspace.
+// Синхронизация через POST /sync обычно идёт от внешней системы (WMS/ERP),
+// здесь — только просмотр и ручное редактирование.
+
+async function renderReferenceLists() {
+  const orgId = workspace.current?.organization_id ?? '';
+  setView(`<div class="page">
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Reference lists</h1>
+        <p class="page-subtitle">Справочники для привязки документов к бизнес-сущностям</p>
+      </div>
+    </div>
+    <div id="rl-content">${loadingState()}</div>
+  </div>`);
+
+  if (!orgId) {
+    document.getElementById('rl-content').innerHTML = `<div class="info-banner">Выберите workspace чтобы видеть справочники.</div>`;
+    return;
+  }
+
+  try {
+    const types = await apiJson(`/reference-list-types?organization_id=${encodeURIComponent(orgId)}`);
+
+    if (types.length === 0) {
+      document.getElementById('rl-content').innerHTML = `
+        <div class="card">
+          <div class="empty-state">
+            <p class="empty-state-text">Справочники не созданы</p>
+            <p class="text-sm text-slate-400 mt-2">Справочники создаются при первой синхронизации из WMS/ERP через <code class="font-mono">POST /api/v1/reference-list-types</code></p>
+          </div>
+        </div>`;
+      return;
+    }
+
+    const rows = types.map((t) => `
+      <tr class="row-clickable" onclick="location.hash='#reference-lists/${encodeURIComponent(t.slug)}'">
+        <td class="px-4 py-3 font-mono text-sm">${escapeHtml(t.slug)}</td>
+        <td class="px-4 py-3 text-sm">${escapeHtml(t.label)}</td>
+        <td class="px-4 py-3 text-xs text-slate-500">${escapeHtml(t.search_hint ?? '—')}</td>
+        <td class="px-4 py-3 text-xs text-slate-400 font-mono">${relativeTime(t.created_at)}</td>
+        <td class="px-4 py-3">
+          <a href="#reference-lists/${encodeURIComponent(t.slug)}" class="btn-secondary btn-xs">Записи →</a>
+        </td>
+      </tr>`).join('');
+
+    document.getElementById('rl-content').innerHTML = `
+      <div class="card overflow-hidden">
+        <div class="card-header">
+          <h2 class="card-title">Типы справочников (${types.length})</h2>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="data-table">
+            <thead><tr>
+              <th>Slug</th><th>Название</th><th>Подсказка поиска</th><th>Создан</th><th></th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>`;
+  } catch (err) {
+    document.getElementById('rl-content').innerHTML = errorState(err.message);
+  }
+}
+
+async function renderReferenceListEntries(slug) {
+  const orgId = workspace.current?.organization_id ?? '';
+  setView(`<div class="page">
+    ${backLink('#reference-lists')}
+    <div class="page-header">
+      <div>
+        <h1 class="page-title font-mono">${escapeHtml(slug)}</h1>
+        <p class="page-subtitle">Записи справочника</p>
+      </div>
+    </div>
+    <div id="rle-search" class="mb-4 flex gap-2">
+      <input id="rle-q" type="search" class="form-input max-w-xs" placeholder="Поиск…" />
+    </div>
+    <div id="rle-content">${loadingState()}</div>
+  </div>`);
+
+  if (!orgId) {
+    document.getElementById('rle-content').innerHTML = `<div class="info-banner">Выберите workspace.</div>`;
+    return;
+  }
+
+  let q = '';
+  let offset = 0;
+  const limit = 50;
+
+  async function loadEntries() {
+    const content = document.getElementById('rle-content');
+    if (!content) return;
+    content.innerHTML = loadingState();
+    try {
+      const qs = new URLSearchParams({
+        organization_id: orgId,
+        limit: String(limit),
+        offset: String(offset),
+        active_only: 'false',
+        ...(q ? { q } : {}),
+      });
+      const data = await apiJson(`/reference-list-types/${encodeURIComponent(slug)}/entries?${qs}`);
+      const { items } = data;
+
+      if (items.length === 0 && offset === 0) {
+        content.innerHTML = `<div class="card"><div class="empty-state"><p class="empty-state-text">Нет записей</p></div></div>`;
+        return;
+      }
+
+      const rows = items.map((e) => `
+        <tr>
+          <td class="px-4 py-3 text-xs font-mono text-slate-500">${escapeHtml(e.external_id ?? '—')}</td>
+          <td class="px-4 py-3 text-sm">${escapeHtml(e.display_name)}</td>
+          <td class="px-4 py-3 text-xs font-mono text-slate-500 max-w-[16rem] truncate">${escapeHtml(e.search_keys.join(', '))}</td>
+          <td class="px-4 py-3">
+            ${e.is_active
+              ? '<span class="badge badge-emerald">Active</span>'
+              : '<span class="badge badge-slate">Inactive</span>'}
+          </td>
+          <td class="px-4 py-3 text-xs text-slate-400">${relativeTime(e.synced_at ?? e.updated_at)}</td>
+        </tr>`).join('');
+
+      const paginationHtml = `
+        <div class="flex items-center gap-3 px-4 py-3 text-sm text-slate-500">
+          <span>Показано ${offset + 1}–${offset + items.length}</span>
+          ${offset > 0 ? `<button id="rle-prev" class="btn-secondary btn-xs">← Назад</button>` : ''}
+          ${items.length === limit ? `<button id="rle-next" class="btn-secondary btn-xs">Вперёд →</button>` : ''}
+        </div>`;
+
+      content.innerHTML = `
+        <div class="card overflow-hidden">
+          <div class="overflow-x-auto">
+            <table class="data-table">
+              <thead><tr>
+                <th>External ID</th><th>Название</th><th>Ключи поиска</th><th>Статус</th><th>Синхр.</th>
+              </tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+          ${paginationHtml}
+        </div>`;
+
+      document.getElementById('rle-prev')?.addEventListener('click', () => {
+        offset = Math.max(0, offset - limit);
+        void loadEntries();
+      });
+      document.getElementById('rle-next')?.addEventListener('click', () => {
+        offset += limit;
+        void loadEntries();
+      });
+    } catch (err) {
+      content.innerHTML = errorState(err.message);
+    }
+  }
+
+  document.getElementById('rle-q')?.addEventListener('input', (e) => {
+    q = e.target.value.trim();
+    offset = 0;
+    clearTimeout(window._rleSearchTimer);
+    window._rleSearchTimer = setTimeout(() => void loadEntries(), 300);
+  });
+
+  await loadEntries();
 }
 
 // ============================================================

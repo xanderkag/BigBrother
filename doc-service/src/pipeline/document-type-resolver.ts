@@ -18,6 +18,7 @@ import { config } from '../config.js';
 import { documentTypesRepo, type DocumentTypeRow } from '../storage/document-types.js';
 import { DOCUMENT_JSON_SCHEMAS, EXPECTED_FIELDS } from '../types/document-json-schemas.js';
 import type { DocumentTypeSlug } from '../types/documents.js';
+import type { ResolutionConfig } from '../resolution/types.js';
 
 const DEFAULT_TTL_MS = 60_000;
 
@@ -54,6 +55,11 @@ export type ResolvedTypeConfig = {
    * null = используем дефолтный диспатч фабрики.
    */
   parserKind: string | null;
+  /**
+   * Конфиг резолюционного пайплайна из document_types.resolution_config.
+   * null — резолюция не настроена для этого типа документа.
+   */
+  resolutionConfig: ResolutionConfig | null;
   /** Whether this config was DB-sourced or fully built from fallbacks. */
   source: 'db' | 'fallback';
 };
@@ -166,6 +172,7 @@ export function resolveConfigFromRow(
       llmSchema: fallbackSchema as Record<string, unknown>,
       llmPrompt: null,
       parserKind: null,
+      resolutionConfig: null,
       source: 'fallback',
     };
   }
@@ -187,6 +194,7 @@ export function resolveConfigFromRow(
     // textarea с одними пробелами; не разваливаем prompt.
     llmPrompt: row.llm_prompt && row.llm_prompt.trim().length > 0 ? row.llm_prompt : null,
     parserKind: row.parser_kind ?? null,
+    resolutionConfig: (row.resolution_config as ResolutionConfig | null) ?? null,
     source: 'db',
   };
 }

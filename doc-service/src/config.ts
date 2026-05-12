@@ -90,6 +90,18 @@ const ConfigSchema = z.object({
     // По умолчанию 365 дней — типичный IT-change audit. Под регуляторные
     // требования (5-7 лет в финансовом контексте) поднимайте через env.
     auditLogRetentionDays: numberFromEnv(365),
+    // Webhook auto-retry sweeper (A4 remainder). Ищет jobs у которых
+    // webhook_delivered_at IS NULL и последняя попытка была давно.
+    // Интервал — как часто проверять (default 15 мин).
+    webhookSweeperIntervalMs: numberFromEnv(15 * 60 * 1000),
+    // Не трогать job'ы, у которых последняя попытка была менее N минут назад.
+    // Default 60 мин — даёт delivery-backoff закончиться естественно, прежде
+    // чем sweeper вмешивается.
+    webhookSweeperGraceMinutes: numberFromEnv(60),
+    // Суммарный жёсткий лимит попыток (initial + sweeper). При 5 initial
+    // maxAttempts и лимите 15 — sweeper даёт ещё 2 волны по 5 попыток.
+    // После достижения лимита — только ручная кнопка redeliver-webhook.
+    webhookSweeperHardLimit: numberFromEnv(15),
   }),
 
   thresholds: z.object({

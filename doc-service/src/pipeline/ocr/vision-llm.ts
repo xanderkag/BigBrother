@@ -19,6 +19,9 @@ const IMAGE_MIMES = new Set(['image/jpeg', 'image/png', 'image/bmp', 'image/tiff
  * For PDFs, the engine rasterizes pages with pdftoppm and runs vision-OCR per
  * page, then concatenates. Multi-page PDFs are expensive here — keep this
  * engine as a fallback after tesseract.
+ *
+ * A5: if the orchestrator pre-rasterized the PDF (`input.rasterizedPages`),
+ * we skip our own pdftoppm call and use those pages directly.
  */
 export class VisionLlmEngine implements OcrEngine {
   readonly name = 'vision-llm' as const;
@@ -49,7 +52,12 @@ export class VisionLlmEngine implements OcrEngine {
       };
     }
 
-    // PDF: rasterize, OCR each page via LLM, average.
+    // PDF: A5 — use orchestrator-provided pages when available.
+    if (input.rasterizedPages && input.rasterizedPages.length > 0) {
+      return this.processPages(input.rasterizedPages, started);
+    }
+
+    // Fallback: rasterize independently (standalone use / no pre-rasterization).
     const workDir = await mkdtemp(join(tmpdir(), 'docsvc-vlm-'));
     try {
       const prefix = join(workDir, 'page');
@@ -57,21 +65,27 @@ export class VisionLlmEngine implements OcrEngine {
 
       const pageFiles = (await readdir(workDir))
         .filter((f) => f.startsWith('page') && f.endsWith('.png'))
-        .sort();
+        .sort()
+        .map((f) => join(workDir, f));
 
-      const pages: Array<{ text: string; confidence: number }> = [];
-      for (const pf of pageFiles) {
-        const r = await this.llm.visionOcr({ imagePath: join(workDir, pf) });
-        pages.push({ text: r.text.trim(), confidence: r.confidence });
-      }
-
-      const text = pages.map((p) => p.text).join('\n\n');
-      const confidence =
-        pages.length === 0 ? 0 : pages.reduce((a, p) => a + p.confidence, 0) / pages.length;
-
-      return { engine: this.name, text, confidence, pages, durationMs: Date.now() - started };
+      return this.processPages(pageFiles, started);
     } finally {
       await rm(workDir, { recursive: true, force: true });
     }
+  }
+
+  /** Run vision-OCR on an already-rasterized list of page PNG paths. */
+  private async processPages(pageFiles: string[], started: number): Promise<OcrResult> {
+    const pages: Array<{ text: string; confidence: number }> = [];
+    for (const pf of pageFiles) {
+      const r = await this.llm.visionOcr({ imagePath: pf });
+      pages.push({ text: r.text.trim(), confidence: r.confidence });
+    }
+
+    const text = pages.map((p) => p.text).join('\n\n');
+    const confidence =
+      pages.length === 0 ? 0 : pages.reduce((a, p) => a + p.confidence, 0) / pages.length;
+
+    return { engine: this.name, text, confidence, pages, durationMs: Date.now() - started };
   }
 }

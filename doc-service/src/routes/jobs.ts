@@ -26,6 +26,7 @@ import { combineConfidence } from '../pipeline/quality.js';
 import { projectsRepo } from '../storage/projects.js';
 import { sanitizeMetadata } from '../storage/metadata-sanitizer.js';
 import { SYSTEM_DEFAULT_ORG_ID, SYSTEM_DEFAULT_PROJECT_ID } from '../auth.js';
+import { deliverWebhook } from '../webhooks/deliver.js';
 import {
   getEffectiveScope,
   requireProjectAccess,
@@ -520,6 +521,71 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         return { error: 'job not found' };
       }
       return jobsRepo.toApi(updated);
+    },
+  );
+
+  // POST /jobs/:id/redeliver-webhook — сбросить счётчик попыток и повторить доставку вебхука.
+  // Use-case: доставка упала (недоступный endpoint получателя); оператор починил endpoint,
+  // жмёт кнопку — вебхук летит снова. Метод идемпотентен по смыслу: если webhook_url
+  // не задан или job ещё in-flight — возвращаем ошибку с понятным сообщением.
+  r.post(
+    '/jobs/:id/redeliver-webhook',
+    {
+      schema: {
+        tags: ['jobs'],
+        summary: 'Повторить доставку вебхука',
+        description:
+          'Сбрасывает `webhook_attempts` и `webhook_delivered_at`, после чего немедленно ' +
+          'повторяет доставку вебхука в фоне (с полным backoff-циклом). ' +
+          'Требует, чтобы у job был `webhook_url` и job находился в терминальном статусе. ' +
+          'Возвращает 202 Accepted — доставка асинхронная.',
+        security: [{ bearerAuth: [] }],
+        params: JobIdParam,
+        response: {
+          202: Job,
+          400: ErrorResponse,
+          401: ErrorResponse,
+          404: ErrorResponse,
+          409: ErrorResponse,
+        },
+      },
+    },
+    async (req, reply) => {
+      const job = await jobsRepo.findById(req.params.id);
+      if (!job) {
+        reply.code(404);
+        return { error: 'job not found' };
+      }
+      if (!(await requireProjectWrite(req, reply, job.project_id))) return reply;
+      if (!job.webhook_url) {
+        reply.code(400);
+        return { error: 'job has no webhook_url configured' };
+      }
+      if (job.status === 'pending' || job.status === 'processing') {
+        reply.code(409);
+        return {
+          error: `cannot redeliver webhook for job in status "${job.status}", wait for terminal state`,
+        };
+      }
+      // Сбрасываем счётчик и временну́ю метку перед запуском,
+      // чтобы deliverWebhook начинал с попытки №1.
+      await jobsRepo.resetWebhookAttempts(req.params.id);
+      const payload = {
+        job_id: job.id,
+        status: job.status,
+        document_type: job.document_type ?? null,
+        confidence: job.confidence !== null ? Number(job.confidence) : null,
+        ocr_engine: job.ocr_engine ?? null,
+        extracted: (job.extracted as Record<string, unknown> | null) ?? null,
+        metadata: (job.metadata as Record<string, unknown> | null) ?? null,
+        error: job.error ?? null,
+      };
+      // Fire-and-forget: доставка идёт в фоне, ответ клиенту не ждёт.
+      void deliverWebhook(req.params.id, job.webhook_url, payload, req.log as never);
+      reply.code(202);
+      // Возвращаем актуальный снимок job'а (счётчик уже сброшен).
+      const refreshed = await jobsRepo.findById(req.params.id);
+      return jobsRepo.toApi(refreshed!);
     },
   );
 

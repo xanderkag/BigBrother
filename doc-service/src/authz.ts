@@ -3,9 +3,9 @@ import { usersRepo } from './storage/users.js';
 import type { ProjectAccessRole } from './storage/users.js';
 
 /**
- * Authorization guards для route handlers.
+ * Authorization guards и request-helpers для route handlers.
  *
- * Все функции возвращают `true` если доступ есть, и `false` если уже
+ * Все функции `require*` возвращают `true` если доступ есть, и `false` если уже
  * отправлен 401/403 (reply.code(...).send(...) вызван). Caller прерывает
  * выполнение по false.
  *
@@ -17,7 +17,37 @@ import type { ProjectAccessRole } from './storage/users.js';
  *
  * Project-level роль: super_admin/org_admin = «admin» в любом проекте
  * своей орг. Обычные юзеры — по записям в user_project_access.
+ *
+ * Хелперы извлечения из req.user:
+ *   getOrgId(req)  — organization_id токена или '' (super_admin / no-org).
+ *   getUserId(req) — id пользователя или 'unknown' (API_KEY root).
  */
+
+// ---------------------------------------------------------------------------
+// Request-level helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Извлечь organization_id из req.user (токен / личный PAT).
+ * super_admin (API_KEY) не привязан к орг → возвращает ''.
+ * Используется в org-scoped роутах вместо повторяющегося каста
+ * `(req as unknown as { user?:{...} }).user?.organization_id ?? ''`.
+ */
+export function getOrgId(req: FastifyRequest): string {
+  return req.user?.organization_id ?? '';
+}
+
+/**
+ * Извлечь id пользователя из req.user для аудит-полей (confirmed_by, …).
+ * API_KEY root-токен не имеет реального user → 'unknown'.
+ */
+export function getUserId(req: FastifyRequest): string {
+  return req.user?.id ?? 'unknown';
+}
+
+// ---------------------------------------------------------------------------
+// Guards
+// ---------------------------------------------------------------------------
 
 /** Считается ли роль писательской (manager/admin), а не только viewer'ом? */
 function isWriterRole(role: ProjectAccessRole): boolean {

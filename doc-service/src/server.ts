@@ -23,6 +23,8 @@ import { settingsRoutes } from './routes/settings.js';
 import { providerSettingsRoutes } from './routes/provider-settings.js';
 import { auditLogRoutes } from './routes/audit-log.js';
 import { tenantRoutes } from './routes/tenants.js';
+import { referenceListsRoutes } from './routes/reference-lists.js';
+import { resolutionRoutes } from './routes/resolution.js';
 import { closeDb } from './db.js';
 import { closeQueue } from './queue.js';
 
@@ -122,6 +124,8 @@ async function main() {
         { name: 'audit-log', description: 'История админ-изменений document_types и provider_settings' },
         { name: 'tenants', description: 'Multi-tenant: organizations / projects / users / access' },
         { name: 'settings', description: 'Снимок настроек и статус LLM-провайдеров' },
+        { name: 'reference-lists', description: 'Справочники для привязки документов (cargo units, nomenclature, …)' },
+        { name: 'resolution', description: 'Результаты привязки документа к бизнес-сущностям: confirm / reject / re-resolve' },
         { name: 'health', description: 'Liveness/readiness пробники' },
       ],
     },
@@ -229,6 +233,8 @@ async function main() {
   await app.register(auditLogRoutes, { prefix: '/api/v1' });
   await app.register(tenantRoutes, { prefix: '/api/v1' });
   await app.register(operationalMetricsRoutes, { prefix: '/api/v1' });
+  await app.register(referenceListsRoutes, { prefix: '/api/v1' });
+  await app.register(resolutionRoutes, { prefix: '/api/v1' });
 
   // --- Operator UI: static files at /ui, redirect / → /ui/ ---
   //

@@ -1,20 +1,26 @@
-# doc-service
+# parsdocs — doc-service
 
-Универсальный сервис обработки документов: OCR + извлечение структурированных данных из транспортных и бухгалтерских документов (счета, УПД, ТТН, CMR, акты).
+Платформа обработки документов: OCR + извлечение структурированных данных + привязка к бизнес-объектам. Работает со счетами, УПД, ТТН, CMR, актами и пользовательскими типами документов.
 
 Самостоятельный микросервис: подключается по HTTP к любой системе, не зависит от конкретной инфраструктуры.
 
+> **Подробная архитектура:** [ARCHITECTURE.md](./ARCHITECTURE.md)
+
+---
+
 ## Стек
 
-- **Runtime:** Node.js 22 + Fastify
-- **Очередь:** BullMQ + Redis
-- **БД:** PostgreSQL (хранение jobs)
-- **OCR pipeline (по приоритету):**
-  1. `pdf-parse` — текстовые PDF (мгновенно)
-  2. системный `tesseract` (русский+английский) — сканы и изображения
-  3. внешний LLM inference-service (Qwen-VL и т.п.) — сложные сканы и проверка
-  4. Yandex Cloud Vision — последний резерв
-- **Хранилище файлов:** локальная ФС (`STORAGE_DIR`), интерфейс `FileStorage` готов под S3/MinIO
+| Слой | Технология |
+|------|-----------|
+| HTTP server | Node.js 22 + Fastify 5 + Zod |
+| Очередь | BullMQ + Redis |
+| БД | PostgreSQL 16 |
+| OCR локальный | Tesseract + pdftoppm (poppler) |
+| OCR/LLM API | inference-service (Python/FastAPI) |
+| Auth | Bearer token (API_KEY или Personal Access Token) |
+| UI | Vanilla JS + Alpine.js + Tailwind CDN (без build-шага) |
+
+---
 
 ## Быстрый старт
 
@@ -25,158 +31,211 @@ cp .env.example .env
 docker compose up --build
 ```
 
-API на `http://localhost:3000`, документация на `http://localhost:3000/docs`. Миграция БД выполняется автоматически при первом запуске Postgres-контейнера.
+- API: `http://localhost:3000`
+- Swagger UI: `http://localhost:3000/docs`
+- Operator UI: `http://localhost:3000/ui/`
 
-В этом режиме `vision-llm` ступень OCR-пайплайна выпадает (нет inference-service), а Phase 2 парсеры (ТТН/CMR/АКТ) деградируют до `needs_review`. Phase 1 (счёт/УПД) работает полноценно на regex.
+Миграции БД применяются автоматически при первом запуске.
+
+В этом режиме: PDF-парсинг и regex-парсеры (счёт/УПД) работают полноценно. Сложные сканы — через tesseract. Парсеры ТТН/CMR/АКТ деградируют до `needs_review` без LLM.
 
 ### Весь стек (doc-service + inference-service)
 
-Из корня workspace `ai-platform/`:
+Из корня workspace:
 
 ```bash
 docker network create ai-platform
 docker compose -f docker-compose.doc-platform.yml up -d --build
 ```
 
-После этого:
-- doc-service → `http://localhost:3000` (API), `http://localhost:3000/docs` (Swagger UI)
-- inference-service → `http://localhost:8000` (API), `http://localhost:8000/docs` (FastAPI auto-docs)
+После запуска в `doc-service/.env` поставить:
+```
+LLM_INFERENCE_URL=http://inference:8000
+```
 
-В `doc-service/.env` поставить `LLM_INFERENCE_URL=http://inference:8000` — после этого Phase 2 парсеры начинают реально извлекать поля, а сложные сканы попадают в LLM-OCR (vision-llm ступень).
+---
 
 ## Аутентификация
 
-Все ручки `/api/v1/*` защищены Bearer-токеном, если в `.env` задан `API_KEY`. `/health` и `/ready` всегда публичные — нужны для load balancer / orchestrator пробников.
+Все ручки `/api/v1/*` защищены Bearer-токеном.
 
 ```bash
 # .env
 API_KEY=$(openssl rand -hex 32)
 ```
 
-Запросы:
-
 ```http
-POST /api/v1/jobs HTTP/1.1
-Authorization: Bearer <ключ из API_KEY>
-Content-Type: multipart/form-data
+Authorization: Bearer <API_KEY>
 ```
 
-Если `API_KEY` пустой (по умолчанию в `.env.example`) — auth отключён, любой запрос проходит. Это удобно для локальной разработки, но на проде ключ обязателен.
+Поддерживаются два типа токенов:
+- **API_KEY** (env) → `super_admin`, глобальный доступ
+- **Personal Access Token** (PAT) → привязан к конкретному пользователю с его ролью/организацией
 
-Сравнение токенов — constant-time, чтобы не утекать валидный префикс через тайминги. На неверный/отсутствующий токен возвращается `401` с JSON-телом, без `WWW-Authenticate` (это server-to-server API, не браузерный).
+Мультиключевой режим: `API_KEYS_JSON='{"<key>":"<client_name>"}'`
 
-Один ключ — один deployment. Когда понадобится разные клиенты с разными правами, расширим до многоключевой схемы (`API_KEYS_JSON='{"<key>":"<client_name>"}'`) или DB-backed токенов.
+`/health` и `/ready` всегда публичны (для load balancer / k8s пробников).
 
-## Документация API
+---
 
-Полное описание ручек, схем тел и ошибок — в Swagger UI: `http://localhost:3000/docs`.
+## Pipeline — фазы обработки
 
-OpenAPI 3.1 spec в JSON: `http://localhost:3000/docs/json` — пригоден для автогенерации клиентов (например, через `openapi-typescript-codegen`, `oapi-codegen` для Go, или `openapi-python-client`).
-
-Auth-токен из `API_KEY` указывается в Swagger UI через кнопку **Authorize** в правом верхнем углу — после этого все запросы из UI идут с заголовком `Authorization: Bearer ...`.
-
-## API
-
-### Отправка документа
-
-```http
-POST /api/v1/jobs
-Content-Type: multipart/form-data
-
-file            (binary)        PDF, JPG, PNG, BMP, TIFF
-webhook_url     (string, opt)   куда POST результат после обработки
-document_hint   (string, opt)   invoice | TTN | CMR | UPD | AKT
-metadata        (string, opt)   произвольный JSON, возвращается как есть
+```
+Upload (multipart/form-data)
+  ↓
+Classify    → тип документа (из hint или keywords/LLM-классификатора)
+  ↓
+OCR chain   → pdf-parse → tesseract → vision-llm (chain шарит растеризацию PDF)
+  ↓
+Parse       → regex-парсер или GenericLlmParser (из document_types.parser_kind)
+  ↓
+Validate    → доменные валидаторы: INN, KPP, даты, банковские реквизиты
+  ↓
+Finalize    → status: done | needs_review | failed + webhook
+  ↓
+Resolve     → привязка к справочникам (fire-and-forget, best-effort)
 ```
 
-Ответ: `{ "job_id": "...", "status": "pending" }`.
+---
 
-### Статус и результат
+## API — основные группы
+
+### Jobs
 
 ```http
-GET /api/v1/jobs/:id
+POST   /api/v1/jobs                          загрузить документ
+GET    /api/v1/jobs                          список (фильтры: status, document_type, from/to)
+GET    /api/v1/jobs/:id                      статус и результат
+PATCH  /api/v1/jobs/:id/extracted            скорректировать извлечённые данные
+POST   /api/v1/jobs/:id/approve              needs_review → done
+POST   /api/v1/jobs/:id/reprocess            повторный прогон (без OCR)
+POST   /api/v1/jobs/:id/redeliver-webhook    принудительная повторная доставка вебхука
+GET    /api/v1/jobs/:id/file                 скачать оригинал
 ```
 
-Ответ:
+**Поля загрузки** (`multipart/form-data`):
 
-```json
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `file` | binary | PDF, JPG, PNG, BMP, TIFF |
+| `document_hint` | string | slug типа — пропускает классификатор |
+| `webhook_url` | string | URL для POST результата (HMAC-signed) |
+| `metadata` | string | произвольный JSON, echo в ответе |
+| `project_id` | uuid | проект для multi-tenant изоляции |
+
+**Статусы job:**
+`pending` → `processing` → `done` | `needs_review` | `failed`
+
+### Document types
+
+```http
+GET    /api/v1/document-types                список (builtin + custom)
+POST   /api/v1/document-types                создать пользовательский тип
+PATCH  /api/v1/document-types/:slug          настроить: prompt, schema, пороги, resolution_config
+DELETE /api/v1/document-types/:slug          удалить (только non-builtin)
+GET    /api/v1/document-types/:slug/history  история изменений
+```
+
+Конфигурируемые поля типа документа:
+- `parser_kind` — `builtin:invoice_regex` | `builtin:upd_regex` | `llm_extract`
+- `llm_prompt` — кастомная инструкция для LLM (overrides builtin prompt)
+- `llm_schema` — JSON Schema для `/v1/extract`
+- `expected_fields`, `validators`, `confidence_threshold`
+- `resolution_config` — конфигурация привязки к справочникам (см. ниже)
+
+### Reference Lists — справочники
+
+```http
+GET    /api/v1/reference-list-types                     список типов справочников
+POST   /api/v1/reference-list-types                     создать тип
+PATCH  /api/v1/reference-list-types/:slug               обновить тип
+DELETE /api/v1/reference-list-types/:slug               удалить
+GET    /api/v1/reference-list-types/:slug/entries       список записей (поиск, пагинация)
+POST   /api/v1/reference-list-types/:slug/entries       добавить запись
+POST   /api/v1/reference-list-types/:slug/entries/bulk  создать пакетно
+POST   /api/v1/reference-list-types/:slug/sync          push-синхронизация от WMS/ERP
+PATCH  /api/v1/reference-list-entries/:id               обновить запись
+DELETE /api/v1/reference-list-entries/:id               деактивировать (soft-delete)
+```
+
+**Push-синхронизация** (`/sync`): принимает полный список актуальных записей — upsert по `external_id` + деактивация тех, кого нет в теле.
+
+```http
+POST /api/v1/reference-list-types/cargo_units/sync
+Content-Type: application/json
+
 {
-  "job_id": "...",
-  "status": "done",
-  "document_type": "invoice",
-  "confidence": 0.92,
-  "ocr_engine": "tesseract",
-  "raw_text": "...",
-  "extracted": { ... },
-  "metadata": { ... },
-  "error": null
+  "entries": [
+    {
+      "external_id": "WMS-001",
+      "display_name": "Грузовая единица #001",
+      "search_keys": ["WMS-001", "ГЕ-001"],
+      "data": { "weight": 1200, "type": "pallet" }
+    }
+  ]
 }
 ```
 
-`status`: `pending` → `processing` → `done` | `failed` | `needs_review`.
-
-### Корректировка извлечённых данных
+### Resolution — привязка документа
 
 ```http
-PATCH /api/v1/jobs/:id/extracted
-Content-Type: application/json
+GET  /api/v1/jobs/:id/resolution              результаты привязки + summary
+POST /api/v1/jobs/:id/re-resolve              повторный прогон резолюции
 
-{ "поля": "для перезаписи" }
+POST /api/v1/job-entity-links/:id/confirm     подтвердить привязку к сущности
+POST /api/v1/job-entity-links/:id/reject      отклонить
+POST /api/v1/job-item-matches/:id/confirm     подтвердить матч строки
+POST /api/v1/job-item-matches/:id/reject      отклонить
 ```
 
-Полностью перезаписывает поле `extracted` и переводит статус в `done`. Время правки фиксируется в `extracted_corrected_at` (для последующего дообучения парсеров).
+#### Настройка resolution_config
 
-### Список
+В поле `document_types.resolution_config` (JSONB) задаётся конфигурация привязки:
+
+```json
+{
+  "entity_links": [
+    {
+      "list_type": "cargo_units",
+      "match_fields": ["cargo_id", "cargo_number"],
+      "on_not_found": "needs_review"
+    },
+    {
+      "list_type": "contractors",
+      "match_fields": ["seller_inn"],
+      "on_not_found": "warn"
+    }
+  ],
+  "item_matching": {
+    "list_type": "nomenclature",
+    "items_field": "items",
+    "code_field": "code",
+    "name_field": "name",
+    "on_not_found": "warn"
+  }
+}
+```
+
+`on_not_found`:
+- `"needs_review"` (default для entity_links) — job переводится в needs_review
+- `"warn"` — только лог
+- `"ignore"` — пропускаем
+
+### Multi-tenant
 
 ```http
-GET /api/v1/jobs?status=&document_type=&from=&to=&limit=50&offset=0
+GET/POST/PATCH/DELETE  /api/v1/organizations
+GET/POST/PATCH/DELETE  /api/v1/projects
+GET/POST/PATCH/DELETE  /api/v1/users
+POST                   /api/v1/users/:id/tokens        выпустить PAT
+DELETE                 /api/v1/users/:id/tokens/:tokenId
 ```
 
-## OCR pipeline
+---
 
-```
-                ┌───────────────┐
-PDF ──────────► │   pdf-parse   │ confidence ≥ 0.90 → done
-                └──────┬────────┘
-                       ↓ иначе
-                ┌───────────────┐
-скан/картинка ► │   tesseract   │ confidence ≥ 0.75 → done
-                └──────┬────────┘
-                       ↓ иначе (если LLM_INFERENCE_URL задан)
-                ┌────────────────────┐
-                │  vision-llm (Qwen) │ confidence ≥ 0.75 → done
-                └──────┬─────────────┘
-                       ↓ иначе (если YANDEX_VISION_API_KEY задан)
-                ┌───────────────────┐
-                │  yandex.vision    │ всегда принимаем результат
-                └───────────────────┘
+## Webhook
 
-После OCR: классификация (по ключевым словам или LLM /classify)
-       ↓
-       парсер по типу документа → extracted
-       ↓
-       confidence < 0.60 → status = needs_review
-       иначе                → status = done
-```
-
-Каждый движок реализует интерфейс `OcrEngine` (`src/pipeline/ocr/types.ts`). Порядок и пороги настраиваются через env. Движки без credentials (LLM, Yandex) автоматически исключаются из цепочки.
-
-## LLM inference-service
-
-doc-service ходит за LLM по HTTP с доменными ручками — не сырой chat-API, чтобы можно было сменить модель без правок здесь:
-
-```
-POST /v1/classify     { text }                 → { type, confidence }
-POST /v1/extract      { text, schema, hint? }  → { extracted, confidence, issues[] }
-POST /v1/vision-ocr   { image, prompt? }       → { text, confidence }
-POST /v1/verify       { extracted, raw_text }  → { extracted, issues[] }
-```
-
-Сам inference-service — отдельный проект (Python + FastAPI + Qwen-VL), здесь только тонкий клиент. Если `LLM_INFERENCE_URL` пуст — используется `NullLlmClient` (всё no-op), пайплайн работает без LLM.
-
-## Безопасность webhook
-
-Тело каждой webhook-доставки подписывается HMAC-SHA256 с `WEBHOOK_HMAC_SECRET`. Получатель проверяет:
+Тело каждой доставки подписывается HMAC-SHA256 с `WEBHOOK_HMAC_SECRET`:
 
 ```
 X-DocService-Signature: sha256=<hex>
@@ -184,73 +243,83 @@ X-DocService-Job-Id:    <uuid>
 X-DocService-Attempt:   <n>
 ```
 
-Доставка ретраится с экспоненциальной задержкой до `WEBHOOK_MAX_ATTEMPTS` раз.
+Ретраи с экспоненциальной задержкой до `WEBHOOK_MAX_ATTEMPTS` раз.
+Sweeper (`WEBHOOK_SWEEPER_INTERVAL_MS`) добивает неудачные доставки в фоне.
+Принудительный повтор вручную: `POST /api/v1/jobs/:id/redeliver-webhook`.
 
-## Локальный smoke-прогон без Docker
+---
 
-Полный пайплайн (OCR → классификация → парсинг) на одном файле, без БД, без очереди, без сервера. Удобно для проверки качества OCR на конкретном документе или отладки парсера.
+## Локальный smoke-прогон (без Docker)
 
 ```bash
 npm install
 npm run smoke -- ./path/to/document.pdf
-# или с подсказкой типа:
 npm run smoke -- ./scan.jpg --hint TTN
 ```
 
-Скрипт читает `.env`, поэтому работает с теми же настройками (LLM URL, Yandex ключ, пороги), что и сервер. Результат — JSON в stdout с разбивкой по этапам: какой OCR-движок отработал, что распозналось, что классификатор определил, что извлечено, какие поля не нашлись.
+Гоняет полный OCR → classify → parse без БД и очереди. Результат — JSON в stdout.
 
-Tesseract и `pdftoppm` должны быть доступны в PATH (или гонять внутри Docker-образа: `docker compose run --rm api npm run smoke -- /app/data/uploads/<storage_id>/file.pdf`).
+---
 
 ## Миграции БД
 
-Управляются через `node-pg-migrate`. Файлы в `migrations/<timestamp>_<slug>.sql` с явными секциями `-- Up Migration` и `-- Down Migration`. Применённые миграции трекаются в таблице `pgmigrations` — повторный прогон применяет только новые.
-
-В Docker всё происходит автоматически: отдельный one-shot сервис `migrate` стартует после Postgres, прогоняет все pending миграции, и только после его успеха запускаются `api` и `worker`.
-
-Локальные команды:
-
 ```bash
-npm run migrate                       # применить все pending миграции
-npm run migrate:down                  # откатить последнюю (destructive)
-npm run migrate:create add_column_x   # создать новый файл-шаблон в migrations/
+npm run migrate           # применить все pending
+npm run migrate:down      # откатить последнюю (destructive)
+npm run migrate:create add_column_x
 ```
 
-После `migrate:create` редактируешь созданный файл — добавляешь SQL в `-- Up Migration` (и желательно зеркальный `DROP/ALTER` в `-- Down Migration` для возможности отката).
+В Docker: отдельный one-shot сервис `migrate` применяет миграции до запуска `api` и `worker`.
+
+---
 
 ## Структура проекта
 
 ```
 doc-service/
-├── docker-compose.yml         api + worker + postgres + redis
-├── Dockerfile                 node:22-slim + tesseract + poppler-utils
-├── migrations/                node-pg-migrate (Up/Down секции, трекинг в pgmigrations)
-├── data/                      локальное хранилище (volume)
+├── ARCHITECTURE.md          подробная архитектура и схемы
+├── TECH_DEBT.md             технический долг и план доработок
+├── docker-compose.yml       api + worker + postgres + redis
+├── Dockerfile               node:22-slim + tesseract + poppler-utils
+├── migrations/              SQL-миграции (12 штук)
+├── shared/
+│   └── classifier-rules.json  правила классификатора (Node + Python)
+├── web/                     Operator UI (HTML + JS, без build-шага)
 └── src/
-    ├── server.ts              Fastify entry
-    ├── worker.ts              BullMQ Worker entry
-    ├── config.ts              env через zod
-    ├── db.ts / queue.ts       пулы pg / Redis
-    ├── routes/                jobs, health
+    ├── server.ts            Fastify entry
+    ├── worker.ts            BullMQ Worker + sweeper-процессы
+    ├── config.ts            env через zod, все пороги
+    ├── auth.ts / authz.ts   Bearer auth + guards + request-helpers
+    ├── routes/
+    │   ├── jobs.ts          CRUD jobs + approve/reprocess/redeliver
+    │   ├── document-types.ts  реестр типов документов
+    │   ├── reference-lists.ts справочники + bulk + sync
+    │   ├── resolution.ts    привязка + confirm/reject
+    │   └── tenants.ts       multi-tenant CRUD
     ├── pipeline/
-    │   ├── orchestrator.ts    главный сценарий
-    │   ├── router.ts          выбор цепочки OCR
-    │   ├── quality.ts         эвристики confidence
-    │   ├── ocr/               pdf-text, tesseract, vision-llm, yandex
-    │   ├── classifier/        keywords (+ интерфейс под ML)
-    │   ├── llm/               клиент к inference-service
-    │   └── parsers/           invoice, upd (Phase 1) + ttn/cmr/akt stubs
-    ├── storage/               files (local fs), jobs (pg repo)
-    └── webhooks/              доставка с HMAC и ретраями
+    │   ├── orchestrator.ts  OCR chain → parse → validate → resolve
+    │   ├── classifier/      keywords-классификатор (+ shared/classifier-rules.json)
+    │   ├── ocr/             pdf-text, tesseract, vision-llm, yandex
+    │   ├── parsers/         invoice, upd, ttn, cmr, akt, generic-llm
+    │   ├── validation/      доменные валидаторы
+    │   └── document-type-resolver.ts  TTL-кэш над document_types
+    ├── resolution/
+    │   ├── types.ts         TypeScript-типы + JSDoc с примером resolution_config
+    │   ├── list-repo.ts     репозитории: Types, Entries, ResolutionResults
+    │   └── pipeline.ts      runResolutionPipeline: entity linking + item matching
+    ├── storage/
+    │   ├── jobs.ts          JobsRepo
+    │   ├── document-types.ts  DocumentTypesRepo
+    │   └── files.ts         локальное ФС-хранилище + retention-cleanup
+    └── webhooks/
+        └── deliver.ts       HMAC-signed POST, retry с backoff
 ```
 
-## Фазы
+---
 
-- **Фаза 1 (текущая):** scaffold, OCR pipeline, классификатор по ключевым словам, парсеры invoice + УПД, webhook.
-- **Фаза 2:** парсеры ТТН, CMR, АКТ.
-- **Фаза 3:** AWB, коносамент, СМГС.
-- **Параллельно:** отдельный inference-service (Qwen-VL) — поднимается рядом.
+## Документация API
 
-## Открытые вопросы
+Swagger UI: `http://localhost:3000/docs`
+OpenAPI JSON: `http://localhost:3000/docs/json`
 
-- Шаринг файлового стора с другими сервисами — пока локальная ФС, MinIO/S3 за интерфейсом `FileStorage`.
-- Аутентификация между системами — пока не реализована, добавим API-ключ в `Authorization: Bearer ...` при необходимости.
+Токен вводится через кнопку **Authorize** в правом верхнем углу.

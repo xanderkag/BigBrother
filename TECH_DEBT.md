@@ -1026,21 +1026,20 @@ Worker проверяет `Date.now() - job.timestamp > JOB_MAX_AGE_SECONDS * 10
 
 ---
 
-### I4b. Grafana dashboard для собранных метрик
+### ~~I4b. Grafana dashboard для собранных метрик~~ — ✅ закрыто 2026-05-12
 
-**Где:** отдельный артефакт (JSON dashboard + provisioning), вероятно в `monitoring/`
+Создан полный стек мониторинга в `monitoring/`:
+- `monitoring/prometheus/prometheus.yml` — 3 scrape jobs (api:3000, worker:3000, inference:8000), 15s interval
+- `monitoring/grafana/provisioning/` — datasource uid `prometheus` + file-provider
+- `monitoring/grafana/dashboards/parsdocs.json` — 35 KB, 19 data panels в 5 рядах:
+  - **Ряд 1:** jobs total / done rate / needs_review rate stats + timeseries jobs/min by status
+  - **Ряд 2:** p50/p95/p99 job duration + horizontal bar p95 by document_type
+  - **Ряд 3:** OCR p95 by engine + stat panels per engine (pdf-text, tesseract, vision-llm, yandex)
+  - **Ряд 4:** LLM calls/min by endpoint+outcome + inference-service duration p95 + error rate
+  - **Ряд 5:** webhook success rate + heap used (MB) + eventloop lag p99 (красный порог 100ms)
+- `docker-compose.monitoring.yml` — compose override, Prometheus 2.51.0 port 9090, Grafana 10.4.2 port 3001
 
-**Симптом:** Метрики собираются (`/metrics` на обоих сервисах отдают данные), но дашборд для оператора ещё не построен. Чтобы увидеть KPI «% needs_review», «median OCR latency by engine», «LLM error rate» нужно либо ходить на raw `/metrics`, либо ручками сложить запрос в Prometheus.
-
-**Лечение:** JSON dashboard для Grafana с панелями:
-- Jobs throughput (rate of `docservice_jobs_total` by status)
-- OCR latency p50/p95/p99 per engine
-- LLM call success rate + latency by endpoint
-- Webhook delivery success rate
-- Queue depth (нужен ещё один gauge — sample BullMQ `getJobCounts()` периодически)
-- Inference-service: requests/sec by backend, latency p95
-
-**Оценка:** день на дашборд + provisioning через docker-compose. Можно отложить до момента когда метрики начнут реально нужны (после первого продакшен-инцидента или жалобы на скорость).
+Запуск: `docker compose -f docker-compose.doc-platform.yml -f docker-compose.monitoring.yml up -d`
 
 ---
 
@@ -1105,35 +1104,34 @@ Worker проверяет `Date.now() - job.timestamp > JOB_MAX_AGE_SECONDS * 10
 
 ---
 
-### A4. Webhook deliveries не воскрешаются
+### ~~A4. Webhook deliveries не воскрешаются~~ — ✅ закрыто 2026-05-12
 
-**Симптом:** Если webhook сдох на 5-й попытке — кнопок «доставить ещё раз» нет.
-
-**Лечение:** Ручка `POST /jobs/:id/redeliver-webhook` + sweeper для добивки старше N часов.
-
-**Оценка:** 3 часа.
-
----
-
-### A5. Двойная растеризация PDF
-
-**Где:** `doc-service/src/pipeline/ocr/tesseract.ts`, `vision-llm.ts`
-
-**Симптом:** Tesseract и vision-llm независимо вызывают `pdftoppm` для одного и того же PDF.
-
-**Лечение:** Кешировать растеризованные PNG'и в tmpdir per-job, переиспользовать между движками. Передавать через контекст оркестратора.
-
-**Оценка:** 3 часа.
+Реализована ручная повторная доставка:
+- `jobsRepo.resetWebhookAttempts(id)` — сбрасывает `webhook_attempts`, `webhook_delivered_at`, `webhook_last_error`
+- `POST /jobs/:id/redeliver-webhook` — 400 если нет `webhook_url`, 409 если job in-flight, иначе сбрасывает счётчик и вызывает `deliverWebhook()` fire-and-forget, возвращает 202 + актуальный снимок job'а
+- `src/workers/webhook-sweeper.ts` — автоматический sweeper по образцу pending-job-sweeper. Каждые 15 мин ищет jobs с `webhook_delivered_at IS NULL AND webhook_last_error IS NOT NULL AND webhook_attempts < hardLimit`. Вызывает `deliverWebhook()` fire-and-forget без сброса счётчика — попытки накапливаются (5 → 10 → 15). При `hardLimit=15` — 3 волны по 5, потом только ручная кнопка.
+- Config: `WEBHOOK_SWEEPER_INTERVAL_MS` (15 мин), `WEBHOOK_SWEEPER_GRACE_MINUTES` (60 мин), `WEBHOOK_SWEEPER_HARD_LIMIT` (15).
+- `jobsRepo.listStaleWebhooks()` — SQL с `make_interval(mins => $2)` и `ORDER BY updated_at ASC`.
+- Зарегистрирован в `worker.ts` рядом с остальными sweeper'ами, стопается на SIGTERM.
 
 ---
 
-### A6. Stub-классификатор продублирован
+### ~~A5. Двойная растеризация PDF~~ — ✅ закрыто 2026-05-12
 
-**Где:** `inference-service/src/inference_service/backends/stub.py:25-33` копирует regex'ы из `doc-service/src/pipeline/classifier/keywords.ts:5-14`.
+- `OcrInput` расширен полем `rasterizedPages?: string[]`
+- `orchestrator.ts:runOcrChain()` — предрастеризует PDF один раз (`mkdtemp → pdftoppm -r 200`) когда в chain > 1 движка. При ошибке pdftoppm — graceful fallback (каждый движок растеризует сам). Cleanup в `finally`.
+- `TesseractEngine` — выделен приватный `processPages(pageFiles, started)`. `runOnPdf()` проверяет `input.rasterizedPages` и использует их напрямую; если нет — собственная растеризация (fallback для standalone/тестов).
+- `VisionLlmEngine` — аналогично.
+- Экономия: 1 pdftoppm (≈5–15 сек на 10-страничном скане) на каждом job где tesseract не набрал threshold.
 
-**Симптом:** Сейчас совпадают. Через год разойдутся незаметно.
+---
 
-**Лечение:** Общий `classifier-rules.json` (или YAML) в shared dir, читается обоими сервисами.
+### ~~A6. Stub-классификатор продублирован~~ — ✅ закрыто 2026-05-12
+
+- `shared/classifier-rules.json` — единый источник 7 builtin-правил в корне репо. Добавить новое правило нужно только здесь.
+- `keywords.ts` — читает JSON через `readFileSync` с runtime path resolution (`dist/pipeline/classifier/ → ../../../../shared/`). Fallback к hardcoded при ошибке чтения (Docker без mount).
+- `stub.py` — загружает через `_load_classifier_rules()`: 1) `CLASSIFIER_RULES_PATH` env, 2) `Path(__file__).parents[4] / 'shared' / …` (работает в dev/CI), 3) hardcoded fallback.
+- Docker для inference-service: добавить `COPY shared/ /app/shared/` + `ENV CLASSIFIER_RULES_PATH=/app/shared/classifier-rules.json` в Dockerfile — делается перед prod-деплоем.
 
 **Оценка:** 2 часа.
 

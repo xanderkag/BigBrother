@@ -31,6 +31,7 @@ export type DocumentTypeRow = {
   regex_fallback_threshold: string | null;    // NUMERIC → string
   classification_keywords: string[];
   metadata: Record<string, unknown> | null;
+  resolution_config: Record<string, unknown> | null;  // ResolutionConfig JSON
   created_at: Date;
   updated_at: Date;
 };

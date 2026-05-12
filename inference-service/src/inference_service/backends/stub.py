@@ -9,7 +9,10 @@ recognizable placeholder), and pass-through /verify.
 This is NOT a serious extractor — never use it in production.
 """
 
+import json
+import os
 import re
+from pathlib import Path
 from typing import Any
 
 from ..schemas import (
@@ -20,18 +23,49 @@ from ..schemas import (
 )
 from .base import ModelBackend
 
-# Same rules as doc-service's KeywordClassifier. Duplicated deliberately —
-# coupling the services through shared code is a worse problem than the
-# duplication, and these few lines rarely change.
-_RULES: list[tuple[str, re.Pattern[str], float]] = [
-    ("UPD", re.compile(r"универсальный\s+передаточный\s+документ|\bУПД\b", re.IGNORECASE), 0.95),
-    ("CMR", re.compile(r"\bCMR\b|международная\s+товарно-транспортная", re.IGNORECASE), 0.95),
-    ("TTN", re.compile(r"транспортная\s+накладная|товарно-транспортная\s+накладная|\bТТН\b", re.IGNORECASE), 0.95),
-    ("factInvoice", re.compile(r"счет-фактура|счёт-фактура", re.IGNORECASE), 0.95),
-    ("AKT", re.compile(r"\bакт\b\s+(оказанных|выполненных|сдачи)|акт\s+об\s+оказании", re.IGNORECASE), 0.9),
-    ("invoice", re.compile(r"\bсч[её]т\s+на\s+оплату\b|\bсч[её]т\s+№", re.IGNORECASE), 0.85),
-    ("invoice", re.compile(r"\bсч[её]т\b", re.IGNORECASE), 0.6),
-]
+
+def _load_classifier_rules() -> list[tuple[str, re.Pattern[str], float]]:
+    """Load classifier rules from shared/classifier-rules.json (A6 fix).
+
+    Search order:
+      1. CLASSIFIER_RULES_PATH env var — Docker override / custom mount.
+      2. Relative to __file__: repo_root/shared/ (works in dev/CI where the
+         full repo checkout is available).
+      3. Hardcoded fallback (Docker without shared/ mount; stub is never used
+         in production so this path doesn't matter for real data).
+    """
+    candidates: list[Path] = []
+    if env_path := os.getenv("CLASSIFIER_RULES_PATH"):
+        candidates.append(Path(env_path))
+    # Dev/CI: __file__ is inside repo at inference-service/src/…/backends/stub.py
+    # parents[4] = repo root (backends → inference_service → src → inference-service → repo)
+    candidates.append(Path(__file__).parents[4] / "shared" / "classifier-rules.json")
+
+    for path in candidates:
+        if path.exists():
+            try:
+                raw: list[dict[str, object]] = json.loads(path.read_text("utf-8"))
+                return [
+                    (str(r["slug"]), re.compile(str(r["pattern"]), re.IGNORECASE), float(str(r["weight"])))
+                    for r in raw
+                ]
+            except (KeyError, ValueError):
+                pass  # malformed JSON — try next candidate
+
+    # Hardcoded fallback — kept in sync with shared/classifier-rules.json.
+    # If you update the JSON, update this list too (and vice versa).
+    return [
+        ("UPD",         re.compile(r"универсальный\s+передаточный\s+документ|\bУПД\b", re.IGNORECASE), 1.0),
+        ("CMR",         re.compile(r"\bCMR\b|международная\s+товарно-транспортная", re.IGNORECASE), 1.0),
+        ("TTN",         re.compile(r"транспортная\s+накладная|товарно-транспортная\s+накладная|\bТТН\b", re.IGNORECASE), 1.0),
+        ("factInvoice", re.compile(r"счет-фактура|счёт-фактура", re.IGNORECASE), 1.0),
+        ("AKT",         re.compile(r"\bакт\b\s+(оказанных|выполненных|сдачи)|акт\s+об\s+оказании", re.IGNORECASE), 0.95),
+        ("invoice",     re.compile(r"\bсч[её]т\s+на\s+оплату\b|\bсч[её]т\s+№", re.IGNORECASE), 0.9),
+        ("invoice",     re.compile(r"\bсч[её]т\b", re.IGNORECASE), 0.6),
+    ]
+
+
+_RULES: list[tuple[str, re.Pattern[str], float]] = _load_classifier_rules()
 
 
 class StubBackend(ModelBackend):
