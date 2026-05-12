@@ -479,6 +479,50 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // POST /jobs/:id/approve — CP6: одобрить needs_review без изменения extracted.
+  // Оператор проверил данные визуально и убедился, что всё верно.
+  // Идемпотентен: если job уже 'done' — возвращает его без ошибки.
+  r.post(
+    '/jobs/:id/approve',
+    {
+      schema: {
+        tags: ['jobs'],
+        summary: 'Одобрить job (needs_review → done)',
+        description:
+          'Переводит статус `needs_review` → `done` без изменения `extracted`. ' +
+          'Используется оператором в Review Queue после визуальной проверки. ' +
+          'Идемпотентен — если статус уже `done`, возвращает актуальную строку. ' +
+          'Если job в статусе `pending`/`processing`/`failed` — 409.',
+        security: [{ bearerAuth: [] }],
+        params: JobIdParam,
+        response: {
+          200: Job,
+          401: ErrorResponse,
+          404: ErrorResponse,
+          409: ErrorResponse,
+        },
+      },
+    },
+    async (req, reply) => {
+      const job = await jobsRepo.findById(req.params.id);
+      if (!job) {
+        reply.code(404);
+        return { error: 'job not found' };
+      }
+      if (!(await requireProjectWrite(req, reply, job.project_id))) return reply;
+      if (job.status === 'pending' || job.status === 'processing' || job.status === 'failed') {
+        reply.code(409);
+        return { error: `cannot approve job in status "${job.status}"` };
+      }
+      const updated = await jobsRepo.approve(req.params.id);
+      if (!updated) {
+        reply.code(404);
+        return { error: 'job not found' };
+      }
+      return jobsRepo.toApi(updated);
+    },
+  );
+
   // POST /jobs/:id/reprocess — перепрогнать уже-распознанный текст
   // через АКТУАЛЬНУЮ конфигурацию типа (новый prompt / схема / валидаторы).
   // Главный use-case: цикл тюнинга prompt'а — поменяли инструкцию в админ-UI,

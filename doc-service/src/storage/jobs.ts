@@ -271,6 +271,27 @@ class JobsRepo {
   }
 
   /**
+   * CP6: Human approval — переводит needs_review → done без изменения
+   * extracted. Используется оператором в Review Queue после проверки,
+   * когда он убедился что данные верны. Если статус уже не needs_review
+   * (например, конкурентный approve или reprocess) — операция идемпотентна
+   * и возвращает актуальную строку без изменений.
+   */
+  async approve(id: string): Promise<JobRow | null> {
+    const { rows } = await db.query<JobRow>(
+      `UPDATE jobs
+         SET status = 'done',
+             extracted_corrected_at = COALESCE(extracted_corrected_at, now())
+       WHERE id = $1 AND status = 'needs_review'
+       RETURNING *`,
+      [id],
+    );
+    // If row wasn't in needs_review — return current state (idempotent).
+    if (rows.length === 0) return this.findById(id);
+    return rows[0] ?? null;
+  }
+
+  /**
    * Rows that the API created in `pending` but BullMQ never received (or
    * received and lost). `graceSeconds` ignores fresh rows so the normal
    * enqueue path isn't second-guessed during its window. `markProcessing`

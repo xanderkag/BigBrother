@@ -927,21 +927,17 @@ proxy_http_version 1.1; Upgrade $http_upgrade; Connection $connection_upgrade;
 - ✅ `llm_schema` per-type пробрасывается в /v1/extract.
 - ✅ `parser_kind='llm_extract'` в БД → `ParsersFactory.getGeneric()` — orchestrator читает `typeConfig.parserKind` и форсирует GenericLlmParser для builtin-slug'ов. `ResolvedTypeConfig.parserKind` добавлен.
 
-**Осталось:**
-- ⏸ Классификатор всё ещё читает захардкоженные keywords (seed в БД совпадает — не критично).
-- ⏸ `llm_prompt` override не пробрасывается в inference-service (нужно расширение `/v1/extract` API).
+**Все подпункты закрыты:**
+- ✅ Классификатор читает keywords из БД (`documentTypeResolver.listActive()` → RegExp-компиляция), hardcoded fallback для пустой БД.
+- ✅ `llm_prompt` override — inference-service уже принимает `prompt_override` в `ExtractRequest`; парсеры передают `override?.llmPrompt` → `llmExtract()` → `llm.extract({ promptOverride })` → HTTP snake_case `prompt_override`.
+
+**CP1 ✅ FULLY DONE.**
 
 ---
 
-### CP2. Editor UI для Document Types
+### ~~CP2. Editor UI для Document Types~~ — ✅ закрыто 2026-05-12
 
-**Где:** `doc-service/web/`
-
-**Симптом:** UI сейчас read-only. Чтобы добавить новый тип / поправить промпт — лезть в SQL.
-
-**Лечение:** Форма редактирования (markdown-style для prompt, JSON-editor для schema, list-builder для validators/keywords). Кнопка «Тестировать» — гонит выбранный документ через draft-конфигурацию, показывает результат до сохранения.
-
-**Оценка:** 3-4 дня.
+`web/app.js`: полный CRUD-editor на `#document-types/:slug`. Поля: slug, display_name, description, is_active, parser_kind (select), confidence_threshold, regex_fallback_threshold, expected_fields (chips), validators (chips), classification_keywords (chips), llm_prompt (textarea), llm_schema (JSON-editor с inline валидацией). Inline bookkeeping (created_at/updated_at). Async-observations панель с stats + recent jobs после сохранения.
 
 ---
 
@@ -979,15 +975,14 @@ proxy_http_version 1.1; Upgrade $http_upgrade; Connection $connection_upgrade;
 
 ---
 
-### CP6. Quality Review workflow
+### ~~CP6. Quality Review workflow~~ — ✅ закрыто 2026-05-12
 
-**Где:** `web/` + новые роуты
-
-**Симптом:** Сейчас `needs_review` задачи висят в общем списке job'ов. Нет отдельного «оператор-режима» где видны только они с быстрым approve/edit.
-
-**Лечение:** Новый view `/review` — очередь needs_review с side-by-side: preview документа + редактор extracted + batch-кнопки (approve / reject / re-process). Накапливать diff between OCR-result и финальный — будет training data.
-
-**Оценка:** 2-3 дня.
+- `POST /jobs/:id/approve` — `needs_review → done` без изменения extracted; идемпотентен.
+- `jobsRepo.approve()` — SQL UPDATE только если `status='needs_review'`, иначе возвращает текущее.
+- `web/app.js`: `#review` view — список needs_review со сводкой extracted полей и one-click «✓ Одобрить»; автопулл 15s; approve удаляет строку из DOM немедленно.
+- Кнопка «Одобрить ✓» добавлена в job detail header (показывается только при `status=needs_review`).
+- Nav-ссылка «Review» (amber-иконка ⚠) между Jobs и Upload.
+- `btn-success` (emerald) добавлен в design tokens index.html.
 
 ---
 

@@ -775,6 +775,7 @@ function route() {
       h === target ||
       (target === 'dashboard' && h.startsWith('dashboard')) ||
       (target === 'jobs' && h.startsWith('jobs')) ||
+      (target === 'review' && h.startsWith('review')) ||
       (target === 'document-types' && h.startsWith('document-types')) ||
       (target === 'providers' && h.startsWith('providers')) ||
       (target === 'audit-log' && h.startsWith('audit-log')) ||
@@ -785,6 +786,7 @@ function route() {
   if (h === 'dashboard') return renderDashboard();
   if (h === 'jobs') return renderJobsList();
   if (h.startsWith('jobs/')) return renderJobDetail(h.slice(5));
+  if (h === 'review') return renderReviewQueue();
   if (h === 'upload') return renderUpload();
   if (h === 'document-types') return renderDocumentTypesList();
   if (h === 'document-types/new') return renderDocumentTypeEditor(null);
@@ -1350,6 +1352,7 @@ async function renderJobDetail(jobId) {
                 <button id="view-json-btn" class="px-2 py-1 hover:bg-slate-100 dark:hover:bg-slate-800" data-view="json">JSON</button>
               </div>
               <button id="copy-json-btn" class="btn-secondary btn-xs">Copy</button>
+              ${job.status === 'needs_review' ? `<button id="approve-btn" class="btn-success btn-xs" title="Одобрить: marked as done без изменения extracted">Одобрить ✓</button>` : ''}
               <button id="reprocess-btn" class="btn-secondary btn-xs" title="Перепрогнать через текущий prompt/схему типа (без новой OCR)">Перепрогнать</button>
               <button id="edit-btn" class="btn-accent-outline btn-xs">Edit</button>
             </div>
@@ -1467,6 +1470,23 @@ async function renderJobDetail(jobId) {
       if (currentOriginalUrl) URL.revokeObjectURL(currentOriginalUrl);
       currentOriginalUrl = res.url;
     });
+
+    // Одобрить: needs_review → done без изменения extracted.
+    const approveBtn = document.getElementById('approve-btn');
+    if (approveBtn) {
+      approveBtn.addEventListener('click', async () => {
+        approveBtn.disabled = true;
+        approveBtn.textContent = 'Сохранение…';
+        try {
+          await apiJson(`/jobs/${encodeURIComponent(jobId)}/approve`, { method: 'POST' });
+          await load();
+        } catch (err) {
+          approveBtn.disabled = false;
+          approveBtn.textContent = 'Одобрить ✓';
+          alert(`Не удалось одобрить: ${err.message}`);
+        }
+      });
+    }
 
     // Перепрогнать: вызывает POST /jobs/:id/reprocess. OCR не повторяется,
     // обрабатывает только пост-OCR этап с актуальным prompt/схемой.
@@ -1854,6 +1874,142 @@ async function readEntryRecursive(entry, out) {
       for (const sub of batch) await readEntryRecursive(sub, out);
     } while (batch.length > 0);
   }
+}
+
+// ============================================================
+// Review Queue (CP6) — очередь needs_review для оператора
+// ============================================================
+//
+// Фокусированный вид: только задачи в статусе needs_review.
+// Для каждой — ключевые данные + кнопка «Одобрить» (approve без
+// изменения extracted) + ссылка в полный detail для корректировки.
+// Автообновление каждые 15 секунд.
+
+async function renderReviewQueue() {
+  setView(`
+    <div class="page">
+      ${pageHeader({
+        title: 'Review queue',
+        subtitle: 'Задачи, которые требуют проверки оператора. Одобрите корректные или откройте для редактирования.',
+        actions: `<button id="rq-refresh" class="btn-secondary btn-md" title="Обновить">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 0 1-9.201 2.466l-.312-.311h2.433a.75.75 0 0 0 0-1.5H3.989a.75.75 0 0 0-.75.75v4.242a.75.75 0 0 0 1.5 0v-2.43l.31.31a7 7 0 0 0 11.712-3.138.75.75 0 0 0-1.449-.39Zm1.23-3.723a.75.75 0 0 0 .219-.53V2.929a.75.75 0 0 0-1.5 0V5.36l-.31-.31A7 7 0 0 0 3.239 8.188a.75.75 0 1 0 1.448.389A5.5 5.5 0 0 1 13.89 6.11l.311.31h-2.432a.75.75 0 0 0 0 1.5h4.243a.75.75 0 0 0 .53-.219Z" clip-rule="evenodd"/></svg>
+          Обновить
+        </button>`,
+      })}
+      <div id="rq-list">${loadingState()}</div>
+    </div>
+  `);
+
+  let pollTimer = null;
+
+  async function load() {
+    try {
+      const data = await apiJson('/jobs?status=needs_review&limit=100');
+      renderList(data.items ?? []);
+    } catch (err) {
+      document.getElementById('rq-list').innerHTML = errorState(err.message);
+    }
+  }
+
+  function renderList(items) {
+    const root = document.getElementById('rq-list');
+    if (!root) return;
+    if (items.length === 0) {
+      root.innerHTML = `
+        <div class="empty-state">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-12 h-12 text-emerald-500 mx-auto mb-3"><path fill-rule="evenodd" d="M2.25 12c0-5.385 4.365-9.75 9.75-9.75s9.75 4.365 9.75 9.75-4.365 9.75-9.75 9.75S2.25 17.385 2.25 12Zm13.36-1.814a.75.75 0 1 0-1.22-.872l-3.236 4.53L9.53 12.22a.75.75 0 0 0-1.06 1.06l2.25 2.25a.75.75 0 0 0 1.14-.094l3.75-5.25Z" clip-rule="evenodd"/></svg>
+          <p class="empty-state-text">Очередь пуста — всё проверено!</p>
+          <a href="#jobs" class="empty-state-cta">Посмотреть все задачи →</a>
+        </div>`;
+      return;
+    }
+
+    root.innerHTML = `
+      <div class="space-y-3" id="rq-items">
+        ${items.map((j) => renderReviewItem(j)).join('')}
+      </div>
+      <p class="text-xs text-slate-400 text-right mt-3">Всего: ${items.length} задач</p>
+    `;
+
+    root.querySelectorAll('[data-approve-id]').forEach((btn) => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const id = btn.dataset.approveId;
+        btn.disabled = true;
+        btn.textContent = '…';
+        try {
+          await apiJson(`/jobs/${encodeURIComponent(id)}/approve`, { method: 'POST' });
+          // Убираем строку из DOM сразу — не ждём перезагрузки.
+          const card = root.querySelector(`[data-rq-job-id="${id}"]`);
+          if (card) card.remove();
+          // Обновляем счётчик
+          const remaining = root.querySelectorAll('[data-rq-job-id]').length;
+          const countEl = root.querySelector('p.text-xs');
+          if (countEl) countEl.textContent = `Всего: ${remaining} задач`;
+          if (remaining === 0) load(); // покажем empty state
+        } catch (err) {
+          btn.disabled = false;
+          btn.textContent = '✓';
+          alert(`Ошибка: ${err.message}`);
+        }
+      });
+    });
+
+    root.querySelectorAll('[data-rq-job-id]').forEach((card) => {
+      card.addEventListener('click', (e) => {
+        if (e.target.closest('[data-approve-id]')) return; // approve btn handled above
+        location.hash = `#jobs/${card.dataset.rqJobId}`;
+      });
+    });
+  }
+
+  function renderReviewItem(j) {
+    const issues = j.validation_issues ?? [];
+    const extracted = j.extracted ?? {};
+    const topFields = Object.entries(extracted)
+      .filter(([k]) => !k.startsWith('_'))
+      .slice(0, 5);
+
+    return `
+      <div class="card card-body row-clickable cursor-pointer" data-rq-job-id="${escapeHtml(j.job_id)}">
+        <div class="flex items-start justify-between gap-4">
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-2 flex-wrap mb-1">
+              ${badge(j.status)}
+              ${j.document_type ? `<span class="font-mono text-xs text-slate-600 dark:text-slate-400">${escapeHtml(j.document_type)}</span>` : ''}
+              ${issues.length > 0 ? `<span class="badge badge-rose">${issues.length} issue${issues.length > 1 ? 's' : ''}</span>` : ''}
+            </div>
+            <div class="font-medium text-sm truncate" title="${escapeHtml(j.file_name)}">${escapeHtml(j.file_name)}</div>
+            <div class="mt-0.5 text-xs text-slate-400 font-mono">${escapeHtml(j.job_id.slice(0, 8))} · ${escapeHtml(relativeTime(j.created_at))}</div>
+            ${topFields.length > 0 ? `
+              <div class="mt-2 flex flex-wrap gap-x-4 gap-y-1">
+                ${topFields.map(([k, v]) => `
+                  <span class="text-xs"><span class="text-slate-400">${escapeHtml(k)}:</span> <span class="font-mono text-slate-700 dark:text-slate-300">${escapeHtml(String(v ?? ''))}</span></span>
+                `).join('')}
+              </div>` : ''}
+          </div>
+          <div class="flex items-center gap-2 shrink-0">
+            ${confidenceBar(j.confidence)}
+            <button data-approve-id="${escapeHtml(j.job_id)}"
+              class="btn-success btn-sm whitespace-nowrap" title="Одобрить: перевести в done без изменений">✓ Одобрить</button>
+          </div>
+        </div>
+        ${issues.length > 0 ? `
+          <div class="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800">
+            <ul class="space-y-0.5">
+              ${issues.slice(0, 3).map((i) => `<li class="text-xs font-mono text-amber-700 dark:text-amber-400">• ${escapeHtml(i)}</li>`).join('')}
+              ${issues.length > 3 ? `<li class="text-xs text-slate-400">… ещё ${issues.length - 3}</li>` : ''}
+            </ul>
+          </div>` : ''}
+      </div>
+    `;
+  }
+
+  document.getElementById('rq-refresh')?.addEventListener('click', load);
+
+  await load();
+  pollTimer = setInterval(load, 15_000);
+  registerCleanup(() => { clearInterval(pollTimer); });
 }
 
 // ============================================================
