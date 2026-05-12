@@ -17,6 +17,7 @@ import { documentTypesRoutes } from './routes/document-types.js';
 import { jobsRoutes } from './routes/jobs.js';
 import { healthRoutes } from './routes/health.js';
 import { metricsRoutes } from './routes/metrics.js';
+import { operationalMetricsRoutes } from './routes/operational-metrics.js';
 import { settingsRoutes } from './routes/settings.js';
 import { providerSettingsRoutes } from './routes/provider-settings.js';
 import { auditLogRoutes } from './routes/audit-log.js';
@@ -198,6 +199,7 @@ async function main() {
   await app.register(providerSettingsRoutes, { prefix: '/api/v1' });
   await app.register(auditLogRoutes, { prefix: '/api/v1' });
   await app.register(tenantRoutes, { prefix: '/api/v1' });
+  await app.register(operationalMetricsRoutes, { prefix: '/api/v1' });
 
   // --- Operator UI: static files at /ui, redirect / → /ui/ ---
   //

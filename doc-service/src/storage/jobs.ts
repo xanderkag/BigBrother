@@ -1,6 +1,84 @@
 import { db } from '../db.js';
 import type { DocumentTypeSlug, JobStatus, OcrEngineName } from '../types/documents.js';
 
+/**
+ * Сводный operational-результат, отдаваемый в /api/v1/metrics/operational.
+ * Поля выбраны так, чтобы фронт мог их рисовать без пересчёта.
+ */
+export type OperationalSummary = {
+  window_hours: number;
+  totals: {
+    total: number;
+    pending: number;
+    processing: number;
+    done: number;
+    needs_review: number;
+    failed: number;
+    validation_issues: number;
+    llm_used: number;
+  };
+  rates: {
+    done_rate: number;
+    needs_review_rate: number;
+    failed_rate: number;
+    validation_issue_rate: number;
+    llm_fallback_rate: number;
+  };
+  latency: { p50_ms: number | null; p95_ms: number | null };
+  llm: {
+    tokens_in_p95: number | null;
+    tokens_out_p95: number | null;
+    duration_p95_ms: number | null;
+  };
+  avg_confidence: number | null;
+  throughput_per_hour: number;
+  by_type: Array<{
+    slug: string;
+    total: number;
+    done: number;
+    needs_review: number;
+    failed: number;
+    validation_issues: number;
+    llm_used: number;
+    latency_p50_ms: number | null;
+    latency_p95_ms: number | null;
+    avg_confidence: number | null;
+    done_rate: number;
+    needs_review_rate: number;
+    failed_rate: number;
+    validation_issue_rate: number;
+    llm_fallback_rate: number;
+  }>;
+};
+
+function emptySummary(windowHours: number): OperationalSummary {
+  return {
+    window_hours: windowHours,
+    totals: {
+      total: 0,
+      pending: 0,
+      processing: 0,
+      done: 0,
+      needs_review: 0,
+      failed: 0,
+      validation_issues: 0,
+      llm_used: 0,
+    },
+    rates: {
+      done_rate: 0,
+      needs_review_rate: 0,
+      failed_rate: 0,
+      validation_issue_rate: 0,
+      llm_fallback_rate: 0,
+    },
+    latency: { p50_ms: null, p95_ms: null },
+    llm: { tokens_in_p95: null, tokens_out_p95: null, duration_p95_ms: null },
+    avg_confidence: null,
+    throughput_per_hour: 0,
+    by_type: [],
+  };
+}
+
 export type LlmCallTrace = {
   prompt: string;
   raw_response: string;
@@ -373,6 +451,205 @@ class JobsRepo {
       filled: Number(r[`f${i}`] ?? 0),
       total,
     }));
+  }
+
+  /**
+   * Системная сводка для operations-дашборда: за окно (часах) считаем —
+   *  - тоталы по статусам,
+   *  - перцентили end-to-end latency,
+   *  - LLM-метрики (fallback rate, P95 tokens in/out, P95 call duration),
+   *  - per-type breakdown.
+   *
+   * Зачем именно так: эти цифры есть в БД без всякого ground-truth (в
+   * отличие от accuracy, которая требует golden-set). Дают честную
+   * картину operational health: «у нас 14% needs_review и P95 9сек на
+   * UPD'ах, latency растёт» — это видно по graph'у, без выгрузки.
+   *
+   * Tenant-scope:
+   *   - kind:'all'        — без фильтра (super_admin)
+   *   - kind:'org'        — добавляем organization_id = $X
+   *   - kind:'projects'   — добавляем project_id = ANY($X). Пустой набор
+   *     → пустой результат (0 jobs во всём).
+   */
+  async getOperationalSummary(
+    windowHours: number,
+    scope:
+      | { kind: 'all' }
+      | { kind: 'org'; orgId: string }
+      | { kind: 'projects'; projectIds: Set<string> },
+  ): Promise<OperationalSummary> {
+    // Пустой projects-scope = «нет доступа ни к одному проекту». Возвращаем
+    // пустую сводку, чтобы UI показал «нет данных», а не ронялся.
+    if (scope.kind === 'projects' && scope.projectIds.size === 0) {
+      return emptySummary(windowHours);
+    }
+
+    // Сборка scope-фильтра. Кладём в начало параметров, дальше idx сдвигается.
+    const params: unknown[] = [String(windowHours)];
+    const scopeWhere: string[] = [];
+    if (scope.kind === 'org') {
+      params.push(scope.orgId);
+      scopeWhere.push(`organization_id = $${params.length}`);
+    } else if (scope.kind === 'projects') {
+      params.push(Array.from(scope.projectIds));
+      scopeWhere.push(`project_id = ANY($${params.length}::uuid[])`);
+    }
+    const whereExtra = scopeWhere.length ? `AND ${scopeWhere.join(' AND ')}` : '';
+
+    // --- 1. Тоталы + perсentile + LLM-сводка ---
+    //
+    // percentile_cont — линейная интерполяция, корректно работает на
+    // малых выборках. Считаем по терминальным (done/needs_review) —
+    // failed не имеют finished_at, pending/processing не финальные.
+    const totalsSql = `
+      SELECT
+        COUNT(*)::text                                                AS total,
+        COUNT(*) FILTER (WHERE status = 'pending')::text              AS pending,
+        COUNT(*) FILTER (WHERE status = 'processing')::text           AS processing,
+        COUNT(*) FILTER (WHERE status = 'done')::text                 AS done,
+        COUNT(*) FILTER (WHERE status = 'needs_review')::text         AS needs_review,
+        COUNT(*) FILTER (WHERE status = 'failed')::text               AS failed,
+        COUNT(*) FILTER (
+          WHERE extracted ? '_issues'
+            AND jsonb_array_length(COALESCE(extracted->'_issues','[]'::jsonb)) > 0
+        )::text                                                       AS validation_issues,
+        COUNT(*) FILTER (WHERE last_llm_call IS NOT NULL)::text       AS llm_used,
+        percentile_cont(0.5) WITHIN GROUP (
+          ORDER BY EXTRACT(EPOCH FROM (finished_at - created_at)) * 1000
+        ) FILTER (WHERE finished_at IS NOT NULL)                      AS lat_p50,
+        percentile_cont(0.95) WITHIN GROUP (
+          ORDER BY EXTRACT(EPOCH FROM (finished_at - created_at)) * 1000
+        ) FILTER (WHERE finished_at IS NOT NULL)                      AS lat_p95,
+        percentile_cont(0.95) WITHIN GROUP (
+          ORDER BY (last_llm_call->>'prompt_tokens')::int
+        ) FILTER (WHERE (last_llm_call->>'prompt_tokens') IS NOT NULL) AS tok_in_p95,
+        percentile_cont(0.95) WITHIN GROUP (
+          ORDER BY (last_llm_call->>'output_tokens')::int
+        ) FILTER (WHERE (last_llm_call->>'output_tokens') IS NOT NULL) AS tok_out_p95,
+        percentile_cont(0.95) WITHIN GROUP (
+          ORDER BY (last_llm_call->>'duration_ms')::int
+        ) FILTER (WHERE (last_llm_call->>'duration_ms') IS NOT NULL) AS llm_dur_p95,
+        AVG(confidence) FILTER (WHERE status IN ('done','needs_review'))::text AS avg_confidence
+      FROM jobs
+      WHERE created_at >= now() - ($1 || ' hours')::interval
+        ${whereExtra}
+    `;
+    const totalsRes = await db.query<{
+      total: string;
+      pending: string;
+      processing: string;
+      done: string;
+      needs_review: string;
+      failed: string;
+      validation_issues: string;
+      llm_used: string;
+      lat_p50: string | null;
+      lat_p95: string | null;
+      tok_in_p95: string | null;
+      tok_out_p95: string | null;
+      llm_dur_p95: string | null;
+      avg_confidence: string | null;
+    }>(totalsSql, params);
+    const t = totalsRes.rows[0]!;
+    const total = Number(t.total);
+
+    // --- 2. Per-type breakdown ---
+    //
+    // Те же поля, но GROUP BY document_type. NULL document_type
+    // (классификатор не справился) попадает в свою строку с slug='_unknown'.
+    const byTypeSql = `
+      SELECT
+        COALESCE(document_type, '_unknown')                           AS slug,
+        COUNT(*)::text                                                AS total,
+        COUNT(*) FILTER (WHERE status = 'done')::text                 AS done,
+        COUNT(*) FILTER (WHERE status = 'needs_review')::text         AS needs_review,
+        COUNT(*) FILTER (WHERE status = 'failed')::text               AS failed,
+        COUNT(*) FILTER (
+          WHERE extracted ? '_issues'
+            AND jsonb_array_length(COALESCE(extracted->'_issues','[]'::jsonb)) > 0
+        )::text                                                       AS validation_issues,
+        COUNT(*) FILTER (WHERE last_llm_call IS NOT NULL)::text       AS llm_used,
+        percentile_cont(0.5) WITHIN GROUP (
+          ORDER BY EXTRACT(EPOCH FROM (finished_at - created_at)) * 1000
+        ) FILTER (WHERE finished_at IS NOT NULL)                      AS lat_p50,
+        percentile_cont(0.95) WITHIN GROUP (
+          ORDER BY EXTRACT(EPOCH FROM (finished_at - created_at)) * 1000
+        ) FILTER (WHERE finished_at IS NOT NULL)                      AS lat_p95,
+        AVG(confidence) FILTER (WHERE status IN ('done','needs_review'))::text AS avg_confidence
+      FROM jobs
+      WHERE created_at >= now() - ($1 || ' hours')::interval
+        ${whereExtra}
+      GROUP BY 1
+      ORDER BY COUNT(*) DESC, slug ASC
+    `;
+    const byTypeRes = await db.query<{
+      slug: string;
+      total: string;
+      done: string;
+      needs_review: string;
+      failed: string;
+      validation_issues: string;
+      llm_used: string;
+      lat_p50: string | null;
+      lat_p95: string | null;
+      avg_confidence: string | null;
+    }>(byTypeSql, params);
+
+    const byType = byTypeRes.rows.map((r) => {
+      const tot = Number(r.total);
+      return {
+        slug: r.slug,
+        total: tot,
+        done: Number(r.done),
+        needs_review: Number(r.needs_review),
+        failed: Number(r.failed),
+        validation_issues: Number(r.validation_issues),
+        llm_used: Number(r.llm_used),
+        latency_p50_ms: r.lat_p50 === null ? null : Math.round(Number(r.lat_p50)),
+        latency_p95_ms: r.lat_p95 === null ? null : Math.round(Number(r.lat_p95)),
+        avg_confidence: r.avg_confidence === null ? null : Number(r.avg_confidence),
+        // Pre-computed rates — UI не пересчитывает.
+        done_rate: tot === 0 ? 0 : Number(r.done) / tot,
+        needs_review_rate: tot === 0 ? 0 : Number(r.needs_review) / tot,
+        failed_rate: tot === 0 ? 0 : Number(r.failed) / tot,
+        validation_issue_rate: tot === 0 ? 0 : Number(r.validation_issues) / tot,
+        llm_fallback_rate: tot === 0 ? 0 : Number(r.llm_used) / tot,
+      };
+    });
+
+    return {
+      window_hours: windowHours,
+      totals: {
+        total,
+        pending: Number(t.pending),
+        processing: Number(t.processing),
+        done: Number(t.done),
+        needs_review: Number(t.needs_review),
+        failed: Number(t.failed),
+        validation_issues: Number(t.validation_issues),
+        llm_used: Number(t.llm_used),
+      },
+      rates: {
+        done_rate: total === 0 ? 0 : Number(t.done) / total,
+        needs_review_rate: total === 0 ? 0 : Number(t.needs_review) / total,
+        failed_rate: total === 0 ? 0 : Number(t.failed) / total,
+        validation_issue_rate: total === 0 ? 0 : Number(t.validation_issues) / total,
+        llm_fallback_rate: total === 0 ? 0 : Number(t.llm_used) / total,
+      },
+      latency: {
+        p50_ms: t.lat_p50 === null ? null : Math.round(Number(t.lat_p50)),
+        p95_ms: t.lat_p95 === null ? null : Math.round(Number(t.lat_p95)),
+      },
+      llm: {
+        tokens_in_p95: t.tok_in_p95 === null ? null : Math.round(Number(t.tok_in_p95)),
+        tokens_out_p95: t.tok_out_p95 === null ? null : Math.round(Number(t.tok_out_p95)),
+        duration_p95_ms:
+          t.llm_dur_p95 === null ? null : Math.round(Number(t.llm_dur_p95)),
+      },
+      avg_confidence: t.avg_confidence === null ? null : Number(t.avg_confidence),
+      throughput_per_hour: total === 0 ? 0 : Math.round((total / windowHours) * 100) / 100,
+      by_type: byType,
+    };
   }
 
   async list(filters: ListFilters): Promise<JobRow[]> {

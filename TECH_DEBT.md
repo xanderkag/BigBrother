@@ -59,6 +59,46 @@
 - ✅ **B5 file magic-bytes validation** — пакет `file-type ^19.6`. После сохранения файла читаются magic bytes; если детектируется не из `ACCEPTED_DOCUMENT_MIMES` (PDF/JPEG/PNG/BMP/TIFF/WebP) — 400 и удаление файла. Если detected mime ≠ declared multipart Content-Type — detected становится authoritative (логируется warning). Защита от exe-под-видом-PDF, расширения vs реальный формат, и подобного.
 - ✅ Тесты: `tests/idempotency.spec.ts` (header parsing, unique-violation detector), `tests/magic-bytes.spec.ts` (PDF/PNG/JPEG/BMP/WebP по реальным magic bytes, рейект plaintext/exe, обнаружение mislabelled PDF).
 
+### Phase 3 Day 23 — Operational dashboard (2026-05-12)
+
+Закрыт долг «метрики есть, в UI их не видно». Из тех же критериев,
+что и в eval'е, выделили подмножество, которое можно посчитать
+ИЗ БД без эталонов (status, latency, LLM-расход) — и сделали
+живой operational-дашборд. Accuracy и field-coverage остаются за
+golden-set'ом (это правильно — без ground-truth их посчитать
+невозможно).
+
+- ✅ `storage/jobs.ts:getOperationalSummary(windowHours, scope)` —
+  один SQL-аггрегатор. Перцентили через `percentile_cont WITHIN
+  GROUP (ORDER BY …)` без выгрузки строк в Node. Tenant-scope
+  применяется автоматически через `getEffectiveScope`. Empty
+  projects-scope короткозамыкает в emptySummary, чтобы не делать
+  лишний SQL на пустой набор.
+- ✅ `routes/operational-metrics.ts`: GET /api/v1/metrics/operational
+  с `?window=1h|24h|7d|30d`. zod-схема ответа, авто-фильтр под
+  текущего user'а, swagger description с явной отсылкой к eval'у
+  для accuracy.
+- ✅ UI: новая вкладка «Dashboard» в sidebar (первая, default). 4
+  топ-карточки (total / done / needs_review / failed) + bar
+  validation issues + 2 карточки latency и LLM-tokens + per-type
+  таблица. Window-switcher (1h / 24h / 7d / 30d) с persist в
+  localStorage, auto-refresh 30 сек, cleanup на uhod со страницы.
+  Бэйджи на rates окрашены по порогам (good / warn / bad) — за 5
+  сек видно «горит или ок».
+- ✅ Тесты (`tests/operational-summary.spec.ts`): empty-scope
+  short-circuit, shape-трансформация полной выборки, total=0 без
+  делений на ноль, scope-параметры (org / projects ANY-array) —
+  5/5 passed.
+
+Что не закрыто (вне этой итерации):
+- Time-series график (сейчас точечная сводка за окно). Нужен
+  материализованный rollup по часам, чтобы рисовать sparkline без
+  тяжёлых ad-hoc SQL'ей.
+- Алёрты на пороги (needs_review > 40% → notify). Сначала нужен
+  механизм нотификаций.
+- Стоимость в рублях/долларах: токены × прайс. Прайсы лежат
+  per-provider, пока не вынесли в config.
+
 ### Phase 3 Day 22 — Golden-set eval harness (2026-05-12)
 
 Закрыт долг #1 из списка «до серверного прогона»: появилась цифра

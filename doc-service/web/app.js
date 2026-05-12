@@ -767,12 +767,13 @@ async function initWorkspace() {
 // ============================================================
 
 function route() {
-  const h = (location.hash || '#jobs').slice(1);
+  const h = (location.hash || '#dashboard').slice(1);
 
   document.querySelectorAll('[data-nav]').forEach((el) => {
     const target = el.dataset.nav;
     const isActive =
       h === target ||
+      (target === 'dashboard' && h.startsWith('dashboard')) ||
       (target === 'jobs' && h.startsWith('jobs')) ||
       (target === 'document-types' && h.startsWith('document-types')) ||
       (target === 'providers' && h.startsWith('providers')) ||
@@ -781,6 +782,7 @@ function route() {
     el.classList.toggle('active', isActive);
   });
 
+  if (h === 'dashboard') return renderDashboard();
   if (h === 'jobs') return renderJobsList();
   if (h.startsWith('jobs/')) return renderJobDetail(h.slice(5));
   if (h === 'upload') return renderUpload();
@@ -793,9 +795,327 @@ function route() {
   if (h === 'audit-log') return renderAuditLog();
   if (h === 'tenants') return renderTenants();
   if (h === 'settings') return renderSettings();
-  location.hash = '#jobs';
+  location.hash = '#dashboard';
 }
 window.addEventListener('hashchange', route);
+
+// ============================================================
+// Dashboard — операционный обзор
+// ============================================================
+//
+// Что выводим (и почему): только метрики, которые можно посчитать ИЗ БД
+// без ground-truth — статусы, latency перцентили, LLM-стоимость,
+// throughput, per-type breakdown. Accuracy/coverage требуют golden-set,
+// и считаются отдельно через `npm run eval`.
+//
+// UX-приоритет: пользователь должен за 5 секунд понять — «всё ок или
+// что-то горит». Поэтому сверху — большие цифры totals + статус-бар,
+// ниже — латенси и LLM, в самом низу — таблица по типам. Окно
+// переключается одним кликом (1h / 24h / 7d / 30d) — без формы.
+// Auto-refresh каждые 30 сек когда вкладка активна (cleanup на uhod
+// со страницы), окно меняется без перезагрузки страницы.
+
+const DASHBOARD_WINDOWS = [
+  { value: '1h', label: '1 час' },
+  { value: '24h', label: '24 часа' },
+  { value: '7d', label: '7 дней' },
+  { value: '30d', label: '30 дней' },
+];
+const DASHBOARD_REFRESH_MS = 30_000;
+
+function pctFmt(n) {
+  if (n === null || n === undefined || Number.isNaN(n)) return '—';
+  return `${(n * 100).toFixed(1)}%`;
+}
+function msFmt(n) {
+  if (n === null || n === undefined) return '—';
+  if (n < 1000) return `${n} мс`;
+  return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0)} с`;
+}
+function numFmt(n) {
+  if (n === null || n === undefined || Number.isNaN(n)) return '—';
+  return new Intl.NumberFormat('ru-RU').format(n);
+}
+function confFmt(n) {
+  if (n === null || n === undefined) return '—';
+  return n.toFixed(3);
+}
+
+// Цветовая шкала для нашего нагрузки/нездоровья. Использую те же
+// токены что для status-бэйджей, чтобы UI был consistent.
+function rateBadgeClass(rate, { goodMax, badMin }) {
+  if (rate === null || rate === undefined) return 'badge-slate';
+  if (rate >= badMin) return 'badge-rose';
+  if (rate <= goodMax) return 'badge-emerald';
+  return 'badge-amber';
+}
+
+async function renderDashboard() {
+  // Persist выбранного окна между визитами — частая UX-просьба
+  // у мониторинга. Default = 24h (хорошее окно для оперативного взгляда).
+  const initialWindow = localStorage.getItem('dashboard_window') || '24h';
+
+  setView(`
+    <div class="page">
+      ${pageHeader({
+        title: 'Dashboard',
+        subtitle: 'Операционная сводка по обработке документов',
+        actions: `
+          <div class="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 rounded-lg p-1" id="dashboard-window-switcher">
+            ${DASHBOARD_WINDOWS.map((w) => `
+              <button data-window="${w.value}" class="px-3 py-1 text-xs font-medium rounded ${w.value === initialWindow ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}">
+                ${escapeHtml(w.label)}
+              </button>
+            `).join('')}
+          </div>
+          <button id="dashboard-refresh" class="btn-ghost btn-sm" title="Обновить сейчас">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 0 1-9.201 2.466l-.312-.311h2.433a.75.75 0 0 0 0-1.5H3.989a.75.75 0 0 0-.75.75v4.242a.75.75 0 0 0 1.5 0v-2.43l.31.31a7 7 0 0 0 11.712-3.138.75.75 0 0 0-1.449-.39Zm1.23-3.723a.75.75 0 0 0 .219-.53V2.929a.75.75 0 0 0-1.5 0V5.36l-.31-.31A7 7 0 0 0 3.239 8.188a.75.75 0 1 0 1.448.389A5.5 5.5 0 0 1 13.89 6.11l.311.31h-2.432a.75.75 0 0 0 0 1.5h4.243a.75.75 0 0 0 .53-.219Z" clip-rule="evenodd"/></svg>
+          </button>
+        `,
+      })}
+      <div id="dashboard-content" class="space-y-4">${loadingState()}</div>
+      <p class="mt-4 text-xs text-slate-400 dark:text-slate-500">
+        Метрики считаются из БД на лету. Accuracy и поле-точность требуют эталонного набора —
+        см. <code class="font-mono">npm run eval</code>.
+      </p>
+    </div>
+  `);
+
+  let currentWindow = initialWindow;
+  let refreshTimer = null;
+
+  async function refresh() {
+    try {
+      const data = await apiJson(`/metrics/operational?window=${encodeURIComponent(currentWindow)}`);
+      const el = document.getElementById('dashboard-content');
+      if (!el) return; // ушли со страницы
+      el.innerHTML = renderDashboardBody(data);
+    } catch (err) {
+      const el = document.getElementById('dashboard-content');
+      if (el) el.innerHTML = errorState(err.message);
+    }
+  }
+
+  function setWindow(value) {
+    if (value === currentWindow) return;
+    currentWindow = value;
+    localStorage.setItem('dashboard_window', value);
+    document
+      .querySelectorAll('#dashboard-window-switcher button')
+      .forEach((b) => {
+        const active = b.dataset.window === value;
+        b.className = `px-3 py-1 text-xs font-medium rounded ${
+          active
+            ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-sm'
+            : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+        }`;
+      });
+    refresh();
+  }
+
+  document
+    .getElementById('dashboard-window-switcher')
+    ?.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-window]');
+      if (btn) setWindow(btn.dataset.window);
+    });
+  document.getElementById('dashboard-refresh')?.addEventListener('click', refresh);
+
+  await refresh();
+  refreshTimer = setInterval(refresh, DASHBOARD_REFRESH_MS);
+  registerCleanup(() => {
+    if (refreshTimer) clearInterval(refreshTimer);
+  });
+}
+
+function renderDashboardBody(data) {
+  return `
+    ${renderDashboardTotals(data)}
+    ${renderDashboardLatencyAndLlm(data)}
+    ${renderDashboardByType(data)}
+  `;
+}
+
+function renderDashboardTotals(data) {
+  const t = data.totals;
+  const r = data.rates;
+
+  // Топ-карточки: одна большая цифра + раскладка под ней.
+  // Логика бэйджей по rates: чем меньше needs_review и failed — тем лучше.
+  // Пороги взяты из README eval'а; для дашборда — те же.
+  const reviewBadge = rateBadgeClass(r.needs_review_rate, { goodMax: 0.2, badMin: 0.4 });
+  const failedBadge = rateBadgeClass(r.failed_rate, { goodMax: 0.01, badMin: 0.05 });
+  const issueBadge = rateBadgeClass(r.validation_issue_rate, { goodMax: 0.15, badMin: 0.35 });
+
+  return `
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div class="card card-body">
+        <div class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Всего jobs</div>
+        <div class="text-3xl font-semibold mt-1">${numFmt(t.total)}</div>
+        <div class="text-xs text-slate-500 dark:text-slate-400 mt-1">
+          ${numFmt(data.throughput_per_hour)} / час · окно ${escapeHtml(String(data.window_hours))} ч
+        </div>
+      </div>
+      <div class="card card-body">
+        <div class="flex items-center justify-between">
+          <div class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Done</div>
+          <span class="badge badge-emerald">${pctFmt(r.done_rate)}</span>
+        </div>
+        <div class="text-3xl font-semibold mt-1">${numFmt(t.done)}</div>
+        <div class="text-xs text-slate-500 dark:text-slate-400 mt-1">
+          avg confidence ${confFmt(data.avg_confidence)}
+        </div>
+      </div>
+      <div class="card card-body">
+        <div class="flex items-center justify-between">
+          <div class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Needs review</div>
+          <span class="badge ${reviewBadge}">${pctFmt(r.needs_review_rate)}</span>
+        </div>
+        <div class="text-3xl font-semibold mt-1">${numFmt(t.needs_review)}</div>
+        <div class="text-xs text-slate-500 dark:text-slate-400 mt-1">
+          <a href="#jobs?status=needs_review" class="text-indigo-600 hover:text-indigo-700">открыть список →</a>
+        </div>
+      </div>
+      <div class="card card-body">
+        <div class="flex items-center justify-between">
+          <div class="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Failed</div>
+          <span class="badge ${failedBadge}">${pctFmt(r.failed_rate)}</span>
+        </div>
+        <div class="text-3xl font-semibold mt-1">${numFmt(t.failed)}</div>
+        <div class="text-xs text-slate-500 dark:text-slate-400 mt-1">
+          ${t.pending + t.processing > 0 ? `${numFmt(t.pending + t.processing)} in-flight` : 'нет in-flight'}
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-body">
+        <div class="flex items-center justify-between mb-2">
+          <h3 class="card-title">Качество extraction</h3>
+          <span class="badge ${issueBadge}">${pctFmt(r.validation_issue_rate)} с issues</span>
+        </div>
+        <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">
+          Доля jobs, в которых доменная валидация нашла нестыковки (ИНН/КПП, НДС-сумма,
+          госномер, парс дат). Без эталона мы не знаем «правильно или нет» —
+          это <em>indicator of trouble</em>, не accuracy.
+        </p>
+        <dl class="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-2 text-sm">
+          <div class="kv-row"><dt class="kv-key">с validation issues</dt><dd class="kv-value">${numFmt(t.validation_issues)}</dd></div>
+          <div class="kv-row"><dt class="kv-key">LLM-fallback</dt><dd class="kv-value">${numFmt(t.llm_used)} (${pctFmt(r.llm_fallback_rate)})</dd></div>
+          <div class="kv-row"><dt class="kv-key">pending</dt><dd class="kv-value">${numFmt(t.pending)}</dd></div>
+          <div class="kv-row"><dt class="kv-key">processing</dt><dd class="kv-value">${numFmt(t.processing)}</dd></div>
+        </dl>
+      </div>
+    </div>
+  `;
+}
+
+function renderDashboardLatencyAndLlm(data) {
+  return `
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="card card-body">
+        <h3 class="card-title mb-2">End-to-end latency</h3>
+        <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">
+          От <code class="font-mono">POST /jobs</code> до финального статуса.
+          Включает ожидание в очереди — клиент видит именно это.
+        </p>
+        <div class="grid grid-cols-2 gap-3">
+          <div class="rounded-lg bg-slate-50 dark:bg-slate-950/50 p-3">
+            <div class="text-xs uppercase tracking-wider text-slate-500">P50</div>
+            <div class="text-2xl font-semibold mt-1 font-mono">${msFmt(data.latency.p50_ms)}</div>
+          </div>
+          <div class="rounded-lg bg-slate-50 dark:bg-slate-950/50 p-3">
+            <div class="text-xs uppercase tracking-wider text-slate-500">P95</div>
+            <div class="text-2xl font-semibold mt-1 font-mono">${msFmt(data.latency.p95_ms)}</div>
+          </div>
+        </div>
+      </div>
+      <div class="card card-body">
+        <h3 class="card-title mb-2">LLM-расход</h3>
+        <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">
+          P95 по последнему LLM-вызову в job'е. Прокси для стоимости —
+          хвост важнее среднего (бюджет сжигается на больших документах).
+        </p>
+        <dl class="grid grid-cols-3 gap-3">
+          <div class="rounded-lg bg-slate-50 dark:bg-slate-950/50 p-3">
+            <div class="text-xs uppercase tracking-wider text-slate-500">tokens in</div>
+            <div class="text-xl font-semibold mt-1 font-mono">${numFmt(data.llm.tokens_in_p95)}</div>
+          </div>
+          <div class="rounded-lg bg-slate-50 dark:bg-slate-950/50 p-3">
+            <div class="text-xs uppercase tracking-wider text-slate-500">tokens out</div>
+            <div class="text-xl font-semibold mt-1 font-mono">${numFmt(data.llm.tokens_out_p95)}</div>
+          </div>
+          <div class="rounded-lg bg-slate-50 dark:bg-slate-950/50 p-3">
+            <div class="text-xs uppercase tracking-wider text-slate-500">call ms</div>
+            <div class="text-xl font-semibold mt-1 font-mono">${msFmt(data.llm.duration_p95_ms)}</div>
+          </div>
+        </dl>
+      </div>
+    </div>
+  `;
+}
+
+function renderDashboardByType(data) {
+  if (!data.by_type || data.by_type.length === 0) {
+    return `
+      <div class="card empty-state">
+        <p class="empty-state-text">За окно нет jobs — загрузите документы во вкладке Upload.</p>
+      </div>
+    `;
+  }
+
+  const rows = data.by_type.map((t) => {
+    const slugLabel =
+      t.slug === '_unknown'
+        ? '<span class="badge badge-slate">не классифицирован</span>'
+        : `<a href="#jobs?document_type=${encodeURIComponent(t.slug)}" class="font-mono text-sm text-indigo-700 dark:text-indigo-300 hover:underline">${escapeHtml(t.slug)}</a>`;
+    const reviewBadge = rateBadgeClass(t.needs_review_rate, { goodMax: 0.2, badMin: 0.4 });
+    const failedBadge = rateBadgeClass(t.failed_rate, { goodMax: 0.01, badMin: 0.05 });
+    const issueBadge = rateBadgeClass(t.validation_issue_rate, { goodMax: 0.15, badMin: 0.35 });
+    return `
+      <tr>
+        <td>${slugLabel}</td>
+        <td class="font-mono text-right">${numFmt(t.total)}</td>
+        <td class="text-right">${numFmt(t.done)}<span class="text-slate-400 ml-1">/${pctFmt(t.done_rate)}</span></td>
+        <td class="text-right"><span class="badge ${reviewBadge}">${pctFmt(t.needs_review_rate)}</span></td>
+        <td class="text-right"><span class="badge ${failedBadge}">${pctFmt(t.failed_rate)}</span></td>
+        <td class="text-right"><span class="badge ${issueBadge}">${pctFmt(t.validation_issue_rate)}</span></td>
+        <td class="font-mono text-right">${msFmt(t.latency_p50_ms)}</td>
+        <td class="font-mono text-right">${msFmt(t.latency_p95_ms)}</td>
+        <td class="text-right">${pctFmt(t.llm_fallback_rate)}</td>
+        <td class="font-mono text-right">${confFmt(t.avg_confidence)}</td>
+      </tr>
+    `;
+  }).join('');
+
+  return `
+    <div class="card">
+      <div class="card-header">
+        <h3 class="card-title">По типам документов</h3>
+        <span class="text-xs text-slate-500 dark:text-slate-400">сортировка по объёму</span>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>тип</th>
+              <th class="text-right">total</th>
+              <th class="text-right">done</th>
+              <th class="text-right">needs_review</th>
+              <th class="text-right">failed</th>
+              <th class="text-right">issues</th>
+              <th class="text-right">P50</th>
+              <th class="text-right">P95</th>
+              <th class="text-right">LLM</th>
+              <th class="text-right">avg conf.</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
 
 // ============================================================
 // Jobs list
