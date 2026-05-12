@@ -413,10 +413,15 @@ export async function runDocumentPipeline(
     //     needs_review threshold.
     typeConfig = await documentTypeResolver.resolveConfig(documentType);
 
-    // Factory диспатчит: builtin slug → типизированный парсер,
-    // custom slug → GenericLlmParser (всё извлечение через LLM с
-    // DB-резолвленной схемой/полями).
-    const parser = parsersFactory.get(documentType);
+    // CP1: parser_kind dispatch. Если в БД задано 'llm_extract' — форсируем
+    // GenericLlmParser даже для builtin-slug'ов (позволяет переключить тип
+    // с regex на чистый LLM через UI без передеплоя кода).
+    // Для всех остальных значений (null / builtin:*) — стандартный диспатч
+    // фабрики: builtin slug → типизированный regex-парсер, custom → Generic.
+    const parser =
+      typeConfig?.parserKind === 'llm_extract'
+        ? parsersFactory.getGeneric(documentType)
+        : parsersFactory.get(documentType);
     const tParser = Date.now();
     const result = await parser.parse(rawText, {
       expectedFields: typeConfig.expectedFields,

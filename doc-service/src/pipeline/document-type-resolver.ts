@@ -47,6 +47,13 @@ export type ResolvedTypeConfig = {
    * встроенный prompt для этого типа.
    */
   llmPrompt: string | null;
+  /**
+   * CP1: parser_kind из БД. Если 'llm_extract' — форсируем GenericLlmParser
+   * даже для builtin-slug'ов (позволяет отключить regex и перейти на чистый
+   * LLM для конкретного типа без передеплоя кода).
+   * null = используем дефолтный диспатч фабрики.
+   */
+  parserKind: string | null;
   /** Whether this config was DB-sourced or fully built from fallbacks. */
   source: 'db' | 'fallback';
 };
@@ -158,6 +165,7 @@ export function resolveConfigFromRow(
       validators: [],
       llmSchema: fallbackSchema as Record<string, unknown>,
       llmPrompt: null,
+      parserKind: null,
       source: 'fallback',
     };
   }
@@ -178,6 +186,7 @@ export function resolveConfigFromRow(
     // Пустую строку трактуем как «не задан» — в форме админ может Save'нуть
     // textarea с одними пробелами; не разваливаем prompt.
     llmPrompt: row.llm_prompt && row.llm_prompt.trim().length > 0 ? row.llm_prompt : null,
+    parserKind: row.parser_kind ?? null,
     source: 'db',
   };
 }

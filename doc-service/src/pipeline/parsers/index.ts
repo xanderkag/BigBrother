@@ -55,6 +55,15 @@ export class ParsersFactory {
     if (isBuiltinDocumentType(slug)) {
       return this.builtins[slug];
     }
+    return this.getGeneric(slug);
+  }
+
+  /**
+   * CP1: Force GenericLlmParser regardless of slug type.
+   * Used when parser_kind='llm_extract' is set in the DB for a builtin type,
+   * bypassing the regex pipeline and going straight to LLM extraction.
+   */
+  getGeneric(slug: DocumentTypeSlug): DocumentParser {
     const cached = this.genericCache.get(slug);
     if (cached) return cached;
     const parser = new GenericLlmParser(this.llm, slug);
