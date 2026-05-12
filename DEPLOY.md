@@ -356,7 +356,7 @@ docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi
 | Актуальная `main` запушена в TAIPIT-origin | `git push origin main` | проверяй каждый раз перед заявкой |
 | `Dockerfile` + `docker-compose.yml` | в `doc-service/` и `inference-service/`, мастер-compose в корне | ✅ |
 | `.env.example` без значений | в каждом сервисе | ✅ |
-| `OWNERS.md` (owner + заместитель) | в корне | ✅ см. файл |
+| `OWNERS.md` (owner и контакты) | в корне | ✅ см. файл |
 | `README.md` с описанием проекта и security-нотой | корень | ✅ |
 | Deploy Token для прод-машины (read-only) | GitLab → Settings → Repository → Deploy tokens | создаётся по запросу DB Support |
 
