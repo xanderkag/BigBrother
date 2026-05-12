@@ -59,6 +59,41 @@
 - ✅ **B5 file magic-bytes validation** — пакет `file-type ^19.6`. После сохранения файла читаются magic bytes; если детектируется не из `ACCEPTED_DOCUMENT_MIMES` (PDF/JPEG/PNG/BMP/TIFF/WebP) — 400 и удаление файла. Если detected mime ≠ declared multipart Content-Type — detected становится authoritative (логируется warning). Защита от exe-под-видом-PDF, расширения vs реальный формат, и подобного.
 - ✅ Тесты: `tests/idempotency.spec.ts` (header parsing, unique-violation detector), `tests/magic-bytes.spec.ts` (PDF/PNG/JPEG/BMP/WebP по реальным magic bytes, рейект plaintext/exe, обнаружение mislabelled PDF).
 
+### Phase 3 Day 22 — Golden-set eval harness (2026-05-12)
+
+Закрыт долг #1 из списка «до серверного прогона»: появилась цифра
+качества пайплайна, которой можно меряться до/после изменения промпта,
+модели или цепочки OCR. Без него любые «улучшения» — на глаз.
+
+- ✅ `src/scripts/eval/compare.ts`: компараторы по типам (money,
+  percent, date, inn/kpp/account, plate, country, integer, number,
+  string). Money tolerance ±0.01, дата — нормализация в ISO, цифры —
+  digits-only. Различие missing vs mismatch отдельной вердиктой —
+  coverage и accuracy считаются как разные метрики.
+- ✅ `src/scripts/eval/schema.ts`: zod-схема golden-set.json. Один
+  файл описывает: instance + token + project_id + список фикстур.
+  На фикстуру: file, опц. document_type_hint/metadata, expected
+  document_type/terminal_status/no_issues/max_total_duration_ms/fields.
+- ✅ `src/scripts/eval/run.ts`: runner. POST /jobs → poll → comp.
+  Печатает per-fixture verdict с mismatch'ами и aggregate-таблицу:
+  classification accuracy, field coverage, field exact-match,
+  needs_review/failed/validation issue rate, latency P50/P95,
+  LLM tokens P95 in/out, LLM-fallback rate. Опц. JSON-out для CI.
+- ✅ `npm run eval` + `--fail-on-mismatch` для CI gating.
+- ✅ README: формат golden-set, описание компараторов, пороги для
+  деплоя (classification ≥0.95, exact-match ≥0.85, regression-
+  guard: падение exact-match >2 п.п. = блокер).
+- ✅ `golden-set.example.json` — рабочий пример с тремя фикстурами.
+- ✅ `tests/eval-compare.spec.ts`: 36 тестов на все компараторы,
+  включая разные surface-форм (1234.56 vs "1 234,56 ₽" vs 1234,56),
+  inferKind по path (vat_rate→percent, carrier.inn→inn, plate→plate)
+  и tracking missing-vs-mismatch.
+
+Дальнейшее (вне этой итерации):
+- Per-document-type aggregation в отчёте (сейчас только overall).
+- Сборка golden-set'а из реальных prod-jobs (replay из БД).
+- Grafana-панель, читающая report.json после ночного прогона.
+
 ### Phase 3 Day 21 — Multi-token: label + expires_at + last_used_at (2026-05-14)
 
 Закрыт UX-долг из фазы 2 multi-tenant'а: каждый user теперь имеет

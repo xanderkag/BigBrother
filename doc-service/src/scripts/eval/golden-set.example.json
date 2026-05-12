@@ -1,0 +1,56 @@
+{
+  "$schema": "Описание см. в src/scripts/eval/README.md",
+  "instance": "http://localhost:3000",
+  "token": "pdpat_REPLACE_ME",
+  "poll": { "interval_ms": 2000, "timeout_ms": 300000 },
+  "fixtures": [
+    {
+      "id": "ttn-rosneft-001",
+      "file": "./samples/ttn/rosneft-001.pdf",
+      "expected": {
+        "document_type": "ttn",
+        "terminal_status": "done",
+        "max_total_duration_ms": 60000,
+        "fields": [
+          { "path": "carrier.inn", "expected": "7707083893" },
+          { "path": "carrier.name", "expected": "ПАО Роснефть" },
+          { "path": "consignor.inn", "expected": "5024000001" },
+          { "path": "vehicle.plate", "expected": "А123ВВ77" },
+          { "path": "loading_date", "expected": "2026-04-12" },
+          { "path": "weight_net", "expected": 12500.5, "kind": "number" },
+          { "path": "positions.0.name", "expected": "Бензин АИ-92" }
+        ]
+      }
+    },
+    {
+      "id": "invoice-yandex-001",
+      "file": "./samples/invoice/yandex-001.pdf",
+      "expected": {
+        "document_type": "invoice",
+        "no_issues": true,
+        "fields": [
+          { "path": "seller.inn", "expected": "7736207543" },
+          { "path": "buyer.inn", "expected": "9909999999" },
+          { "path": "total", "expected": 125000.0 },
+          { "path": "vat", "expected": 20833.33 },
+          { "path": "vat_rate", "expected": 20, "kind": "percent" },
+          { "path": "invoice_date", "expected": "2026-03-01" },
+          { "path": "currency", "expected": "RUB" }
+        ]
+      }
+    },
+    {
+      "id": "cmr-export-001",
+      "file": "./samples/cmr/export-001.jpg",
+      "document_type_hint": "cmr",
+      "expected": {
+        "fields": [
+          { "path": "sender.country", "expected": "RU" },
+          { "path": "receiver.country", "expected": "DE" },
+          { "path": "vehicle.plate", "expected": "Х999ВВ77" },
+          { "path": "goods.0.weight", "expected": 5400, "kind": "number" }
+        ]
+      }
+    }
+  ]
+}

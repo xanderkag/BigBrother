@@ -624,6 +624,7 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
         body: TokenCreateBody,
         response: {
           201: TokenCreateResponse,
+          400: ErrorResponse,
           401: ErrorResponse,
           403: ErrorResponse,
           404: ErrorResponse,

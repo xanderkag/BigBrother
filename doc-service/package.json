@@ -19,6 +19,7 @@
     "migrate:secrets": "tsx src/scripts/migrate-secrets.ts",
     "rotate:secrets": "tsx src/scripts/rotate-secrets.ts",
     "smoke": "tsx src/scripts/smoke.ts",
+    "eval": "tsx src/scripts/eval/run.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
