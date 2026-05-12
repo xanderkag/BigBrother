@@ -41,12 +41,16 @@ docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi
 
 ## 2. Получаем код
 
+**Канонический источник — корпоративный GitLab:**
+
 ```bash
 git clone https://git.taipit.ru/airesearch/docs-parse.git parsdocs
 cd parsdocs
 ```
 
-(Или с GitHub: `git clone https://github.com/xanderkag/Doc-Parser.git parsdocs`)
+Если учётки в `git.taipit.ru` нет — открыть портал, залогиниться через Keycloak доменной учёткой (`DOMAIN\username` или e-mail). После первого логина — обратиться в DB Support за апрувом, если доступ к репозиториям не появился.
+
+GitHub-mirror (`xanderkag/BigBrother`) — параллельная отгрузка для backup'а и публичных демо. Канонический путь — **только** TAIPIT GitLab. Никаких чувствительных данных (паролей БД, API-токенов, экземпляров реальных документов) в обоих репозиториях быть не должно — только `.env.example` без значений.
 
 ---
 
@@ -337,3 +341,68 @@ docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi
 - [ ] Через UI можно загрузить документ, увидеть его в очереди, дождаться `done`
 - [ ] Результат `extracted` соответствует ожиданиям
 - [ ] (Опционально) Webhook доставляется на тестовый endpoint с правильной HMAC-подписью
+
+---
+
+## 11. Развёртывание в корпоративной песочнице ТАЙПИТ
+
+Этот раздел — для случая «локально работает, теперь нужно поднять на `10.10.13.10` под поддоменом `*.taipit.ru`», по правилам внутренней AI-инициативы. Канонический документ-регламент — «Памятка автору решения, разрабатываемого вне штатного процесса разработки» (v0.2+, в стадии согласования). Этот раздел — практическая выжимка под наш конкретный стек.
+
+### 11.1. Что должен подготовить автор
+
+| Артефакт | Где | Статус |
+|---|---|---|
+| Репо в `git.taipit.ru/airesearch/docs-parse` | `git@git.taipit.ru:airesearch/docs-parse.git` | ✅ создан |
+| Актуальная `main` запушена в TAIPIT-origin | `git push origin main` | проверяй каждый раз перед заявкой |
+| `Dockerfile` + `docker-compose.yml` | в `doc-service/` и `inference-service/`, мастер-compose в корне | ✅ |
+| `.env.example` без значений | в каждом сервисе | ✅ |
+| `OWNERS.md` (owner + заместитель) | в корне | ✅ см. файл |
+| `README.md` с описанием проекта и security-нотой | корень | ✅ |
+| Deploy Token для прод-машины (read-only) | GitLab → Settings → Repository → Deploy tokens | создаётся по запросу DB Support |
+
+### 11.2. Что просить у DB Support
+
+Готовый шаблон письма — см. `OWNERS.md` (раздел «Запрос на развёртывание»). Кратко:
+
+| Параметр | Значение |
+|---|---|
+| **Имя проекта** | `docs-parse` (внутренний name `parsdocs`) |
+| **Желаемый поддомен** | `parsdocs.taipit.ru` (или другой свободный) |
+| **Стек** | Node.js 22 (Fastify) + Python 3.11 (FastAPI) + PostgreSQL 16 + Redis 7. Опционально — Ollama / vLLM для локальной модели. Всё через `docker compose`. |
+| **WebSocket / SSE / Upgrade-headers** | НЕ требуются. Чистый REST + polling в UI. |
+| **Внешний порт** | один: `doc-service:3000` (UI + API). `inference:8000` — только внутри docker-сети, наружу не публикуется. |
+| **TLS** | через корп. nginx, HTTPS-only. |
+| **Ресурсы (пилот)** | 32 GB RAM, 100 GB disk, GPU желателен (≥16 GB VRAM для Qwen2.5-VL 7B). См. таблицу в разделе 1. |
+| **Корп. БД** | НЕ требуется — у сервиса своя Postgres в compose. `pg_hba.conf` не релевантен. |
+| **DBA-доступы** | не нужны. |
+
+### 11.3. Регламент работы с кодом
+
+- **Все правки идут в `origin` (`git.taipit.ru/airesearch/docs-parse`).** GitHub `xanderkag/BigBrother` — параллельный mirror, на него тоже пушим, но canonical = TAIPIT.
+- **Перед каждым `git push`:** `git diff --cached`, проверка что в стейдже нет `.env`, ключей, sample-документов с реальными данными, отладочных принтов.
+- **Секреты не в git и не в логах.** `.env` в `.gitignore` на всех уровнях; в репо — только `.env.example`.
+- **Cloud-LLM (`claude`, `openai`) — для прод-данных запрещён.** На песочнице держим `BACKEND=stub` или `openai_compat` (локальная Ollama / vLLM). Cloud-ключи в env храним только если действительно нужны для отладки промптов на синтетике.
+- **Действия с внешними последствиями — через confirm.** Webhook'и опциональны, через UI настраиваются явно. Никаких автоматических ответов / отправок без подтверждения оператора.
+
+### 11.4. После приёмки (когда регламент v0.2+ войдёт)
+
+По текущему черновику Памятки разворачивает DB Support, не автор. Тогда последовательность будет такая:
+
+1. Автор связывается с DB Support **за ~2 недели** до планируемой подачи на ранний апрув.
+2. Готовит локально (L1), доводит качество на golden-set'е (`npm run eval`).
+3. Подаёт комплект: репо + README + `.env.example` + паспорт MVP + owner+зам + перечень секретов + резервный план + бюджет ресурсов.
+4. DB Support разворачивает на корп. инфраструктуре, автор остаётся owner'ом.
+
+### 11.5. Smoke после развёртывания
+
+```bash
+# С сервера
+curl -i https://parsdocs.taipit.ru/health   # → 200 ok
+curl -i https://parsdocs.taipit.ru/ready    # → 200 ready (postgres/redis/storage все живы)
+
+# С токеном — operational metrics
+curl -H "Authorization: Bearer $API_KEY" \
+     https://parsdocs.taipit.ru/api/v1/metrics/operational?window=24h
+```
+
+Если `/ready` отдаёт 503 — смотри `error` в JSON. Чаще всего: postgres ещё не отмигрирован, redis недоступен, или storage volume не примонтирован.
