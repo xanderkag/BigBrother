@@ -2,6 +2,12 @@
 
 ---
 
-Паш, привет. Хотим запилить **parsdocs** (репо `git.taipit.ru/airesearch/docs-parse`) на `10.10.13.10` — docker compose, без сюрпризов: node + python + postgres + redis, опц. Ollama под локальную LLM. Наружу один порт `doc-service:3000` (UI+API), нужен поддомен `parsdocs.taipit.ru` с TLS через корп. nginx, WebSocket не используем. Корпоративную БД не дёргаем — своя Postgres в compose. Compose поднимаем сами, нужно от тебя три вещи: (1) **свободный host-port** из вашего пула (контейнер слушает 3000, пробросим на что дашь); (2) **proxy_pass** `parsdocs.taipit.ru → 10.10.13.10:<port>` + TLS; (3) **открыть этот порт** в firewall сервера. GPU был бы плюсом если есть свободная ≥16 GB VRAM. Секреты передам отдельно.
+Паш, привет. Хотим запилить **parsdocs** (репо `git.taipit.ru/airesearch/docs-parse`) на `10.10.13.10` — docker compose: node + python + postgres + redis, опц. Ollama под локальную LLM. Наружу один порт — контейнер слушает `3000`, пробрасываем на `8085`. Compose поднимаем сами, нужно от тебя:
+
+1. `proxy_pass` `parsedocs.taipit.ru → 10.10.13.10:8085` + TLS
+2. Открыть `8085` в firewall сервера
+3. В nginx-блоке: `client_max_body_size 50m`, `proxy_read_timeout 600s`, WS-headers (`proxy_http_version 1.1`, `Upgrade $http_upgrade`, `Connection $connection_upgrade`) — OCR + LLM может идти до 5-10 минут, PDF-сканы бывают тяжёлые
+
+Корп. БД не используем — своя Postgres в compose. GPU был бы плюсом ≥16 GB VRAM. Секреты передам отдельно.
 
 — А. Ляпустин

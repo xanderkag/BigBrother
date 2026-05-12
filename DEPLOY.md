@@ -367,11 +367,11 @@ docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi
 | Параметр | Значение |
 |---|---|
 | **Имя проекта** | `docs-parse` (внутренний name `parsdocs`) |
-| **Желаемый поддомен** | `parsdocs.taipit.ru` (или другой свободный) |
+| **Желаемый поддомен** | `parsedocs.taipit.ru` |
 | **Стек** | Node.js 22 (Fastify) + Python 3.11 (FastAPI) + PostgreSQL 16 + Redis 7. Опционально — Ollama / vLLM для локальной модели. Всё через `docker compose`. |
-| **WebSocket / SSE / Upgrade-headers** | НЕ требуются. Чистый REST + polling в UI. |
-| **Внешний порт** | один: `doc-service:3000` (UI + API). `inference:8000` — только внутри docker-сети, наружу не публикуется. |
+| **Внешний порт (host)** | `8085` → проксируется на `doc-service:3000`. `inference:8000` — только внутри docker-сети, наружу не публикуется. |
 | **TLS** | через корп. nginx, HTTPS-only. |
+| **nginx-параметры** | `client_max_body_size 50m` (PDF-сканы); `proxy_read_timeout 600s` (OCR + LLM до 5-10 мин); WS-headers (`proxy_http_version 1.1`, `Upgrade`, `Connection`) — страховка. |
 | **Ресурсы (пилот)** | 32 GB RAM, 100 GB disk, GPU желателен (≥16 GB VRAM для Qwen2.5-VL 7B). См. таблицу в разделе 1. |
 | **Корп. БД** | НЕ требуется — у сервиса своя Postgres в compose. `pg_hba.conf` не релевантен. |
 | **DBA-доступы** | не нужны. |
@@ -397,12 +397,12 @@ docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi
 
 ```bash
 # С сервера
-curl -i https://parsdocs.taipit.ru/health   # → 200 ok
-curl -i https://parsdocs.taipit.ru/ready    # → 200 ready (postgres/redis/storage все живы)
+curl -i https://parsedocs.taipit.ru/health   # → 200 ok
+curl -i https://parsedocs.taipit.ru/ready    # → 200 ready (postgres/redis/storage все живы)
 
 # С токеном — operational metrics
 curl -H "Authorization: Bearer $API_KEY" \
-     https://parsdocs.taipit.ru/api/v1/metrics/operational?window=24h
+     https://parsedocs.taipit.ru/api/v1/metrics/operational?window=24h
 ```
 
 Если `/ready` отдаёт 503 — смотри `error` в JSON. Чаще всего: postgres ещё не отмигрирован, redis недоступен, или storage volume не примонтирован.
