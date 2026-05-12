@@ -963,15 +963,17 @@ proxy_http_version 1.1; Upgrade $http_upgrade; Connection $connection_upgrade;
 
 ---
 
-### CP5. Расширение набора document types
+### ~~CP5. Расширение набора document types~~ — ✅ закрыто 2026-05-12
 
-**Где:** `migrations/...` + опционально через API после CP4
+`migrations/20260514000005_extended_document_types.sql` — +6 builtin-типов (все `llm_extract`):
+- `payment_order` — Платёжное поручение (форма 0401060); валидаторы inn/kpp/money
+- `commercial_invoice` — Международный инвойс (ВЭД); поля exporter/consignee/hs_code/incoterms
+- `packing_list` — Упаковочный лист; поля по местам/весу/объёму  
+- `bill_of_lading` — Коносамент (B/L); vessel/voyage/containers ISO-6346
+- `customs_declaration` — ГТД/ДТ; регномер/декларант/графа-31/пошлины
+- `cash_receipt` — Кассовый чек ККТ (54-ФЗ); ФН/ФД/ФП/позиции
 
-**Симптом:** Сейчас только 6 типов. По roadmap нужно: commercial invoice, packing list, AWB, B/L, контракты, customs, этикеты, доверенности, сертификаты, внутренние формы.
-
-**Лечение:** После CP1-CP4 каждый новый тип = миграция со seed-вставкой (или админ через UI). Параллельно — определить JSON schemas для каждого, написать LLM-промпты, валидаторы.
-
-**Оценка:** ~день на тип (включая prompt-инжиниринг и проверку на образцах).
+Все с `llm_schema` + `expected_fields` + `classification_keywords` + `llm_prompt`. Через UI добавляются без перезапуска кода.
 
 ---
 
