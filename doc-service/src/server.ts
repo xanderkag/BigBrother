@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import Fastify from 'fastify';
+import rateLimit from '@fastify/rate-limit';
 import multipart from '@fastify/multipart';
 import staticFiles from '@fastify/static';
 import swagger from '@fastify/swagger';
@@ -56,6 +57,34 @@ async function main() {
   // (e.g., the multipart POST /jobs) keep ajv defaults.
   app.setValidatorCompiler(validatorCompiler);
   app.setSerializerCompiler(serializerCompiler);
+
+  // I5: Rate-limiting. Keyed by API key (header) when present, falls back to
+  // source IP. /health and /ready are excluded — they're polled by nginx/k8s
+  // and must not be rate-limited. Set RATE_LIMIT_PER_MINUTE=0 to disable.
+  // I5: Rate-limiting. Keyed by API key (header) when present, falls back to
+  // source IP. /health and /ready are excluded — they're polled by nginx/k8s
+  // and must not be rate-limited. Set RATE_LIMIT_PER_MINUTE=0 to disable.
+  if (config.rateLimitPerMinute > 0) {
+    await app.register(rateLimit, {
+      max: config.rateLimitPerMinute,
+      timeWindow: '1 minute',
+      keyGenerator: (req) => {
+        // Use the bearer token as the rate-limit key so different callers
+        // with the same IP (VPN, NAT) don't share a bucket.
+        const auth = req.headers['authorization'];
+        const token = Array.isArray(auth) ? auth[0] : auth;
+        if (token?.startsWith('Bearer ')) return token.slice(7);
+        return req.ip;
+      },
+      allowList: (req) => req.url === '/health' || req.url === '/ready',
+      skipOnError: true,
+      errorResponseBuilder: (_req, context) => ({
+        statusCode: 429,
+        error: 'Too Many Requests',
+        message: `Rate limit exceeded. Max ${context.max} requests per minute. Retry after ${context.after}.`,
+      }),
+    });
+  }
 
   await app.register(multipart, {
     limits: {

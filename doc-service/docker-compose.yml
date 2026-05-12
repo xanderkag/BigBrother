@@ -19,7 +19,7 @@ services:
     command: node dist/server.js
     env_file: .env
     ports:
-      - "${PORT:-3000}:3000"
+      - "${HOST_PORT:-${PORT:-3000}}:${PORT:-3000}"
     volumes:
       - doc-data:/app/data
     depends_on:

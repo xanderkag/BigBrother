@@ -1,4 +1,4 @@
-import { Worker } from 'bullmq';
+import { Worker, UnrecoverableError } from 'bullmq';
 import pino from 'pino';
 import { config } from './config.js';
 import { QUEUE_NAME, redisConnection, type DocJobPayload, closeQueue } from './queue.js';
@@ -23,6 +23,22 @@ const worker = new Worker<DocJobPayload>(
       bull_id: job.id,
       attempt,
     });
+
+    // I2: Hard deadline — если job старше JOB_MAX_AGE_SECONDS, убиваем без
+    // дальнейших ретраев. Типичная причина: LLM-сервис лежал несколько часов,
+    // накопилась очередь устаревших задач; их незачем повторять.
+    // UnrecoverableError говорит BullMQ «не ретраить», job помечается failed.
+    const maxAgeMs = config.jobMaxAgeSeconds * 1000;
+    const jobAgeMs = Date.now() - job.timestamp;
+    if (jobAgeMs > maxAgeMs) {
+      jobLog.warn(
+        { job_age_min: Math.round(jobAgeMs / 60_000), max_age_min: config.jobMaxAgeSeconds / 60 },
+        'job exceeded max age — dropping without retry',
+      );
+      throw new UnrecoverableError(
+        `job exceeded max age (${Math.round(jobAgeMs / 60_000)} min > ${config.jobMaxAgeSeconds / 60} min)`,
+      );
+    }
 
     // Retry-событие — отдельным сообщением, чтобы log-агрегатор
     // мог построить отдельную метрику ретраев. attemptsMade=0 →

@@ -34,6 +34,18 @@ const ConfigSchema = z.object({
   // workload is mostly LLM/network bound or you have multiple cores.
   workerConcurrency: numberFromEnv(1),
 
+  // I2: Hard deadline for job processing. If a job has been sitting in the
+  // queue longer than this, it is failed unconditionally (no more retries).
+  // Prevents a backlog of retries from a prolonged LLM/OCR outage from
+  // clogging the queue indefinitely.
+  // Default: 4 hours. OCR + LLM on the worst-case document takes ~10 min;
+  // 4 h gives ample room for transient outages without holding jobs forever.
+  jobMaxAgeSeconds: numberFromEnv(4 * 60 * 60),
+
+  // I5: Rate-limiting. Requests per minute per client (identified by API key,
+  // or by IP when the key is absent). Set to 0 to disable rate-limiting.
+  rateLimitPerMinute: numberFromEnv(200),
+
   // Hard cap on the multipart `metadata` field, in bytes. Caller-supplied
   // metadata is JSONB-stored verbatim; without a cap a client could pin
   // arbitrary blobs to every job row.
@@ -113,6 +125,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     apiKey: env.API_KEY ?? '',
     secretsEncryptionKey: env.SECRETS_ENCRYPTION_KEY ?? '',
     workerConcurrency: env.WORKER_CONCURRENCY,
+    jobMaxAgeSeconds: env.JOB_MAX_AGE_SECONDS,
+    rateLimitPerMinute: env.RATE_LIMIT_PER_MINUTE,
     maxMetadataBytes: env.MAX_METADATA_BYTES,
     slowJobThresholdMs: env.SLOW_JOB_THRESHOLD_MS,
     sweepers: {

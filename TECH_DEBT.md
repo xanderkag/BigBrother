@@ -872,6 +872,25 @@ SGLang, TGI) выставляют OpenAI Chat Completions API; теперь pars
 
 ---
 
+## 🚧 Инфра (ждём Павла)
+
+### D1. nginx server_block для parsedocs.taipit.ru
+
+**Статус:** DNS `parsedocs.taipit.ru → 10.59.17.54` настроен. Сервис работает на `10.10.13.10:8085`. Порт открыт. Ждём от Павла: `server_block` + TLS-сертификат.
+
+**Что нужно Павлу:**
+```nginx
+server_name parsedocs.taipit.ru;
+proxy_pass http://10.10.13.10:8085;
+client_max_body_size 50m;
+proxy_read_timeout 600s;
+proxy_http_version 1.1; Upgrade $http_upgrade; Connection $connection_upgrade;
+```
+
+**Smoke после:** `curl https://parsedocs.taipit.ru/health` → `{"status":"ok"}`
+
+---
+
 ## 🔴 Critical (блочит пилотный запуск)
 
 ### ~~C1. Гонка между «создать job» и «положить в очередь»~~ — ✅ закрыто 2026-05-11
