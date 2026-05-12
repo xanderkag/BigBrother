@@ -19,6 +19,18 @@ const ConfigSchema = z.object({
   // Applies to all /api/v1/* routes; /health and /ready are always public.
   apiKey: z.string().default(''),
 
+  // A3: Named client keys. JSON map of { "<key>": "<client_name>" }.
+  // Each key grants the same access as API_KEY but tags req.user.caller
+  // with the client name for audit/logging. Example:
+  //   API_KEYS_JSON='{"abc123":"erp-system","xyz456":"mobile-app"}'
+  // API_KEY (root key) takes priority; listed keys are checked second.
+  apiKeysJson: z
+    .preprocess((v) => {
+      if (!v || v === '') return {};
+      try { return JSON.parse(v as string); } catch { return {}; }
+    }, z.record(z.string()))
+    .default({}),
+
   // Master key для envelope-шифрования секретов в БД (api_key провайдеров).
   // Формат: 64-символьная hex-строка (= 32 байта). Сгенерировать:
   //   openssl rand -hex 32
@@ -123,6 +135,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     redisUrl: env.REDIS_URL,
     storageDir: env.STORAGE_DIR,
     apiKey: env.API_KEY ?? '',
+    apiKeysJson: env.API_KEYS_JSON,
     secretsEncryptionKey: env.SECRETS_ENCRYPTION_KEY ?? '',
     workerConcurrency: env.WORKER_CONCURRENCY,
     jobMaxAgeSeconds: env.JOB_MAX_AGE_SECONDS,

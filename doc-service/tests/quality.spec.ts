@@ -36,6 +36,22 @@ describe('combineConfidence', () => {
     expect(combineConfidence(0.9, 0.1)).toBeLessThan(0.5);
     expect(combineConfidence(0.9, 0.9)).toBeGreaterThan(0.85);
   });
+
+  // I3: parser=0 means LLM unavailable/stub, not "extraction failed completely".
+  // Should not zero out a good OCR result — apply mild penalty instead.
+  it('I3: parser=0 returns ocr*0.85, not zero', () => {
+    expect(combineConfidence(0.9, 0)).toBeCloseTo(0.765); // 0.9 * 0.85
+    expect(combineConfidence(0.9, 0)).toBeGreaterThan(0.7);
+  });
+
+  it('I3: perfect OCR with stub backend stays above needs_review threshold', () => {
+    // needs_review threshold default = 0.6; stub should not force everything into review
+    expect(combineConfidence(0.95, 0)).toBeGreaterThan(0.6);
+  });
+
+  it('I3: weak OCR + parser=0 still gets low score', () => {
+    expect(combineConfidence(0.3, 0)).toBeCloseTo(0.255); // 0.3 * 0.85
+  });
 });
 
 describe('normalizeTesseractConfidence', () => {

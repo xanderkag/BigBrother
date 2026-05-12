@@ -48,9 +48,19 @@ export function normalizeTesseractConfidence(rawAvgConfidence: number): number {
 
 /**
  * Combine OCR confidence with parser-side confidence (how many expected fields were extracted).
+ *
+ * I3 fix: geometric mean is only applied when parser actually ran and returned
+ * a meaningful score. parser=0 means "LLM unavailable / stub / timed out" —
+ * in that case we preserve the OCR signal with a small penalty instead of
+ * zeroing the result (sqrt(0.9 * 0) = 0 is misleading when OCR was perfect).
+ *
+ * Decision table:
+ *   parser undefined  → OCR-only pipeline, return ocr as-is
+ *   parser > 0        → geometric mean (penalizes weak extraction)
+ *   parser === 0      → LLM unavailable; ocr * 0.85 (mild penalty, keeps needs_review logic honest)
  */
 export function combineConfidence(ocr: number, parser: number | undefined): number {
   if (parser === undefined) return ocr;
-  // Geometric mean penalizes when either component is weak.
-  return Math.sqrt(Math.max(0, ocr) * Math.max(0, parser));
+  if (parser <= 0) return Math.max(0, ocr) * 0.85;
+  return Math.sqrt(Math.max(0, ocr) * parser);
 }

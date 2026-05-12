@@ -34,6 +34,12 @@ export type AuthUser = {
   isSuperAdmin: boolean;
   /** Полная row из БД (null для системного fallback'а). */
   row: UserRow | null;
+  /**
+   * A3: Human-readable caller name from API_KEYS_JSON map.
+   * Set when auth succeeds via a named key (not root API_KEY or pdpat_).
+   * Useful for per-client audit logs and rate-limit attribution.
+   */
+  caller?: string;
 };
 
 declare module 'fastify' {
@@ -87,10 +93,22 @@ export const bearerAuthHook: onRequestHookHandler = async (
     return;
   }
 
-  // Path 1: глобальный API_KEY → super_admin
+  // Path 1: глобальный API_KEY → super_admin (root key, no caller tag)
   if (constantTimeEqual(provided, expected)) {
     req.user = systemSuperAdmin();
     return;
+  }
+
+  // Path 1.5: A3 named client keys from API_KEYS_JSON.
+  // Each key maps to a caller name for audit/logging. Same privileges as
+  // root API_KEY but tagged so logs show who made each request.
+  const namedKeys = config.apiKeysJson;
+  for (const [key, callerName] of Object.entries(namedKeys)) {
+    if (constantTimeEqual(provided, key)) {
+      req.user = { ...systemSuperAdmin(), caller: callerName };
+      req.log.debug({ caller: callerName }, 'auth via named api key');
+      return;
+    }
   }
 
   // Path 2: personal access token. Префикс pdpat_ обязателен — это
