@@ -915,26 +915,21 @@ proxy_http_version 1.1; Upgrade $http_upgrade; Connection $connection_upgrade;
 
 Эти пункты — продолжение Phase 3 Day 1 (foundation сделан, см. шапку). Переводят рантайм с захардкоженных значений на чтение из БД, добавляют admin-UI редактор и подготавливают почву под multi-tenant.
 
-### CP1. Runtime читает Document Types из БД (in progress)
+### CP1. Runtime читает Document Types из БД ✅ DONE (частично)
 
-**Где:** `doc-service/src/pipeline/orchestrator.ts`, `parsers/index.ts`, `classifier/keywords.ts`, `validation/index.ts`, `types/document-json-schemas.ts`
+**Где:** `doc-service/src/pipeline/orchestrator.ts`, `parsers/index.ts`, `document-type-resolver.ts`
 
-**Симптом:** Сейчас pipeline использует захардкоженные значения. Конфиг в БД — informational only.
-
-**Прогресс:**
+**Реализовано:**
 - ✅ `DocumentTypeResolver` (кэш + invalidate hook + `resolveConfig`) — готов.
-- ✅ Валидация читает `validators[]` из БД через resolver — готово. Hardcoded composer оставлен как fallback.
-- ✅ Парсеры принимают `ParserOverride` с `expected_fields`/`regex_fallback_threshold`/`llm_schema` — orchestrator передаёт.
-- ✅ `confidence_threshold` per-type работает — orchestrator берёт из resolved config (fallback на env).
-- ✅ `regex_fallback_threshold` per-type работает — пробрасывается в Phase 1 парсеры через override.
-- ✅ `llm_schema` per-type работает — пробрасывается в /v1/extract.
-- ⏸ Классификатор всё ещё читает захардкоженные keywords (хотя seed в БД совпадает).
-- ⏸ `parser_kind` поле есть, но не диспатчит парсера — определяет TS-импорты в `buildParsers`.
-- ⏸ `llm_prompt` override не пробрасывается в inference-service (нужно расширение `/v1/extract` API чтобы принимать prompt override).
+- ✅ Валидация читает `validators[]` из БД через resolver.
+- ✅ Парсеры принимают `ParserOverride` (expected_fields / regex_fallback_threshold / llm_schema) — orchestrator передаёт.
+- ✅ `confidence_threshold` и `regex_fallback_threshold` per-type работают.
+- ✅ `llm_schema` per-type пробрасывается в /v1/extract.
+- ✅ `parser_kind='llm_extract'` в БД → `ParsersFactory.getGeneric()` — orchestrator читает `typeConfig.parserKind` и форсирует GenericLlmParser для builtin-slug'ов. `ResolvedTypeConfig.parserKind` добавлен.
 
-**Лечение оставшегося:** (а) классификатор → async-метод с резолюцией keywords из БД (агрегация по всем активным типам); (b) `parser_kind` диспатч — если в БД написано `llm_extract` для бывшего regex-типа, парсер должен использовать LLM-only; (c) llm_prompt override — расширение API inference-service.
-
-**Оценка:** 1 день на оставшееся.
+**Осталось:**
+- ⏸ Классификатор всё ещё читает захардкоженные keywords (seed в БД совпадает — не критично).
+- ⏸ `llm_prompt` override не пробрасывается в inference-service (нужно расширение `/v1/extract` API).
 
 ---
 
@@ -956,15 +951,19 @@ proxy_http_version 1.1; Upgrade $http_upgrade; Connection $connection_upgrade;
 
 ---
 
-### CP4. PUT/POST /document-types + audit log
+### CP4. PUT/POST /document-types + audit log ✅ DONE
 
-**Где:** новые API + миграция
+**Где:** `src/routes/document-types.ts`, `src/storage/audit-log.ts`
 
-**Симптом:** Конфигурация в БД read-only через API. Изменения только через SQL.
+**Реализовано:**
+- `POST /document-types` — создание пользовательских типов; builtin защищены
+- `PATCH /document-types/:slug` — частичное обновление любого поля конфига
+- `DELETE /document-types/:slug` — удаление; builtin заблокированы (только деактивация)
+- `GET /document-types/:slug/history` — changelog из `audit_log`: before/after/diff, пагинация (`?limit&offset`)
+- Каждый write → `audit_log.append()` с вычисленным diff + `documentTypeResolver.invalidate(slug)`
+- `audit_log` хранит `diff: { field: { from, to } }` — уже готовый для UI
 
-**Лечение:** PUT для существующих, POST для новых типов (с slug-validation). Каждое изменение → запись в `document_types_history` (кто/когда/что поменял + diff). Подготовит почву под role-based access (admin vs operator).
-
-**Оценка:** 2 дня (включая history-таблицу + UI changelog).
+**Отдельная история (`document_types_history`)** не нужна — `audit_log` покрывает задачу и уже обслуживает также `provider_settings`.
 
 ---
 
@@ -1012,29 +1011,15 @@ proxy_http_version 1.1; Upgrade $http_upgrade; Connection $connection_upgrade;
 
 ---
 
-### I2. Нет deadline на ретраи
+### ~~I2. Нет deadline на ретраи~~ — ✅ закрыто 2026-05-12
 
-**Где:** `doc-service/src/queue.ts:21-25` (BullMQ defaults)
-
-**Симптом:** При длительном падении внешнего сервиса (LLM, Yandex) job либо сдаётся слишком быстро (3 attempts × backoff), либо может тянуть retry-цепочку часами без естественной остановки.
-
-**Лечение:** В worker'е перед обработкой проверять `now() - job.created_at > MAX_AGE` → markFailed.
-
-**Оценка:** 2 часа.
+Worker проверяет `Date.now() - job.timestamp > JOB_MAX_AGE_SECONDS * 1000` и бросает `UnrecoverableError` (BullMQ не ретраит). `JOB_MAX_AGE_SECONDS=14400` (4 ч), настраивается через env.
 
 ---
 
-### I3. `combineConfidence(ocr, 0)` валит хорошо распознанный документ
+### ~~I3. `combineConfidence(ocr, 0)` валит хорошо распознанный документ~~ — ✅ закрыто 2026-05-12
 
-**Где:** `doc-service/src/pipeline/quality.ts:55`
-
-**Симптом:** Геометрическое среднее. Если LLM недоступен и Phase 2 парсер вернул `confidence: 0`, итоговая = 0 → `needs_review` даже на идеальном OCR.
-
-**Лечение (требует продуктового решения):**
-- Вариант A: оставить как есть, явно задокументировать «без LLM ТТН/CMR/АКТ всегда needs_review».
-- Вариант B: разделить на два поля API: `ocr_confidence` и `extraction_confidence`. Клиент сам решает.
-
-**Оценка:** 1 час кода + продуктовое обсуждение.
+`parser=0` теперь трактуется как «LLM недоступен (stub)» → `ocr * 0.85` (мягкий штраф вместо нуля). Геометрическое среднее применяется только при `parser > 0`. Тесты: 3 новых кейса в `tests/quality.spec.ts`.
 
 ---
 
@@ -1062,15 +1047,9 @@ proxy_http_version 1.1; Upgrade $http_upgrade; Connection $connection_upgrade;
 
 ---
 
-### I5. Нет rate-limiting
+### ~~I5. Нет rate-limiting~~ — ✅ закрыто 2026-05-12
 
-**Где:** `doc-service/src/server.ts`
-
-**Симптом:** Любой клиент с валидным `API_KEY` может забить очередь и съесть диск за минуту.
-
-**Лечение:** `@fastify/rate-limit` плагин, лимиты per-IP и per-API-key.
-
-**Оценка:** 2 часа.
+`@fastify/rate-limit` зарегистрирован в `server.ts`. Лимит per-API-key (fallback на IP). `/health` и `/ready` exempt через `allowList`. Настраивается `RATE_LIMIT_PER_MINUTE` (default 200, 0 = выключено).
 
 ---
 
@@ -1123,15 +1102,9 @@ proxy_http_version 1.1; Upgrade $http_upgrade; Connection $connection_upgrade;
 
 ---
 
-### A3. Single API key
+### ~~A3. Single API key~~ — ✅ закрыто 2026-05-12 (вариант 1)
 
-**Симптом:** Нет аудита «кто загружал», нет ротации без даунтайма.
-
-**Лечение:**
-1. Multi-key через env: `API_KEYS_JSON='{"<key>":"<client_name>"}'`. Имя клиента → `jobs.metadata.caller`.
-2. DB-backed токены с CRUD-API + ротацией — отдельный мини-проект.
-
-**Оценка:** 3 часа на вариант 1, неделя на вариант 2.
+`API_KEYS_JSON='{"key":"client-name"}'` — named keys с caller-тегом в `AuthUser`. Auth middleware перебирает все named keys через constant-time compare, затем падает на root `API_KEY`. `caller` пишется в лог. DB-backed токены (вариант 2) — отдельный проект когда понадобится.
 
 ---
 

@@ -335,6 +335,70 @@ export async function documentTypesRoutes(app: FastifyInstance): Promise<void> {
     ),
   });
 
+  // --- History endpoint: changelog из audit_log для конкретного типа ---
+
+  const HistoryQuery = z.object({
+    limit: z.coerce.number().int().min(1).max(200).default(50),
+    offset: z.coerce.number().int().min(0).default(0),
+  });
+
+  const AuditDiffEntry = z.record(z.object({ from: z.unknown(), to: z.unknown() }));
+
+  const AuditLogEntry = z.object({
+    id: z.number(),
+    at: z.string(),
+    actor: z.string(),
+    action: z.enum(['create', 'update', 'delete']),
+    before: z.record(z.unknown()).nullable(),
+    after: z.record(z.unknown()).nullable(),
+    diff: AuditDiffEntry.nullable(),
+  });
+
+  const HistoryResponse = z.object({
+    slug: z.string(),
+    items: z.array(AuditLogEntry),
+  });
+
+  r.get(
+    '/document-types/:slug/history',
+    {
+      schema: {
+        tags: ['document-types'],
+        summary: 'История изменений типа документа',
+        description:
+          'Возвращает записи audit_log для данного slug в порядке убывания времени. ' +
+          'Каждая запись содержит `before`/`after` снимки конфига и `diff` ' +
+          '(поля, изменённые данной правкой). Используется страницей типа документа ' +
+          'для отображения changelog\'а — кто и что менял.',
+        security: [{ bearerAuth: [] }],
+        params: SlugParam,
+        querystring: HistoryQuery,
+        response: {
+          200: HistoryResponse,
+          401: ErrorResponse,
+          404: ErrorResponse,
+        },
+      },
+    },
+    async (req, reply) => {
+      const exists = await documentTypesRepo.findBySlug(req.params.slug);
+      if (!exists) {
+        reply.code(404);
+        return { error: 'document type not found' };
+      }
+      const rows = await auditLogRepo.list({
+        entity: 'document_type',
+        entity_id: req.params.slug,
+        limit: req.query.limit,
+        offset: req.query.offset,
+      });
+      return {
+        slug: req.params.slug,
+        items: rows.map((row) => auditLogRepo.toApi(row)),
+      };
+    },
+  );
+
   r.get(
     '/document-types/:slug/stats',
     {
