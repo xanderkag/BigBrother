@@ -384,6 +384,266 @@ function labelFor(key) {
     .replace(/^./, (c) => c.toUpperCase());
 }
 
+// ============================================================
+// Items table (Phase C) — таблица позиций документа
+// ============================================================
+//
+// Универсальный компонент: рендер таблицы из массива items[] с поиском,
+// сортировкой по столбцу, пагинацией, экспортом в CSV и раскрытием строки
+// для полного набора полей. Используется в job detail.
+//
+// Контракт: items — массив объектов канонического shape (после нормализации
+// в normalizeExtracted). State per-таблица хранится в инстансе через
+// замыкание; нет глобального состояния. Caller вызывает renderItemsTableInto
+// один раз — возвращается teardown-функция чтобы отписать listeners.
+
+/** Колонки по умолчанию: ключ items[i] → заголовок таблицы. */
+const ITEMS_TABLE_COLUMNS = [
+  { key: 'line_no',         label: '#',          align: 'right', width: '3rem',  type: 'number' },
+  { key: 'code',            label: 'Код',        align: 'left',  width: '8rem',  type: 'text' },
+  { key: 'name',            label: 'Наименование', align: 'left', width: 'auto', type: 'text' },
+  { key: 'qty',             label: 'Кол-во',     align: 'right', width: '5rem',  type: 'number' },
+  { key: 'unit',            label: 'Ед.',        align: 'left',  width: '4rem',  type: 'text' },
+  { key: 'price',           label: 'Цена',       align: 'right', width: '6rem',  type: 'money' },
+  { key: 'vat_rate',        label: 'НДС',        align: 'right', width: '4rem',  type: 'percent' },
+  { key: 'total_with_vat',  label: 'Сумма',      align: 'right', width: '7rem',  type: 'money' },
+];
+
+const ITEMS_PAGE_SIZE = 50;
+
+function formatCell(value, type) {
+  if (value === null || value === undefined || value === '') {
+    return '<span class="text-slate-400">—</span>';
+  }
+  if (type === 'money' && typeof value === 'number') {
+    return value.toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  if (type === 'percent' && typeof value === 'number') {
+    return `${value}%`;
+  }
+  if (type === 'number' && typeof value === 'number') {
+    return value.toLocaleString('ru-RU');
+  }
+  return escapeHtml(String(value));
+}
+
+/** Собрать строку для CSV-экспорта — RFC 4180. */
+function csvEscape(value) {
+  if (value === null || value === undefined) return '';
+  const s = String(value);
+  if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+function itemsToCsv(items, columns) {
+  const lines = [];
+  // BOM для корректного открытия в Excel под Windows
+  lines.push(columns.map((c) => csvEscape(c.label)).join(','));
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue;
+    lines.push(columns.map((c) => csvEscape(item[c.key])).join(','));
+  }
+  return '﻿' + lines.join('\r\n');
+}
+
+function downloadCsv(filename, csvContent) {
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Рендерит секцию-карточку с таблицей позиций в указанный контейнер.
+ * Возвращает teardown-функцию (вызвать при unmount если нужно).
+ */
+function renderItemsTableInto(container, items, options = {}) {
+  const totalCount = items.length;
+  const filename = options.filename ?? 'items.csv';
+
+  // State замыкания
+  let query = '';
+  let sortKey = null;
+  let sortDir = 'asc';
+  let page = 0;
+  let expandedRows = new Set();
+
+  function filtered() {
+    if (!query) return items;
+    const q = query.toLowerCase();
+    return items.filter((item) => {
+      if (!item || typeof item !== 'object') return false;
+      // Поиск по name + code + barcode — самые частые поля для UX-поиска
+      return ['name', 'code', 'barcode'].some((k) => {
+        const v = item[k];
+        return typeof v === 'string' && v.toLowerCase().includes(q);
+      });
+    });
+  }
+
+  function sorted(arr) {
+    if (!sortKey) return arr;
+    const copy = [...arr];
+    copy.sort((a, b) => {
+      const av = a?.[sortKey], bv = b?.[sortKey];
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      const cmp = typeof av === 'number' && typeof bv === 'number'
+        ? av - bv
+        : String(av).localeCompare(String(bv), 'ru');
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+    return copy;
+  }
+
+  function render() {
+    const filteredArr = filtered();
+    const sortedArr = sorted(filteredArr);
+    const pageCount = Math.max(1, Math.ceil(sortedArr.length / ITEMS_PAGE_SIZE));
+    if (page >= pageCount) page = pageCount - 1;
+    const start = page * ITEMS_PAGE_SIZE;
+    const visible = sortedArr.slice(start, start + ITEMS_PAGE_SIZE);
+
+    const headers = ITEMS_TABLE_COLUMNS.map((c) => {
+      const sortIcon = sortKey === c.key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '';
+      return `<th class="cursor-pointer select-none hover:bg-slate-200 dark:hover:bg-slate-700"
+        data-sort-key="${escapeHtml(c.key)}"
+        style="text-align:${c.align}; width:${c.width}"
+        title="Сортировать по ${escapeHtml(c.label)}"
+        >${escapeHtml(c.label)}${sortIcon}</th>`;
+    }).join('');
+
+    const rows = visible.map((item, i) => {
+      if (!item || typeof item !== 'object') {
+        return `<tr><td colspan="${ITEMS_TABLE_COLUMNS.length}" class="text-slate-400 italic px-4 py-2">(невалидная строка #${start + i + 1})</td></tr>`;
+      }
+      const globalIdx = items.indexOf(item);
+      const isExpanded = expandedRows.has(globalIdx);
+      const tds = ITEMS_TABLE_COLUMNS.map((c) =>
+        `<td style="text-align:${c.align}" class="${c.type === 'money' || c.type === 'number' || c.type === 'percent' ? 'font-mono tabular-nums' : ''}">${formatCell(item[c.key], c.type)}</td>`,
+      ).join('');
+
+      // Раскрытие строки: все ключи кроме тех что уже в основной таблице
+      const knownKeys = new Set(ITEMS_TABLE_COLUMNS.map((c) => c.key));
+      const extra = Object.entries(item).filter(([k]) => !knownKeys.has(k) && !k.startsWith('_'));
+      const extraHtml = extra.length > 0
+        ? `<tr class="bg-slate-50 dark:bg-slate-950/50 ${isExpanded ? '' : 'hidden'}" data-expanded-for="${globalIdx}">
+            <td colspan="${ITEMS_TABLE_COLUMNS.length}" class="px-4 py-2">
+              <dl class="kv grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-1">
+                ${extra.map(([k, v]) => `
+                  <div class="kv-row">
+                    <dt class="kv-key">${escapeHtml(labelFor(k))}</dt>
+                    <dd class="kv-value">${typeof v === 'object' ? `<code>${escapeHtml(JSON.stringify(v))}</code>` : escapeHtml(String(v))}</dd>
+                  </div>`).join('')}
+              </dl>
+            </td>
+           </tr>`
+        : '';
+
+      return `<tr class="row-clickable" data-row-idx="${globalIdx}" title="${extra.length > 0 ? 'Кликни для разворота' : ''}">${tds}</tr>${extraHtml}`;
+    }).join('');
+
+    container.innerHTML = `
+      <details class="card" open>
+        <summary class="card-header cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 transition list-none">
+          <div class="flex items-center justify-between w-full gap-3">
+            <span class="card-title">
+              Позиции
+              <span class="text-sm font-normal text-slate-500">${totalCount}${query ? ` (отфильтровано: ${filteredArr.length})` : ''}</span>
+            </span>
+            <div class="flex items-center gap-2 flex-wrap">
+              <input type="search" placeholder="Поиск по названию, коду..." class="form-input text-xs py-1 w-48" data-items-search value="${escapeHtml(query)}">
+              <button class="btn-secondary btn-xs" data-items-csv>⬇ CSV</button>
+            </div>
+          </div>
+        </summary>
+        <div class="overflow-x-auto">
+          <table class="data-table">
+            <thead><tr>${headers}</tr></thead>
+            <tbody>${rows || `<tr><td colspan="${ITEMS_TABLE_COLUMNS.length}" class="text-center text-slate-400 italic py-6">${query ? 'Ничего не найдено' : 'Нет позиций'}</td></tr>`}</tbody>
+          </table>
+        </div>
+        ${pageCount > 1 ? `
+          <div class="flex items-center justify-between gap-2 px-4 py-2 border-t border-slate-100 dark:border-slate-800 text-xs text-slate-500">
+            <span>Показано ${start + 1}–${Math.min(start + ITEMS_PAGE_SIZE, sortedArr.length)} из ${sortedArr.length}</span>
+            <div class="flex gap-1">
+              <button class="btn-ghost btn-xs" data-items-page="prev" ${page === 0 ? 'disabled' : ''}>← Назад</button>
+              <span class="px-2 py-1">стр. ${page + 1} / ${pageCount}</span>
+              <button class="btn-ghost btn-xs" data-items-page="next" ${page >= pageCount - 1 ? 'disabled' : ''}>Вперёд →</button>
+            </div>
+          </div>` : ''}
+      </details>
+    `;
+
+    // Bind events после каждого рендера (innerHTML стирает предыдущие listeners)
+    const searchEl = container.querySelector('[data-items-search]');
+    if (searchEl) {
+      // Поиск debounce 200ms — не дёргаем рендер на каждой клавише
+      let debounceTimer;
+      searchEl.addEventListener('input', (e) => {
+        clearTimeout(debounceTimer);
+        const newQuery = e.target.value.trim();
+        debounceTimer = setTimeout(() => {
+          query = newQuery;
+          page = 0;
+          render();
+          // Восстанавливаем фокус и каретку — render() сделал innerHTML
+          const newSearch = container.querySelector('[data-items-search]');
+          if (newSearch) {
+            newSearch.focus();
+            newSearch.setSelectionRange(newSearch.value.length, newSearch.value.length);
+          }
+        }, 200);
+      });
+    }
+    container.querySelector('[data-items-csv]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      downloadCsv(filename, itemsToCsv(sortedArr, ITEMS_TABLE_COLUMNS));
+    });
+    container.querySelectorAll('[data-sort-key]').forEach((th) => {
+      th.addEventListener('click', () => {
+        const key = th.dataset.sortKey;
+        if (sortKey === key) {
+          sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+        } else {
+          sortKey = key;
+          sortDir = 'asc';
+        }
+        render();
+      });
+    });
+    container.querySelectorAll('[data-items-page]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (btn.dataset.itemsPage === 'prev') page = Math.max(0, page - 1);
+        else page = page + 1;
+        render();
+      });
+    });
+    container.querySelectorAll('[data-row-idx]').forEach((tr) => {
+      tr.addEventListener('click', () => {
+        const idx = Number(tr.dataset.rowIdx);
+        if (expandedRows.has(idx)) expandedRows.delete(idx);
+        else expandedRows.add(idx);
+        render();
+      });
+    });
+  }
+
+  render();
+  return () => {
+    // Teardown — на всякий случай очищаем contents, listeners уйдут с DOM
+    container.innerHTML = '';
+  };
+}
+
 /** Формат для значения по типу ключа. Возвращает HTML-safe строку. */
 function formatValue(key, value) {
   if (value === null || value === undefined || value === '') {
@@ -1575,6 +1835,9 @@ async function renderJobDetail(jobId) {
         </div>
       </div>
 
+      <!-- Phase C: таблица позиций. Контейнер пуст в HTML, заполняется в renderItemsSection() ниже -->
+      <div id="items-table-container"></div>
+
       ${(job.pipeline_steps && job.pipeline_steps.length > 0) ? `
         <details class="card" open>
           <summary class="card-header cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 transition list-none">
@@ -1660,6 +1923,15 @@ async function renderJobDetail(jobId) {
       <!-- Resolution panel — заполняется асинхронно через loadResolution() -->
       <div id="resolution-panel"></div>
     `;
+
+    // Phase C: таблица позиций — если в extracted есть items[], рендерим
+    // отдельной секцией с поиском, сортировкой, пагинацией, CSV-экспортом.
+    const itemsContainer = document.getElementById('items-table-container');
+    if (itemsContainer && Array.isArray(extracted?.items) && extracted.items.length > 0) {
+      renderItemsTableInto(itemsContainer, extracted.items, {
+        filename: `${job.job_id}-items.csv`,
+      });
+    }
 
     const copyBtn = document.getElementById('copy-json-btn');
     copyBtn.addEventListener('click', async () => {
@@ -2433,6 +2705,9 @@ function renderUploadPage(options) {
                   ${issues.length > 5 ? `<li class="text-slate-500">... +${issues.length - 5} ещё</li>` : ''}
                 </ul>
               </div>` : ''}
+            ${Array.isArray(job.extracted?.items) && job.extracted.items.length > 0
+              ? `<div data-items-mount-job="${escapeHtml(job.job_id)}"></div>`
+              : ''}
             <details>
               <summary class="cursor-pointer text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-200">Extracted JSON</summary>
               <div class="mt-2 bg-slate-50 dark:bg-slate-950 rounded p-3 overflow-x-auto">${jsonTree(job.extracted ?? {})}</div>
@@ -2441,6 +2716,19 @@ function renderUploadPage(options) {
           </div>
         </div>`;
     }).join('');
+
+    // После innerHTML — монтируем таблицы позиций (если есть). Делается отдельно
+    // чтобы каждая таблица имела свой замыкание-state (search/sort/page).
+    for (const q of completed) {
+      if (Array.isArray(q.fullJob?.extracted?.items) && q.fullJob.extracted.items.length > 0) {
+        const mount = section.querySelector(`[data-items-mount-job="${q.fullJob.job_id}"]`);
+        if (mount) {
+          renderItemsTableInto(mount, q.fullJob.extracted.items, {
+            filename: `${q.fullJob.job_id}-items.csv`,
+          });
+        }
+      }
+    }
   }
 
   startBtn.addEventListener('click', async () => {
