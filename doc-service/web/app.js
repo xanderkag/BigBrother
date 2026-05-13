@@ -3066,6 +3066,12 @@ async function renderDocumentTypeEditor(slug) {
     expected_fields: [...t.expected_fields],
     validators: [...t.validators],
     classification_keywords: [...t.classification_keywords],
+    // Phase A: resolution_config — глубокая структура; редактируется реактивно
+    // через resolution-блок ниже, сохраняется как объект в payload.
+    resolution_config: t.resolution_config ? JSON.parse(JSON.stringify(t.resolution_config)) : null,
+    // Кэш доступных reference list types — для dropdown'ов list_type.
+    // Заполняется async после mount'а.
+    availableListTypes: [],
   };
 
   const root = document.getElementById('dt-editor');
@@ -3279,8 +3285,15 @@ function renderEditorForm(t, isCreate) {
           <option value="builtin:invoice_regex" ${t.parser_kind === 'builtin:invoice_regex' ? 'selected' : ''}>builtin:invoice_regex — regex для счёта на оплату</option>
           <option value="builtin:upd_regex" ${t.parser_kind === 'builtin:upd_regex' ? 'selected' : ''}>builtin:upd_regex — regex для УПД / СФ</option>
           <option value="llm_extract" ${t.parser_kind === 'llm_extract' ? 'selected' : ''}>llm_extract — целиком через LLM /v1/extract</option>
+          <option value="llm_extract_multipass" ${t.parser_kind === 'llm_extract_multipass' ? 'selected' : ''}>llm_extract_multipass — двухпроходный (header + items батчами) для длинных документов</option>
         </select>
-        <p class="form-help">Builtin'ы используют свои regex'ы + LLM-fallback при низкой уверенности. <code class="font-mono">llm_extract</code> сразу идёт в LLM.</p>
+        <p class="form-help">
+          Builtin'ы используют свои regex'ы + LLM-fallback при низкой уверенности.
+          <code class="font-mono">llm_extract</code> сразу идёт в LLM.
+          <code class="font-mono">llm_extract_multipass</code> разбивает на header + items[] батчи —
+          для счетов на 100+ позиций. Для <code class="font-mono">llm_extract</code> multipass
+          включается автоматически при OCR-тексте больше MULTIPASS_AUTO_BYTES (~30KB).
+        </p>
       </div>
       <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div class="form-row">
@@ -3350,6 +3363,22 @@ function renderEditorForm(t, isCreate) {
       <p id="f-llm_schema-error" class="form-error hidden"></p>
     </div>
 
+    <!-- Resolution config: привязка к справочникам (entity_links + item_matching) -->
+    <div class="card card-body space-y-3">
+      <div class="flex items-center justify-between gap-2">
+        <h3 class="card-title">Резолюция (привязка к справочникам)</h3>
+        <label class="inline-flex items-center gap-2 text-sm">
+          <input id="rc-enabled" type="checkbox" class="rounded border-slate-300 dark:border-slate-700" />
+          <span>Включена</span>
+        </label>
+      </div>
+      <p class="text-xs text-slate-500 dark:text-slate-400">
+        После извлечения данные документа автоматически привязываются к записям справочников этой организации.
+        Для каждой привязки указывается тип справочника, поля документа для поиска и поведение при ненахождении.
+      </p>
+      <div id="rc-body" class="space-y-4"></div>
+    </div>
+
     <!-- Observations: загружается асинхронно для существующих типов -->
     ${!isCreate ? `<div id="dt-observations" class="space-y-4"></div>` : ''}
 
@@ -3391,6 +3420,264 @@ function renderChipsInput(field, placeholder, exampleValue) {
       class="form-input font-mono text-xs" />`;
 }
 
+/**
+ * Reactive-блок редактирования document_types.resolution_config.
+ *
+ * Не использует фреймворк — просто redraw на каждое изменение в state.resolution_config.
+ * Реактивность достаточная для размеров (entity_links обычно 1-3 штуки, item_matching — один).
+ *
+ * Контракт: state.resolution_config либо null (выключено) либо
+ *   { entity_links?: [{list_type, match_fields[], on_not_found}], item_matching?: {...} }
+ * Полностью валидно по Zod-схеме на стороне сервера.
+ */
+function renderResolutionBlock(state, root) {
+  const body = root.querySelector('#rc-body');
+  const enabledEl = root.querySelector('#rc-enabled');
+  if (!body || !enabledEl) return;
+
+  enabledEl.checked = state.resolution_config !== null;
+
+  const redraw = () => {
+    if (state.resolution_config === null) {
+      body.innerHTML = `
+        <div class="text-sm text-slate-400 italic p-4 text-center border-2 border-dashed border-slate-200 dark:border-slate-800 rounded">
+          Резолюция выключена для этого типа документа
+        </div>`;
+      return;
+    }
+
+    const cfg = state.resolution_config;
+    const listTypeOptions = state.availableListTypes.length === 0
+      ? '<option value="" disabled>— нет справочников в организации —</option>'
+      : state.availableListTypes
+          .map((lt) => `<option value="${escapeHtml(lt.slug)}">${escapeHtml(lt.label)} (${escapeHtml(lt.slug)})</option>`)
+          .join('');
+
+    // ── Entity links: массив привязок job → запись справочника ────────────
+    const entityLinks = cfg.entity_links ?? [];
+    const linksHtml = entityLinks.length === 0
+      ? '<p class="text-sm text-slate-400 italic">Привязок к сущностям нет</p>'
+      : entityLinks.map((link, idx) => `
+          <div class="border border-slate-200 dark:border-slate-700 rounded-lg p-3 space-y-2" data-link-idx="${idx}">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-semibold text-slate-600 dark:text-slate-300">Привязка #${idx + 1}</span>
+              <button type="button" class="text-rose-500 hover:text-rose-700 text-xs" data-link-remove="${idx}">Удалить</button>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div class="form-row">
+                <label class="form-label text-xs">Справочник (list_type)</label>
+                <select class="form-select text-xs" data-link-list-type="${idx}">
+                  <option value="">— выбрать —</option>
+                  ${listTypeOptions.replace(
+                    `value="${escapeHtml(link.list_type ?? '')}"`,
+                    `value="${escapeHtml(link.list_type ?? '')}" selected`,
+                  )}
+                </select>
+              </div>
+              <div class="form-row">
+                <label class="form-label text-xs">Поведение при ненахождении</label>
+                <select class="form-select text-xs" data-link-on-not-found="${idx}">
+                  <option value="needs_review" ${(link.on_not_found ?? 'needs_review') === 'needs_review' ? 'selected' : ''}>needs_review — отправить на ручную проверку</option>
+                  <option value="warn" ${link.on_not_found === 'warn' ? 'selected' : ''}>warn — только лог</option>
+                  <option value="ignore" ${link.on_not_found === 'ignore' ? 'selected' : ''}>ignore — пропустить молча</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-row">
+              <label class="form-label text-xs">
+                Поля документа (match_fields) — поиск идёт по каждому в порядке указания
+              </label>
+              <div class="chip-input" data-link-match-fields="${idx}"></div>
+              <input type="text" placeholder="seller.inn, cargo_id, contract_number ... (Enter)"
+                class="form-input font-mono text-xs mt-1" data-link-add-field="${idx}" />
+            </div>
+          </div>`).join('');
+
+    // ── Item matching: один объект для номенклатуры ───────────────────────
+    const im = cfg.item_matching ?? null;
+    const itemMatchHtml = im === null ? `
+      <button type="button" class="btn-secondary btn-sm" id="rc-enable-im">+ Добавить матчинг строк документа</button>
+    ` : `
+      <div class="border border-slate-200 dark:border-slate-700 rounded-lg p-3 space-y-2">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-semibold text-slate-600 dark:text-slate-300">Матчинг строк (items[])</span>
+          <button type="button" class="text-rose-500 hover:text-rose-700 text-xs" id="rc-disable-im">Удалить</button>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div class="form-row">
+            <label class="form-label text-xs">Справочник номенклатуры</label>
+            <select class="form-select text-xs" id="rc-im-list-type">
+              <option value="">— выбрать —</option>
+              ${listTypeOptions.replace(
+                `value="${escapeHtml(im.list_type ?? '')}"`,
+                `value="${escapeHtml(im.list_type ?? '')}" selected`,
+              )}
+            </select>
+          </div>
+          <div class="form-row">
+            <label class="form-label text-xs">Поведение при ненахождении</label>
+            <select class="form-select text-xs" id="rc-im-on-not-found">
+              <option value="warn" ${(im.on_not_found ?? 'warn') === 'warn' ? 'selected' : ''}>warn — только лог</option>
+              <option value="needs_review" ${im.on_not_found === 'needs_review' ? 'selected' : ''}>needs_review</option>
+              <option value="ignore" ${im.on_not_found === 'ignore' ? 'selected' : ''}>ignore</option>
+            </select>
+          </div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div class="form-row">
+            <label class="form-label text-xs">items_field</label>
+            <input type="text" class="form-input font-mono text-xs" id="rc-im-items-field"
+              value="${escapeHtml(im.items_field ?? 'items')}" placeholder="items" />
+          </div>
+          <div class="form-row">
+            <label class="form-label text-xs">code_field</label>
+            <input type="text" class="form-input font-mono text-xs" id="rc-im-code-field"
+              value="${escapeHtml(im.code_field ?? 'code')}" placeholder="code" />
+          </div>
+          <div class="form-row">
+            <label class="form-label text-xs">name_field</label>
+            <input type="text" class="form-input font-mono text-xs" id="rc-im-name-field"
+              value="${escapeHtml(im.name_field ?? 'name')}" placeholder="name" />
+          </div>
+        </div>
+      </div>
+    `;
+
+    body.innerHTML = `
+      <div>
+        <div class="flex items-center justify-between mb-2">
+          <h4 class="text-sm font-semibold">Привязки к сущностям (entity_links)</h4>
+          <button type="button" class="btn-secondary btn-xs" id="rc-add-link">+ Добавить привязку</button>
+        </div>
+        <div class="space-y-2">${linksHtml}</div>
+      </div>
+      <div>
+        <h4 class="text-sm font-semibold mb-2">Матчинг строк документа (item_matching)</h4>
+        ${itemMatchHtml}
+      </div>
+    `;
+
+    // ── Bind handlers ─────────────────────────────────────────────────────
+    // Add entity link
+    body.querySelector('#rc-add-link')?.addEventListener('click', () => {
+      cfg.entity_links = [...(cfg.entity_links ?? []), { list_type: '', match_fields: [], on_not_found: 'needs_review' }];
+      redraw();
+    });
+
+    // Remove entity link
+    body.querySelectorAll('[data-link-remove]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const idx = Number(btn.dataset.linkRemove);
+        cfg.entity_links = (cfg.entity_links ?? []).filter((_, i) => i !== idx);
+        redraw();
+      });
+    });
+
+    // list_type + on_not_found dropdowns на entity_links
+    body.querySelectorAll('[data-link-list-type]').forEach((sel) => {
+      sel.addEventListener('change', () => {
+        const idx = Number(sel.dataset.linkListType);
+        cfg.entity_links[idx].list_type = sel.value;
+      });
+    });
+    body.querySelectorAll('[data-link-on-not-found]').forEach((sel) => {
+      sel.addEventListener('change', () => {
+        const idx = Number(sel.dataset.linkOnNotFound);
+        cfg.entity_links[idx].on_not_found = sel.value;
+      });
+    });
+
+    // match_fields chip-input на каждый entity_link
+    (cfg.entity_links ?? []).forEach((link, idx) => {
+      const chipContainer = body.querySelector(`[data-link-match-fields="${idx}"]`);
+      const addInput = body.querySelector(`[data-link-add-field="${idx}"]`);
+      const redrawChips = () => {
+        if (!chipContainer) return;
+        if (link.match_fields.length === 0) {
+          chipContainer.innerHTML = `<span class="text-xs text-slate-400 px-1 py-0.5">—</span>`;
+          return;
+        }
+        chipContainer.innerHTML = link.match_fields
+          .map((v, i) => `
+            <span class="chip">
+              ${escapeHtml(v)}
+              <span class="chip-remove" data-link-field-remove="${idx}:${i}" title="Удалить">×</span>
+            </span>`).join('');
+        chipContainer.querySelectorAll('[data-link-field-remove]').forEach((el) => {
+          el.addEventListener('click', () => {
+            const [li, fi] = el.dataset.linkFieldRemove.split(':').map(Number);
+            cfg.entity_links[li].match_fields.splice(fi, 1);
+            redraw();
+          });
+        });
+      };
+      redrawChips();
+      if (addInput) {
+        addInput.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            const v = addInput.value.trim();
+            if (v && !link.match_fields.includes(v)) {
+              link.match_fields.push(v);
+              redraw();
+            }
+            addInput.value = '';
+          }
+        });
+      }
+    });
+
+    // Item matching: enable
+    body.querySelector('#rc-enable-im')?.addEventListener('click', () => {
+      cfg.item_matching = { list_type: '', items_field: 'items', code_field: 'code', name_field: 'name', on_not_found: 'warn' };
+      redraw();
+    });
+    // Item matching: disable
+    body.querySelector('#rc-disable-im')?.addEventListener('click', () => {
+      delete cfg.item_matching;
+      redraw();
+    });
+    // Item matching: field bindings
+    body.querySelector('#rc-im-list-type')?.addEventListener('change', (e) => {
+      cfg.item_matching.list_type = e.target.value;
+    });
+    body.querySelector('#rc-im-on-not-found')?.addEventListener('change', (e) => {
+      cfg.item_matching.on_not_found = e.target.value;
+    });
+    body.querySelector('#rc-im-items-field')?.addEventListener('input', (e) => {
+      cfg.item_matching.items_field = e.target.value.trim() || 'items';
+    });
+    body.querySelector('#rc-im-code-field')?.addEventListener('input', (e) => {
+      cfg.item_matching.code_field = e.target.value.trim() || 'code';
+    });
+    body.querySelector('#rc-im-name-field')?.addEventListener('input', (e) => {
+      cfg.item_matching.name_field = e.target.value.trim() || 'name';
+    });
+  };
+
+  // Toggle всего блока (enabled/disabled)
+  enabledEl.addEventListener('change', () => {
+    state.resolution_config = enabledEl.checked
+      ? (state.resolution_config ?? { entity_links: [], item_matching: undefined })
+      : null;
+    redraw();
+  });
+
+  // Подгружаем доступные list types из текущей организации
+  void (async () => {
+    try {
+      const orgId = workspace.current?.organization_id;
+      const items = await apiJson(`/reference-list-types${orgId ? `?organization_id=${encodeURIComponent(orgId)}` : ''}`);
+      state.availableListTypes = items;
+      redraw();
+    } catch (err) {
+      console.warn('Не удалось подгрузить список справочников:', err.message);
+    }
+  })();
+
+  redraw();
+}
+
 function bindEditorHandlers(originalRow, isCreate, state, root) {
   const redrawChips = (field) => {
     const container = root.querySelector(`#chips-${field}`);
@@ -3430,6 +3717,9 @@ function bindEditorHandlers(originalRow, isCreate, state, root) {
       }
     });
   });
+
+  // Phase A: resolution_config — отдельный реактивный блок
+  renderResolutionBlock(state, root);
 
   // Delete button
   const delBtn = root.querySelector('#delete-btn');
@@ -3473,6 +3763,35 @@ function bindEditorHandlers(originalRow, isCreate, state, root) {
     const confRaw = root.querySelector('#f-confidence_threshold').value;
     const regexThrRaw = root.querySelector('#f-regex_fallback_threshold').value;
 
+    // Phase A: подготовка resolution_config к отправке.
+    // null = выключено. Если включено — чистим пустые entity_links и пустые
+    // match_fields, чтобы не отправлять мусор. Server валидирует Zod-схемой.
+    let resolutionConfig = null;
+    if (state.resolution_config !== null) {
+      const cleaned = {};
+      const links = (state.resolution_config.entity_links ?? [])
+        .filter((l) => l.list_type && Array.isArray(l.match_fields) && l.match_fields.length > 0)
+        .map((l) => ({
+          list_type: l.list_type,
+          match_fields: [...l.match_fields],
+          on_not_found: l.on_not_found ?? 'needs_review',
+        }));
+      if (links.length > 0) cleaned.entity_links = links;
+      if (state.resolution_config.item_matching && state.resolution_config.item_matching.list_type) {
+        cleaned.item_matching = {
+          list_type: state.resolution_config.item_matching.list_type,
+          items_field: state.resolution_config.item_matching.items_field || 'items',
+          code_field: state.resolution_config.item_matching.code_field || 'code',
+          name_field: state.resolution_config.item_matching.name_field || 'name',
+          on_not_found: state.resolution_config.item_matching.on_not_found ?? 'warn',
+        };
+      }
+      // Если оператор включил резолюцию но не добавил ни links ни item_matching —
+      // отправляем NULL вместо пустого объекта, иначе runResolutionPipeline
+      // отработает впустую на каждом job'е.
+      resolutionConfig = Object.keys(cleaned).length > 0 ? cleaned : null;
+    }
+
     const payload = {
       display_name: root.querySelector('#f-display_name').value.trim(),
       description: root.querySelector('#f-description').value.trim() || null,
@@ -3485,6 +3804,7 @@ function bindEditorHandlers(originalRow, isCreate, state, root) {
       confidence_threshold: confRaw === '' ? null : Number(confRaw),
       regex_fallback_threshold: regexThrRaw === '' ? null : Number(regexThrRaw),
       classification_keywords: [...state.classification_keywords],
+      resolution_config: resolutionConfig,
     };
 
     try {
