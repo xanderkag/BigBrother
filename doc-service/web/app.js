@@ -713,7 +713,31 @@ document.getElementById('dark-toggle').addEventListener('click', toggleTheme);
  * один (типичный manager) — прячет, но устанавливает в storage.
  * Если ноль — оставляет default System/Default.
  */
+/**
+ * Подсветить admin-only nav-ссылки если /users/me вернул super_admin или
+ * org_admin. По умолчанию они в HTML скрыты через class="hidden".
+ *
+ * Идемпотентно: вызывается при каждом initWorkspace и просто переключает
+ * .hidden. Никаких throw-кейсов — если /me упал, ссылки остаются скрытыми.
+ */
+async function initAdminNav() {
+  try {
+    const me = await apiJson('/users/me');
+    if (me.is_super_admin || me.role === 'org_admin') {
+      document.getElementById('nav-test-lab')?.classList.remove('hidden');
+    }
+  } catch {
+    // Молча — UI без ссылок работает нормально, backend в любом случае enforce
+  }
+}
+
 async function initWorkspace() {
+  // Параллельно: проекты для workspace switcher'а + текущий user для
+  // gating'а админ-nav (Тестовая лаборатория). Оба best-effort — если /me
+  // упал, просто не показываем админ-ссылки; если /projects упал, остаёмся
+  // без свитчера.
+  void initAdminNav();
+
   let projects;
   try {
     const res = await apiJson('/projects');
@@ -780,7 +804,8 @@ function route() {
       (target === 'providers' && h.startsWith('providers')) ||
       (target === 'audit-log' && h.startsWith('audit-log')) ||
       (target === 'tenants' && h.startsWith('tenants')) ||
-      (target === 'reference-lists' && h.startsWith('reference-lists'));
+      (target === 'reference-lists' && h.startsWith('reference-lists')) ||
+      (target === 'test-lab' && h.startsWith('test-lab'));
     el.classList.toggle('active', isActive);
   });
 
@@ -789,6 +814,7 @@ function route() {
   if (h.startsWith('jobs/')) return renderJobDetail(h.slice(5));
   if (h === 'review') return renderReviewQueue();
   if (h === 'upload') return renderUpload();
+  if (h === 'test-lab') return renderTestLab();
   if (h === 'document-types') return renderDocumentTypesList();
   if (h === 'document-types/new') return renderDocumentTypeEditor(null);
   if (h.startsWith('document-types/')) return renderDocumentTypeEditor(h.slice('document-types/'.length));
@@ -1836,9 +1862,55 @@ async function loadOriginalFile(jobId, jobMeta) {
 const UPLOAD_CONCURRENCY = 3;
 
 function renderUpload() {
+  // Простой режим для конечного пользователя: только то что нужно для
+  // нормальной работы. Тех-настройки (движки, выбор модели) — в #test-lab,
+  // ссылка на который показывается админам ниже.
+  renderUploadPage({
+    pageTitle: 'Загрузить документы',
+    pageSubtitle: 'Один или несколько файлов на обработку',
+    showEngineChain: false,
+    showModelPicker: false,
+    showLiveResultPreview: false,
+    advancedLink: true,
+  });
+}
+
+function renderTestLab() {
+  // Расширенный режим для админа/тестера. Тот же базовый flow, но с
+  // движками, выбором модели и встроенным результатом прямо на странице.
+  renderUploadPage({
+    pageTitle: 'Тестовая лаборатория',
+    pageSubtitle: 'Прогон документов через конкретные движки и модели для калибровки/тюнинга',
+    showEngineChain: true,
+    showModelPicker: true,
+    showLiveResultPreview: true,
+    advancedLink: false,
+  });
+}
+
+/**
+ * Общая реализация Upload-страницы с переключателями.
+ *
+ * options:
+ *   showEngineChain     — badges цепочки OCR (PDF-text → Tesseract → Vision LLM → Yandex)
+ *   showModelPicker     — дропдаун выбора LLM-провайдера (force_provider)
+ *   showLiveResultPreview — после загрузки рендерить extracted + pipeline timeline
+ *                           прямо на странице, без перехода в job detail
+ *   advancedLink        — показывать ссылку на Test Lab (только в простом режиме)
+ */
+function renderUploadPage(options) {
+  const {
+    pageTitle,
+    pageSubtitle,
+    showEngineChain,
+    showModelPicker,
+    showLiveResultPreview,
+    advancedLink,
+  } = options;
+
   setView(`
     <div class="page-narrow">
-      ${pageHeader({ title: 'Загрузить документы', subtitle: 'Один или несколько файлов на обработку' })}
+      ${pageHeader({ title: pageTitle, subtitle: pageSubtitle })}
 
       <div class="space-y-5">
         <div class="card card-body-lg">
@@ -1874,21 +1946,28 @@ function renderUpload() {
             </div>
           </div>
 
-          <!-- Движки обработки: что реально побежит на сервере -->
-          <div id="processing-engines" class="hidden">
+          ${showEngineChain ? `
+            <!-- Движки обработки: что реально побежит на сервере -->
+            <div id="processing-engines" class="hidden">
+              <div class="form-row">
+                <label class="form-label">Движок обработки</label>
+                <div id="engines-chain" class="flex items-center gap-2 flex-wrap text-sm"></div>
+                <p class="form-help">Цепочка пробуется сверху вниз — каждая следующая ступень включается если предыдущая не уверена.</p>
+              </div>
+            </div>` : ''}
+
+          ${showModelPicker ? `
+            <!-- Per-job переопределение LLM-провайдера -->
             <div class="form-row">
-              <label class="form-label">Движок обработки</label>
-              <div id="engines-chain" class="flex items-center gap-2 flex-wrap text-sm"></div>
-              <p class="form-help">
-                Цепочка пробуется сверху вниз — каждая следующая ступень включается если предыдущая не уверена.
-                Можно переопределить LLM-провайдера для этой загрузки:
-              </p>
-              <select id="llm-provider-select" class="form-select mt-2 text-sm">
+              <label class="form-label">LLM-провайдер для этой загрузки</label>
+              <select id="llm-provider-select" class="form-select">
                 <option value="">По умолчанию (как настроено в Providers)</option>
-                <!-- Опции из /provider-settings kind=llm -->
               </select>
-            </div>
-          </div>
+              <p class="form-help">
+                Передаётся в job через <code class="font-mono">metadata._force_provider_id</code>.
+                Полезно для сравнения моделей на одном файле.
+              </p>
+            </div>` : ''}
 
           <!-- Дев-настройки: webhook + metadata, спрятаны по умолчанию -->
           <details class="border-t border-slate-200 dark:border-slate-800 pt-4">
@@ -1909,6 +1988,12 @@ function renderUpload() {
               </div>
             </div>
           </details>
+
+          ${advancedLink ? `
+            <div id="advanced-link-container" class="hidden border-t border-slate-200 dark:border-slate-800 pt-3 text-xs text-slate-500 dark:text-slate-400">
+              Тестируете модели или калибруете пайплайн?
+              <a href="#test-lab" class="text-indigo-600 dark:text-indigo-400 font-medium hover:underline ml-1">Открыть тестовую лабораторию →</a>
+            </div>` : ''}
         </form>
 
         <!-- Очередь файлов -->
@@ -1923,15 +2008,18 @@ function renderUpload() {
           <div id="queue-list"></div>
         </div>
 
+        ${showLiveResultPreview ? `
+          <!-- Inline preview результата прямо на странице (Test Lab режим) -->
+          <div id="result-preview-section" class="space-y-3"></div>` : ''}
+
         <p id="upload-error" class="hidden form-error"></p>
       </div>
     </div>
   `);
 
-  // ── Подгрузка справочников (типы документов + движки) ─────────────────────
-  // Делается асинхронно после render'а, чтобы не блокировать показ страницы.
-  // Если запросы упадут — UI деградирует к старой пустой логике без ошибок
-  // пользователю (auto-detect всё равно работает).
+  // Стартуем все хелперы текущего рендера. uploadHelpers возвращает все
+  // нужные кишки (renderQueue, queue, addFiles, и т.д.) — общие между
+  // обоими режимами.
   let availableTypes = []; // [{ slug, display_name, expected_fields }]
 
   void (async () => {
@@ -1954,36 +2042,55 @@ function renderUpload() {
     }
   })();
 
-  void (async () => {
-    try {
-      const settings = await apiJson('/settings');
-      renderEngineChain(settings);
-    } catch (err) {
-      console.warn('Не удалось загрузить настройки движков:', err.message);
-    }
-  })();
-
-  // Подгружаем LLM-провайдеров для дропдауна выбора. Без ошибки если их нет —
-  // пользователь просто увидит "По умолчанию" и пайплайн применит default.
-  void (async () => {
-    try {
-      const { items } = await apiJson('/provider-settings');
-      const llms = items.filter((p) => p.kind === 'llm' && p.is_active);
-      const select = document.getElementById('llm-provider-select');
-      if (!select || llms.length === 0) return;
-      for (const p of llms) {
-        const opt = document.createElement('option');
-        opt.value = p.id;
-        const isDefault = p.is_default ? ' (по умолчанию)' : '';
-        const noKey = !p.has_api_key && p.id !== 'stub' ? ' — нет ключа' : '';
-        opt.textContent = `${p.display_name}${isDefault}${noKey}`;
-        if (noKey) opt.disabled = true;
-        select.appendChild(opt);
+  if (showEngineChain) {
+    void (async () => {
+      try {
+        const settings = await apiJson('/settings');
+        renderEngineChain(settings);
+      } catch (err) {
+        console.warn('Не удалось загрузить настройки движков:', err.message);
       }
-    } catch (err) {
-      console.warn('Не удалось загрузить LLM-провайдеров:', err.message);
-    }
-  })();
+    })();
+  }
+
+  if (showModelPicker) {
+    // Подгружаем LLM-провайдеров для дропдауна выбора. Без ошибки если их нет —
+    // пользователь просто увидит "По умолчанию" и пайплайн применит default.
+    void (async () => {
+      try {
+        const { items } = await apiJson('/provider-settings');
+        const llms = items.filter((p) => p.kind === 'llm' && p.is_active);
+        const select = document.getElementById('llm-provider-select');
+        if (!select || llms.length === 0) return;
+        for (const p of llms) {
+          const opt = document.createElement('option');
+          opt.value = p.id;
+          const isDefault = p.is_default ? ' (по умолчанию)' : '';
+          const noKey = !p.has_api_key && p.id !== 'stub' ? ' — нет ключа' : '';
+          opt.textContent = `${p.display_name}${isDefault}${noKey}`;
+          if (noKey) opt.disabled = true;
+          select.appendChild(opt);
+        }
+      } catch (err) {
+        console.warn('Не удалось загрузить LLM-провайдеров:', err.message);
+      }
+    })();
+  }
+
+  if (advancedLink) {
+    // Показываем ссылку «Открыть тестовую лабораторию →» только админам.
+    // Для обычных пользователей этой ссылки и страницы вообще нет.
+    void (async () => {
+      try {
+        const me = await apiJson('/users/me');
+        if (me.is_super_admin || me.role === 'org_admin') {
+          document.getElementById('advanced-link-container')?.classList.remove('hidden');
+        }
+      } catch {
+        // /users/me не упал — оставляем как обычно (без ссылки). Не критично.
+      }
+    })();
+  }
 
   function renderEngineChain(settings) {
     const container = document.getElementById('processing-engines');
@@ -2256,7 +2363,9 @@ function renderUpload() {
           };
           item.status = job.status === 'failed' ? 'failed' : job.status;
           if (job.status === 'failed') item.error = job.error ?? 'неизвестная ошибка';
+          item.fullJob = job;  // полная job для inline-preview в Test Lab
           renderQueue();
+          if (showLiveResultPreview) renderResultPreview();
           return;
         }
         renderQueue(); // обновляем step-row пока ещё processing
@@ -2270,6 +2379,68 @@ function renderUpload() {
       if (Date.now() - startedAt > 30_000) interval = 5000;
     }
     // Timeout — оставляем processing, оператор может зайти в job detail
+  }
+
+  /**
+   * Inline preview результата в Test Lab режиме. Рендерит карточку для каждого
+   * завершённого файла: краткая сводка, extracted JSON (collapsed), pipeline
+   * timeline. Без перехода в job detail — оператор сразу видит исход для
+   * сравнения N моделей на одном файле.
+   */
+  function renderResultPreview() {
+    const section = document.getElementById('result-preview-section');
+    if (!section) return;
+    const completed = queue.filter((q) => q.fullJob && (q.status === 'done' || q.status === 'needs_review' || q.status === 'failed'));
+    if (completed.length === 0) {
+      section.innerHTML = '';
+      return;
+    }
+    section.innerHTML = completed.map((q) => {
+      const job = q.fullJob;
+      const issues = job.validation_issues ?? [];
+      const statusBadge = job.status === 'done'
+        ? '<span class="badge badge-emerald">done</span>'
+        : job.status === 'needs_review'
+          ? '<span class="badge badge-amber">needs_review</span>'
+          : '<span class="badge badge-rose">failed</span>';
+
+      const stepsHtml = (job.pipeline_steps ?? []).map((s) => {
+        const icon = s.status === 'done' ? '✓' : s.status === 'failed' ? '✗' : s.status === 'skipped' ? '⊘' : '⟳';
+        const color = s.status === 'done' ? 'text-emerald-600' : s.status === 'failed' ? 'text-rose-600' : s.status === 'skipped' ? 'text-slate-400' : 'text-indigo-600';
+        const dur = s.duration_ms != null ? (s.duration_ms < 1000 ? ` ${s.duration_ms}мс` : ` ${(s.duration_ms / 1000).toFixed(1)}с`) : '';
+        return `<span class="${color}" title="${escapeHtml(s.step)}">${icon} ${escapeHtml(s.step)}${dur}</span>`;
+      }).join('<span class="text-slate-300 mx-1">→</span>');
+
+      return `
+        <div class="card">
+          <div class="card-header">
+            <div class="flex items-center gap-2 min-w-0">
+              <span class="font-medium truncate" title="${escapeHtml(q.file.name)}">${escapeHtml(q.file.name)}</span>
+              ${statusBadge}
+              ${job.document_type ? `<span class="badge badge-slate">${escapeHtml(job.document_type)}</span>` : ''}
+              ${job.confidence != null ? `<span class="text-xs font-mono">${Math.round(job.confidence * 100)}%</span>` : ''}
+              ${job.ocr_engine ? `<span class="text-xs text-slate-400">via ${escapeHtml(job.ocr_engine)}</span>` : ''}
+            </div>
+            <a href="#jobs/${escapeHtml(job.job_id)}" class="btn-ghost btn-xs">Открыть полностью →</a>
+          </div>
+          <div class="card-body space-y-3">
+            <div class="text-xs flex flex-wrap items-center gap-1">${stepsHtml}</div>
+            ${issues.length > 0 ? `
+              <div class="warning-banner text-xs">
+                <strong>Замечания (${issues.length}):</strong>
+                <ul class="mt-1 list-disc list-inside space-y-0.5">
+                  ${issues.slice(0, 5).map((i) => `<li class="font-mono">${escapeHtml(i)}</li>`).join('')}
+                  ${issues.length > 5 ? `<li class="text-slate-500">... +${issues.length - 5} ещё</li>` : ''}
+                </ul>
+              </div>` : ''}
+            <details>
+              <summary class="cursor-pointer text-xs text-slate-500 hover:text-slate-700 dark:hover:text-slate-200">Extracted JSON</summary>
+              <div class="mt-2 bg-slate-50 dark:bg-slate-950 rounded p-3 overflow-x-auto">${jsonTree(job.extracted ?? {})}</div>
+            </details>
+            ${job.error ? `<div class="error-banner text-xs"><strong>Ошибка:</strong> ${escapeHtml(job.error)}</div>` : ''}
+          </div>
+        </div>`;
+    }).join('');
   }
 
   startBtn.addEventListener('click', async () => {

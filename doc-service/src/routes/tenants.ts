@@ -333,6 +333,47 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  /**
+   * GET /users/me — текущий аутентифицированный пользователь.
+   *
+   * Используется UI для:
+   *   - показа имени в шапке
+   *   - gating'а админ-features (страница «Тестовая лаборатория», editor
+   *     document_types, etc.) — фронту нужно знать `role`, чтобы не показывать
+   *     ссылки которые backend всё равно завернёт 403'й.
+   *
+   * Для API_KEY root-токена возвращает виртуального super_admin без id (id='system').
+   */
+  r.get(
+    '/users/me',
+    {
+      schema: {
+        tags: ['tenants'],
+        summary: 'Текущий аутентифицированный пользователь',
+        security: [{ bearerAuth: [] }],
+        response: {
+          200: z.object({
+            id: z.string(),
+            role: z.string(),
+            organization_id: z.string().uuid().nullable(),
+            is_super_admin: z.boolean(),
+          }),
+          401: ErrorResponse,
+        },
+      },
+    },
+    async (req, reply) => {
+      const user = req.user;
+      if (!user) { reply.code(401); return { error: 'auth required' }; }
+      return {
+        id: user.id,
+        role: user.role,
+        organization_id: user.organization_id,
+        is_super_admin: user.isSuperAdmin,
+      };
+    },
+  );
+
   r.post(
     '/users',
     {
