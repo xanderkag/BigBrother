@@ -571,12 +571,24 @@ export async function runDocumentPipeline(
     // CP1: parser_kind dispatch. Если в БД задано 'llm_extract' — форсируем
     // GenericLlmParser даже для builtin-slug'ов (позволяет переключить тип
     // с regex на чистый LLM через UI без передеплоя кода).
+    //
+    // Phase B: дополнительный диспатч на MultiPassLlmParser:
+    //   - parser_kind='llm_extract_multipass' — явный admin-override
+    //   - parser_kind='llm_extract' + размер OCR-текста > MULTIPASS_AUTO_THRESHOLD
+    //     (config.thresholds.multipassAutoBytes, default 30_000) — авто-режим
+    //
     // Для всех остальных значений (null / builtin:*) — стандартный диспатч
     // фабрики: builtin slug → типизированный regex-парсер, custom → Generic.
+    const useMultipass =
+      typeConfig?.parserKind === 'llm_extract_multipass' ||
+      (typeConfig?.parserKind === 'llm_extract' &&
+        rawText.length > config.thresholds.multipassAutoBytes);
     const parser =
-      typeConfig?.parserKind === 'llm_extract'
-        ? parsersFactory.getGeneric(documentType)
-        : parsersFactory.get(documentType);
+      useMultipass
+        ? parsersFactory.getMultipass(documentType)
+        : typeConfig?.parserKind === 'llm_extract'
+          ? parsersFactory.getGeneric(documentType)
+          : parsersFactory.get(documentType);
     const tParser = Date.now();
     const result = await parser.parse(rawText, {
       expectedFields: typeConfig.expectedFields,

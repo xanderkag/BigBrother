@@ -18,6 +18,7 @@
 import type { Logger } from 'pino';
 import { db } from '../db.js';
 import { jobsRepo } from '../storage/jobs.js';
+import { resolveItemsArray } from '../storage/normalize-extracted.js';
 import { listEntriesRepo, resolutionResultsRepo } from './list-repo.js';
 import type {
   EntityLinkConfig,
@@ -161,18 +162,26 @@ async function runItemMatching(
   const nameField = cfg.name_field ?? 'name';
   const codeField = cfg.code_field ?? 'code';
 
-  // Извлекаем массив строк из extracted
-  const rawItems = extracted[cfg.items_field];
-  if (!Array.isArray(rawItems) || rawItems.length === 0) {
+  // Phase A: используем resolveItemsArray — даёт массив независимо от того,
+  // указал админ legacy positions/services в items_field или новое items.
+  // Если ничего не найдено — пустой массив, return early.
+  const rawItems = resolveItemsArray(extracted, cfg.items_field);
+  if (rawItems.length === 0) {
     return { matched: 0, notFound: 0 };
   }
 
   let matched = 0;
   let notFound = 0;
 
+  // Phase E1: batch lookup — собираем все непустые код/имя в один массив,
+  // один SELECT через exactSearch вместо N (где N — число строк документа).
+  // На документе с 500 позициями это 1 запрос вместо 1000 (code + name).
+  type ItemTuple = { idx: number; raw: Record<string, unknown>; code: string; name: string };
+  const tuples: ItemTuple[] = [];
+  const lookupValues = new Set<string>();
+
   for (let i = 0; i < rawItems.length; i++) {
     const raw = rawItems[i];
-    // OCR/LLM иногда отдают null/строки в items[] — пропускаем безопасно
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
     const item = raw as Record<string, unknown>;
     const code =
@@ -187,39 +196,51 @@ async function runItemMatching(
         : typeof item[nameField] === 'number'
           ? String(item[nameField])
           : '';
+    tuples.push({ idx: i, raw: item, code, name });
+    if (code) lookupValues.add(code);
+    if (name) lookupValues.add(name.toLowerCase());
+  }
 
-    // Шаг 1: exact по коду
-    let entries = code
-      ? await listEntriesRepo.exactSearch({
-          listTypeSlug: cfg.list_type,
-          organizationId,
-          values: [code],
-          limit: 3,
-        })
-      : [];
-
-    let method: string | null = code && entries.length > 0 ? 'exact_code' : null;
-
-    // Шаг 2: exact по названию (нормализованное)
-    if (entries.length === 0 && name) {
-      entries = await listEntriesRepo.exactSearch({
+  // Один batch-запрос на все коды и имена сразу. limit = размер массива + headroom
+  // под потенциальные duplicate-entries с пересекающимися search_keys.
+  const allValues = [...lookupValues];
+  const allEntries = allValues.length > 0
+    ? await listEntriesRepo.exactSearch({
         listTypeSlug: cfg.list_type,
         organizationId,
-        values: [name.toLowerCase()],
-        limit: 3,
-      });
-      if (entries.length > 0) method = 'exact_name';
-    }
+        values: allValues,
+        limit: Math.max(allValues.length * 2, 100),
+      })
+    : [];
 
-    if (entries.length > 0) {
-      const best = entries[0]!;
+  // Строим map { значение → первый matching entry }. Если у одной записи
+  // справочника несколько search_keys пересеклись с lookup'ом, берём её
+  // для каждого ключа (один entry может матчить и code и name).
+  const byValue = new Map<string, typeof allEntries[number]>();
+  for (const entry of allEntries) {
+    for (const key of entry.search_keys) {
+      if (lookupValues.has(key) && !byValue.has(key)) {
+        byValue.set(key, entry);
+      }
+    }
+  }
+
+  // Резолвим каждую строку через map. Сначала по коду, потом по имени.
+  // Inserts идут параллельно — БД-write мелкий, БД профильна для concurrent writes.
+  await Promise.all(tuples.map(async ({ idx, raw, code, name }) => {
+    const byCode = code ? byValue.get(code) : undefined;
+    const byName = !byCode && name ? byValue.get(name.toLowerCase()) : undefined;
+    const entry = byCode ?? byName;
+    const method = byCode ? 'exact_code' : byName ? 'exact_name' : 'exact';
+
+    if (entry) {
       await resolutionResultsRepo.insertItemMatch({
         jobId,
         organizationId,
         listTypeSlug: cfg.list_type,
-        itemIndex: i,
-        itemRaw: item,
-        entryId: best.id,
+        itemIndex: idx,
+        itemRaw: raw,
+        entryId: entry.id,
         matchScore: 1.0,
         matchMethod: method,
         status: 'suggested',
@@ -230,8 +251,8 @@ async function runItemMatching(
         jobId,
         organizationId,
         listTypeSlug: cfg.list_type,
-        itemIndex: i,
-        itemRaw: item,
+        itemIndex: idx,
+        itemRaw: raw,
         entryId: null,
         matchScore: null,
         matchMethod: 'exact',
@@ -240,10 +261,11 @@ async function runItemMatching(
       });
       notFound++;
     }
-  }
+  }));
 
   log.info(
-    { jobId, list_type: cfg.list_type, total: rawItems.length, matched, not_found: notFound },
+    { jobId, list_type: cfg.list_type, total: rawItems.length, matched, not_found: notFound,
+      lookup_values: lookupValues.size, batch_entries: allEntries.length },
     'resolution: item matching complete',
   );
 

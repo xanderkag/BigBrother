@@ -1,4 +1,5 @@
 import { db } from '../db.js';
+import { normalizeExtracted } from './normalize-extracted.js';
 import type { DocumentTypeSlug, JobStatus, OcrEngineName } from '../types/documents.js';
 
 /**
@@ -806,6 +807,11 @@ class JobsRepo {
    */
   toApi(row: JobRow) {
     const { extracted, issues } = splitExtractedAndIssues(row.extracted);
+    // Phase A: нормализуем legacy positions/services → канонический items[]
+    // для всех читателей API (UI, integrations, Resolution Engine).
+    // Старые job'ы написанные до миграции получают унифицированную форму
+    // без перезаписи в БД.
+    const normalized = normalizeExtracted(extracted);
     return {
       job_id: row.id,
       status: row.status,
@@ -814,7 +820,7 @@ class JobsRepo {
       confidence: row.confidence === null ? null : Number(row.confidence),
       ocr_engine: row.ocr_engine,
       raw_text: row.raw_text,
-      extracted,
+      extracted: normalized,
       validation_issues: issues,
       metadata: row.metadata,
       file_name: row.file_name,

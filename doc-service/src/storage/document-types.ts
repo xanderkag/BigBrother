@@ -14,7 +14,17 @@ import { db } from '../db.js';
  * валидация остаются без fallback'а.
  */
 
-export type ParserKind = 'builtin:invoice_regex' | 'builtin:upd_regex' | 'llm_extract';
+export type ParserKind =
+  | 'builtin:invoice_regex'
+  | 'builtin:upd_regex'
+  | 'llm_extract'
+  /**
+   * Phase B: двухпроходный LLM extract для длинных документов (200+ позиций).
+   * Pass 1 — header на head+tail текста; Pass 2 — items[] батчами по ~12KB.
+   * Активируется явно админом или авто-режимом orchestrator'а при размере
+   * OCR-текста > config.thresholds.multipassAutoBytes.
+   */
+  | 'llm_extract_multipass';
 
 export type DocumentTypeRow = {
   slug: string;

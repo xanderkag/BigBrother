@@ -8,6 +8,7 @@ import { TtnParser } from './ttn.js';
 import { CmrParser } from './cmr.js';
 import { AktParser } from './akt.js';
 import { GenericLlmParser } from './generic-llm.js';
+import { MultiPassLlmParser } from './multipass-llm.js';
 
 export type ParsersOptions = {
   /**
@@ -68,6 +69,21 @@ export class ParsersFactory {
     if (cached) return cached;
     const parser = new GenericLlmParser(this.llm, slug);
     this.genericCache.set(slug, parser);
+    return parser;
+  }
+
+  /**
+   * Phase B: MultiPassLlmParser — для длинных документов (большое число
+   * позиций). Активируется когда parser_kind='llm_extract_multipass' в БД
+   * или автоматически при OCR-тексте > MULTIPASS_AUTO_THRESHOLD (см.
+   * orchestrator). Делает Pass 1 на header + Pass 2 батчами на items[].
+   */
+  getMultipass(slug: DocumentTypeSlug): DocumentParser {
+    const cacheKey = `__multipass__:${slug}`;
+    const cached = this.genericCache.get(cacheKey);
+    if (cached) return cached;
+    const parser = new MultiPassLlmParser(this.llm, slug);
+    this.genericCache.set(cacheKey, parser);
     return parser;
   }
 }

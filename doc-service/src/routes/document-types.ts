@@ -30,7 +30,12 @@ import { requireSuperAdmin } from '../authz.js';
  * roles yet — any valid token can write. Future: gate writes on `admin` role.
  */
 
-const ParserKind = z.enum(['builtin:invoice_regex', 'builtin:upd_regex', 'llm_extract']);
+const ParserKind = z.enum([
+  'builtin:invoice_regex',
+  'builtin:upd_regex',
+  'llm_extract',
+  'llm_extract_multipass',
+]);
 
 /**
  * Resolution config: формализованная Zod-схема для document_types.resolution_config.

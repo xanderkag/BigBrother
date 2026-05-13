@@ -112,6 +112,11 @@ const ConfigSchema = z.object({
     // Below this regex-parser confidence, Phase 1 parsers fall back to LLM /extract.
     // Set to 0 to disable LLM-fallback for invoice/UPD entirely.
     regexFallback: numberFromEnv(0.7),
+    // Phase B: при OCR-тексте крупнее этого порога авто-включается MultiPassLlmParser
+    // для типов с parser_kind='llm_extract'. Двухпроходный режим разбивает текст
+    // на header + items-батчи, что улучшает точность на длинных таблицах и
+    // уменьшает риск «потери середины» у недорогих моделей.
+    multipassAutoBytes: numberFromEnv(30_000),
   }),
 
   tesseractLangs: z.string().default('rus+eng'),
@@ -168,6 +173,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       visionLlm: env.VISION_LLM_ACCEPT_THRESHOLD,
       needsReview: env.NEEDS_REVIEW_THRESHOLD,
       regexFallback: env.LLM_FALLBACK_THRESHOLD,
+      multipassAutoBytes: env.MULTIPASS_AUTO_BYTES,
     },
     tesseractLangs: env.TESSERACT_LANGS,
     llm: {
