@@ -30,22 +30,29 @@ const ConfirmBody = z.object({
 // Shared action helpers — DRY для confirm/reject
 // ---------------------------------------------------------------------------
 
+type ReqType = Parameters<typeof requireProjectWrite>[0];
+type ReplyType = Parameters<typeof requireProjectWrite>[1];
+
 /**
  * Выполнить confirm / reject для entity link.
- * Загружает link → находит job → проверяет write-доступ → обновляет статус.
+ * Порядок: link 404 → job 404 → authz 403 → update. Каждый шаг гарантированно
+ * шлёт reply, поэтому возвращаем `void` если ответ уже отправлен (через .send),
+ * либо объект для Fastify-сериализации.
  */
 async function entityLinkAction(
   id: string,
   status: 'confirmed' | 'rejected',
-  req: Parameters<typeof requireProjectWrite>[0],
-  reply: Parameters<typeof requireProjectWrite>[1],
+  req: ReqType,
+  reply: ReplyType,
   entryId?: string,
-): Promise<ReturnType<typeof resolutionResultsRepo.entityLinkToApi> | { error: string } | typeof reply> {
+): Promise<Record<string, unknown> | { error: string } | ReplyType> {
   const rawLink = await resolutionResultsRepo.findEntityLinkById(id);
   if (!rawLink) { reply.code(404); return { error: 'entity link not found' }; }
 
   const job = await jobsRepo.findById(rawLink.job_id);
-  if (!job || !(await requireProjectWrite(req, reply, job.project_id))) return reply;
+  if (!job) { reply.code(404); return { error: 'job not found' }; }
+
+  if (!(await requireProjectWrite(req, reply, job.project_id))) return reply;
 
   const updated = await resolutionResultsRepo.updateEntityLinkStatus(
     id, job.organization_id, status, getUserId(req), entryId,
@@ -55,20 +62,22 @@ async function entityLinkAction(
 }
 
 /**
- * Выполнить confirm / reject для item match.
+ * Выполнить confirm / reject для item match. Тот же порядок проверок.
  */
 async function itemMatchAction(
   id: string,
   status: 'confirmed' | 'rejected',
-  req: Parameters<typeof requireProjectWrite>[0],
-  reply: Parameters<typeof requireProjectWrite>[1],
+  req: ReqType,
+  reply: ReplyType,
   entryId?: string,
-): Promise<ReturnType<typeof resolutionResultsRepo.itemMatchToApi> | { error: string } | typeof reply> {
+): Promise<Record<string, unknown> | { error: string } | ReplyType> {
   const rawMatch = await resolutionResultsRepo.findItemMatchById(id);
   if (!rawMatch) { reply.code(404); return { error: 'item match not found' }; }
 
   const job = await jobsRepo.findById(rawMatch.job_id);
-  if (!job || !(await requireProjectWrite(req, reply, job.project_id))) return reply;
+  if (!job) { reply.code(404); return { error: 'job not found' }; }
+
+  if (!(await requireProjectWrite(req, reply, job.project_id))) return reply;
 
   const updated = await resolutionResultsRepo.updateItemMatchStatus(
     id, job.organization_id, status, getUserId(req), entryId,
@@ -131,8 +140,8 @@ export async function resolutionRoutes(app: FastifyInstance): Promise<void> {
         resolutionResultsRepo.listItemMatches(req.params.id),
       ]);
 
-      // Eagerly join entry details for all non-null entry_ids (one query per entry,
-      // но на практике их мало — единицы на документ, не тысячи)
+      // Eagerly join entry details — один SELECT … WHERE id = ANY($1) на весь job,
+      // а не N+1. На документе с 100 строками номенклатуры это 1 запрос вместо 100.
       const allEntryIds = [
         ...new Set([
           ...linkRows.filter((l) => l.entry_id).map((l) => l.entry_id!),
@@ -141,12 +150,10 @@ export async function resolutionRoutes(app: FastifyInstance): Promise<void> {
       ];
 
       const entryMap = new Map<string, ReturnType<typeof listEntriesRepo.toApi>>();
-      await Promise.all(
-        allEntryIds.map(async (eid) => {
-          const entry = await listEntriesRepo.findById(eid);
-          if (entry) entryMap.set(eid, listEntriesRepo.toApi(entry));
-        }),
-      );
+      const entries = await listEntriesRepo.findByIds(allEntryIds);
+      for (const entry of entries) {
+        entryMap.set(entry.id, listEntriesRepo.toApi(entry));
+      }
 
       const entity_links: EntityLinkApi[] = linkRows.map((l) =>
         resolutionResultsRepo.entityLinkToApi(

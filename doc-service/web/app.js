@@ -1349,15 +1349,27 @@ async function renderJobDetail(jobId) {
             btn.textContent = 'Запущено ✓';
             setTimeout(() => void loadResolution(jid), 1500);
           } catch (e) {
-            btn.disabled = false;
-            btn.textContent = 'Re-resolve';
-            alert(`Ошибка: ${e.message}`);
+            const msg = String(e?.message ?? e);
+            // 400 «no resolution_config» — конфиг типа был удалён админом между
+            // загрузкой панели и кликом. Дизейблим кнопку и подсвечиваем.
+            if (msg.includes('no resolution_config') || msg.includes('400')) {
+              btn.textContent = 'Конфиг удалён';
+              btn.classList.add('opacity-50');
+            } else {
+              btn.disabled = false;
+              btn.textContent = 'Re-resolve';
+              alert(`Ошибка: ${msg}`);
+            }
           }
         });
       });
-    } catch (_err) {
-      // Нет resolution_config для этого типа — не показываем панель
-      panel.innerHTML = '';
+    } catch (err) {
+      // GET /resolution всегда 200 если job существует; нечего показывать
+      // обрабатывается в res.length === 0 ветке выше. Сюда попадаем только при
+      // реальных ошибках (500, network, 401/403) — их показываем баннером,
+      // чтобы оператор понимал что бэкенд недоступен.
+      const msg = String(err?.message ?? err);
+      panel.innerHTML = `<div class="error-banner text-sm">Не удалось загрузить резолюцию: ${escapeHtml(msg)}</div>`;
     }
   }
 

@@ -67,7 +67,10 @@ export function startWebhookSweeper(
         'found stale undelivered webhooks, retrying',
       );
 
-      let succeeded = 0;
+      // triggered — это число запущенных доставок, не реально дошедших до
+      // получателя. Реальная доставка асинхронна (fire-and-forget) с собственным
+      // retry-loop внутри deliverWebhook().
+      let triggered = 0;
       for (const row of stale) {
         if (!row.webhook_url) continue; // should not happen given SQL filter
         const payload: WebhookPayload = {
@@ -86,13 +89,13 @@ export function startWebhookSweeper(
           void deliver(row.id, row.webhook_url, payload, log).catch((err) => {
             log.error({ job_id: row.id, err }, 'webhook sweeper delivery error');
           });
-          succeeded += 1;
+          triggered += 1;
           log.info({ job_id: row.id, attempts_so_far: row.webhook_attempts }, 'webhook re-delivery triggered');
         } catch (err) {
           log.error({ job_id: row.id, err }, 'webhook sweeper: failed to trigger delivery');
         }
       }
-      return succeeded;
+      return triggered;
     } catch (err) {
       log.error({ err }, 'webhook sweeper iteration failed');
       return 0;

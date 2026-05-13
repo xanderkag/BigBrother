@@ -277,6 +277,37 @@ class JobsRepo {
    * (например, конкурентный approve или reprocess) — операция идемпотентна
    * и возвращает актуальную строку без изменений.
    */
+  /**
+   * Принудительно перевести job в `needs_review` и добавить `reason` в
+   * `extracted._issues[]`. Используется Resolution Engine'ом когда сущность не
+   * нашлась в справочнике с `on_not_found: 'needs_review'`.
+   *
+   * Работает только если job уже в терминальном статусе (done|needs_review) —
+   * чтобы не перебить нормальный pipeline-flow. Возвращает обновлённую строку
+   * или null если переход не произошёл.
+   */
+  async markNeedsReview(id: string, reason: string): Promise<JobRow | null> {
+    const { rows } = await db.query<JobRow>(
+      `UPDATE jobs
+       SET status    = 'needs_review',
+           extracted = CASE
+             WHEN extracted IS NULL THEN
+               jsonb_build_object('_issues', jsonb_build_array($2::text))
+             ELSE
+               jsonb_set(
+                 extracted,
+                 '{_issues}',
+                 COALESCE(extracted->'_issues', '[]'::jsonb) || to_jsonb($2::text),
+                 true
+               )
+           END
+       WHERE id = $1 AND status IN ('done', 'needs_review')
+       RETURNING *`,
+      [id, reason],
+    );
+    return rows[0] ?? null;
+  }
+
   async approve(id: string): Promise<JobRow | null> {
     const { rows } = await db.query<JobRow>(
       `UPDATE jobs

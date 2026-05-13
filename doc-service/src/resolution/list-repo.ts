@@ -1,4 +1,4 @@
-import { db } from '../db.js';
+import { db, withTransaction } from '../db.js';
 import type {
   ReferenceListTypeRow,
   ReferenceListEntryRow,
@@ -158,6 +158,16 @@ class ReferenceListEntriesRepo {
     return rows[0] ?? null;
   }
 
+  /** Batch-поиск по списку id — для eager-join в `GET /resolution`. */
+  async findByIds(ids: string[]): Promise<ReferenceListEntryRow[]> {
+    if (ids.length === 0) return [];
+    const { rows } = await db.query<ReferenceListEntryRow>(
+      `SELECT * FROM reference_list_entries WHERE id = ANY($1::uuid[])`,
+      [ids],
+    );
+    return rows;
+  }
+
   /**
    * Exact-поиск по search_keys — ядро матчинга v1.
    * GIN-индекс даёт O(1) на типичных объёмах каталога.
@@ -247,9 +257,44 @@ class ReferenceListEntriesRepo {
   }
 
   /**
+   * Bulk create — все или ничего: одна транзакция, при ошибке полный rollback.
+   * Используется `POST /entries/bulk`. external_id может отсутствовать (в отличие от sync).
+   */
+  async bulkCreate(params: {
+    listTypeSlug: string;
+    organizationId: string;
+    entries: Array<EntryCreateInput>;
+  }): Promise<number> {
+    if (params.entries.length === 0) return 0;
+    return withTransaction(async (client) => {
+      let created = 0;
+      for (const entry of params.entries) {
+        await client.query(
+          `INSERT INTO reference_list_entries
+             (list_type_slug, organization_id, external_id, display_name, search_keys, data)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            params.listTypeSlug,
+            params.organizationId,
+            entry.external_id ?? null,
+            entry.display_name,
+            entry.search_keys,
+            JSON.stringify(entry.data ?? {}),
+          ],
+        );
+        created++;
+      }
+      return created;
+    });
+  }
+
+  /**
    * Bulk upsert — используется push-sync от внешних систем.
    * Ключ: (list_type_slug, organization_id, external_id).
    * Записи с external_id которых нет в переданном массиве — деактивируются.
+   *
+   * All-or-nothing: вся операция в одной транзакции. Если упало на любой
+   * строке — rollback всего, чтобы snapshot оставался согласованным.
    */
   async bulkSync(params: {
     listTypeSlug: string;
@@ -260,49 +305,51 @@ class ReferenceListEntriesRepo {
       return { upserted: 0, deactivated: 0 };
     }
 
-    let upserted = 0;
-    const externalIds: string[] = [];
+    return withTransaction(async (client) => {
+      let upserted = 0;
+      const externalIds: string[] = [];
 
-    for (const entry of params.entries) {
-      await db.query(
-        `INSERT INTO reference_list_entries
-           (list_type_slug, organization_id, external_id, display_name, search_keys, data, synced_at)
-         VALUES ($1, $2, $3, $4, $5, $6, now())
-         ON CONFLICT (list_type_slug, organization_id, external_id)
-           WHERE external_id IS NOT NULL
-         DO UPDATE SET
-           display_name = EXCLUDED.display_name,
-           search_keys  = EXCLUDED.search_keys,
-           data         = EXCLUDED.data,
-           is_active    = TRUE,
-           synced_at    = now(),
-           updated_at   = now()`,
-        [
-          params.listTypeSlug,
-          params.organizationId,
-          entry.external_id,
-          entry.display_name,
-          entry.search_keys,
-          JSON.stringify(entry.data ?? {}),
-        ],
+      for (const entry of params.entries) {
+        await client.query(
+          `INSERT INTO reference_list_entries
+             (list_type_slug, organization_id, external_id, display_name, search_keys, data, synced_at)
+           VALUES ($1, $2, $3, $4, $5, $6, now())
+           ON CONFLICT (list_type_slug, organization_id, external_id)
+             WHERE external_id IS NOT NULL
+           DO UPDATE SET
+             display_name = EXCLUDED.display_name,
+             search_keys  = EXCLUDED.search_keys,
+             data         = EXCLUDED.data,
+             is_active    = TRUE,
+             synced_at    = now(),
+             updated_at   = now()`,
+          [
+            params.listTypeSlug,
+            params.organizationId,
+            entry.external_id,
+            entry.display_name,
+            entry.search_keys,
+            JSON.stringify(entry.data ?? {}),
+          ],
+        );
+        upserted++;
+        externalIds.push(entry.external_id);
+      }
+
+      // Деактивируем записи которых нет в новой выгрузке
+      const { rowCount } = await client.query(
+        `UPDATE reference_list_entries
+         SET is_active = FALSE, updated_at = now()
+         WHERE list_type_slug = $1
+           AND organization_id = $2
+           AND external_id IS NOT NULL
+           AND external_id <> ALL($3)
+           AND is_active`,
+        [params.listTypeSlug, params.organizationId, externalIds],
       );
-      upserted++;
-      externalIds.push(entry.external_id);
-    }
 
-    // Деактивируем записи которых нет в новой выгрузке
-    const { rowCount } = await db.query(
-      `UPDATE reference_list_entries
-       SET is_active = FALSE, updated_at = now()
-       WHERE list_type_slug = $1
-         AND organization_id = $2
-         AND external_id IS NOT NULL
-         AND external_id <> ALL($3)
-         AND is_active`,
-      [params.listTypeSlug, params.organizationId, externalIds],
-    );
-
-    return { upserted, deactivated: rowCount ?? 0 };
+      return { upserted, deactivated: rowCount ?? 0 };
+    });
   }
 
   toApi(row: ReferenceListEntryRow): ReferenceListEntryApi {

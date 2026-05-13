@@ -1,8 +1,8 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { bearerAuthHook } from '../auth.js';
-import { getOrgId } from '../authz.js';
+import { getOrgId, requireOrgAdmin } from '../authz.js';
 import { listTypesRepo, listEntriesRepo } from '../resolution/list-repo.js';
 import { ErrorResponse } from '../types/api-schemas.js';
 
@@ -21,11 +21,14 @@ const CreateTypeBody = z.object({
   slug: z.string().min(1).max(64).regex(/^[a-z][a-z0-9_]*$/),
   label: z.string().min(1).max(200),
   search_hint: z.string().max(500).nullable().optional(),
+  /** Опционально для super_admin: записать в указанную организацию. */
+  organization_id: z.string().uuid().optional(),
 });
 
 const PatchTypeBody = z.object({
   label: z.string().min(1).max(200).optional(),
   search_hint: z.string().max(500).nullable().optional(),
+  organization_id: z.string().uuid().optional(),
 });
 
 const EntryBody = z.object({
@@ -33,12 +36,15 @@ const EntryBody = z.object({
   display_name: z.string().min(1).max(500),
   search_keys: z.array(z.string().min(1).max(256)).min(1),
   data: z.record(z.unknown()).optional(),
+  organization_id: z.string().uuid().optional(),
 });
 
 const BulkBody = z.object({
+  organization_id: z.string().uuid().optional(),
   entries: z.array(
     z.object({
-      external_id: z.string().min(1).max(256),
+      // bulk-create — external_id опционален; sync — обязателен (валидируется отдельно).
+      external_id: z.string().min(1).max(256).nullable().optional(),
       display_name: z.string().min(1).max(500),
       search_keys: z.array(z.string().min(1).max(256)).min(1),
       data: z.record(z.unknown()).optional(),
@@ -46,7 +52,17 @@ const BulkBody = z.object({
   ).min(1),
 });
 
-const SyncBody = BulkBody; // же структура, другая семантика (upsert + deactivate)
+const SyncBody = z.object({
+  organization_id: z.string().uuid().optional(),
+  entries: z.array(
+    z.object({
+      external_id: z.string().min(1).max(256),  // sync требует external_id для upsert
+      display_name: z.string().min(1).max(500),
+      search_keys: z.array(z.string().min(1).max(256)).min(1),
+      data: z.record(z.unknown()).optional(),
+    }),
+  ).min(1),
+});
 
 const ListEntriesQuery = z.object({
   q: z.string().optional(),
@@ -61,7 +77,46 @@ const PatchEntryBody = z.object({
   search_keys: z.array(z.string().min(1).max(256)).min(1).optional(),
   data: z.record(z.unknown()).optional(),
   is_active: z.boolean().optional(),
+  organization_id: z.string().uuid().optional(),
 });
+
+// ---------------------------------------------------------------------------
+// Helpers — резолюция organization_id с явной обработкой super_admin кейса
+// ---------------------------------------------------------------------------
+
+/**
+ * Резолвит organization_id для read-операции.
+ * Возвращает '' если ни в токене, ни в query — caller сам решит как реагировать
+ * (например GET /reference-list-types возвращает пустой массив).
+ */
+function resolveOrgIdForRead(
+  req: FastifyRequest & { query?: { organization_id?: string } },
+): string {
+  return getOrgId(req) || req.query?.organization_id || '';
+}
+
+/**
+ * Резолвит organization_id для write-операции. Super_admin (без org в токене)
+ * ОБЯЗАН явно указать organization_id в body / query — иначе 400.
+ * Возвращает null если orgId не разрешён (caller должен прервать обработку,
+ * reply уже отправлен).
+ */
+async function resolveOrgIdForWrite(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  bodyOrgId: string | undefined,
+  queryOrgId?: string,
+): Promise<string | null> {
+  const tokenOrg = getOrgId(req);
+  const orgId = tokenOrg || bodyOrgId || queryOrgId || '';
+  if (!orgId) {
+    reply.code(400).send({ error: 'organization_id required (in body or query for super_admin)' });
+    return null;
+  }
+  // org_admin / writers разрешены только в свою орг; super_admin — везде.
+  if (!requireOrgAdmin(req, reply, orgId)) return null;
+  return orgId;
+}
 
 // ---------------------------------------------------------------------------
 // Route plugin
@@ -89,8 +144,7 @@ export async function referenceListsRoutes(app: FastifyInstance): Promise<void> 
       },
     },
     async (req) => {
-      // Токен → orgId, fallback на query-параметр (только для super_admin)
-      const orgId = getOrgId(req) || req.query.organization_id || '';
+      const orgId = resolveOrgIdForRead(req);
       if (!orgId) return [];
       const rows = await listTypesRepo.list(orgId);
       return rows.map((row) => listTypesRepo.toApi(row));
@@ -103,14 +157,15 @@ export async function referenceListsRoutes(app: FastifyInstance): Promise<void> 
       schema: {
         tags: ['reference-lists'],
         summary: 'Создать тип справочника',
+        description: 'Требует org_admin/super_admin. super_admin должен передать organization_id в body.',
         security: [{ bearerAuth: [] }],
         body: CreateTypeBody,
-        response: { 201: z.record(z.unknown()), 400: ErrorResponse, 401: ErrorResponse },
+        response: { 201: z.record(z.unknown()), 400: ErrorResponse, 401: ErrorResponse, 403: ErrorResponse },
       },
     },
     async (req, reply) => {
-      const orgId = getOrgId(req);
-      if (!orgId) { reply.code(401); return { error: 'organization_id required' }; }
+      const orgId = await resolveOrgIdForWrite(req, reply, req.body.organization_id);
+      if (!orgId) return reply;
       const existing = await listTypesRepo.findBySlug(req.body.slug, orgId);
       if (existing) { reply.code(400); return { error: `slug '${req.body.slug}' already exists` }; }
       const row = await listTypesRepo.create({
@@ -133,11 +188,13 @@ export async function referenceListsRoutes(app: FastifyInstance): Promise<void> 
         security: [{ bearerAuth: [] }],
         params: SlugParam,
         body: PatchTypeBody,
-        response: { 200: z.record(z.unknown()), 404: ErrorResponse, 401: ErrorResponse },
+        response: { 200: z.record(z.unknown()), 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse },
       },
     },
     async (req, reply) => {
-      const updated = await listTypesRepo.update(req.params.slug, getOrgId(req), {
+      const orgId = await resolveOrgIdForWrite(req, reply, req.body.organization_id);
+      if (!orgId) return reply;
+      const updated = await listTypesRepo.update(req.params.slug, orgId, {
         label: req.body.label,
         searchHint: req.body.search_hint,
       });
@@ -154,11 +211,14 @@ export async function referenceListsRoutes(app: FastifyInstance): Promise<void> 
         summary: 'Удалить тип справочника (вместе со всеми записями)',
         security: [{ bearerAuth: [] }],
         params: SlugParam,
-        response: { 204: z.null(), 404: ErrorResponse, 401: ErrorResponse },
+        querystring: OrgQuery,
+        response: { 204: z.null(), 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse },
       },
     },
     async (req, reply) => {
-      const ok = await listTypesRepo.delete(req.params.slug, getOrgId(req));
+      const orgId = await resolveOrgIdForWrite(req, reply, undefined, req.query.organization_id);
+      if (!orgId) return reply;
+      const ok = await listTypesRepo.delete(req.params.slug, orgId);
       if (!ok) { reply.code(404); return { error: 'list type not found' }; }
       reply.code(204);
       return null;
@@ -191,7 +251,8 @@ export async function referenceListsRoutes(app: FastifyInstance): Promise<void> 
       },
     },
     async (req, reply) => {
-      const orgId = getOrgId(req) || req.query.organization_id || '';
+      const orgId = resolveOrgIdForRead(req);
+      if (!orgId) { reply.code(404); return { error: 'list type not found' }; }
       const typeExists = await listTypesRepo.findBySlug(req.params.slug, orgId);
       if (!typeExists) { reply.code(404); return { error: 'list type not found' }; }
       const rows = await listEntriesRepo.list({
@@ -219,11 +280,12 @@ export async function referenceListsRoutes(app: FastifyInstance): Promise<void> 
         security: [{ bearerAuth: [] }],
         params: SlugParam,
         body: EntryBody,
-        response: { 201: z.record(z.unknown()), 400: ErrorResponse, 404: ErrorResponse, 401: ErrorResponse },
+        response: { 201: z.record(z.unknown()), 400: ErrorResponse, 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse },
       },
     },
     async (req, reply) => {
-      const orgId = getOrgId(req);
+      const orgId = await resolveOrgIdForWrite(req, reply, req.body.organization_id);
+      if (!orgId) return reply;
       const typeExists = await listTypesRepo.findBySlug(req.params.slug, orgId);
       if (!typeExists) { reply.code(404); return { error: 'list type not found' }; }
       const row = await listEntriesRepo.create({
@@ -246,27 +308,31 @@ export async function referenceListsRoutes(app: FastifyInstance): Promise<void> 
     {
       schema: {
         tags: ['reference-lists'],
-        summary: 'Bulk-создание записей (без дедупликации)',
-        description: 'Создаёт записи в цикле без проверки дублей. Для полной синхронизации с внешней системой используйте `/sync`.',
+        summary: 'Bulk-создание записей (без дедупликации, транзакция all-or-nothing)',
+        description:
+          'Создаёт записи в одной транзакции. Если хотя бы одна упадёт — откатываем все. ' +
+          'Для полной push-синхронизации с внешней системой используйте `/sync`.',
         security: [{ bearerAuth: [] }],
         params: SlugParam,
         body: BulkBody,
         response: {
           201: z.object({ created: z.number() }),
-          404: ErrorResponse,
           401: ErrorResponse,
+          403: ErrorResponse,
+          404: ErrorResponse,
         },
       },
     },
     async (req, reply) => {
-      const orgId = getOrgId(req);
+      const orgId = await resolveOrgIdForWrite(req, reply, req.body.organization_id);
+      if (!orgId) return reply;
       const typeExists = await listTypesRepo.findBySlug(req.params.slug, orgId);
       if (!typeExists) { reply.code(404); return { error: 'list type not found' }; }
-      let created = 0;
-      for (const entry of req.body.entries) {
-        await listEntriesRepo.create({ listTypeSlug: req.params.slug, organizationId: orgId, input: entry });
-        created++;
-      }
+      const created = await listEntriesRepo.bulkCreate({
+        listTypeSlug: req.params.slug,
+        organizationId: orgId,
+        entries: req.body.entries,
+      });
       reply.code(201);
       return { created };
     },
@@ -281,19 +347,21 @@ export async function referenceListsRoutes(app: FastifyInstance): Promise<void> 
         description:
           'Принимает полный список актуальных записей. Записи с совпадающим `external_id` ' +
           'обновляются. Новые — создаются. Записи которых нет в теле — деактивируются (soft-delete). ' +
-          'Вызывается WMS/ERP при изменении своего списка.',
+          'Транзакция all-or-nothing. Вызывается WMS/ERP при изменении своего списка.',
         security: [{ bearerAuth: [] }],
         params: SlugParam,
         body: SyncBody,
         response: {
           200: z.object({ upserted: z.number(), deactivated: z.number() }),
-          404: ErrorResponse,
           401: ErrorResponse,
+          403: ErrorResponse,
+          404: ErrorResponse,
         },
       },
     },
     async (req, reply) => {
-      const orgId = getOrgId(req);
+      const orgId = await resolveOrgIdForWrite(req, reply, req.body.organization_id);
+      if (!orgId) return reply;
       const typeExists = await listTypesRepo.findBySlug(req.params.slug, orgId);
       if (!typeExists) { reply.code(404); return { error: 'list type not found' }; }
       return listEntriesRepo.bulkSync({
@@ -313,11 +381,13 @@ export async function referenceListsRoutes(app: FastifyInstance): Promise<void> 
         security: [{ bearerAuth: [] }],
         params: EntryIdParam,
         body: PatchEntryBody,
-        response: { 200: z.record(z.unknown()), 404: ErrorResponse, 401: ErrorResponse },
+        response: { 200: z.record(z.unknown()), 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse },
       },
     },
     async (req, reply) => {
-      const updated = await listEntriesRepo.update(req.params.id, getOrgId(req), req.body);
+      const orgId = await resolveOrgIdForWrite(req, reply, req.body.organization_id);
+      if (!orgId) return reply;
+      const updated = await listEntriesRepo.update(req.params.id, orgId, req.body);
       if (!updated) { reply.code(404); return { error: 'entry not found' }; }
       return listEntriesRepo.toApi(updated);
     },
@@ -331,11 +401,14 @@ export async function referenceListsRoutes(app: FastifyInstance): Promise<void> 
         summary: 'Деактивировать запись справочника (soft-delete)',
         security: [{ bearerAuth: [] }],
         params: EntryIdParam,
-        response: { 204: z.null(), 404: ErrorResponse, 401: ErrorResponse },
+        querystring: OrgQuery,
+        response: { 204: z.null(), 401: ErrorResponse, 403: ErrorResponse, 404: ErrorResponse },
       },
     },
     async (req, reply) => {
-      const ok = await listEntriesRepo.deactivate(req.params.id, getOrgId(req));
+      const orgId = await resolveOrgIdForWrite(req, reply, undefined, req.query.organization_id);
+      if (!orgId) return reply;
+      const ok = await listEntriesRepo.deactivate(req.params.id, orgId);
       if (!ok) { reply.code(404); return { error: 'entry not found' }; }
       reply.code(204);
       return null;

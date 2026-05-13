@@ -51,6 +51,8 @@ export type DocumentTypeCreateInput = {
   regex_fallback_threshold?: number | null;
   classification_keywords?: string[];
   metadata?: Record<string, unknown> | null;
+  /** Конфиг резолюционного пайплайна (entity_links + item_matching). */
+  resolution_config?: Record<string, unknown> | null;
 };
 
 /** Partial update. Любое поле = `undefined` оставляет колонку как есть. `null` — обнуляет. */
@@ -95,11 +97,13 @@ class DocumentTypesRepo {
       `INSERT INTO document_types (
          slug, display_name, description, is_active, is_builtin, parser_kind,
          llm_prompt, llm_schema, expected_fields, validators,
-         confidence_threshold, regex_fallback_threshold, classification_keywords, metadata
+         confidence_threshold, regex_fallback_threshold, classification_keywords, metadata,
+         resolution_config
        ) VALUES (
          $1, $2, $3, COALESCE($4, true), false, COALESCE($5, 'llm_extract'),
          $6, $7, COALESCE($8, ARRAY[]::TEXT[]), COALESCE($9, ARRAY[]::TEXT[]),
-         $10, $11, COALESCE($12, ARRAY[]::TEXT[]), $13
+         $10, $11, COALESCE($12, ARRAY[]::TEXT[]), $13,
+         $14
        ) RETURNING *`,
       [
         input.slug,
@@ -115,6 +119,7 @@ class DocumentTypesRepo {
         input.regex_fallback_threshold ?? null,
         input.classification_keywords ?? null,
         input.metadata ?? null,
+        input.resolution_config ?? null,
       ],
     );
     return rows[0]!;
@@ -148,6 +153,7 @@ class DocumentTypesRepo {
     if (patch.classification_keywords !== undefined)
       push('classification_keywords', patch.classification_keywords);
     if (patch.metadata !== undefined) push('metadata', patch.metadata);
+    if (patch.resolution_config !== undefined) push('resolution_config', patch.resolution_config);
     if (sets.length === 0) return this.findBySlug(slug);
 
     values.push(slug);
@@ -194,6 +200,7 @@ class DocumentTypesRepo {
         row.regex_fallback_threshold === null ? null : Number(row.regex_fallback_threshold),
       classification_keywords: row.classification_keywords,
       metadata: row.metadata,
+      resolution_config: row.resolution_config,
       created_at: row.created_at.toISOString(),
       updated_at: row.updated_at.toISOString(),
     };

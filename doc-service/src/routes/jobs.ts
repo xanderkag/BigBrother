@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
+import { z } from 'zod';
 import { createReadStream } from 'node:fs';
 import { stat, unlink } from 'node:fs/promises';
 import { config } from '../config.js';
@@ -538,9 +539,11 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
           'Сбрасывает `webhook_attempts` и `webhook_delivered_at`, после чего немедленно ' +
           'повторяет доставку вебхука в фоне (с полным backoff-циклом). ' +
           'Требует, чтобы у job был `webhook_url` и job находился в терминальном статусе. ' +
-          'Возвращает 202 Accepted — доставка асинхронная.',
+          'Возвращает 202 Accepted — доставка асинхронная. ' +
+          'Если webhook уже доставлен (`webhook_delivered_at != null`) — отказ 409 без `?force=true`.',
         security: [{ bearerAuth: [] }],
         params: JobIdParam,
+        querystring: z.object({ force: z.coerce.boolean().default(false) }),
         response: {
           202: Job,
           400: ErrorResponse,
@@ -565,6 +568,15 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         reply.code(409);
         return {
           error: `cannot redeliver webhook for job in status "${job.status}", wait for terminal state`,
+        };
+      }
+      // Защита от случайного redeliver уже-доставленных вебхуков — клиент мог
+      // не понять что доставка успешна и нажать ещё раз. Через ?force=true можно
+      // принудительно перепослать (например для replay в QA).
+      if (job.webhook_delivered_at && !req.query.force) {
+        reply.code(409);
+        return {
+          error: 'webhook already delivered; use ?force=true to redeliver anyway',
         };
       }
       // Сбрасываем счётчик и временну́ю метку перед запуском,

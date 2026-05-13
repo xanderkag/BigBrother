@@ -32,6 +32,36 @@ import { requireSuperAdmin } from '../authz.js';
 
 const ParserKind = z.enum(['builtin:invoice_regex', 'builtin:upd_regex', 'llm_extract']);
 
+/**
+ * Resolution config: формализованная Zod-схема для document_types.resolution_config.
+ * См. полное описание + примеры — src/resolution/types.ts.
+ *
+ * Жёсткая валидация на write-ручках, чтобы админ не записал JSON «куда придётся»:
+ * пустой массив `entity_links: []` валиден (просто нет привязок); `item_matching`
+ * можно опустить целиком.
+ */
+const OnNotFoundSchema = z.enum(['needs_review', 'warn', 'ignore']);
+
+const EntityLinkConfigSchema = z.object({
+  list_type: z.string().min(1).max(64),
+  match_fields: z.array(z.string().min(1).max(80)).min(1).max(16),
+  on_not_found: OnNotFoundSchema.optional(),
+});
+
+const ItemMatchingConfigSchema = z.object({
+  list_type: z.string().min(1).max(64),
+  items_field: z.string().min(1).max(80),
+  name_field: z.string().min(1).max(80).optional(),
+  code_field: z.string().min(1).max(80).optional(),
+  fuzzy_threshold: z.number().min(0).max(1).optional(),
+  on_not_found: OnNotFoundSchema.optional(),
+});
+
+const ResolutionConfigSchema = z.object({
+  entity_links: z.array(EntityLinkConfigSchema).max(32).optional(),
+  item_matching: ItemMatchingConfigSchema.optional(),
+});
+
 const DocumentType = z.object({
   slug: z.string(),
   display_name: z.string(),
@@ -47,6 +77,7 @@ const DocumentType = z.object({
   regex_fallback_threshold: z.number().nullable(),
   classification_keywords: z.array(z.string()),
   metadata: z.record(z.unknown()).nullable(),
+  resolution_config: ResolutionConfigSchema.nullable(),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -78,6 +109,7 @@ const CreateBody = z.object({
   regex_fallback_threshold: Threshold.optional(),
   classification_keywords: z.array(z.string().min(1).max(200)).max(64).optional(),
   metadata: z.record(z.unknown()).nullable().optional(),
+  resolution_config: ResolutionConfigSchema.nullable().optional(),
 });
 
 // PATCH — все поля опциональные, slug нельзя менять (берётся из URL).
