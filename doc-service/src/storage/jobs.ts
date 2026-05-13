@@ -120,6 +120,30 @@ export type JobRow = {
   project_id: string;
   /** Пользователь-инициатор. Может быть null для legacy job'ов до миграции 008. */
   created_by_user_id: string | null;
+  /**
+   * Append-only список событий пайплайна. Заполняется оркестратором на каждой
+   * стадии (upload, classify, ocr.<engine>, parse, validate, resolve, finalize).
+   * UI читает для live-прогресса; пост-мортем при ошибках показывает на какой
+   * именно ступени job упал.
+   */
+  pipeline_steps: PipelineStep[];
+};
+
+/**
+ * Одно событие пайплайна. Хранится в jobs.pipeline_steps как элемент JSONB-массива.
+ *
+ *   step:        'upload' | 'classify' | 'ocr.tesseract' | 'ocr.vision-llm' | 'parse.<kind>' | 'validate' | 'resolve' | 'finalize'
+ *   status:      'started' | 'done' | 'failed' | 'skipped'
+ *   at:          ISO-таймстамп
+ *   duration_ms: только у done/failed/skipped — сколько шаг занял
+ *   details:     произвольный JSON с конкретикой шага (confidence, engine, issues_count, …)
+ */
+export type PipelineStep = {
+  step: string;
+  status: 'started' | 'done' | 'failed' | 'skipped';
+  at: string;
+  duration_ms?: number;
+  details?: Record<string, unknown>;
 };
 
 export type CreateJobInput = {
@@ -210,6 +234,19 @@ class JobsRepo {
       [key],
     );
     return rows[0] ?? null;
+  }
+
+  /**
+   * Append одного события пайплайна в jobs.pipeline_steps. Best-effort:
+   * исключения логирует caller, мы не хотим что pipeline-observability
+   * валила основной поток обработки. Один запрос на событие — для типичных
+   * 10-20 событий на job это ~10ms суммарно.
+   */
+  async appendPipelineStep(id: string, step: PipelineStep): Promise<void> {
+    await db.query(
+      `UPDATE jobs SET pipeline_steps = pipeline_steps || $2::jsonb WHERE id = $1`,
+      [id, JSON.stringify(step)],
+    );
   }
 
   async markProcessing(id: string): Promise<void> {
@@ -785,6 +822,7 @@ class JobsRepo {
       file_size: Number(row.file_size),
       error: row.error,
       last_llm_call: row.last_llm_call,
+      pipeline_steps: row.pipeline_steps ?? [],
       organization_id: row.organization_id,
       project_id: row.project_id,
       created_by_user_id: row.created_by_user_id,

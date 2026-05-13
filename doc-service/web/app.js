@@ -1549,6 +1549,47 @@ async function renderJobDetail(jobId) {
         </div>
       </div>
 
+      ${(job.pipeline_steps && job.pipeline_steps.length > 0) ? `
+        <details class="card" open>
+          <summary class="card-header cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 transition list-none">
+            <div class="flex items-center justify-between w-full">
+              <span class="card-title">Этапы обработки <span class="text-sm font-normal text-slate-500">${job.pipeline_steps.length}</span></span>
+              <span class="text-xs text-slate-400">пайплайн end-to-end</span>
+            </div>
+          </summary>
+          <div class="card-body">
+            <ol class="space-y-2">
+              ${job.pipeline_steps.map((s, i) => {
+                const icon = s.status === 'done' ? '✓' : s.status === 'failed' ? '✗' : s.status === 'skipped' ? '⊘' : '⟳';
+                const color =
+                  s.status === 'done' ? 'text-emerald-600' :
+                  s.status === 'failed' ? 'text-rose-600' :
+                  s.status === 'skipped' ? 'text-slate-400' :
+                  'text-indigo-600';
+                const dur = s.duration_ms != null
+                  ? (s.duration_ms < 1000 ? `${s.duration_ms} мс` : `${(s.duration_ms / 1000).toFixed(2)} с`)
+                  : '';
+                const det = s.details
+                  ? `<div class="text-xs font-mono text-slate-500 dark:text-slate-400 mt-1 ml-7 break-all">${escapeHtml(JSON.stringify(s.details))}</div>`
+                  : '';
+                return `
+                  <li class="flex items-start gap-2 text-sm">
+                    <span class="${color} font-bold w-5 text-center pt-0.5">${icon}</span>
+                    <div class="flex-1 min-w-0">
+                      <div class="flex items-center gap-2 flex-wrap">
+                        <span class="font-mono font-medium">${escapeHtml(s.step)}</span>
+                        <span class="badge ${s.status === 'done' ? 'badge-emerald' : s.status === 'failed' ? 'badge-rose' : s.status === 'skipped' ? 'badge-slate' : 'badge-indigo'}">${s.status}</span>
+                        ${dur ? `<span class="text-xs font-mono text-slate-500">${dur}</span>` : ''}
+                        <span class="text-xs text-slate-400">${new Date(s.at).toLocaleTimeString('ru-RU')}</span>
+                      </div>
+                      ${det}
+                    </div>
+                  </li>`;
+              }).join('')}
+            </ol>
+          </div>
+        </details>` : ''}
+
       <!-- Raw text (collapsed) -->
       <details class="card">
         <summary class="card-header cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50 transition list-none">
@@ -1838,7 +1879,14 @@ function renderUpload() {
             <div class="form-row">
               <label class="form-label">Движок обработки</label>
               <div id="engines-chain" class="flex items-center gap-2 flex-wrap text-sm"></div>
-              <p class="form-help">Цепочка пробуется сверху вниз — каждая следующая ступень включается если предыдущая не уверена.</p>
+              <p class="form-help">
+                Цепочка пробуется сверху вниз — каждая следующая ступень включается если предыдущая не уверена.
+                Можно переопределить LLM-провайдера для этой загрузки:
+              </p>
+              <select id="llm-provider-select" class="form-select mt-2 text-sm">
+                <option value="">По умолчанию (как настроено в Providers)</option>
+                <!-- Опции из /provider-settings kind=llm -->
+              </select>
             </div>
           </div>
 
@@ -1915,6 +1963,28 @@ function renderUpload() {
     }
   })();
 
+  // Подгружаем LLM-провайдеров для дропдауна выбора. Без ошибки если их нет —
+  // пользователь просто увидит "По умолчанию" и пайплайн применит default.
+  void (async () => {
+    try {
+      const { items } = await apiJson('/provider-settings');
+      const llms = items.filter((p) => p.kind === 'llm' && p.is_active);
+      const select = document.getElementById('llm-provider-select');
+      if (!select || llms.length === 0) return;
+      for (const p of llms) {
+        const opt = document.createElement('option');
+        opt.value = p.id;
+        const isDefault = p.is_default ? ' (по умолчанию)' : '';
+        const noKey = !p.has_api_key && p.id !== 'stub' ? ' — нет ключа' : '';
+        opt.textContent = `${p.display_name}${isDefault}${noKey}`;
+        if (noKey) opt.disabled = true;
+        select.appendChild(opt);
+      }
+    } catch (err) {
+      console.warn('Не удалось загрузить LLM-провайдеров:', err.message);
+    }
+  })();
+
   function renderEngineChain(settings) {
     const container = document.getElementById('processing-engines');
     const chain = document.getElementById('engines-chain');
@@ -1932,7 +2002,14 @@ function renderUpload() {
       steps.push({ name: 'Vision LLM', desc: 'Нейросеть для сложных сканов', active: true });
     }
     if (settings.ocr_engines?.yandex_vision?.enabled) {
-      steps.push({ name: 'Yandex Vision', desc: 'Облачный OCR (резерв)', active: true, warn: true });
+      steps.push({
+        name: 'Yandex Vision ⚠',
+        // 152-ФЗ упоминается явно, чтобы оператор понимал чем именно опасен Yandex
+        // для документов с ПДн (например водительские права в ТТН).
+        desc: 'Облачный OCR (резерв). ВНИМАНИЕ: персональные данные уходят в Yandex Cloud — несовместимо с 152-ФЗ для документов с ПДн (паспорт, права).',
+        active: true,
+        warn: true,
+      });
     }
 
     container.classList.remove('hidden');
@@ -2028,11 +2105,30 @@ function renderUpload() {
           </div>`
         : '';
 
+      // Живой прогресс: пока job в обработке, показываем последние pipeline-шаги.
+      // pipeline_steps приходит из polling'а в виде массива событий — берём
+      // последние 4 чтобы не разрастаться по ширине. ✓ = done, ⟳ = in-progress, ✗ = failed.
+      const stepsRow = (q.status === 'processing' || q.status === 'uploading') && q.steps && q.steps.length > 0
+        ? `<div class="text-xs mt-1 flex items-center gap-1.5 flex-wrap">
+            ${q.steps.slice(-4).map((s) => {
+              const icon = s.status === 'done' ? '✓' : s.status === 'failed' ? '✗' : s.status === 'skipped' ? '⊘' : '⟳';
+              const color =
+                s.status === 'done' ? 'text-emerald-600' :
+                s.status === 'failed' ? 'text-rose-600' :
+                s.status === 'skipped' ? 'text-slate-400' :
+                'text-indigo-600 animate-pulse';
+              const dur = s.duration_ms ? ` ${s.duration_ms < 1000 ? `${s.duration_ms}мс` : `${(s.duration_ms / 1000).toFixed(1)}с`}` : '';
+              return `<span class="${color}" title="${escapeHtml(s.step)} · ${s.status}">${icon} ${escapeHtml(s.step)}${dur}</span>`;
+            }).join('<span class="text-slate-300">→</span>')}
+          </div>`
+        : '';
+
       return `
         <div class="grid grid-cols-[1fr_9rem_4rem_2rem] gap-3 px-4 py-2.5 border-b border-slate-100 dark:border-slate-800 last:border-b-0 items-start text-sm">
           <div class="min-w-0">
             <div class="truncate" title="${escapeHtml(q.file.name)}">${escapeHtml(q.file.name)}</div>
             ${summary}
+            ${stepsRow}
           </div>
           <span class="pt-0.5">${statusLabel}</span>
           <span class="text-xs text-slate-500 font-mono tabular-nums pt-0.5">${(q.file.size / 1024).toFixed(0)} KB</span>
@@ -2067,17 +2163,34 @@ function renderUpload() {
   });
 
   // Чтение common-полей формы и валидация. Один раз перед стартом батча.
+  // Если пользователь выбрал конкретный LLM-провайдер — мерджим его в metadata
+  // под ключом `_force_provider_id`. Backend читает этот ключ в processJob и
+  // через AsyncLocalStorage форсит весь pipeline на указанный провайдер.
   function readCommonFields() {
     const formEl = document.getElementById('upload-form');
     const formData = new FormData(formEl);
     const hint = formData.get('document_hint')?.toString() ?? '';
     const webhook = formData.get('webhook_url')?.toString() ?? '';
-    const metaText = formData.get('metadata')?.toString().trim() ?? '';
-    if (metaText) {
-      try { JSON.parse(metaText); }
-      catch {
-        return { error: 'Metadata: невалидный JSON' };
+    let metaText = formData.get('metadata')?.toString().trim() ?? '';
+    const forceProvider = document.getElementById('llm-provider-select')?.value ?? '';
+
+    // Если задан force_provider — впихиваем в metadata. Если оператор уже
+    // что-то ввёл — парсим, добавляем ключ, сериализуем обратно. Если поле
+    // пустое — просто создаём из одного ключа.
+    if (forceProvider) {
+      let metaObj = {};
+      if (metaText) {
+        try { metaObj = JSON.parse(metaText); }
+        catch { return { error: 'Metadata: невалидный JSON' }; }
+        if (typeof metaObj !== 'object' || Array.isArray(metaObj) || metaObj === null) {
+          return { error: 'Metadata должна быть объектом' };
+        }
       }
+      metaObj._force_provider_id = forceProvider;
+      metaText = JSON.stringify(metaObj);
+    } else if (metaText) {
+      try { JSON.parse(metaText); }
+      catch { return { error: 'Metadata: невалидный JSON' }; }
     }
     return { hint, webhook, metaText };
   }
@@ -2129,6 +2242,9 @@ function renderUpload() {
     while (Date.now() < deadline) {
       try {
         const job = await apiJson(`/jobs/${encodeURIComponent(item.jobId)}`);
+        // Обновляем pipeline-шаги на каждом тике — UI показывает живой прогресс
+        // даже когда job ещё в processing.
+        item.steps = job.pipeline_steps ?? [];
         if (job.status === 'done' || job.status === 'needs_review' || job.status === 'failed') {
           item.summary = {
             document_type: job.document_type,
@@ -2143,6 +2259,7 @@ function renderUpload() {
           renderQueue();
           return;
         }
+        renderQueue(); // обновляем step-row пока ещё processing
       } catch (err) {
         // 401/network — прерываем polling, оператор увидит "processing" пока
         // не перезагрузит. Не падаем шумно — это всё ещё лучше чем alert.
@@ -3009,23 +3126,31 @@ async function renderProvidersList() {
   });
 
   const renderRow = (p) => `
-    <div class="card card-body cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/30 transition" data-id="${escapeHtml(p.id)}">
+    <div class="card card-body" data-row-id="${escapeHtml(p.id)}">
       <div class="flex items-start justify-between gap-4">
-        <div class="min-w-0 flex-1">
+        <div class="min-w-0 flex-1 cursor-pointer" data-edit-id="${escapeHtml(p.id)}">
           <div class="flex items-center gap-2 flex-wrap mb-1">
             <span class="font-medium">${escapeHtml(p.display_name)}</span>
             <span class="badge ${PROVIDER_KIND_BADGE[p.kind]?.variant ?? 'badge-slate'}">${PROVIDER_KIND_BADGE[p.kind]?.label ?? p.kind}</span>
-            ${p.is_default ? '<span class="badge badge-indigo">default</span>' : ''}
+            ${p.is_default ? '<span class="badge badge-emerald" title="Используется по умолчанию для этого kind">● используется сейчас</span>' : ''}
             ${!p.is_active ? '<span class="badge badge-slate">inactive</span>' : ''}
             ${p.has_api_key ? '<span class="badge badge-emerald">key set</span>' : '<span class="badge badge-rose">no key</span>'}
           </div>
           <div class="font-mono text-xs text-slate-500">${escapeHtml(p.id)}</div>
           ${p.description ? `<div class="text-xs text-slate-500 dark:text-slate-400 mt-2">${escapeHtml(p.description)}</div>` : ''}
+          ${p.model || p.base_url ? `
+            <div class="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs font-mono text-slate-500">
+              ${p.model ? `<span>model: ${escapeHtml(p.model)}</span>` : ''}
+              ${p.base_url ? `<span class="truncate max-w-[20rem]" title="${escapeHtml(p.base_url)}">${escapeHtml(p.base_url)}</span>` : ''}
+              ${p.api_key_masked ? `<span>key: ${escapeHtml(p.api_key_masked)}</span>` : ''}
+            </div>` : ''}
         </div>
-        <div class="text-right shrink-0 space-y-1">
-          ${p.model ? `<div class="text-xs font-mono text-slate-400">${escapeHtml(p.model)}</div>` : ''}
-          ${p.base_url ? `<div class="text-xs font-mono text-slate-400 truncate max-w-[14rem]" title="${escapeHtml(p.base_url)}">${escapeHtml(p.base_url)}</div>` : ''}
-          ${p.api_key_masked ? `<div class="text-xs font-mono text-slate-400">key: ${escapeHtml(p.api_key_masked)}</div>` : ''}
+        <div class="text-right shrink-0 flex flex-col gap-1.5 items-end">
+          ${p.is_default
+            ? '<button class="btn-ghost btn-xs" disabled title="Этот провайдер уже активен">✓ Активен</button>'
+            : `<button class="btn-accent-outline btn-xs" data-activate-id="${escapeHtml(p.id)}" title="Сделать дефолтным для kind=${escapeHtml(p.kind)} — пайплайн начнёт использовать его">Сделать активной</button>`}
+          <button class="btn-secondary btn-xs" data-test-id="${escapeHtml(p.id)}" title="Реальный запрос — проверка связи и latency">Проверить →</button>
+          <span class="text-xs text-slate-400" data-test-result-id="${escapeHtml(p.id)}"></span>
         </div>
       </div>
     </div>`;
@@ -3045,9 +3170,58 @@ async function renderProvidersList() {
     </div>
   `;
 
-  document.querySelectorAll('[data-id]').forEach((row) => {
-    row.addEventListener('click', () => {
-      location.hash = `#providers/${row.dataset.id}`;
+  // Клик по основной зоне card-body → редактор
+  document.querySelectorAll('[data-edit-id]').forEach((el) => {
+    el.addEventListener('click', () => {
+      location.hash = `#providers/${el.dataset.editId}`;
+    });
+  });
+
+  // Кнопка «Сделать активной»: POST /provider-settings/:id/set-default
+  document.querySelectorAll('[data-activate-id]').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      btn.disabled = true;
+      btn.textContent = 'Активирую…';
+      try {
+        await apiJson(`/provider-settings/${encodeURIComponent(btn.dataset.activateId)}/set-default`, {
+          method: 'POST',
+        });
+        // Перерисовываем список — теперь у этого default=true, у других =false
+        void renderProvidersList();
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = 'Сделать активной';
+        alert(`Не удалось активировать: ${err.message}`);
+      }
+    });
+  });
+
+  // Кнопка «Проверить»: POST /provider-settings/:id/test — реальный ping модели
+  document.querySelectorAll('[data-test-id]').forEach((btn) => {
+    btn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.testId;
+      const resultEl = document.querySelector(`[data-test-result-id="${CSS.escape(id)}"]`);
+      btn.disabled = true;
+      btn.textContent = 'Пингую…';
+      if (resultEl) resultEl.textContent = '';
+      try {
+        const res = await apiJson(`/provider-settings/${encodeURIComponent(id)}/test`, { method: 'POST' });
+        btn.disabled = false;
+        btn.textContent = 'Проверить →';
+        if (resultEl) {
+          if (res.ok) {
+            resultEl.innerHTML = `<span class="text-emerald-600">✓ ${res.latency_ms} мс</span>`;
+          } else {
+            resultEl.innerHTML = `<span class="text-rose-600" title="${escapeHtml(res.message ?? '')}">✗ ${escapeHtml((res.message ?? 'error').slice(0, 40))}</span>`;
+          }
+        }
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = 'Проверить →';
+        if (resultEl) resultEl.innerHTML = `<span class="text-rose-600">✗ ${escapeHtml(err.message.slice(0, 40))}</span>`;
+      }
     });
   });
 }

@@ -107,6 +107,48 @@ export async function processJob(
 
   await jobsRepo.markProcessing(jobId);
 
+  // Per-job force_provider override: пользователь мог при загрузке выбрать
+  // конкретного LLM-провайдера через UI Upload (передаётся как
+  // `metadata._force_provider_id`). Если задан — оборачиваем всю обработку
+  // в withForceProvider, который через AsyncLocalStorage заставит все вызовы
+  // dynamicLlm внутри pipeline резолвиться к этому провайдеру.
+  const forceProviderId =
+    (job.metadata as Record<string, unknown> | null | undefined)?.['_force_provider_id'];
+  if (typeof forceProviderId === 'string' && forceProviderId.length > 0) {
+    log.info({ jobId, force_provider: forceProviderId }, 'using forced LLM provider for this job');
+    return dynamicLlm.withForceProvider(forceProviderId, () => processJobInner(job, jobId, log, opts));
+  }
+  return processJobInner(job, jobId, log, opts);
+}
+
+/**
+ * Внутренняя реализация обработки job — вынесена чтобы можно было обернуть
+ * её в withForceProvider() для per-job LLM override. См. processJob выше.
+ */
+async function processJobInner(
+  job: NonNullable<Awaited<ReturnType<typeof jobsRepo.findById>>>,
+  jobId: string,
+  log: Logger,
+  opts: { attempt?: number } = {},
+): Promise<void> {
+  // Локальный helper для пайплайн-событий: best-effort, исключения глушим.
+  // Цель — observability, ронять обработку из-за лога нельзя.
+  const stepEvent = async (
+    step: string,
+    status: 'started' | 'done' | 'failed' | 'skipped',
+    extras?: { duration_ms?: number; details?: Record<string, unknown> },
+  ): Promise<void> => {
+    try {
+      await jobsRepo.appendPipelineStep(jobId, {
+        step, status,
+        at: new Date().toISOString(),
+        ...extras,
+      });
+    } catch (err) {
+      log.warn({ jobId, step, status, err }, 'failed to record pipeline step (non-fatal)');
+    }
+  };
+
   let ocr: OcrResult | null = null;
   let documentType: DocumentTypeSlug | null = job.document_hint ?? null;
 
@@ -119,10 +161,20 @@ export async function processJob(
   const startedAt = Date.now();
 
   try {
+    // ── OCR ────────────────────────────────────────────────────────────────
+    await stepEvent('ocr', 'started', { details: { mime: job.mime_type } });
     const ocrStart = Date.now();
     ocr = await runOcrChain({ filePath: job.file_path, mimeType: job.mime_type }, log);
     timings.ocr_ms = Date.now() - ocrStart;
+    await stepEvent(`ocr.${ocr.engine}`, 'done', {
+      duration_ms: timings.ocr_ms,
+      details: { confidence: roundConf(ocr.confidence), text_length: ocr.text.length },
+    });
 
+    // ── Classify + Parse + Validate (внутри runDocumentPipeline) ───────────
+    // Мы не лезем во внутренности runDocumentPipeline (это shared smoke/test
+    // surface), а пишем агрегированный шаг "pipeline" с timing'ом каждой
+    // фазы из вернувшегося timings объекта. Подробности — в details.
     const post = await runDocumentPipeline(
       ocr.text,
       { hint: documentType ?? undefined },
@@ -131,6 +183,23 @@ export async function processJob(
       timings,
     );
     documentType = post.documentType;
+    await stepEvent('classify', 'done', {
+      duration_ms: timings.classify_ms,
+      details: { document_type: documentType, source: post.classificationSource },
+    });
+    await stepEvent('parse', 'done', {
+      duration_ms: timings.extract_ms,
+      details: {
+        parser_kind: post.typeConfig?.parserKind ?? 'default',
+        confidence: roundConf(post.parserConfidence),
+        missing: post.parserMissing,
+        llm_called: !!post.llmCall,
+      },
+    });
+    await stepEvent('validate', post.validationIssues.length > 0 ? 'done' : 'done', {
+      duration_ms: timings.validate_ms,
+      details: { issues_count: post.validationIssues.length },
+    });
 
     const overall = combineConfidence(ocr.confidence, post.parserConfidence);
 
@@ -172,6 +241,10 @@ export async function processJob(
       llmCall: post.llmCall ?? null,
       extracted: extractedToStore,
       error: null,
+    });
+    await stepEvent('finalize', 'done', {
+      duration_ms: Date.now() - startedAt,
+      details: { status, confidence: roundConf(overall), issues_count: post.validationIssues.length },
     });
 
     // Metrics: terminal counter + duration histogram. `document_type` may
@@ -238,15 +311,24 @@ export async function processJob(
     // Ошибки здесь не бросаются наружу — job уже в финальном статусе.
     if (updated && post.typeConfig?.resolutionConfig) {
       const orgId = job.organization_id;
+      const resolveStart = Date.now();
       void runResolutionPipeline({
         jobId,
         organizationId: orgId,
         extracted: extractedToStore,
         resolutionConfig: post.typeConfig.resolutionConfig,
         log,
-      }).catch((err) => {
-        log.warn({ jobId, err }, 'resolution pipeline error (job finalized, continuing)');
-      });
+      })
+        .then(() => stepEvent('resolve', 'done', { duration_ms: Date.now() - resolveStart }))
+        .catch((err) => {
+          log.warn({ jobId, err }, 'resolution pipeline error (job finalized, continuing)');
+          void stepEvent('resolve', 'failed', {
+            duration_ms: Date.now() - resolveStart,
+            details: { error: String((err as Error)?.message ?? err) },
+          });
+        });
+    } else if (updated) {
+      await stepEvent('resolve', 'skipped', { details: { reason: 'no resolution_config' } });
     }
 
     if (updated && updated.webhook_url) {
@@ -290,6 +372,10 @@ export async function processJob(
       rawText: ocr?.text ?? null,
       confidence: ocr?.confidence ?? null,
       documentType,
+    });
+    await stepEvent('finalize', 'failed', {
+      duration_ms: totalDurationMs,
+      details: { error: errMsg },
     });
     // Metrics: count failures and record their duration too — long failures
     // (e.g. timeouts) are interesting separately from quick rejects.

@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { providerSettingsRepo } from '../../storage/provider-settings.js';
 import { config } from '../../config.js';
 import { HttpLlmClient } from './http-client.js';
@@ -10,6 +11,14 @@ import type {
   LlmVisionResult,
 } from './types.js';
 import type { DocumentTypeSlug } from '../../types/documents.js';
+
+/**
+ * Per-job override контекста LLM-провайдера. Заполняется processJob если
+ * пользователь явно указал `metadata._force_provider_id` при загрузке. Чтение —
+ * в DynamicLlmClient.delegate() через AsyncLocalStorage: никакие сигнатуры
+ * парсеров не меняются.
+ */
+const forceProviderContext = new AsyncLocalStorage<{ providerId: string }>();
 
 /**
  * DynamicLlmClient — wraps a real LlmClient, but reads its endpoint+key from
@@ -84,7 +93,29 @@ class DynamicLlmClient implements LlmClient {
     this.cached = null;
   }
 
+  /**
+   * Запустить функцию `fn` со «scoped» override LLM-провайдера. Все вызовы
+   * `dynamicLlm.classify/extract/...` внутри callback'а пойдут через провайдер
+   * с заданным id (без TTL-кэша default-провайдера). После возврата контекст
+   * автоматически сбрасывается через AsyncLocalStorage.
+   *
+   * Если провайдер с таким id не найден или у него нет base_url — fallback
+   * на default (не падаем шумно, оператор увидит в логах).
+   */
+  withForceProvider<T>(providerId: string, fn: () => Promise<T>): Promise<T> {
+    return forceProviderContext.run({ providerId }, fn);
+  }
+
   private async delegate(): Promise<LlmClient> {
+    // Если процессинговый код заявил force_provider — резолвим его без кэша
+    // (per-job override должен быть детерминированным; кэш — только для
+    // default-провайдера в стандартном hot-path).
+    const ctx = forceProviderContext.getStore();
+    if (ctx?.providerId) {
+      const forced = await this.resolveById(ctx.providerId);
+      if (forced) return forced;
+      // fallthrough на default если provider не найден
+    }
     const now = Date.now();
     if (this.cached && now - this.cached.resolvedAt < TTL_MS) {
       return this.cached.client;
@@ -99,6 +130,26 @@ class DynamicLlmClient implements LlmClient {
         this.pending = null;
       });
     return this.pending;
+  }
+
+  /**
+   * Резолвит provider по id (без TTL-кэша). Возвращает null если провайдер
+   * не найден / не llm-kind / без base_url — тогда caller должен fallback на
+   * стандартный delegate().
+   */
+  private async resolveById(id: string): Promise<LlmClient | null> {
+    let row;
+    try {
+      row = await providerSettingsRepo.findById(id);
+    } catch {
+      return null;
+    }
+    if (!row || row.kind !== 'llm') return null;
+    if (row.id === 'stub') return new NullLlmClient();
+    const baseUrl = row.base_url || config.llm.url || null;
+    if (!baseUrl) return null;
+    const apiKey = row.api_key || config.llm.apiKey;
+    return new HttpLlmClient({ baseUrl, apiKey, timeoutMs: config.llm.timeoutMs });
   }
 
   private async resolve(): Promise<LlmClient> {

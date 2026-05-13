@@ -328,6 +328,22 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         throw err;
       }
 
+      // Первое событие пайплайна — upload завершён. Используется UI для
+      // показа "✓ загружен" сразу после POST /jobs. Best-effort: исключения
+      // не должны валить создание job'а.
+      await jobsRepo
+        .appendPipelineStep(job.id, {
+          step: 'upload',
+          status: 'done',
+          at: new Date().toISOString(),
+          details: {
+            file_size: savedFile.size,
+            mime_type: savedFile.mimeType,
+            document_hint: documentHint ?? null,
+          },
+        })
+        .catch((err) => req.log.warn({ jobId: job.id, err }, 'failed to record upload step'));
+
       // Propagate the HTTP request id into the BullMQ payload so the worker
       // can bind it to its child logger. The BullMQ jobId is the same as our
       // domain jobId — gives us idempotent enqueue (a retry of POST with the

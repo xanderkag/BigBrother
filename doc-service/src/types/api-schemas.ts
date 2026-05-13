@@ -78,6 +78,21 @@ export const Job = z
       .describe(
         'Дебаг-трасса последнего LLM-вызова при обработке этого job: финальный prompt и сырой ответ модели до парсинга. Заполнено только если парсер реально ходил в LLM.',
       ),
+    pipeline_steps: z
+      .array(
+        z.object({
+          step: z.string(),
+          status: z.enum(['started', 'done', 'failed', 'skipped']),
+          at: z.string(),
+          duration_ms: z.number().optional(),
+          details: z.record(z.unknown()).optional(),
+        }),
+      )
+      .default([])
+      .describe(
+        'Хронологический след этапов обработки: upload, classify, ocr.<engine>, parse.<kind>, validate, resolve, finalize. ' +
+        'Используется UI для живого прогресса и пост-мортема при ошибках.',
+      ),
     organization_id: z.string().uuid(),
     project_id: z.string().uuid(),
     created_by_user_id: z.string().uuid().nullable(),
