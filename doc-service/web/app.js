@@ -1797,7 +1797,7 @@ const UPLOAD_CONCURRENCY = 3;
 function renderUpload() {
   setView(`
     <div class="page-narrow">
-      ${pageHeader({ title: 'Upload', subtitle: 'Загрузить один или несколько документов на обработку' })}
+      ${pageHeader({ title: 'Загрузить документы', subtitle: 'Один или несколько файлов на обработку' })}
 
       <div class="space-y-5">
         <div class="card card-body-lg">
@@ -1805,47 +1805,62 @@ function renderUpload() {
             <input type="file" id="file-input" class="hidden" multiple accept=".pdf,.jpg,.jpeg,.png,.bmp,.tif,.tiff" />
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-12 h-12 mx-auto mb-3 text-slate-400"><path d="M11.47 1.72a.75.75 0 0 1 1.06 0l3 3a.75.75 0 0 1-1.06 1.06l-1.72-1.72V7.5h-1.5V4.06L9.53 5.78a.75.75 0 0 1-1.06-1.06l3-3ZM11.25 7.5V15a.75.75 0 0 0 1.5 0V7.5h3.75a3 3 0 0 1 3 3v9a3 3 0 0 1-3 3h-9a3 3 0 0 1-3-3v-9a3 3 0 0 1 3-3h3.75Z"/></svg>
             <p id="dropzone-text" class="text-sm text-slate-600 dark:text-slate-400">
-              Перетащи один или несколько файлов (или папку) сюда или <span class="text-indigo-600 dark:text-indigo-400 font-medium">кликни чтобы выбрать</span>
+              Перетащи файлы (или папку) сюда или <span class="text-indigo-600 dark:text-indigo-400 font-medium">кликни чтобы выбрать</span>
             </p>
             <p class="text-xs text-slate-400 mt-1">PDF, JPG, PNG, BMP, TIFF · до 50 МБ на файл · до ${UPLOAD_CONCURRENCY} параллельно</p>
           </div>
         </div>
 
         <form id="upload-form" class="card card-body-lg space-y-4">
-          <p class="text-xs text-slate-500 dark:text-slate-400">Общие параметры применяются ко всем выбранным файлам.</p>
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div class="form-row">
-              <label class="form-label">Document hint <span class="text-slate-400 font-normal">(опционально)</span></label>
-              <select name="document_hint" class="form-select">
-                <option value="">— auto-detect —</option>
-                <option value="invoice">invoice</option>
-                <option value="factInvoice">factInvoice</option>
-                <option value="UPD">UPD</option>
-                <option value="TTN">TTN</option>
-                <option value="CMR">CMR</option>
-                <option value="AKT">AKT</option>
-                <option value="payment_order">payment_order</option>
-                <option value="commercial_invoice">commercial_invoice</option>
-                <option value="packing_list">packing_list</option>
-                <option value="bill_of_lading">bill_of_lading</option>
-                <option value="customs_declaration">customs_declaration</option>
-                <option value="cash_receipt">cash_receipt</option>
-                <option value="contract">contract</option>
-                <option value="contract_specification">contract_specification</option>
-                <option value="contract_addendum">contract_addendum</option>
-              </select>
-            </div>
-            <div class="form-row">
-              <label class="form-label">Webhook URL <span class="text-slate-400 font-normal">(опционально)</span></label>
-              <input name="webhook_url" type="url" placeholder="https://..." class="form-input" />
+          <!-- Тип документа: главное поле, влияет на качество распознавания -->
+          <div class="form-row">
+            <label class="form-label">Тип документа</label>
+            <select name="document_hint" id="doc-type-select" class="form-select">
+              <option value="">Авто-определение (по содержимому)</option>
+              <!-- Опции подгружаются из /document-types в onMount -->
+            </select>
+            <p class="form-help">
+              Помогает системе точнее распознать структуру. Оставьте авто-определение,
+              если не знаете — классификатор определит сам.
+            </p>
+          </div>
+
+          <!-- Превью ожидаемых полей: показывается после выбора типа -->
+          <div id="expected-fields-preview" class="hidden">
+            <div class="info-banner text-sm">
+              <div class="font-semibold mb-2 text-sky-800 dark:text-sky-200">Будут извлечены:</div>
+              <div id="expected-fields-list" class="flex flex-wrap gap-1.5"></div>
             </div>
           </div>
 
-          <div class="form-row">
-            <label class="form-label">Metadata JSON <span class="text-slate-400 font-normal">(опционально)</span></label>
-            <textarea name="metadata" rows="2" placeholder='{"batch": "test-2026-05"}' class="form-textarea"></textarea>
-            <p class="form-help">Применяется ко всем файлам. Echo обратно в job result и webhook.</p>
+          <!-- Движки обработки: что реально побежит на сервере -->
+          <div id="processing-engines" class="hidden">
+            <div class="form-row">
+              <label class="form-label">Движок обработки</label>
+              <div id="engines-chain" class="flex items-center gap-2 flex-wrap text-sm"></div>
+              <p class="form-help">Цепочка пробуется сверху вниз — каждая следующая ступень включается если предыдущая не уверена.</p>
+            </div>
           </div>
+
+          <!-- Дев-настройки: webhook + metadata, спрятаны по умолчанию -->
+          <details class="border-t border-slate-200 dark:border-slate-800 pt-4">
+            <summary class="cursor-pointer text-sm text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 select-none flex items-center gap-1.5">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path fill-rule="evenodd" d="M6.28 5.22a.75.75 0 0 1 1.06 0L10 7.88l2.66-2.66a.75.75 0 1 1 1.06 1.06l-3.19 3.19a.75.75 0 0 1-1.06 0L6.28 6.28a.75.75 0 0 1 0-1.06Z" clip-rule="evenodd"/></svg>
+              Настройки для разработчиков
+            </summary>
+            <div class="mt-4 space-y-4">
+              <div class="form-row">
+                <label class="form-label">Webhook URL <span class="text-slate-400 font-normal">(опционально)</span></label>
+                <input name="webhook_url" type="url" placeholder="https://..." class="form-input" />
+                <p class="form-help">URL для POST результата после обработки. Подписывается HMAC-SHA256.</p>
+              </div>
+              <div class="form-row">
+                <label class="form-label">Metadata JSON <span class="text-slate-400 font-normal">(опционально)</span></label>
+                <textarea name="metadata" rows="2" placeholder='{"batch": "test-2026-05"}' class="form-textarea"></textarea>
+                <p class="form-help">Echo обратно в результат и webhook. Удобно для batch-ID или трекинга источника.</p>
+              </div>
+            </div>
+          </details>
         </form>
 
         <!-- Очередь файлов -->
@@ -1864,6 +1879,90 @@ function renderUpload() {
       </div>
     </div>
   `);
+
+  // ── Подгрузка справочников (типы документов + движки) ─────────────────────
+  // Делается асинхронно после render'а, чтобы не блокировать показ страницы.
+  // Если запросы упадут — UI деградирует к старой пустой логике без ошибок
+  // пользователю (auto-detect всё равно работает).
+  let availableTypes = []; // [{ slug, display_name, expected_fields }]
+
+  void (async () => {
+    try {
+      const { items } = await apiJson('/document-types');
+      // Только активные типы — деактивированные не должны путать оператора
+      availableTypes = items.filter((t) => t.is_active);
+      const select = document.getElementById('doc-type-select');
+      if (!select) return;
+      // Сортируем по русскому display_name для предсказуемого порядка
+      availableTypes.sort((a, b) => a.display_name.localeCompare(b.display_name, 'ru'));
+      for (const t of availableTypes) {
+        const opt = document.createElement('option');
+        opt.value = t.slug;
+        opt.textContent = t.display_name;
+        select.appendChild(opt);
+      }
+    } catch (err) {
+      console.warn('Не удалось загрузить типы документов:', err.message);
+    }
+  })();
+
+  void (async () => {
+    try {
+      const settings = await apiJson('/settings');
+      renderEngineChain(settings);
+    } catch (err) {
+      console.warn('Не удалось загрузить настройки движков:', err.message);
+    }
+  })();
+
+  function renderEngineChain(settings) {
+    const container = document.getElementById('processing-engines');
+    const chain = document.getElementById('engines-chain');
+    if (!container || !chain) return;
+
+    // Цепочка: PDF-text → Tesseract → Vision-LLM → Yandex (опционально)
+    const steps = [];
+    steps.push({ name: 'PDF-text', desc: 'Извлечение текста из PDF', active: true });
+    steps.push({
+      name: `Tesseract (${(settings.ocr_engines?.tesseract_langs ?? ['rus', 'eng']).join('+')})`,
+      desc: 'Локальный OCR',
+      active: true,
+    });
+    if (settings.ocr_engines?.vision_llm?.enabled) {
+      steps.push({ name: 'Vision LLM', desc: 'Нейросеть для сложных сканов', active: true });
+    }
+    if (settings.ocr_engines?.yandex_vision?.enabled) {
+      steps.push({ name: 'Yandex Vision', desc: 'Облачный OCR (резерв)', active: true, warn: true });
+    }
+
+    container.classList.remove('hidden');
+    chain.innerHTML = steps.map((s, i) => `
+      ${i > 0 ? '<span class="text-slate-400">→</span>' : ''}
+      <span class="badge ${s.warn ? 'badge-amber' : 'badge-indigo'}" title="${escapeHtml(s.desc)}">
+        ${escapeHtml(s.name)}
+      </span>
+    `).join('');
+  }
+
+  // Превью ожидаемых полей под выбранным типом
+  document.getElementById('doc-type-select').addEventListener('change', (e) => {
+    const slug = e.target.value;
+    const preview = document.getElementById('expected-fields-preview');
+    const list = document.getElementById('expected-fields-list');
+    if (!slug) {
+      preview.classList.add('hidden');
+      return;
+    }
+    const type = availableTypes.find((t) => t.slug === slug);
+    if (!type || !type.expected_fields || type.expected_fields.length === 0) {
+      preview.classList.add('hidden');
+      return;
+    }
+    list.innerHTML = type.expected_fields
+      .map((f) => `<span class="chip">${escapeHtml(labelFor(f))}</span>`)
+      .join('');
+    preview.classList.remove('hidden');
+  });
 
   const dropzone = document.getElementById('dropzone');
   const fileInput = document.getElementById('file-input');
@@ -1897,25 +1996,48 @@ function renderUpload() {
 
   function renderQueue() {
     const total = queue.length;
-    const done = queue.filter((q) => q.status === 'done').length;
+    const done = queue.filter((q) => q.status === 'done' || q.status === 'processed' || q.status === 'needs_review').length;
     const failed = queue.filter((q) => q.status === 'failed').length;
-    const inflight = queue.filter((q) => q.status === 'uploading').length;
+    const inflight = queue.filter((q) => q.status === 'uploading' || q.status === 'processing').length;
     queueCounter.textContent = `(${total}: ${done} готово${failed ? `, ${failed} с ошибкой` : ''}${inflight ? `, ${inflight} в работе` : ''})`;
 
     queueList.innerHTML = queue.map((q) => {
+      // Статус-бейдж: разные стадии жизненного цикла item'а в очереди.
+      // queued → uploading → processing → processed | needs_review | failed
       const statusLabel = {
         queued: '<span class="badge badge-slate">в очереди</span>',
         uploading: '<span class="badge badge-indigo badge-pulse">загрузка</span>',
-        done: `<a href="#jobs/${escapeHtml(q.jobId ?? '')}" class="badge badge-emerald hover:underline">done →</a>`,
+        processing: '<span class="badge badge-indigo badge-pulse">обработка</span>',
+        processed: `<a href="#jobs/${escapeHtml(q.jobId ?? '')}" class="badge badge-emerald hover:underline">готово →</a>`,
+        needs_review: `<a href="#jobs/${escapeHtml(q.jobId ?? '')}" class="badge badge-amber hover:underline">проверить →</a>`,
+        done: `<a href="#jobs/${escapeHtml(q.jobId ?? '')}" class="badge badge-emerald hover:underline">готово →</a>`,
         failed: `<span class="badge badge-rose" title="${escapeHtml(q.error ?? '')}">ошибка</span>`,
       }[q.status];
+
+      // Краткая сводка: тип + confidence + время обработки + список проблем.
+      // Показывается только когда job завершён — не загромождает row пока идёт обработка.
+      const summary = q.summary
+        ? `<div class="text-xs text-slate-500 dark:text-slate-400 mt-0.5 flex items-center gap-2 flex-wrap">
+            ${q.summary.document_type ? `<span class="font-mono">${escapeHtml(q.summary.document_type)}</span>` : ''}
+            ${q.summary.confidence !== null && q.summary.confidence !== undefined
+              ? `<span class="font-mono text-${q.summary.confidence >= 0.8 ? 'emerald' : q.summary.confidence >= 0.6 ? 'amber' : 'rose'}-600">${Math.round(q.summary.confidence * 100)}%</span>`
+              : ''}
+            ${q.summary.ocr_engine ? `<span class="text-slate-400">через ${escapeHtml(q.summary.ocr_engine)}</span>` : ''}
+            ${q.summary.elapsed_ms ? `<span class="text-slate-400">${q.summary.elapsed_ms < 1000 ? `${q.summary.elapsed_ms} мс` : `${(q.summary.elapsed_ms / 1000).toFixed(1)} с`}</span>` : ''}
+            ${q.summary.issues_count ? `<span class="text-amber-600">${q.summary.issues_count} замечан${q.summary.issues_count === 1 ? 'ие' : q.summary.issues_count < 5 ? 'ия' : 'ий'}</span>` : ''}
+          </div>`
+        : '';
+
       return `
-        <div class="grid grid-cols-[1fr_8rem_4rem_2rem] gap-3 px-4 py-2 border-b border-slate-100 dark:border-slate-800 last:border-b-0 items-center text-sm">
-          <span class="truncate" title="${escapeHtml(q.file.name)}">${escapeHtml(q.file.name)}</span>
-          <span>${statusLabel}</span>
-          <span class="text-xs text-slate-500 font-mono tabular-nums">${(q.file.size / 1024).toFixed(0)} KB</span>
+        <div class="grid grid-cols-[1fr_9rem_4rem_2rem] gap-3 px-4 py-2.5 border-b border-slate-100 dark:border-slate-800 last:border-b-0 items-start text-sm">
+          <div class="min-w-0">
+            <div class="truncate" title="${escapeHtml(q.file.name)}">${escapeHtml(q.file.name)}</div>
+            ${summary}
+          </div>
+          <span class="pt-0.5">${statusLabel}</span>
+          <span class="text-xs text-slate-500 font-mono tabular-nums pt-0.5">${(q.file.size / 1024).toFixed(0)} KB</span>
           ${q.status === 'queued'
-            ? `<button class="text-slate-400 hover:text-rose-500" data-remove-id="${q.id}" title="Убрать из очереди">×</button>`
+            ? `<button class="text-slate-400 hover:text-rose-500 pt-0.5" data-remove-id="${q.id}" title="Убрать из очереди">×</button>`
             : '<span></span>'}
         </div>`;
     }).join('');
@@ -1963,9 +2085,14 @@ function renderUpload() {
   // Параллельная очередь с ограничением — N worker-промисов разбирают
   // pending-items пока они есть. Каждый uploadOne обновляет UI через
   // renderQueue, так что батч можно наблюдать в реальном времени.
+  //
+  // После успешного POST /jobs запускаем фоновый polling статуса — оператор
+  // видит реальный исход (тип/confidence/issues) прямо в очереди, не
+  // переходя в job detail.
   async function uploadOne(item, common) {
     item.status = 'uploading';
     renderQueue();
+    const startedAt = Date.now();
     const form = new FormData();
     form.append('file', item.file);
     if (common.hint) form.append('document_hint', common.hint);
@@ -1979,14 +2106,53 @@ function renderUpload() {
       const res = await api('/jobs', { method: 'POST', body: form });
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
       const data = await res.json();
-      item.status = 'done';
       item.jobId = data.job_id;
+      item.status = 'processing';
+      renderQueue();
+      // Фоновый polling — НЕ блокируем worker-loop, следующий файл идёт сразу
+      void pollJobStatus(item, startedAt);
     } catch (err) {
       item.status = 'failed';
       item.error = err.message;
-    } finally {
       renderQueue();
     }
+  }
+
+  /**
+   * Опрашивает GET /jobs/:id до терминального статуса. Обновляет item.summary
+   * для отображения краткого отчёта в очереди. Backoff: 1.5s → 5s через 30s.
+   * Сдаёмся через 5 минут — large PDF может идти дольше, но в UI вечно не висим.
+   */
+  async function pollJobStatus(item, startedAt) {
+    const deadline = startedAt + 5 * 60 * 1000;
+    let interval = 1500;
+    while (Date.now() < deadline) {
+      try {
+        const job = await apiJson(`/jobs/${encodeURIComponent(item.jobId)}`);
+        if (job.status === 'done' || job.status === 'needs_review' || job.status === 'failed') {
+          item.summary = {
+            document_type: job.document_type,
+            confidence: job.confidence,
+            ocr_engine: job.ocr_engine,
+            elapsed_ms: Date.now() - startedAt,
+            issues_count: (job.validation_issues ?? []).length,
+            error: job.error,
+          };
+          item.status = job.status === 'failed' ? 'failed' : job.status;
+          if (job.status === 'failed') item.error = job.error ?? 'неизвестная ошибка';
+          renderQueue();
+          return;
+        }
+      } catch (err) {
+        // 401/network — прерываем polling, оператор увидит "processing" пока
+        // не перезагрузит. Не падаем шумно — это всё ещё лучше чем alert.
+        console.warn('poll error:', err.message);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, interval));
+      if (Date.now() - startedAt > 30_000) interval = 5000;
+    }
+    // Timeout — оставляем processing, оператор может зайти в job detail
   }
 
   startBtn.addEventListener('click', async () => {
