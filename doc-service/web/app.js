@@ -1972,6 +1972,18 @@ async function renderJobDetail(jobId) {
     // Оригинал документа: подгружается отдельным fetch'ем с Bearer-токеном,
     // превращается в blob → object URL → <img>/<iframe>. Object URL живёт
     // до teardown'а view (см. registerCleanup ниже).
+    // Если blob URL уже создан — восстанавливаем iframe синхронно без нового
+    // fetch'а. Это устраняет мигание при polling'е (renderDetail сносит pane,
+    // async loadOriginalFile долго его возвращает → белая вспышка).
+    if (currentOriginalUrl) {
+      const pane = document.getElementById('original-pane');
+      if (pane && !pane.querySelector('iframe, img')) {
+        const isPdf = job.mime_type === 'application/pdf';
+        pane.innerHTML = isPdf
+          ? `<iframe src="${currentOriginalUrl}" class="w-full" style="height:70vh; border:0;"></iframe>`
+          : `<img src="${currentOriginalUrl}" class="w-full h-auto rounded" alt="original document" />`;
+      }
+    } else {
     void loadOriginalFile(jobId, job).then((res) => {
       const pane = document.getElementById('original-pane');
       const opener = document.getElementById('original-open');
@@ -1997,6 +2009,7 @@ async function renderJobDetail(jobId) {
       if (currentOriginalUrl) URL.revokeObjectURL(currentOriginalUrl);
       currentOriginalUrl = res.url;
     });
+    } // end else (currentOriginalUrl was null)
 
     // Одобрить: needs_review → done без изменения extracted.
     const approveBtn = document.getElementById('approve-btn');
