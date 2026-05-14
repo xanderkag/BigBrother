@@ -16,26 +16,37 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # --- Dependency layer (cached separately from source) ---
+# Включаем dev-deps — tailwindcss нужен на build-stage для CSS precompile.
+# В runtime-стейдже node_modules копируется из prod-deps без dev-deps.
 FROM base AS deps
 COPY package.json package-lock.json* ./
-RUN npm ci --omit=optional || npm install --omit=optional
+RUN npm ci || npm install
 
 # --- Build layer ---
+# Две задачи: TS → dist/ и Tailwind input.css → web/vendor/tailwind.css.
+# cdn.tailwindcss.com заблокирован в корп.сети, поэтому self-hosted билд CSS.
 FROM deps AS build
 COPY tsconfig.json ./
 COPY src ./src
-RUN npm run build
+COPY web ./web
+RUN npm run build && npm run build:css
+
+# --- Prod-deps layer (без dev-deps) ---
+FROM base AS prod-deps
+COPY package.json package-lock.json* ./
+RUN npm ci --omit=dev --omit=optional || npm install --omit=dev --omit=optional
 
 # --- Runtime layer ---
 FROM base AS runtime
 ENV NODE_ENV=production
 
-COPY --from=deps /app/node_modules ./node_modules
+COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
 COPY migrations ./migrations
-# Operator UI — plain HTML + CDN-loaded Tailwind/Alpine; no build step needed.
-COPY web ./web
+# Operator UI — HTML + JS + precompiled vendor/ (tailwind.css, alpine.min.js).
+# Берём из build-stage чтобы захватить свежий vendor/tailwind.css.
+COPY --from=build /app/web ./web
 
 # Storage volume mount point — must match STORAGE_DIR in .env.
 RUN mkdir -p /app/data && chown -R node:node /app/data

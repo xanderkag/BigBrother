@@ -21,7 +21,9 @@
     "smoke": "tsx src/scripts/smoke.ts",
     "eval": "tsx src/scripts/eval/run.ts",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "build:css": "tailwindcss -c web/tailwind.config.cjs -i web/input.css -o web/vendor/tailwind.css --minify",
+    "build:css:watch": "tailwindcss -c web/tailwind.config.cjs -i web/input.css -o web/vendor/tailwind.css --watch"
   },
   "dependencies": {
     "@fastify/multipart": "^9.0.1",
@@ -49,6 +51,7 @@
     "@types/node": "^22.10.5",
     "@types/pdf-parse": "^1.1.4",
     "@types/pg": "^8.11.10",
+    "tailwindcss": "^3.4.19",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
