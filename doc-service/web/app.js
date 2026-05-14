@@ -5046,11 +5046,15 @@ applyTheme();
  * раз кто мы.
  */
 async function bootApp() {
+  // Дефолтная страница: Test Lab — самое полезное место для текущей стадии
+  // (локальные модели, проверка загрузки документов). В будущем можно
+  // переключить на #jobs или #dashboard когда система выйдет в прод.
+  const DEFAULT_HASH = '#test-lab';
+
   if (auth.isAuthed()) {
-    // Есть сохранённый token → сразу в приложение
     hideLogin();
     void initWorkspace();
-    if (!location.hash) location.hash = '#jobs';
+    if (!location.hash) location.hash = DEFAULT_HASH;
     route();
     return;
   }
@@ -5063,7 +5067,7 @@ async function bootApp() {
       auth.token = '__noauth__'; // не пустой — иначе isAuthed() вернёт false
       hideLogin();
       void initWorkspace();
-      if (!location.hash) location.hash = '#jobs';
+      if (!location.hash) location.hash = DEFAULT_HASH;
       route();
       return;
     }
