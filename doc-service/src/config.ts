@@ -131,6 +131,12 @@ const ConfigSchema = z.object({
     apiKey: z.string().optional(),
     folderId: z.string().optional(),
     timeoutMs: numberFromEnv(30000),
+    /**
+     * I8: глобальный флаг выключения Yandex для PII-документов (TTN, CMR).
+     * Per-job opt-out также доступен через `metadata._disable_external_ocr=true`.
+     * См. router.ts ChainOptions.
+     */
+    disableForPii: z.coerce.boolean().default(false),
   }),
 
   webhook: z.object({
@@ -185,6 +191,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       apiKey: env.YANDEX_VISION_API_KEY || undefined,
       folderId: env.YANDEX_FOLDER_ID || undefined,
       timeoutMs: env.YANDEX_TIMEOUT_MS,
+      disableForPii: env.YANDEX_DISABLE_FOR_PII,
     },
     webhook: {
       hmacSecret: env.WEBHOOK_HMAC_SECRET ?? '',

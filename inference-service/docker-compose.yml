@@ -13,10 +13,20 @@ services:
     build: .
     image: inference-service:latest
     env_file: .env
+    environment:
+      # Единый источник правил классификатора — общий между Node (doc-service)
+      # и Python (этот сервис). См. A6 в TECH_DEBT и shared/classifier-rules.json.
+      # Без этой переменной Python падает на hardcoded fallback правила,
+      # которые могут разъехаться с Node при изменении весов.
+      CLASSIFIER_RULES_PATH: /app/shared/classifier-rules.json
     ports:
       - "${PORT:-8000}:8000"
     volumes:
       - hf-cache:/app/.hf-cache
+      # Read-only mount общего каталога из корня репо. Build context
+      # inference-service не видит ../shared, поэтому используем runtime
+      # volume вместо COPY — даёт hot-reload правил без rebuild образа.
+      - ../shared:/app/shared:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]

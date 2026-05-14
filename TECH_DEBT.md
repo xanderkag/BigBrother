@@ -872,11 +872,11 @@ SGLang, TGI) выставляют OpenAI Chat Completions API; теперь pars
 
 ---
 
-## 🚧 Инфра (ждём Павла)
+## 🚧 Инфра — ✅ закрыто 2026-05-15
 
-### D1. nginx server_block для parsedocs.taipit.ru
+### ~~D1. nginx server_block для parsedocs.taipit.ru~~ — ✅ настроен коллегой 2026-05-08
 
-**Статус:** DNS `parsedocs.taipit.ru → 10.59.17.54` настроен. Сервис работает на `10.10.13.10:8085`. Порт открыт. Ждём от Павла: `server_block` + TLS-сертификат.
+DNS `parsedocs.taipit.ru → 10.59.17.54` настроен. Сервис работает на `10.10.13.10:8085`. nginx server_block + TLS — настроены коллегой (не Павлом) ещё 8 мая 2026. Узнали постфактум при попытке написать Павлу.
 
 **Что нужно Павлу:**
 ```nginx
@@ -1061,18 +1061,47 @@ Worker проверяет `Date.now() - job.timestamp > JOB_MAX_AGE_SECONDS * 10
 
 ---
 
-### I8. PII opt-out для Yandex не реализован
+### ~~I8. PII opt-out для Yandex~~ — ✅ закрыто 2026-05-15
 
-**Где:** `doc-service/src/pipeline/ocr/yandex.ts:18-22`
+Реализованы оба варианта:
+- **Per-job:** `metadata._disable_external_ocr=true` → router выкидывает Yandex для этого job'а (см. `src/pipeline/router.ts:ChainOptions.disableExternalOcr`).
+- **Глобальный:** `YANDEX_DISABLE_FOR_PII=true` (env) + `PII_DOCUMENT_TYPES = {'TTN', 'CMR'}` (hardcoded). Yandex выкидывается если document_hint/type входит в множество, без участия клиента.
 
-**Симптом:** TTN с фотографией паспорта водителя могут уехать в Yandex Cloud. Регуляторный риск (152-ФЗ).
+`orchestrator.ts:runOcrChain` пробрасывает оба флага через `selectOcrChain` опции. Документировано в `.env.example`.
 
-**Лечение:**
-1. Поле `disable_external_ocr: true` в `metadata` → router пропускает Yandex для этого job'а.
-2. ИЛИ глобальный флаг `YANDEX_DISABLE_FOR_PII=true` + классификатор помечает PII-документы (TTN, CMR с водительскими данными).
-3. Пока не сделано — **выключать Yandex полностью** (env пустой, документировано в `.env.example`).
+**Не сделано (отдельный пункт):** автоопределение PII-документов классификатором — TTN/CMR детектится только по `document_hint` от клиента. Если hint не указан и классификатор сработает позже OCR, Yandex успеет получить данные. Принимаем это ограничение: для real-prod через UI всегда указывать тип через `document_hint` или загружать через типизированный route.
 
-**Оценка:** 4 часа на вариант 1, день на вариант 2.
+---
+
+## 🟣 Phase work (ТЗ от 2026-05-14)
+
+### ~~Phase A — расширенные поля + унификация items[]~~ — ✅ закрыто 2026-05-15
+
+См. коммит `549c23e`. 18 полей канонического shape строки (line_no, code, barcode, hs_code, country_of_origin, единицы, веса, разбивка НДС per-line, currency). Header расширен: vat_summary[], currency, exchange_rate, flags, shipper/consignee отдельно от seller/buyer. `normalize-extracted.ts` обеспечивает backward-compat. Миграция `0015` поднимает DB-seeded типы под канон с domain-специфичными полями.
+
+### ~~Phase B — MultiPassLlmParser~~ — ✅ закрыто 2026-05-15
+
+`pipeline/parsers/multipass-llm.ts`. Pass 1: header на head+tail. Pass 2: items батчами ~12KB параллелизм 3. Активация: явно через `parser_kind=llm_extract_multipass` или auto при `rawText > MULTIPASS_AUTO_BYTES` (default 30KB). Миграция `0014` расширяет enum CHECK constraint. UI editor показывает 4-ю опцию.
+
+### ~~Phase C — UI таблица позиций~~ — ✅ закрыто 2026-05-15
+
+`renderItemsTableInto` в `web/app.js`. 8 основных столбцов + раскрытие 10+ доп. полей. Поиск (name + code + barcode, debounce 200ms), сортировка по любому столбцу, пагинация client-side 50 строк/стр, CSV-export RFC 4180. Встроен в job detail и Test Lab inline preview.
+
+### ~~Phase D — per-line валидаторы~~ — ✅ закрыто 2026-05-15
+
+5 builtin'ов в `pipeline/validation/registry.ts`: `items_total_sum`, `items_vat_rates`, `items_unit_known`, `items_line_consistency`, `items_hs_code_format`. Агрегируют ошибки по строкам (не 500 issues).
+
+### ~~Phase E1 — batch exactSearch~~ — ✅ закрыто 2026-05-15
+
+`runItemMatching` собирает все code+name документа в один SELECT через `&&` оператор по GIN. На 500-позиционном документе: 1 запрос вместо 1000.
+
+### ~~Phase E2 — fuzzy match через pg_trgm~~ — ✅ закрыто 2026-05-15
+
+`listEntriesRepo.fuzzySearch()` использует `similarity(display_name, query) >= threshold` + GIN-индекс `gin_trgm_ops` (создан в миграции `0011`). В `runItemMatching` запускается как fallback после exact-провала (name length ≥ 3, threshold из `cfg.fuzzy_threshold ?? 0.3`). `match_method='fuzzy_name'`, `match_score` = реальный similarity.
+
+### Phase F — доп. типы документов (отложено)
+
+Доверенность М-2/М-2а, путевой лист 4-С/4-П, МХ-1/МХ-3, заявка на перевозку, складской ордер М-11, инвойс-проформа. Реализуются через UI Document Types когда появится конкретный бизнес-запрос — не блочит prod-deploy с текущими 15 типами.
 
 ---
 
@@ -1131,9 +1160,10 @@ Worker проверяет `Date.now() - job.timestamp > JOB_MAX_AGE_SECONDS * 10
 - `shared/classifier-rules.json` — единый источник 7 builtin-правил в корне репо. Добавить новое правило нужно только здесь.
 - `keywords.ts` — читает JSON через `readFileSync` с runtime path resolution (`dist/pipeline/classifier/ → ../../../../shared/`). Fallback к hardcoded при ошибке чтения (Docker без mount).
 - `stub.py` — загружает через `_load_classifier_rules()`: 1) `CLASSIFIER_RULES_PATH` env, 2) `Path(__file__).parents[4] / 'shared' / …` (работает в dev/CI), 3) hardcoded fallback.
-- Docker для inference-service: добавить `COPY shared/ /app/shared/` + `ENV CLASSIFIER_RULES_PATH=/app/shared/classifier-rules.json` в Dockerfile — делается перед prod-деплоем.
-
-**Оценка:** 2 часа.
+- Docker для inference-service: ✅ закрыто 2026-05-15. Использован runtime-volume mount вместо COPY (build context inference-service не видит `../shared`):
+  - `inference-service/docker-compose.yml`: `volumes: - ../shared:/app/shared:ro`
+  - `environment: CLASSIFIER_RULES_PATH=/app/shared/classifier-rules.json`
+  - Преимущество: hot-reload правил без rebuild образа.
 
 ---
 
@@ -1145,27 +1175,15 @@ Worker проверяет `Date.now() - job.timestamp > JOB_MAX_AGE_SECONDS * 10
 
 ---
 
-### B3. `DROP TRIGGER + CREATE TRIGGER` в миграциях
+### ~~B3. `DROP TRIGGER + CREATE TRIGGER` в миграциях~~ — ✅ закрыто 2026-05-15
 
-**Где:** `doc-service/migrations/001_init.sql:55-60`
-
-**Симптом:** Идемпотентно при повторном прогоне, но в проде на горячей таблице блочит запись на момент DDL.
-
-**Лечение:** В будущей миграции — `CREATE TRIGGER IF NOT EXISTS` (Postgres 14+) или `CREATE OR REPLACE TRIGGER` (Postgres 14.0 не поддерживает, надо проверить).
-
-**Оценка:** 30 минут.
+Миграция `0016_fix_trigger_ddl.sql` переписывает функцию и trigger через `CREATE OR REPLACE` (Postgres 14+). Идемпотентна, не блочит запись на момент DDL — REPLACE атомарно меняет определение.
 
 ---
 
-### B4. `metadata = JSON.stringify(null)` vs `null`
+### ~~B4. `metadata = JSON.stringify(null)` vs `null`~~ — ✅ закрыто 2026-05-15
 
-**Где:** `doc-service/src/storage/jobs.ts:create`
-
-**Симптом:** Минор. Pg-driver может передать `text NULL` вместо `jsonb NULL`. На JSONB-колонке скорее всего справится, но защита через явный `$7::jsonb` не помешает.
-
-**Лечение:** `INSERT INTO jobs (..., metadata) VALUES (..., $7::jsonb)`.
-
-**Оценка:** 10 минут (одна строка в SQL).
+В `jobsRepo.create()` к параметру `$7` (metadata) добавлен явный cast `$7::jsonb`. Pg-driver больше не может передать text NULL вместо jsonb NULL — защита на случай будущих triggers/expressions на metadata.
 
 ---
 

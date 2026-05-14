@@ -162,9 +162,24 @@ async function processJobInner(
 
   try {
     // ── OCR ────────────────────────────────────────────────────────────────
+    // I8: per-job PII opt-out из metadata._disable_external_ocr. document_hint
+    // используется как ранний намёк на тип документа (для PII-фильтрации даже
+    // до классификации).
+    const metaForRouter = (job.metadata as Record<string, unknown> | null) ?? {};
+    const disableExternalOcr =
+      metaForRouter._disable_external_ocr === true ||
+      metaForRouter._disable_external_ocr === 'true';
+
     await stepEvent('ocr', 'started', { details: { mime: job.mime_type } });
     const ocrStart = Date.now();
-    ocr = await runOcrChain({ filePath: job.file_path, mimeType: job.mime_type }, log);
+    ocr = await runOcrChain(
+      { filePath: job.file_path, mimeType: job.mime_type },
+      log,
+      {
+        documentType: job.document_hint ?? undefined,
+        disableExternalOcr,
+      },
+    );
     timings.ocr_ms = Date.now() - ocrStart;
     await stepEvent(`ocr.${ocr.engine}`, 'done', {
       duration_ms: timings.ocr_ms,
@@ -404,8 +419,16 @@ async function processJobInner(
 export async function runOcrChain(
   input: { filePath: string; mimeType: string },
   log: Logger,
+  options: { documentType?: string; disableExternalOcr?: boolean } = {},
 ): Promise<OcrResult> {
-  const chain = selectOcrChain(engines, input);
+  // I8: PII opt-out. Per-job флаг приходит из orchestrator (через metadata),
+  // глобальный disableForPii — из env. selectOcrChain выкинет Yandex если
+  // что-то из условий совпало.
+  const chain = selectOcrChain(engines, input, {
+    documentType: options.documentType,
+    disableExternalOcr: options.disableExternalOcr,
+    disableYandexForPii: config.yandex.disableForPii,
+  });
   if (chain.length === 0) {
     throw new Error(`no OCR engine available for mime type ${input.mimeType}`);
   }

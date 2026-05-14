@@ -169,6 +169,52 @@ class ReferenceListEntriesRepo {
   }
 
   /**
+   * E2: Fuzzy-поиск через pg_trgm. Используется когда exactSearch ничего не
+   * нашёл — даёт «мягкое» совпадение для случаев типа `"Простоквашино"` vs
+   * `"Простоквашино, ООО"` или OCR-опечаток.
+   *
+   * Возвращает entries с similarity ≥ threshold, отсортированные по убыванию
+   * score'а. similarity() = pg_trgm функция (0..1, 1 = идентично).
+   *
+   * **Performance:** для среднего справочника (<10K entries) sequential scan
+   * приемлем (<50ms). Для больших — потребуется GIN-индекс на display_name
+   * gin_trgm_ops (создаётся в миграции 0011: idx_ref_entries_name_trgm).
+   * Запрос построен так, чтобы планировщик использовал индекс автоматически.
+   *
+   * Score возвращается отдельным полем для downstream-логики (Resolution
+   * Engine пишет его в `match_score`).
+   */
+  async fuzzySearch(params: {
+    listTypeSlug: string;
+    organizationId: string;
+    query: string;
+    threshold?: number; // default 0.3 — соответствует pg_trgm-дефолту
+    limit?: number;
+  }): Promise<Array<ReferenceListEntryRow & { _score: number }>> {
+    if (!params.query.trim()) return [];
+    const threshold = params.threshold ?? 0.3;
+    const { rows } = await db.query<ReferenceListEntryRow & { _score: number }>(
+      `SELECT *, similarity(display_name, $3) AS _score
+         FROM reference_list_entries
+        WHERE list_type_slug = $1
+          AND organization_id = $2
+          AND is_active
+          AND display_name % $3   -- оператор % использует GIN-индекс
+          AND similarity(display_name, $3) >= $4
+        ORDER BY _score DESC, display_name ASC
+        LIMIT $5`,
+      [
+        params.listTypeSlug,
+        params.organizationId,
+        params.query,
+        threshold,
+        params.limit ?? 5,
+      ],
+    );
+    return rows;
+  }
+
+  /**
    * Exact-поиск по search_keys — ядро матчинга v1.
    * GIN-индекс даёт O(1) на типичных объёмах каталога.
    */

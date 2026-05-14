@@ -193,13 +193,17 @@ export type ProcessingUpdate = {
 
 class JobsRepo {
   async create(input: CreateJobInput): Promise<JobRow> {
+    // B4: явный ::jsonb cast на metadata — pg-driver передаёт JSON.stringify(null)
+    // как text NULL, а не jsonb NULL. На JSONB-колонке обычно справляется, но
+    // явный cast убирает неопределённость и помогает type-inference Postgres
+    // если когда-нибудь добавим триггеры/expressions на metadata.
     const { rows } = await db.query<JobRow>(
       `INSERT INTO jobs (
          file_name, file_path, file_size, mime_type,
          document_hint, webhook_url, metadata, idempotency_key,
          organization_id, project_id, created_by_user_id
        )
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11)
        RETURNING *`,
       [
         input.fileName,

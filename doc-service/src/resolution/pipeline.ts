@@ -227,21 +227,46 @@ async function runItemMatching(
 
   // Резолвим каждую строку через map. Сначала по коду, потом по имени.
   // Inserts идут параллельно — БД-write мелкий, БД профильна для concurrent writes.
+  // E2: Threshold для fuzzy fallback. По дефолту 0.3 (pg_trgm дефолт), можно
+  // переопределить per-document-type в `cfg.fuzzy_threshold`. Если поставить
+  // 1.0 — fuzzy эффективно выключен (только идентичные строки сматчатся).
+  const fuzzyThreshold = cfg.fuzzy_threshold ?? 0.3;
+
   await Promise.all(tuples.map(async ({ idx, raw, code, name }) => {
     const byCode = code ? byValue.get(code) : undefined;
     const byName = !byCode && name ? byValue.get(name.toLowerCase()) : undefined;
     const entry = byCode ?? byName;
-    const method = byCode ? 'exact_code' : byName ? 'exact_name' : 'exact';
+    let method = byCode ? 'exact_code' : byName ? 'exact_name' : 'exact';
+    let chosenEntry: typeof entry | (typeof allEntries[number]) | undefined = entry;
+    let score: number | null = entry ? 1.0 : null;
 
-    if (entry) {
+    // E2: fuzzy fallback — если exact ничего не нашёл, пробуем pg_trgm similarity()
+    // по display_name. Активно когда есть `name` для поиска (без кода fuzzy
+    // часто даёт ложные срабатывания).
+    if (!chosenEntry && name && name.length >= 3) {
+      const fuzzy = await listEntriesRepo.fuzzySearch({
+        listTypeSlug: cfg.list_type,
+        organizationId,
+        query: name,
+        threshold: fuzzyThreshold,
+        limit: 1,
+      });
+      if (fuzzy.length > 0) {
+        chosenEntry = fuzzy[0]!;
+        score = Number(fuzzy[0]!._score);
+        method = 'fuzzy_name';
+      }
+    }
+
+    if (chosenEntry) {
       await resolutionResultsRepo.insertItemMatch({
         jobId,
         organizationId,
         listTypeSlug: cfg.list_type,
         itemIndex: idx,
         itemRaw: raw,
-        entryId: entry.id,
-        matchScore: 1.0,
+        entryId: chosenEntry.id,
+        matchScore: score,
         matchMethod: method,
         status: 'suggested',
       });
