@@ -5030,11 +5030,49 @@ async function renderReferenceListEntries(slug) {
 // Boot
 // ============================================================
 applyTheme();
-if (auth.isAuthed()) {
-  hideLogin();
-  void initWorkspace();
-  if (!location.hash) location.hash = '#jobs';
-  route();
-} else {
+
+/**
+ * Авто-детект auth-режима сервера.
+ *
+ * Если на бэкенде API_KEY пустой — auth выключен (dev-mode), любой запрос
+ * проходит как super_admin. В таком случае показывать login-экран бессмысленно
+ * — пробуем GET /users/me без Authorization, и если бэкенд отвечает 200 —
+ * пропускаем логин.
+ *
+ * Если требует Bearer (есть API_KEY) → /users/me вернёт 401 → показываем
+ * логин как обычно.
+ *
+ * Сделано на бутстрапе, не в каждом запросе — нужно только определиться один
+ * раз кто мы.
+ */
+async function bootApp() {
+  if (auth.isAuthed()) {
+    // Есть сохранённый token → сразу в приложение
+    hideLogin();
+    void initWorkspace();
+    if (!location.hash) location.hash = '#jobs';
+    route();
+    return;
+  }
+
+  // Нет token — пробуем no-auth режим
+  try {
+    const res = await fetch(`${API}/users/me`);
+    if (res.ok) {
+      // Сервер пропустил без Bearer → API_KEY пустой → ставим sentinel и заходим
+      auth.token = '__noauth__'; // не пустой — иначе isAuthed() вернёт false
+      hideLogin();
+      void initWorkspace();
+      if (!location.hash) location.hash = '#jobs';
+      route();
+      return;
+    }
+  } catch {
+    // Сеть упала — fall through к login-экрану, оператор увидит знакомый UI
+  }
+
+  // Auth required → показываем login как обычно
   showLogin();
 }
+
+void bootApp();
