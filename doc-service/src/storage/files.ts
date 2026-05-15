@@ -120,6 +120,11 @@ export const ACCEPTED_DOCUMENT_MIMES: ReadonlySet<string> = new Set([
   'image/bmp',
   'image/tiff',
   'image/webp',
+  // HEIC/HEIF — iPhone-фото. Конвертируется в JPG через HeicHandler
+  // в preprocess-pipeline перед основной обработкой. См.
+  // src/pipeline/preprocess/heic.ts
+  'image/heic',
+  'image/heif',
 ]);
 
 export type DetectedFileType = { ext: string; mime: string };

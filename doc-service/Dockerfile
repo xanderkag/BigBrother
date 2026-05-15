@@ -4,12 +4,15 @@ FROM node:22-slim AS base
 #   tesseract-ocr           — OCR engine binary (called via node-tesseract-ocr)
 #   tesseract-ocr-rus/eng   — language packs for Russian and English documents
 #   poppler-utils           — pdftoppm / pdfinfo, used to rasterize scanned PDFs for tesseract
+#   libheif-examples        — heif-convert binary для HEIC/HEIF (iPhone-фото) → JPG
+#                             перед основным pipeline. См. src/pipeline/preprocess/heic.ts
 #   ca-certificates         — outbound TLS to LLM/Yandex
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-rus \
     tesseract-ocr-eng \
     poppler-utils \
+    libheif-examples \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
