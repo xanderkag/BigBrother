@@ -92,15 +92,24 @@ class StubBackend(ModelBackend):
         prompt_override: str | None = None,
         include_debug: bool = False,
     ) -> ExtractResponse:
-        # The stub returns an empty extract with a "stub mode" issue so
-        # callers know real extraction did not happen but the contract held.
-        # `prompt_override` echoed in issues so интеграционные тесты могут
-        # убедиться, что override доехал до самого backend'а.
-        note = f"stub backend cannot extract (hint={hint}"
+        # Stub mode: для смоук-тестирования pipeline'а возвращаем mock-данные
+        # для известных типов документов. Это позволяет проверить ветки
+        # llm_extract / multipass / items[] / per-line validators / resolution
+        # без реальной LLM-модели.
+        #
+        # Mock — это НЕ реальное извлечение. Данные синтетические и
+        # детерминированные (одинаковые для всех документов одного типа).
+        # Для прода используйте Claude/OpenAI/Qwen-бэкенды.
+        mock = _build_mock_extract(hint)
+        note = f"stub backend mock-extract (hint={hint}, mocked={bool(mock)}"
         if prompt_override:
             note += f", prompt_override len={len(prompt_override)}"
         note += ")"
-        return ExtractResponse(extracted={}, confidence=0.0, issues=[note])
+        return ExtractResponse(
+            extracted=mock or {},
+            confidence=0.7 if mock else 0.0,
+            issues=[note],
+        )
 
     async def vision_ocr(
         self,
@@ -122,3 +131,93 @@ class StubBackend(ModelBackend):
     ) -> VerifyResponse:
         # Pass-through: real verify would normalize dates, money, etc.
         return VerifyResponse(extracted=extracted, issues=[])
+
+
+# ─── Mock-extract для смоук-тестирования pipeline'а ──────────────────────────
+# Возвращает синтетические данные канонического shape (Phase A: items[] из 19
+# полей). НЕ запускать в проде. Активно только в BACKEND=stub режиме.
+
+
+def _mock_items(count: int = 3) -> list[dict[str, Any]]:
+    """Несколько строк items[] с реалистичными цифрами для проверки
+    per-line валидаторов: суммы сходятся с шапкой, ставки НДС валидны,
+    единицы из словаря, qty × price == total_without_vat."""
+    items = []
+    base_lines = [
+        ("A-001", "Молоко Простоквашино 3.2% 1л", "шт", 24, 78.50, 10),
+        ("A-002", "Кефир Простоквашино 2.5% 0.9л", "шт", 12, 65.00, 10),
+        ("B-100", "Сыр Российский 50% 1кг", "кг", 5, 450.00, 10),
+    ]
+    for i, (code, name, unit, qty, price, vat_rate) in enumerate(base_lines[:count]):
+        total_no_vat = round(qty * price, 2)
+        vat_amount = round(total_no_vat * vat_rate / 100, 2)
+        total_with_vat = round(total_no_vat + vat_amount, 2)
+        items.append({
+            "line_no": i + 1,
+            "code": code,
+            "name": name,
+            "unit": unit,
+            "qty": qty,
+            "price": price,
+            "vat_rate": vat_rate,
+            "vat_amount": vat_amount,
+            "total_without_vat": total_no_vat,
+            "total_with_vat": total_with_vat,
+            "currency": "RUB",
+        })
+    return items
+
+
+def _build_mock_extract(hint: str | None) -> dict[str, Any] | None:
+    """Mock канонической формы для разных типов. Возвращает None если hint
+    не из известных — caller тогда вернёт пустой extracted."""
+    if hint in ("invoice", "factInvoice", "UPD"):
+        items = _mock_items(3)
+        total_no_vat = sum(i["total_without_vat"] for i in items)
+        vat = sum(i["vat_amount"] for i in items)
+        return {
+            "number": "СЧ-MOCK-001",
+            "date": "2026-05-15",
+            "seller": {"name": "ООО Простоквашино", "inn": "7707083893", "kpp": "770701001"},
+            "buyer": {"name": "ООО ТАЙПИТ", "inn": "5024169813", "kpp": "502401001"},
+            "currency": "RUB",
+            "total": round(total_no_vat + vat, 2),
+            "total_without_vat": round(total_no_vat, 2),
+            "vat": round(vat, 2),
+            "vat_rate": 10,
+            "items": items,
+        }
+    if hint == "TTN":
+        items = _mock_items(2)
+        return {
+            "number": "TTN-MOCK-001",
+            "date": "2026-05-15",
+            "shipper": {"name": "ООО Простоквашино", "inn": "7707083893"},
+            "consignee": {"name": "ООО ТАЙПИТ", "inn": "5024169813"},
+            "vehicle": {"plate": "А123ВВ77", "driver": "Сидоров П.Р."},
+            "loading_point": "Москва, Тверская 1",
+            "unloading_point": "Красногорск, Ильинский б-р 11",
+            "items": items,
+        }
+    if hint == "AKT":
+        items = [
+            {
+                "line_no": 1, "name": "Транспортные услуги Москва-СПб",
+                "unit": "усл", "qty": 1, "price": 45000.0,
+                "vat_rate": 20, "vat_amount": 9000.0,
+                "total_without_vat": 45000.0, "total_with_vat": 54000.0,
+                "currency": "RUB",
+            },
+        ]
+        return {
+            "number": "AKT-MOCK-001",
+            "date": "2026-05-15",
+            "party_a": {"name": "ИП Перевозкин", "inn": "500100732259"},
+            "party_b": {"name": "ООО ТАЙПИТ", "inn": "5024169813"},
+            "total": 54000.0,
+            "total_without_vat": 45000.0,
+            "vat": 9000.0,
+            "vat_rate": 20,
+            "items": items,
+        }
+    return None
