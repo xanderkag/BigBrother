@@ -1171,6 +1171,10 @@ Worker проверяет `Date.now() - job.timestamp > JOB_MAX_AGE_SECONDS * 10
   - `inference-service/docker-compose.yml`: `volumes: - ../shared:/app/shared:ro`
   - `environment: CLASSIFIER_RULES_PATH=/app/shared/classifier-rules.json`
   - Преимущество: hot-reload правил без rebuild образа.
+- Docker для doc-service: ✅ закрыто 2026-05-15. Тот же runtime-volume mount в `api` и `worker`:
+  - `doc-service/docker-compose.yml`: `volumes: - ../shared:/app/shared:ro` для обоих сервисов.
+  - `keywords.ts` уже резолвит путь как `/app/shared/classifier-rules.json` (через `dist/pipeline/classifier/ → ../../../../shared/`).
+  - До этого фикса в Docker doc-service молча падал на hardcoded fallback, что могло разъехаться с Python после правки правил в shared/.
 
 ---
 

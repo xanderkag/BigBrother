@@ -22,6 +22,11 @@ services:
       - "${HOST_PORT:-${PORT:-3000}}:${PORT:-3000}"
     volumes:
       - doc-data:/app/data
+      # A6: общий каталог с правилами классификатора (shared/classifier-rules.json).
+      # Без него keywords.ts падает на hardcoded fallback и может разъехаться с
+      # Python-стороной (inference-service/backends/stub.py). Runtime-mount вместо
+      # COPY в Dockerfile — build context doc-service не видит ../shared.
+      - ../shared:/app/shared:ro
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -39,6 +44,9 @@ services:
     env_file: .env
     volumes:
       - doc-data:/app/data
+      # A6: см. комментарий в сервисе `api`. Worker — основной потребитель
+      # классификатора в OCR pipeline, поэтому mount нужен здесь обязательно.
+      - ../shared:/app/shared:ro
     depends_on:
       migrate:
         condition: service_completed_successfully
