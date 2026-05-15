@@ -17,7 +17,33 @@ const STORAGE = {
   dark: 'parsdocs.dark',
   workspace: 'parsdocs.workspace',  // {organization_id, project_id}
   sidebar: 'parsdocs.sidebarCollapsed', // 'true' | 'false'
+  recentUploads: 'parsdocs.recentUploads', // последние ~20 успешных загрузок
 };
+
+// ── Recent uploads helper ──────────────────────────────────────────────────
+// Persist через localStorage чтобы пользователь не терял ссылки на загруженные
+// документы при уходе со страницы Upload. Кольцевой буфер на 20 записей.
+const RECENT_UPLOADS_MAX = 20;
+
+function getRecentUploads() {
+  try {
+    const raw = localStorage.getItem(STORAGE.recentUploads);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function addRecentUpload(entry) {
+  // entry: { job_id, file_name, uploaded_at, status?, document_type?, confidence? }
+  const list = getRecentUploads();
+  // Дедуп по job_id — если update'имся через polling, заменяем старую запись
+  const existing = list.findIndex((x) => x.job_id === entry.job_id);
+  if (existing >= 0) list.splice(existing, 1);
+  list.unshift(entry);
+  while (list.length > RECENT_UPLOADS_MAX) list.pop();
+  try { localStorage.setItem(STORAGE.recentUploads, JSON.stringify(list)); } catch { /* quota */ }
+}
 
 /**
  * Workspace context — текущий выбранный проект пользователя.
@@ -2333,7 +2359,7 @@ function renderUploadPage(options) {
             <h3 class="card-title">Файлы <span id="queue-counter" class="text-sm font-normal text-slate-500"></span></h3>
             <div class="flex items-center gap-2">
               <button id="clear-done-btn" class="btn-ghost btn-xs" style="display:none">Убрать готовые</button>
-              <button id="start-btn" type="button" class="btn-primary btn-sm">Загрузить</button>
+              <button id="start-btn" type="button" class="btn-secondary btn-sm" title="Загрузка стартует автоматически при добавлении файлов. Кнопка нужна только для retry.">Запустить вручную</button>
             </div>
           </div>
           <div id="queue-list"></div>
@@ -2342,6 +2368,9 @@ function renderUploadPage(options) {
         ${showLiveResultPreview ? `
           <!-- Inline preview результата прямо на странице (Test Lab режим) -->
           <div id="result-preview-section" class="space-y-3"></div>` : ''}
+
+        <!-- Persistent recent uploads — не теряются при уходе со страницы -->
+        <div id="recent-uploads-section"></div>
 
         <p id="upload-error" class="hidden form-error"></p>
       </div>
@@ -2506,7 +2535,48 @@ function renderUploadPage(options) {
     if (added > 0) {
       queueSection.classList.remove('hidden');
       renderQueue();
+      // Auto-upload: чтобы пользователь не «забыл» нажать кнопку. Если у нас
+      // невалидные common-fields (битый Metadata JSON) — startUploads сам
+      // покажет ошибку, файлы останутся в queued.
+      void startUploads();
     }
+  }
+
+  /**
+   * Запустить загрузку всех queued-файлов. Идемпотентно: если уже идёт
+   * параллельный батч — новые queued-файлы подхватятся через worker-loop.
+   */
+  let uploadBatchRunning = false;
+  async function startUploads() {
+    if (uploadBatchRunning) {
+      // Если уже идёт worker-loop — он сам подхватит вновь queued (re-check
+      // cursor < pending.length после каждого uploadOne). Но мы для простоты
+      // запускаем новый worker когда предыдущий завершился.
+      return;
+    }
+    errEl.classList.add('hidden');
+    const common = readCommonFields();
+    if (common.error) {
+      errEl.textContent = common.error;
+      errEl.classList.remove('hidden');
+      return;
+    }
+    const pending = queue.filter((q) => q.status === 'queued');
+    if (pending.length === 0) return;
+
+    uploadBatchRunning = true;
+    startBtn.disabled = true;
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < pending.length) {
+        const idx = cursor++;
+        await uploadOne(pending[idx], common);
+      }
+    };
+    await Promise.all(Array.from({ length: UPLOAD_CONCURRENCY }, worker));
+    uploadBatchRunning = false;
+    startBtn.disabled = false;
+    renderQueue();
   }
 
   function renderQueue() {
@@ -2660,6 +2730,15 @@ function renderUploadPage(options) {
       item.jobId = data.job_id;
       item.status = 'processing';
       renderQueue();
+      // Сразу пишем в persistent recent-uploads — ссылка не потеряется даже
+      // если оператор уйдёт со страницы до завершения polling'а.
+      addRecentUpload({
+        job_id: data.job_id,
+        file_name: item.file.name,
+        uploaded_at: new Date().toISOString(),
+        status: 'processing',
+      });
+      renderRecentUploads();
       // Фоновый polling — НЕ блокируем worker-loop, следующий файл идёт сразу
       void pollJobStatus(item, startedAt);
     } catch (err) {
@@ -2668,6 +2747,67 @@ function renderUploadPage(options) {
       renderQueue();
     }
   }
+
+  /**
+   * Рендерит секцию «Недавние загрузки» из localStorage. Persist между сессиями,
+   * чтобы оператор не терял ссылки на job'ы при закрытии вкладки или уходе со
+   * страницы. Идёт по 10 последних, остальные доступны через #jobs.
+   */
+  function renderRecentUploads() {
+    const section = document.getElementById('recent-uploads-section');
+    if (!section) return;
+    const recent = getRecentUploads();
+    if (recent.length === 0) {
+      section.innerHTML = '';
+      return;
+    }
+    const rows = recent.slice(0, 10).map((r) => {
+      const statusBadge = r.status === 'done'
+        ? '<span class="badge badge-emerald">готово</span>'
+        : r.status === 'needs_review'
+          ? '<span class="badge badge-amber">проверить</span>'
+          : r.status === 'failed'
+            ? '<span class="badge badge-rose">ошибка</span>'
+            : '<span class="badge badge-indigo badge-pulse">обработка</span>';
+      const confidence = r.confidence != null
+        ? `<span class="text-xs font-mono ${r.confidence >= 0.8 ? 'text-emerald-600' : r.confidence >= 0.6 ? 'text-amber-600' : 'text-rose-600'}">${Math.round(r.confidence * 100)}%</span>`
+        : '';
+      const typeBadge = r.document_type
+        ? `<span class="text-xs font-mono text-slate-500">${escapeHtml(r.document_type)}</span>`
+        : '';
+      return `
+        <a href="#jobs/${escapeHtml(r.job_id)}"
+           class="flex items-center gap-3 px-4 py-2 border-b border-slate-100 dark:border-slate-800 last:border-b-0 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition">
+          <span class="truncate flex-1 text-sm" title="${escapeHtml(r.file_name)}">${escapeHtml(r.file_name)}</span>
+          ${typeBadge}
+          ${confidence}
+          ${statusBadge}
+          <span class="text-xs text-slate-400" title="${escapeHtml(r.uploaded_at)}">${relativeTime(r.uploaded_at)}</span>
+        </a>`;
+    }).join('');
+    section.innerHTML = `
+      <div class="card overflow-hidden">
+        <div class="card-header">
+          <h3 class="card-title">Недавние загрузки <span class="text-sm font-normal text-slate-500">${recent.length}${recent.length >= RECENT_UPLOADS_MAX ? '+' : ''}</span></h3>
+          <div class="flex items-center gap-2">
+            <a href="#jobs" class="btn-ghost btn-xs">Все в Jobs →</a>
+            <button class="btn-ghost btn-xs" data-clear-recent>Очистить</button>
+          </div>
+        </div>
+        <div>${rows}</div>
+      </div>`;
+    section.querySelector('[data-clear-recent]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (confirm('Очистить список недавних загрузок? Сами документы останутся в Jobs.')) {
+        localStorage.removeItem(STORAGE.recentUploads);
+        renderRecentUploads();
+      }
+    });
+  }
+
+  // Первый рендер recent-uploads при загрузке страницы — оператор видит свой
+  // прежний батч даже не загружая новый файл.
+  renderRecentUploads();
 
   /**
    * Опрашивает GET /jobs/:id до терминального статуса. Обновляет item.summary
@@ -2695,6 +2835,16 @@ function renderUploadPage(options) {
           item.status = job.status === 'failed' ? 'failed' : job.status;
           if (job.status === 'failed') item.error = job.error ?? 'неизвестная ошибка';
           item.fullJob = job;  // полная job для inline-preview в Test Lab
+          // Обновляем persistent recent — теперь там финальный статус и тип
+          addRecentUpload({
+            job_id: job.job_id,
+            file_name: item.file.name,
+            uploaded_at: new Date().toISOString(),
+            status: job.status,
+            document_type: job.document_type,
+            confidence: job.confidence,
+          });
+          renderRecentUploads();
           renderQueue();
           if (showLiveResultPreview) renderResultPreview();
           return;
@@ -2790,29 +2940,26 @@ function renderUploadPage(options) {
     }
   }
 
-  startBtn.addEventListener('click', async () => {
-    errEl.classList.add('hidden');
-    const common = readCommonFields();
-    if (common.error) {
-      errEl.textContent = common.error;
-      errEl.classList.remove('hidden');
-      return;
-    }
-    const pending = queue.filter((q) => q.status === 'queued');
-    if (pending.length === 0) return;
-    startBtn.disabled = true;
+  // Кнопка «Загрузить» теперь дублирует auto-upload (на случай если оператор
+  // отменил автозапуск через «Убрать готовые» и хочет вручную retry).
+  startBtn.addEventListener('click', () => { void startUploads(); });
 
-    let cursor = 0;
-    const worker = async () => {
-      while (cursor < pending.length) {
-        const idx = cursor++;
-        await uploadOne(pending[idx], common);
-      }
-    };
-    await Promise.all(Array.from({ length: UPLOAD_CONCURRENCY }, worker));
-    startBtn.disabled = false;
-    renderQueue();
-  });
+  // beforeunload guard: если есть unsaved-файлы (queued или uploading) —
+  // спросим прежде чем закрыть вкладку. Чтобы оператор не потерял батч
+  // случайным Ctrl+W. processing'и тоже учитываем — они уже на сервере
+  // но если страница закроется, оператор потеряет polling-сводку и item.fullJob.
+  const beforeUnloadHandler = (e) => {
+    const unsaved = queue.filter((q) =>
+      q.status === 'queued' || q.status === 'uploading'
+    ).length;
+    if (unsaved > 0) {
+      e.preventDefault();
+      e.returnValue = `${unsaved} файл(ов) ещё не загружены. Точно покинуть страницу?`;
+      return e.returnValue;
+    }
+  };
+  window.addEventListener('beforeunload', beforeUnloadHandler);
+  registerCleanup(() => window.removeEventListener('beforeunload', beforeUnloadHandler));
 
   // Dropzone — file picker + drag&drop. У <input multiple> — массив files.
   dropzone.addEventListener('click', () => fileInput.click());
