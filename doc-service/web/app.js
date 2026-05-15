@@ -16,6 +16,7 @@ const STORAGE = {
   token: 'parsdocs.token',
   dark: 'parsdocs.dark',
   workspace: 'parsdocs.workspace',  // {organization_id, project_id}
+  sidebar: 'parsdocs.sidebarCollapsed', // 'true' | 'false'
 };
 
 /**
@@ -966,6 +967,51 @@ document.getElementById('logout-btn').addEventListener('click', () => {
 });
 
 document.getElementById('dark-toggle').addEventListener('click', toggleTheme);
+
+// ── Sidebar collapse ───────────────────────────────────────────────────────
+// Сворачивает боковую панель до 56px (только иконки) для большего workspace.
+// Состояние persist в localStorage, hotkey Ctrl+B / Cmd+B как в VS Code/Linear.
+function applySidebarState() {
+  const sidebar = document.getElementById('sidebar');
+  if (!sidebar) return;
+  const collapsed = localStorage.getItem(STORAGE.sidebar) === 'true';
+  sidebar.classList.toggle('is-collapsed', collapsed);
+  // Переключаем иконки стрелки (← / →) внутри toggle-кнопки
+  const expandedIcon = sidebar.querySelector('.sidebar-toggle-expanded');
+  const collapsedIcon = sidebar.querySelector('.sidebar-toggle-collapsed');
+  if (expandedIcon && collapsedIcon) {
+    expandedIcon.classList.toggle('hidden', collapsed);
+    collapsedIcon.classList.toggle('hidden', !collapsed);
+  }
+  // Обновляем title для hover-подсказки
+  const btn = document.getElementById('sidebar-toggle');
+  if (btn) {
+    btn.title = collapsed
+      ? 'Развернуть боковую панель (Ctrl+B)'
+      : 'Свернуть боковую панель (Ctrl+B)';
+  }
+}
+
+function toggleSidebar() {
+  const current = localStorage.getItem(STORAGE.sidebar) === 'true';
+  localStorage.setItem(STORAGE.sidebar, String(!current));
+  applySidebarState();
+}
+
+document.getElementById('sidebar-toggle')?.addEventListener('click', toggleSidebar);
+
+// Ctrl+B / Cmd+B для toggle. preventDefault'им браузерные bookmark-shortcuts.
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b' && !e.shiftKey && !e.altKey) {
+    // Не перехватываем если фокус в input/textarea — иначе ломаем bold в WYSIWYG-полях
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    e.preventDefault();
+    toggleSidebar();
+  }
+});
+
+applySidebarState();
 
 /**
  * Загружает доступные пользователю проекты и инициализирует workspace

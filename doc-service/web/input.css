@@ -92,8 +92,34 @@
 
   /* === NAV ================================================= */
 
-  .nav-link          { @apply flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition; }
+  .nav-link          { @apply flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition relative; }
   .nav-link.active   { @apply bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300; }
+
+  /* Группы пунктов меню: «WORKSPACE», «ADMIN», «SYSTEM» */
+  .nav-section       { @apply text-[10px] uppercase tracking-wider text-slate-400 dark:text-slate-500 font-medium px-3 pt-4 pb-1; }
+
+  /* === SIDEBAR COLLAPSED ===================================== */
+  /*
+   * Тогглится через class="is-collapsed" на <aside>. Состояние persisted
+   * в localStorage[parsdocs.sidebarCollapsed]. Hotkey Ctrl+B / Cmd+B.
+   *
+   * Стратегия скрытия: все text-узлы обёрнуты в <span class="aside-label">,
+   * при collapsed они display:none. Иконки и тогглеры остаются.
+   */
+  aside.sidebar              { @apply transition-all duration-200; }
+  aside.sidebar.is-collapsed { @apply w-14; }
+  aside.sidebar.is-collapsed .aside-label    { @apply hidden; }
+  aside.sidebar.is-collapsed .nav-section    { @apply hidden; }
+  aside.sidebar.is-collapsed #workspace-switcher { @apply hidden; }
+  aside.sidebar.is-collapsed .nav-link       { @apply justify-center px-2; }
+  aside.sidebar.is-collapsed .sidebar-header { @apply justify-center px-2; }
+  aside.sidebar.is-collapsed .sidebar-footer { @apply flex-col gap-1.5; }
+  aside.sidebar.is-collapsed .sidebar-footer .btn-ghost { @apply px-2; }
+  /* Активный индикатор в collapsed-режиме — индиго-полоска слева */
+  aside.sidebar.is-collapsed .nav-link.active::before {
+    content: '';
+    @apply absolute left-0 top-1 bottom-1 w-1 bg-indigo-500 rounded-r;
+  }
 
   /* === DATA DISPLAY ======================================== */
 
