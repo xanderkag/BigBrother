@@ -1,0 +1,49 @@
+# GPU overlay для parsdocs на хосте с NVIDIA GPU.
+#
+# Применять В ДОПОЛНЕНИЕ к docker-compose.doc-platform.yml +
+# docker-compose.local-models.yml:
+#
+#   docker compose \
+#     -f docker-compose.doc-platform.yml \
+#     -f docker-compose.local-models.yml \
+#     -f docker-compose.gpu.yml \
+#     up -d
+#
+# Что добавляет:
+#  1. GPU passthrough в ollama-контейнер через deploy.resources.reservations
+#  2. Default-набор моделей в OLLAMA_PULL переключается на 7B+ варианты
+#     (полные качественные модели вместо CPU-friendly 3B квантизаций)
+#
+# Требует:
+#  - NVIDIA Container Toolkit (https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/)
+#  - Docker 20.10+
+#  - GPU c CUDA 12.x совместимостью (большинство RTX начиная с 30-серии)
+#
+# Под 16 GB VRAM хорошо помещаются:
+#   - qwen2.5:7b              4.7 GB — text-only, baseline
+#   - qwen2.5-vl:7b           6.0 GB — vision + text, читает PDF/JPG напрямую
+#   - llama3.1:8b             4.7 GB — альтернатива от Meta
+#   - qwen2.5:14b-instruct-q4 9.0 GB — на пределе VRAM, но даёт лучшее качество
+#
+# Перепиши OLLAMA_PULL под нужный набор. Несколько моделей через запятую,
+# Ollama сама держит самую недавно использованную в VRAM (LRU TTL 5 мин).
+
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    # GPU-варианты — поднять для разогрева и оставить в VRAM cache.
+    # qwen2.5-vl:7b отдельным шагом потому что vision-модели надо
+    # явно прогревать (генерация эмбеддингов для тестовых изображений)
+
+  ollama-bootstrap:
+    environment:
+      # 2 модели — text-only baseline и vision (читает PDF/JPG напрямую).
+      # На 16 GB VRAM влезают вместе, между ними переключение через
+      # OPENAI_MODEL в inference-service/.env.
+      OLLAMA_PULL: "${OLLAMA_PULL:-qwen2.5:7b,qwen2.5-vl:7b}"
