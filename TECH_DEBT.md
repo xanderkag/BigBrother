@@ -1261,6 +1261,35 @@ backend делит PDF по страницам и шлёт 2 отдельных 
 
 ---
 
+### F13. Webhook receiver для SLAI continuous category sync — open
+
+**Где:** новый `src/routes/integrations/slai-sync.ts` + storage layer.
+
+**Контекст:** SLAI рекомендует не разовый hist (F6/Q3), а continuous
+bidirectional sync — TypeORM lifecycle hooks → debounced webhook к нам.
+См. их `SLAI_NOTE_2026-05-16_CATEGORY_SYNC.md` и наш ответ
+`doc-service/docs/PARSDOCS_CATEGORY_SYNC_REPLY.md`.
+
+**Что делаем:**
+1. `POST /api/v1/integrations/slai/sync/nomenclature` — events receiver
+   с HMAC verify (`SLAI_TO_PARSDOCS_HMAC_SECRET`), header `X-SLAI-Version: v1`
+2. `POST /api/v1/integrations/slai/sync/nomenclature/snapshot` — daily
+   full reconcile
+3. Миграция `slai_category_map` (id, name, our_hint, active, updated_at)
+4. Redis-cache lookup `slai_category:{id}` с TTL 24ч
+5. `sync_inbox` table с UNIQUE на event_id (идемпотентность)
+6. Background sweeper читает inbox → applies to lookup
+7. Snapshot reconciler (cron 04:00 UTC)
+8. Интеграция: `applyCategoryHints` в orchestrator читает lookup-table
+9. Unit-тесты
+
+**Срок:** 5-7 дней работы. **Зависит от:**
+- HMAC secret обмен (нужен `SLAI_TO_PARSDOCS_HMAC_SECRET`)
+- Подтверждение SLAI что наши 7 ответов в `PARSDOCS_CATEGORY_SYNC_REPLY.md`
+  устраивают
+
+---
+
 ### ~~F7. total_with_vat: пересчёт из items~~ — ✅ закрыто 2026-05-16
 
 **Где:** `src/pipeline/normalize/totals.ts` + подключено в orchestrator
