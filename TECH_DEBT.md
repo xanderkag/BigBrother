@@ -1112,6 +1112,170 @@ Worker проверяет `Date.now() - job.timestamp > JOB_MAX_AGE_SECONDS * 10
 
 ---
 
+## 🚛 SLAI integration debt (ТЗ от 2026-05-16, ждём ответ разработчика SLAI)
+
+См. `Desktop/parsdocs-validation-bench/SLAI_QUESTIONS.md` (мы → SLAI),
+`SLAI_ANSWERS.md` (SLAI → нам), `SLAI_OUR_REPLY.md` (мы → SLAI обратно
+с решениями по [ПРОДУКТ] меткам и ответами на 6 встречных вопросов).
+
+### ~~F1. Identifier normalizers (ИНН + госномер)~~ — ✅ закрыто 2026-05-16
+
+**Что:** `src/pipeline/normalize/identifiers.ts` — `normalizeInn`,
+`normalizePlate`, `damerauLevenshtein`. Подключено в `orchestrator.ts`
+после parser, до validation. Результаты складываются в
+`_normalized_fields: { 'seller.inn': '...', 'vehicle.plate': '...' }` —
+явный канал для интеграторов которым нужны exact-match значения.
+
+16 тестов проходят. Bench v2 на новом корпусе показал что ИНН-нормализация
+работает корректно — 80% seller_inn_match (без неё было бы ниже из-за
+форматирования «ИНН: 7728-168-971»).
+
+См. коммит `373834f`.
+
+---
+
+### F2. Confidence per-field — обещали SLAI через 7 дней
+
+**Где:** orchestrator + extract-prompt.
+
+**Симптом:** сейчас один общий `confidence` на job. SLAI matcher не знает
+что `vehicle.plate=0.95` (надёжно), а `total_with_vat=0.40` (модель угадала).
+Без этого матчинг по слабому полю даст ложные привязки.
+
+**Лечение:**
+1. Извлекать confidence из LLM-ответа (требовать в schema per-field
+   uncertainty)
+2. Калибровать через ground-truth bench (если модель говорит 0.9 а
+   реально правильно в 60% — корректировать вниз)
+3. Для regex-парсеров — вычислять по «primary regex или fallback»
+
+**Контракт API:**
+```json
+{
+  "extracted": { ... },
+  "confidence": 0.86,
+  "_field_confidence": {
+    "vehicle.plate": 0.95,
+    "seller.inn": 0.91,
+    "total_with_vat": 0.40,
+    "items[*].name": 0.80
+  }
+}
+```
+
+**Срок:** 5-7 дней работы. Закрываем как часть MVP интеграции с SLAI.
+
+---
+
+### F3. SLAI webhook receiver + service-token
+
+**Где:** новый `routes/slai-callbacks.ts` + `auth/named-keys.ts` уже есть.
+
+**Что нужно:**
+1. `POST /api/v1/parsdocs/webhook` receiver (на стороне SLAI — мы его
+   не пишем, но согласовываем формат)
+2. HMAC-подпись на наших исходящих webhook (есть в коде —
+   `WEBHOOK_HMAC_SECRET`)
+3. Service-token для SLAI side в нашей `API_KEYS_JSON` с именем `slai`
+4. OpenAPI v1 spec для webhook-payload — `doc-service/docs/openapi/v1.yaml`
+
+**Срок:** 1-2 дня.
+
+---
+
+### F4. PII redaction (`?redact_pii=true`)
+
+**Где:** new helper `src/pipeline/redact-pii.ts`.
+
+**Симптом:** SLAI просит pre-redact ФИО водителей, паспорта,
+вод.удостоверения перед использованием для обучения моделей и тестов.
+
+**Что редактируем:**
+- `vehicle.driver` (ФИО)
+- `vehicle.driver_phone`
+- `seller.contact_person` / `buyer.contact_person`
+- Паспортные данные если найдены в свободном тексте
+- Серии/номера водительских прав
+
+**НЕ редактируем:**
+- ИНН юрлиц и ИП (по 14-ФЗ публичная информация)
+- Названия компаний и адреса юрлиц
+- Госномера ТС (идентификатор объекта, не персона)
+
+**Контракт:** `POST /api/v1/jobs?redact_pii=true` → в response поля
+заменены на `[REDACTED]`.
+
+**Срок:** 3-5 дней. Закрываем до получения 30-50 anonymized PDF от SLAI.
+
+---
+
+### F5. Multi-document PDF (`documents: Array<>`)
+
+**Где:** orchestrator + API response shape (v2 breaking).
+
+**Симптом:** если в PDF два разных документа (1 стр — счёт, 2-3 стр —
+ТТН), модель угадывает доминирующий тип и теряет второй. SLAI хочет
+два отдельных Document'а в БД.
+
+**Лечение:**
+1. Доработка preprocess: page-level classification перед extract
+2. Обновление API contract — поле `documents: Array<ExtractedDocument>`
+   вместо одного `extracted`
+3. Version bump до v2 (старый формат v1 параллельно ≥ 6 мес)
+4. Tests на split
+
+**Срок:** 14 дней после MVP интеграции. Workaround до этого: SLAI
+backend делит PDF по страницам и шлёт 2 отдельных job'а.
+
+---
+
+### F6. category_hint через keyword-mapper
+
+**Где:** новый `src/pipeline/categorize/keyword-mapper.ts` (Node) +
+аналог в inference-service.
+
+**Симптом:** в bench v2 показал что LLM возвращает `category_hint`, но
+угадывает только очевидное (`metal` для болтов). Сервер Dell, картридж
+HP, паллет → все попадают в `other`. F1 по категории — 1%.
+
+**Лечение:** не доверять LLM, делать после extract'а keyword-маппер:
+```typescript
+const CATEGORY_KEYWORDS = {
+  metal:       ['болт', 'уголок', 'лист', 'труба', 'арматура', ...],
+  electrical:  ['кабель', 'автомат', 'светильник', 'сервер', 'картридж'],
+  packaging:   ['паллет', 'стрейч', 'скотч', 'короб'],
+  food:        ['молоко', 'хлеб', 'сыр', 'кефир', 'гречка'],
+  fuel:        ['бензин', 'дизель', 'ГСМ'],
+  ...
+};
+```
+Применяется к `items[].name` после extract. Категория ставится в
+`items[].category_hint`.
+
+**Также:** скоррелировать список с hist'ом от SLAI (обещали 3-5 дней)
+— возможно нужны другие категории (`automotive`, `wood`, `agro`,
+`consumer_goods`).
+
+**Срок:** 1 день после получения SLAI hist'а.
+
+---
+
+### F7. total_with_vat: пересчёт из items если расходится
+
+**Где:** новый post-processor в orchestrator после extract.
+
+**Симптом:** bench v2 показал total_match только 20%. Модель плохо
+суммирует длинные таблицы.
+
+**Лечение:** если `extracted.total_with_vat` отличается от
+`sum(items[].total)` больше чем на 1 руб — пересчитать и добавить
+issue. Это не валидация (которая просто пишет в issues), а реальный
+fix значения.
+
+**Срок:** 2 часа работы. Делаем до закрытия пилота.
+
+---
+
 ## 🟡 Architectural (думать сейчас, делать потом)
 
 ### A1. inference-service синхронный
