@@ -22,6 +22,7 @@ import { dynamicLlm } from './llm/provider-resolver.js';
 import type { LlmClient, LlmExtractDebug } from './llm/types.js';
 import type { DocumentTypeSlug } from '../types/documents.js';
 import { validateExtractedWithResolver } from './validation/index.js';
+import { normalizeExtractedFields } from './normalize/extracted-fields.js';
 import { documentTypeResolver, type ResolvedTypeConfig } from './document-type-resolver.js';
 import { jobsDurationSeconds, jobsTotal, ocrEngineDurationSeconds } from '../metrics.js';
 import { runResolutionPipeline } from '../resolution/pipeline.js';
@@ -668,6 +669,14 @@ export async function runDocumentPipeline(
         },
         'llm call',
       );
+    }
+
+    // Нормализация идентификаторов перед валидацией: ИНН без пробелов/дефисов,
+    // госномер в кириллице. Validator получит чистые значения, а интеграторам
+    // (SLAI matcher) уходит явный канал `_normalized_fields` для exact-match.
+    const normalized = normalizeExtractedFields(extracted);
+    if (normalized && normalized !== extracted) {
+      extracted = normalized;
     }
 
     const tValidate = Date.now();
