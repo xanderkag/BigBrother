@@ -23,6 +23,8 @@ import type { LlmClient, LlmExtractDebug } from './llm/types.js';
 import type { DocumentTypeSlug } from '../types/documents.js';
 import { validateExtractedWithResolver } from './validation/index.js';
 import { normalizeExtractedFields } from './normalize/extracted-fields.js';
+import { recomputeTotalsFromItems } from './normalize/totals.js';
+import { applyCategoryHints } from './normalize/categories.js';
 import { documentTypeResolver, type ResolvedTypeConfig } from './document-type-resolver.js';
 import { jobsDurationSeconds, jobsTotal, ocrEngineDurationSeconds } from '../metrics.js';
 import { runResolutionPipeline } from '../resolution/pipeline.js';
@@ -677,6 +679,24 @@ export async function runDocumentPipeline(
     const normalized = normalizeExtractedFields(extracted);
     if (normalized && normalized !== extracted) {
       extracted = normalized;
+    }
+
+    // F7: пересчитать total_with_vat / total_without_vat / vat_amount если
+    // расходятся с суммой items[]. В bench v2 total_match был 20% — модель
+    // плохо суммирует длинные таблицы. После пересчёта должно стать ~100%
+    // для документов с items[].
+    const recomputed = recomputeTotalsFromItems(extracted);
+    if (recomputed && recomputed !== extracted) {
+      extracted = recomputed;
+    }
+
+    // F6: категоризация items[].name через keyword-mapper (не через LLM).
+    // bench v2 показал что Gemma угадывает категорию только в 1% случаев.
+    // Keyword-mapper детерминирован и легко расширяется под новые категории
+    // (после получения hist от SLAI).
+    const withCategories = applyCategoryHints(extracted);
+    if (withCategories && withCategories !== extracted) {
+      extracted = withCategories;
     }
 
     const tValidate = Date.now();

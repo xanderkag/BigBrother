@@ -1229,52 +1229,60 @@ backend делит PDF по страницам и шлёт 2 отдельных 
 
 ---
 
-### F6. category_hint через keyword-mapper
+### ~~F6. category_hint через keyword-mapper~~ — ✅ закрыто 2026-05-16
 
-**Где:** новый `src/pipeline/categorize/keyword-mapper.ts` (Node) +
-аналог в inference-service.
+**Где:** `src/pipeline/normalize/categories.ts` (17 категорий + ~250
+ключевых слов на русском) + tests в `tests/normalize-totals-categories.spec.ts`.
 
-**Симптом:** в bench v2 показал что LLM возвращает `category_hint`, но
-угадывает только очевидное (`metal` для болтов). Сервер Dell, картридж
-HP, паллет → все попадают в `other`. F1 по категории — 1%.
+**Что сделано:**
+- 17 категорий синхронизированы с SLAI_OUR_REPLY.md (4.5): `food`,
+  `beverage`, `pharma`, `textile`, `chemical`, `fuel`, `metal`,
+  `construction`, `electrical`, `automotive`, `wood`, `agro`,
+  `consumer_goods`, `packaging`, `service_transport`, `service_loading`,
+  `other`
+- Подключено в `orchestrator.ts` после `recomputeTotalsFromItems`
+- Уважает существующий `category_hint != 'other'` от LLM (не перетирает)
+- Перетирает только `other` либо отсутствующие значения
+- Идемпотентно
 
-**Лечение:** не доверять LLM, делать после extract'а keyword-маппер:
-```typescript
-const CATEGORY_KEYWORDS = {
-  metal:       ['болт', 'уголок', 'лист', 'труба', 'арматура', ...],
-  electrical:  ['кабель', 'автомат', 'светильник', 'сервер', 'картридж'],
-  packaging:   ['паллет', 'стрейч', 'скотч', 'короб'],
-  food:        ['молоко', 'хлеб', 'сыр', 'кефир', 'гречка'],
-  fuel:        ['бензин', 'дизель', 'ГСМ'],
-  ...
-};
-```
-Применяется к `items[].name` после extract. Категория ставится в
-`items[].category_hint`.
+**Тонкие моменты решены в keyword-листах:**
+- `шин` → `' шин'/'шина '` чтобы не матчить «Простоквашино»
+- `зерно` → `зерновые культур` чтобы не матчить «Кофе зерновой»
+- `масло сливочное` vs `масло моторное` — обе категории
+- IT-железо (сервер, картридж, кабель) → `electrical`
 
-**Также:** скоррелировать список с hist'ом от SLAI (обещали 3-5 дней)
-— возможно нужны другие категории (`automotive`, `wood`, `agro`,
-`consumer_goods`).
+**После hist от SLAI** (обещали 3-5 дней) — скорректировать список под
+их реальные категории. Это 1 час работы — поменять `KEYWORDS` map.
 
-**Срок:** 1 день после получения SLAI hist'а.
+Тестов: 22 (categorizeName на ~20 примерах + applyCategoryHints на 5
+сценариях + recomputeTotals на 7 сценариях).
 
----
-
-### F7. total_with_vat: пересчёт из items если расходится
-
-**Где:** новый post-processor в orchestrator после extract.
-
-**Симптом:** bench v2 показал total_match только 20%. Модель плохо
-суммирует длинные таблицы.
-
-**Лечение:** если `extracted.total_with_vat` отличается от
-`sum(items[].total)` больше чем на 1 руб — пересчитать и добавить
-issue. Это не валидация (которая просто пишет в issues), а реальный
-fix значения.
-
-**Срок:** 2 часа работы. Делаем до закрытия пилота.
+См. коммит будет в этом push.
 
 ---
+
+### ~~F7. total_with_vat: пересчёт из items~~ — ✅ закрыто 2026-05-16
+
+**Где:** `src/pipeline/normalize/totals.ts` + подключено в orchestrator
+после `normalizeExtractedFields`, до `applyCategoryHints`.
+
+**Поведение:**
+- Считает `sum(items[].total_with_vat || items[].total || qty*price*(1+vat/100))`
+- Если оригинал `total_with_vat` отсутствует — заполняет вычисленным
+- Если расхождение ≥ 1 руб — заменяет + пишет
+  `_totals_recomputed: { from: 'items_sum', deltas: { total_with_vat: ... } }`
+- Если расхождение < 1 руб — не трогает (LLM попал)
+- `total_without_vat` и `vat_amount` НЕ трогаем (риск сломать что LLM
+  правильно ставил)
+
+Парсит строковые числа с пробелами/запятой («1 000,50» → 1000.5), что
+часто прилетает от LLM/regex.
+
+Тестов: 7 в `tests/normalize-totals-categories.spec.ts` (LLM ошибся /
+LLM попал / LLM забыл / строковые числа / пустой items / пересчёт из
+qty×price / идемпотентность).
+
+См. коммит будет в этом push.
 
 ## 🟡 Architectural (думать сейчас, делать потом)
 
