@@ -25,6 +25,7 @@ import { validateExtractedWithResolver } from './validation/index.js';
 import { normalizeExtractedFields } from './normalize/extracted-fields.js';
 import { recomputeTotalsFromItems } from './normalize/totals.js';
 import { applyCategoryHints } from './normalize/categories.js';
+import { redactPii } from './normalize/pii-redact.js';
 import { documentTypeResolver, type ResolvedTypeConfig } from './document-type-resolver.js';
 import { jobsDurationSeconds, jobsTotal, ocrEngineDurationSeconds } from '../metrics.js';
 import { runResolutionPipeline } from '../resolution/pipeline.js';
@@ -350,6 +351,21 @@ async function processJobInner(
     }
 
     if (updated && updated.webhook_url) {
+      // F4: PII redaction перед отправкой webhook'а. Управляется флагом
+      // `metadata.redact_pii: true` который клиент ставит при создании job'а
+      // (через query-param `?redact_pii=true` или поле в metadata).
+      // Если редактим — extracted и metadata пишутся в payload в редактированном
+      // виде; БД-хранилище остаётся как было (для аудита и переотправки
+      // оператором). См. routes/jobs.ts и pipeline/normalize/pii-redact.ts.
+      const meta = (updated.metadata ?? null) as Record<string, unknown> | null;
+      const shouldRedact = meta && (meta.redact_pii === true || meta.redact_pii === 'true');
+      const extractedOut = shouldRedact
+        ? redactPii(updated.extracted as Record<string, unknown> | null)
+        : updated.extracted;
+      const metadataOut = shouldRedact
+        ? redactPii(meta)
+        : meta;
+
       await deliverWebhook(
         jobId,
         updated.webhook_url,
@@ -359,8 +375,8 @@ async function processJobInner(
           document_type: updated.document_type,
           confidence: updated.confidence === null ? null : Number(updated.confidence),
           ocr_engine: updated.ocr_engine,
-          extracted: updated.extracted,
-          metadata: updated.metadata,
+          extracted: extractedOut,
+          metadata: metadataOut,
           error: updated.error,
         },
         log,

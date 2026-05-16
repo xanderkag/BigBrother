@@ -30,7 +30,12 @@
 | **10. GPU vision document-specialist** | RTX 4000 Ada 20 ГБ VRAM | **MiniCPM-V 2.6 (8B, image)** | **9-44 сек** | — | **8/8 JSON, правильно считает items, путает Russian-схему** |
 | **11. GPU vision official Meta** | RTX 4000 Ada 20 ГБ VRAM | **Llama 3.2 Vision 11B (image)** | **20-139 сек** | — | **1/8 JSON, repetition-loop ломает 7 из 8** |
 | **12. GPU baseline v2 (10 файлов, расширенный corpus + ground-truth)** | RTX 4000 Ada 20 ГБ VRAM | **Gemma 3 12B (text-режим)** | **30 сек/файл (5 мин на 10)** | F1 items 80%, type/number/date 100% | **0 провалов**, 80% ИНН, 20% total, 1% category_hint |
-| **13. GPU vision v2 (10 файлов расш. corpus)** | RTX 4000 Ada 20 ГБ VRAM | **MiniCPM-V 2.6 (image, repeat)** | **54 сек/файл (9 мин на 10)** | F1 items 49%, type 10%, ИНН 0% | **3 BAD-JSON** на длинных счетах/УПД, провал |
+| **13. GPU vision v2** | RTX 4000 Ada 20 ГБ VRAM | **MiniCPM-V 2.6 (image)** | **54 сек/файл (9 мин на 10)** | F1 items 49%, type 10%, ИНН 0% | **3 BAD-JSON** на длинных, провал |
+| **14. GPU v2 text — Gemma 3 27B** | RTX 4000 Ada 20 ГБ VRAM | Gemma 3 27B (text) | **69 сек/файл (11.5 мин на 10)** | F1 items 80%, type/number/date 100% | 80% ИНН, **50% total** |
+| **15. GPU v2 text — Qwen 2.5 32B** | RTX 4000 Ada 20 ГБ VRAM | Qwen 2.5 32B (text) | **112 сек/файл (18.6 мин на 10)** | F1 items 80%, type/number/date 100% | 80% ИНН, 50% total — медленнее Gemma27B без выигрыша |
+| **16. GPU v2 text — Mistral Small 3.1** | RTX 4000 Ada 20 ГБ VRAM | Mistral Small 3.1 24B | **45 сек/файл (7.6 мин на 10)** | F1 items 80%, type/number/date 100% | 80% ИНН, 40% total |
+| **17. GPU v2 text — Phi-4** ⭐ | RTX 4000 Ada 20 ГБ VRAM | **Phi-4 14B** | **34 сек/файл (5.6 мин на 10)** | F1 items 80%, type/number/date 100% | **60% total** — лучшая арифметика, в 2× меньше Gemma 27B |
+| **18. GPU v2 vision — Mistral Small 3.1** ⭐ | RTX 4000 Ada 20 ГБ VRAM | **Mistral Small 3.1 (image)** | **50 сек/файл (8.4 мин на 10)** | F1 items 79%, type/number/date **100%**, **ИНН 80%** | Первая vision-модель с реальным ИНН (vs 0% у MiniCPM-V) |
 
 ---
 

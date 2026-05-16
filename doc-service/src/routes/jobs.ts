@@ -161,6 +161,14 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
       // ниже падёт в default project текущего пользователя.
       let projectId: string | undefined;
       let organizationId: string | undefined;
+      // F4: PII redaction может прийти как query-param (?redact_pii=true) или
+      // как поле multipart (`redact_pii`). Любая truthy-строка включает.
+      // Результат запоминаем в metadata.redact_pii — orchestrator его читает
+      // при отправке webhook'а и редактирует extracted/metadata перед уходом
+      // наружу. БД остаётся не редактированной (для аудита).
+      const queryRedact = (req.query as Record<string, unknown> | undefined)?.redact_pii;
+      let redactPiiFlag =
+        queryRedact === 'true' || queryRedact === '1' || queryRedact === true;
 
       for await (const part of req.parts()) {
         if (part.type === 'file' && part.fieldname === 'file') {
@@ -175,6 +183,9 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
           else if (part.fieldname === 'document_hint') documentHint = value;
           else if (part.fieldname === 'project_id') projectId = value;
           else if (part.fieldname === 'organization_id') organizationId = value;
+          else if (part.fieldname === 'redact_pii') {
+            redactPiiFlag = value === 'true' || value === '1';
+          }
           else if (part.fieldname === 'metadata') {
             // Pre-parse size cap — protects against pinning huge blobs to
             // every job row in JSONB. Check raw bytes since the parsed
@@ -293,6 +304,13 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
             'metadata contained values that look like secrets; redacted before storage',
           );
         }
+      }
+
+      // F4: проставить флаг redact_pii в metadata если он пришёл через query
+      // или multipart field. Это позволяет orchestrator'у на финальной стадии
+      // решить редактировать ли extracted перед webhook'ом.
+      if (redactPiiFlag) {
+        sanitizedMetadata = { ...(sanitizedMetadata ?? {}), redact_pii: true };
       }
 
       let job;

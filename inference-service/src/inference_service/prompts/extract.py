@@ -87,3 +87,57 @@ def build(
             **common,
         )
     return BUILTIN_TEMPLATE.format(**common)
+
+
+# --- Раздельные части для prompt caching (F8) ---
+# Anthropic cache работает на префиксе. Если bake'ить всё в один user-message
+# (как `build` выше), кэш будет работать только пока документ один и тот же —
+# бесполезно. Чиним: статическая часть (instructions + schema + контракт)
+# идёт в system-prompt с cache_control, динамическая (text документа) —
+# в user-message. Тогда на каждый новый документ из 10 вызовов 9 raз
+# получают cached input — экономия 90% на input tokens.
+
+_STATIC_BUILTIN_HEADER = """Ты извлекаешь структурированные поля из текста делового документа на русском языке.
+
+Правила:
+- Все суммы — числами без пробелов и без валюты ("15 000,50" → 15000.50).
+- Все даты — в формате YYYY-MM-DD.
+- ИНН — строка из 10 или 12 цифр.
+- Если поле не нашлось в тексте — НЕ выдумывай, оставляй его пустым (отсутствует в JSON).
+- Если есть подозрение на ошибку OCR (несвязные цифры, обрезанные слова) — добавляй описание в "issues".
+
+"""
+
+
+def build_cacheable(
+    text: str,
+    schema: dict[str, Any],
+    hint: str | None,
+    prompt_override: str | None = None,
+) -> tuple[str, str]:
+    """Вернуть (system_prompt, user_prompt) для Anthropic API с prompt
+    caching. system_prompt — статическая часть (один и тот же между
+    вызовами для одного и того же hint+schema), user_prompt — только
+    содержимое документа.
+
+    Backend подставит `cache_control: {"type": "ephemeral"}` на
+    system-блок. Cache hit срабатывает если предыдущий запрос с тем же
+    system был < 5 минут назад.
+    """
+    schema_json = json.dumps(schema, ensure_ascii=False, indent=2)
+    if prompt_override:
+        system = (
+            f"{prompt_override.strip()}\n\n"
+            f"Тип документа: {hint or 'не указан'}\n\n"
+            f"Целевая JSON-схема (используй только эти поля, лишних не добавляй):\n{schema_json}\n\n"
+            f"{_RESPONSE_CONTRACT.replace('{{', '{').replace('}}', '}')}"
+        )
+    else:
+        system = (
+            f"{_STATIC_BUILTIN_HEADER}"
+            f"Тип документа (подсказка): {hint or 'не указан'}\n\n"
+            f"Целевая JSON-схема (используй только эти поля, лишних не добавляй):\n{schema_json}\n\n"
+            f"{_RESPONSE_CONTRACT.replace('{{', '{').replace('}}', '}')}"
+        )
+    user = f'Текст документа:\n"""\n{text[:12000]}\n"""'
+    return system, user
