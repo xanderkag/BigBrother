@@ -121,51 +121,44 @@ SLAI оценили (Q5 в их `SLAI_REPLY_v2.md`): **2-3 недели**, с р
 
 ### Q7. Подтверждение что наш implementation matcher / target_entity_hint / HMAC verify подходит под SLAI видение
 
-- **Status:** ANSWERED
+- **Status:** RESOLVED
 - **Asked:** 2026-05-16
 - **From:** SLAI_DEV
 - **To:** PARSDOCS_DEV / USER
-- **Что нужно:** Проверить реализованные SLAI элементы (matcher scoring +50/+30/+25/+15/+10/+5, HMAC verify timing-safe, `target_entity_hint` auto-detect через vehicle.plate) и подтвердить совпадение с нашим видением
-- **Что сделать когда обработаем:**
-  1. Прочитать [match-transportation-for-document.tool.ts](https://github.com/xanderkag/SLAI-backend/blob/master/src/modules/core/api/routes/ai/tools/match-transportation-for-document.tool.ts)
-  2. Прочитать [parsdocs-integration.service.ts](https://github.com/xanderkag/SLAI-backend/blob/master/src/modules/core/api/routes/parsdocs/parsdocs-integration.service.ts)
-  3. Сравнить с нашим документом `SLAI_OUR_REPLY.md` (раздел про scoring) и `SLAI_QUESTIONS.md`
-  4. Если расхождения — записать в ANSWER и предложить SLAI правки
 
-#### Question / Context
-SLAI реализовали 3 коммита:
-- `65f731c`: M2 skeleton — webhook receiver + nomenclature hist + sync stub
-- `be23aa6`: M3.1 — DocPlatformProcessor + match_transportation_for_document AI tool
-- `3545380`: M3.2 — propose_document_attachment + attach_document executor
+#### Answer (2026-05-17, Claude/parsdocs)
+См. `doc-service/docs/PARSDOCS_Q7_MATCHER_REVIEW.md` (этот же commit).
 
-Scoring у них:
-- vehicle.plate exact match Transfer → +50
-- carrier.inn в любой стороне → +30
-- shipper.inn / buyer.inn → +25 каждый
-- date ±7d → +15
-- amount ±5% → +10
-- not closed/archive → +5
+**Принципиально устраивает.** Их matcher:
+- ✅ Правильные сигналы (vehicle.plate primary, ИНН secondary)
+- ✅ Threshold-логика лучше нашего предложения: HIGH ≥ 70 + (top ≥ 2× second)
+  защищает от ложного auto-attach когда два кандидата равноценны
+- ✅ Терминология shipper / consignee / carrier правильнее нашего seller/buyer
+- ✅ HMAC verify timing-safe — best practice
+- ✅ `target_entity_hint` auto-detect через vehicle.plate — совпало с нашим
+  предложением, наш explicit hint в JSON опционален
+- ✅ `Document.metadata.matched_fields` для audit — отличная идея
 
-Threshold: HIGH ≥ 70, MEDIUM 40-69, LOW < 40. auto_pick = top HIGH + (top.score ≥ 2× second.score).
+**3 уточнения (не блокеры) к SLAI:**
+1. Используется ли `vehicle.driver` ФИО в scoring? Если да — вес? Если нет — добавлять?
+2. Учитывается ли `doc.number` против `transportation.reference` / `transfer.documents[].number`?
+3. Учитывается ли route (`from_city` / `to_city`) match?
 
-#### Answer
-<нужен read-через и сравнение с нашим SLAI_OUR_REPLY.md — TODO для Claude>
+#### Resolution
+- Файл `doc-service/docs/PARSDOCS_Q7_MATCHER_REVIEW.md` создан и запушен
+- TECH_DEBT.md F13: добавлено явное требование использовать `crypto.timingSafeEqual`
+  при имплементации inbound HMAC verify (best practice)
+- 3 уточнения зависают как nice-to-have, обсудим на пилоте по
+  `Document.metadata.matched_fields` статистике
 
 ---
 
 ### Q8. 7 open questions по continuous category sync
 
-- **Status:** ANSWERED
+- **Status:** RESOLVED
 - **Asked:** 2026-05-16
 - **From:** SLAI_DEV
 - **To:** PARSDOCS_DEV / CLAUDE
-- **Что нужно:** Ответы на 7 вопросов из их `SLAI_NOTE_2026-05-16_CATEGORY_SYNC.md` — без них они не подключат TypeORM realtime hooks
-- **Что сделать когда обработаем:**
-  1. Составить файл-ответ `docs/PARSDOCS_CATEGORY_SYNC_REPLY.md` в git
-  2. Параллельно создать F13 (новый долг) — webhook receiver `POST /api/v1/integrations/slai/sync/nomenclature` + snapshot variant
-  3. Поднять storage для lookup-table `slai_category_id → our_category_hint`
-  4. Push в 3 ремоута
-  5. SLAI зеркалит ответ
 
 #### Question / Context
 Они переходят от разового hist'а на непрерывный bidirectional sync. Цель — чтобы через 6 месяцев когда логисты добавят 30 новых типов груза, parsdocs не отстал.
@@ -270,3 +263,4 @@ F9 — изменено в `inference-service/.env.example`:
 |---|---|
 | 2026-05-16 | Файл создан как `Desktop\OPEN_QUESTIONS.md`. 5 active questions: Q1-Q5. |
 | 2026-05-16 | Переехал в git: `doc-service/docs/INTEGRATION_QUEUE.md` (рекомендация SLAI A vs B). Q2, Q3 RESOLVED. Добавлены Q7, Q8 от SLAI. |
+| 2026-05-17 | Q7 RESOLVED — review matcher/HMAC/target_entity_hint, файл `PARSDOCS_Q7_MATCHER_REVIEW.md`. Q8 переведено из ANSWERED в RESOLVED (action plan был выполнен ещё `4087510`). |

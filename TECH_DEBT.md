@@ -1183,29 +1183,64 @@ Worker проверяет `Date.now() - job.timestamp > JOB_MAX_AGE_SECONDS * 10
 
 ---
 
-### F4. PII redaction (`?redact_pii=true`)
+### ~~F4. PII redaction (`?redact_pii=true`)~~ — ✅ закрыто 2026-05-16
 
-**Где:** new helper `src/pipeline/redact-pii.ts`.
+**Где:** `src/pipeline/normalize/pii-redact.ts` + интеграция в orchestrator
+(перед deliverWebhook) + flag в `routes/jobs.ts` (query `?redact_pii=true`
+или multipart `redact_pii=true`).
 
-**Симптом:** SLAI просит pre-redact ФИО водителей, паспорта,
-вод.удостоверения перед использованием для обучения моделей и тестов.
+**Что сделано:**
+- Field-path redaction для: vehicle.driver, driver_phone, driver_passport,
+  driver_license, seller/buyer/shipper/consignee/carrier.contact_person,
+  signatory
+- Regex для свободного текста (консервативный — требует контекст-слова):
+  паспорт ("паспорт … 4501 №123456"), вод. удостоверение, телефон (+7/8),
+  email
+- **НЕ редактим**: ИНН/КПП/ОГРН (по 14-ФЗ публичная), госномера, названия
+  компаний, юр.адреса. `_normalized_fields` тоже сохраняется (только ИНН
+  и plate — не PII)
+- Идемпотентно, в `_redacted_fields` пишется audit-список
+- БД хранит оригинал, редактим только webhook payload (оператор всегда
+  может посмотреть исходник, redeliver если надо)
+- 13 unit-тестов
 
-**Что редактируем:**
-- `vehicle.driver` (ФИО)
-- `vehicle.driver_phone`
-- `seller.contact_person` / `buyer.contact_person`
-- Паспортные данные если найдены в свободном тексте
-- Серии/номера водительских прав
+См. коммит `e8f3f6f`.
 
-**НЕ редактируем:**
-- ИНН юрлиц и ИП (по 14-ФЗ публичная информация)
-- Названия компаний и адреса юрлиц
-- Госномера ТС (идентификатор объекта, не персона)
+---
 
-**Контракт:** `POST /api/v1/jobs?redact_pii=true` → в response поля
-заменены на `[REDACTED]`.
+### ~~F8. Prompt caching в ClaudeBackend~~ — ✅ закрыто 2026-05-16
 
-**Срок:** 3-5 дней. Закрываем до получения 30-50 anonymized PDF от SLAI.
+**Где:** `inference-service/src/inference_service/prompts/extract.py` —
+новая функция `build_cacheable()` возвращает (system, user) tuple.
+`backends/claude.py::_complete_with_usage()` подаёт system с
+`cache_control: {"type": "ephemeral"}`.
+
+**Эффект:** Anthropic кэширует static часть промпта (instructions + schema
++ контракт) на 5 минут. На bulk-обработке cache hit = ~10% обычной цены
+input tokens. Экономия 70-85% на типовых документах.
+
+`usage` возвращает `cache_creation_input_tokens` и `cache_read_input_tokens`
+для измерения hit-rate в `/metrics`.
+
+См. коммит `e8f3f6f`.
+
+---
+
+### ~~F9. Sonnet 4.7 как production default~~ — ✅ закрыто 2026-05-16
+
+**Где:** `inference-service/.env.example`:
+`ANTHROPIC_MODEL_ID=claude-sonnet-4-7-20260301` (было `claude-opus-4-7-20260301`).
+
+**Эффект:** Sonnet 4.7 в ~5× дешевле Opus ($3/$15 vs $15/$75 за 1M
+tokens), сохраняет качество для structured extract. Через
+provider_settings UI оператор может переключить на Opus для конкретных
+типов документов (CP1 готов).
+
+**Итого экономия для пилота SLAI (50 doc/day × 30):**
+- Opus без caching: $225/мес
+- Sonnet с caching (F8+F9): $45/мес — **в 5× дешевле**
+
+См. коммит `e8f3f6f`.
 
 ---
 
@@ -1272,7 +1307,10 @@ bidirectional sync — TypeORM lifecycle hooks → debounced webhook к нам.
 
 **Что делаем:**
 1. `POST /api/v1/integrations/slai/sync/nomenclature` — events receiver
-   с HMAC verify (`SLAI_TO_PARSDOCS_HMAC_SECRET`), header `X-SLAI-Version: v1`
+   с HMAC verify (`SLAI_TO_PARSDOCS_HMAC_SECRET`), header `X-SLAI-Version: v1`.
+   ⚠️ **Обязательно использовать `crypto.timingSafeEqual`** для сравнения
+   сигнатур (защита от timing attack). SLAI у себя так и сделали — берём
+   с них пример. Не использовать `===` или `Buffer.compare`
 2. `POST /api/v1/integrations/slai/sync/nomenclature/snapshot` — daily
    full reconcile
 3. Миграция `slai_category_map` (id, name, our_hint, active, updated_at)
