@@ -150,13 +150,29 @@ export function useReprocessJob() {
   });
 }
 
+/**
+ * Перезаписывает extracted целиком (PATCH /jobs/:id/extracted).
+ *
+ * Тело запроса — сам extracted объект (не { extracted: ... }), как
+ * указано в `ExtractedPatchBody = z.record(z.unknown())` на backend'е.
+ * Сервер пере-валидирует payload через document_type правила и
+ * вернёт обновлённый Job (статус становится 'done' если был
+ * 'needs_review').
+ */
 export function useUpdateExtracted() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ jobId, extracted }: { jobId: string; extracted: Record<string, unknown> }) =>
-      api.patch<Job>(`/api/v1/jobs/${jobId}/extracted`, { extracted }),
+    mutationFn: ({
+      jobId,
+      extracted,
+    }: {
+      jobId: string;
+      extracted: Record<string, unknown>;
+    }) => api.patch<Job>(`/api/v1/jobs/${jobId}/extracted`, extracted),
     onSuccess: (data, { jobId }) => {
       qc.setQueryData(jobsKeys.detail(jobId), data);
+      // Invalidate список — там status мог поменяться
+      qc.invalidateQueries({ queryKey: jobsKeys.all });
     },
   });
 }

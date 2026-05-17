@@ -1,5 +1,6 @@
 import { Link, NavLink, useLocation } from 'react-router-dom';
 import { clearToken } from '@/lib/auth';
+import { useJobsList } from '@/queries/jobs';
 
 /**
  * Top-level layout v2: sticky header с навигацией между основными
@@ -32,6 +33,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               Dashboard
             </NavItem>
             <NavItem to="/jobs">Документы</NavItem>
+            <NavItem to="/review">
+              <ReviewNavLabel />
+            </NavItem>
             <NavItem to="/upload">Загрузить</NavItem>
           </nav>
         </div>
@@ -60,6 +64,27 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       </header>
       <main className="flex-1 overflow-auto bg-slate-50">{children}</main>
     </div>
+  );
+}
+
+/**
+ * Label для "На проверке" nav item с live-счётчиком количества
+ * needs_review job'ов. Подтягивается через тот же useJobsList что
+ * на самой странице — TanStack Query auto-dedupe + cache, поэтому
+ * лишних запросов не делает.
+ */
+function ReviewNavLabel() {
+  const { data } = useJobsList({ status: 'needs_review', limit: 100 });
+  const count = data?.items.length ?? 0;
+  return (
+    <span className="flex items-center gap-1.5">
+      На проверке
+      {count > 0 && (
+        <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800">
+          {count}
+        </span>
+      )}
+    </span>
   );
 }
 

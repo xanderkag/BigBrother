@@ -1,9 +1,10 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useJob, useJobFile, useApproveJob, useReprocessJob } from '@/queries/jobs';
 import PdfViewer from '@/components/PdfViewer';
 import ExtractedDataPanel from '@/components/ExtractedDataPanel';
 import ValidationBanner from '@/components/ValidationBanner';
+import ExtractedEditor from '@/components/ExtractedEditor';
 import {
   formatFileSize,
   formatPercent,
@@ -33,6 +34,7 @@ export default function JobDetailPage() {
   const { data: fileUrl } = useJobFile(jobId);
   const approve = useApproveJob();
   const reprocess = useReprocessJob();
+  const [editorOpen, setEditorOpen] = useState(false);
 
   // Cleanup blob URL — react-pdf держит ссылку, поэтому освобождаем
   // только при unmount страницы (не при ре-фетче).
@@ -115,6 +117,14 @@ export default function JobDetailPage() {
             >
               {reprocess.isPending ? 'Перепрогон…' : 'Перепрогнать'}
             </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => setEditorOpen(true)}
+              title="Редактировать extracted JSON"
+            >
+              ✎ Edit
+            </button>
             <a
               href={`/ui/#jobs/${job.id}`}
               className="btn-ghost"
@@ -154,6 +164,14 @@ export default function JobDetailPage() {
           )}
         </div>
       </div>
+
+      {editorOpen && (
+        <ExtractedEditor
+          jobId={job.id}
+          initial={job.extracted}
+          onClose={() => setEditorOpen(false)}
+        />
+      )}
     </div>
   );
 }

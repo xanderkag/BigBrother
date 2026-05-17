@@ -5,6 +5,7 @@ import DashboardPage from '@/pages/Dashboard';
 import JobsListPage from '@/pages/JobsList';
 import JobDetailPage from '@/pages/JobDetail';
 import UploadPage from '@/pages/Upload';
+import ReviewQueuePage from '@/pages/ReviewQueue';
 import Layout from '@/components/Layout';
 
 /**
@@ -37,6 +38,7 @@ export default function App() {
                 <Route path="jobs" element={<JobsListPage />} />
                 <Route path="jobs/:jobId" element={<JobDetailPage />} />
                 <Route path="upload" element={<UploadPage />} />
+                <Route path="review" element={<ReviewQueuePage />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
             </Layout>
