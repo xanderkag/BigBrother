@@ -48,6 +48,50 @@
 
 ## Active Questions
 
+### Q9. ТЗ от SLAI v1.0 — 18 типов документов, 8 open questions, golden dataset
+
+- **Status:** ANSWERED (наш ответ создан, ждём golden dataset)
+- **Asked:** 2026-05-17
+- **From:** SLAI_DEV
+- **To:** PARSDOCS_DEV / USER
+
+#### Answer (2026-05-17, SLAI_DEV)
+Прислано полное ТЗ — `doc-service/docs/SLAI_TZ_v1_2026-05-17.md`. 12 секций:
+- 10 типов документов в Фазе 1 + 8 ВЭД в Фазе 2 (3 месяца работы)
+- Контракт JSON v1 + per-field confidence + normalized fields
+- Acceptance критерии: критичные поля ≥ 95%, остальные ≥ 80%
+- SLA: ≤ 90 сек/doc MVP, ≤ 30 сек прод
+- Golden dataset `~/Desktop/SLAI/test-docs/` — 15 PDF + 15 .gt.json
+- 8 встречных open questions к нам
+
+#### Resolution (2026-05-17, parsdocs)
+Файл-ответ: `doc-service/docs/PARSDOCS_REPLY_TO_SLAI_TZ.md`.
+
+**Ответы на 8 questions:**
+1. Multi-document PDF — F5 в roadmap (14 дней), workaround делить на SLAI
+2. Versioning — add=compat, rename/del=v2, 1 мес preview, 6 мес legacy
+3. Retry — есть `POST /jobs/:id/reprocess` для пересчёта + новый F20 для one-shot prompt
+4. OCR-only — `document_hint: "raw_ocr"` + F21 `GET /:id/raw-text`
+5. Языки — rus+eng сейчас, F23 китайский (1 час) для AliExpress
+6. Rate limit — 200 req/min default, для SLAI 600 (10× запас)
+7. Длительные — webhook прилетит когда готов, polling через `GET /jobs/:id` опционально
+8. Storage — 30 дней default, `redact_pii` не удаляет файл, можем F27 для delete-after
+
+**Gap по типам:** 3 новых типа нужно создать
+- F16: `transport_request` (заявка на перевозку)
+- F17: `transport_invoice` (новая ТН 2013)
+- F18: `waybill` (путевой лист)
+
+**Gap по полям:**
+- F19: bank/bik/account в invoice schema (1 день)
+
+**Sync slug'ов** — F22 case-insensitive lookup (1 час).
+
+**Блокер:** ждём golden dataset (15 PDF) — без него не запустим baseline.
+Запросили scp / Yandex.Disk / положить в репо. См. секцию 5 в PARSDOCS_REPLY_TO_SLAI_TZ.md.
+
+
+
 ### Q1. ANTHROPIC_API_KEY для F11 baseline bench
 
 - **Status:** RESOLVED (2026-05-17)
@@ -294,3 +338,5 @@ F9 — изменено в `inference-service/.env.example`:
 | 2026-05-16 | Переехал в git: `doc-service/docs/INTEGRATION_QUEUE.md` (рекомендация SLAI A vs B). Q2, Q3 RESOLVED. Добавлены Q7, Q8 от SLAI. |
 | 2026-05-17 | Q7 RESOLVED — review matcher/HMAC/target_entity_hint, файл `PARSDOCS_Q7_MATCHER_REVIEW.md`. Q8 переведено из ANSWERED в RESOLVED (action plan был выполнен ещё `4087510`). |
 | 2026-05-17 | Q1 RESOLVED — прогон Claude Sonnet 4.6 на синт. PDF: $0.0165/doc, F1 70%, 4× быстрее локальных. Найдены F14 (prefilled `{`) и F15 (cache boost). Model_id в `.env.example` исправлен с фейкового `claude-sonnet-4-7-20260301` на реальный `claude-sonnet-4-6`. |
+| 2026-05-17 | F14 + F15 закрыты: prompt-based JSON enforcement + расширенный SYSTEM_PROMPT с 13 типов + few-shot. Bench #22: 10/10 valid JSON, cache 62-83%, items_F1 80%, type/number/date 100%. Claude сравнялся с Gemma 27B при 5× скорости. |
+| 2026-05-17 | Q9 ANSWERED — получено ТЗ SLAI v1.0 (18 типов в 3 фазы, 8 open questions). Наш ответ в `PARSDOCS_REPLY_TO_SLAI_TZ.md`. Заведены 12 новых долгов F16-F27. Блокер: ждём golden dataset (15 PDF). |

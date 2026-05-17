@@ -1343,6 +1343,33 @@ cache сильнее проявится — точная цифра по prod и
 
 ---
 
+### Долги из SLAI ТЗ v1.0 (2026-05-17) — F16-F27
+
+См. `doc-service/docs/SLAI_TZ_v1_2026-05-17.md` (ТЗ от SLAI) и
+`doc-service/docs/PARSDOCS_REPLY_TO_SLAI_TZ.md` (наш ответ).
+
+| # | Долг | Срок | Приоритет |
+|---|---|---|---|
+| **F16** | Новый тип `transport_request` (заявка на перевозку) | 3-5 дней | high |
+| **F17** | Новый тип `transport_invoice` (ТН формы 2013) | 2-3 дня | medium |
+| **F18** | Новый тип `waybill` (путевой лист) | 2 дня | medium |
+| **F19** | Bank-реквизиты (bank/bik/account/corr_account) в invoice schema | 1 день | high |
+| **F20** | One-shot `metadata.prompt_override` для reprocess (опционально) | 2 дня | low — ждём явный запрос SLAI |
+| **F21** | `GET /jobs/:id/raw-text` endpoint | 0.5 дня | medium |
+| **F22** | Case-insensitive document_type lookup (синк slug'ов между SLAI/нашими) | 1 час | low |
+| **F23** | Tesseract китайский упрощённый (Aliexpress) | 1 час | low — Фаза 2 ВЭД |
+| **F24** | Tesseract турецкий | 1 час | low — Фаза 2 |
+| **F25** | Tesseract польский | 1 час | low — Фаза 2 |
+| **F26** | API-param `metadata.tesseract_langs` (опционально) | 2 часа | low |
+| **F27** | `metadata.delete_after_processing` flag | 1 день | low — ждём запрос SLAI |
+
+**Блокер старта:** golden dataset из `~/Desktop/SLAI/test-docs/` —
+15 PDF + 15 .gt.json для invoice / request / ttn. Запросили у SLAI scp /
+Yandex.Disk / в репо. Без него не запустим baseline и не сможем тюнить
+prompt'ы под их форматы.
+
+---
+
 ### F13. Webhook receiver для SLAI continuous category sync — open
 
 **Где:** новый `src/routes/integrations/slai-sync.ts` + storage layer.
