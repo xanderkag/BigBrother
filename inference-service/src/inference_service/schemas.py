@@ -65,6 +65,12 @@ class ExtractDebug(BaseModel):
 class ExtractResponse(BaseModel):
     extracted: dict[str, Any]
     confidence: float = Field(ge=0.0, le=1.0)
+    # F2 (2026-05-17): per-field confidence. Ключи — field path
+    # ("seller.inn", "total_with_vat"). Значения — float 0..1.
+    # Заполняется LLM в `_RESPONSE_CONTRACT`. doc-service пропускает
+    # это поле в webhook payload через `extracted._field_confidence`
+    # (мы кладём туда же), чтобы SLAI matcher мог делать weighted scoring.
+    field_confidence: dict[str, float] = Field(default_factory=dict)
     issues: list[str] = Field(default_factory=list)
     debug: ExtractDebug | None = None
 

@@ -202,6 +202,21 @@ class OpenAICompatibleBackend(ModelBackend):
         extracted = data.get("extracted") if isinstance(data.get("extracted"), dict) else {}
         confidence = float(data.get("confidence", 0.0) or 0.0)
         issues = data.get("issues") if isinstance(data.get("issues"), list) else []
+        # F2: per-field confidence (см. claude.py для подробностей).
+        raw_fc = data.get("field_confidence")
+        field_confidence: dict[str, float] = {}
+        if isinstance(raw_fc, dict):
+            for k, v in raw_fc.items():
+                if not isinstance(k, str):
+                    continue
+                try:
+                    f = float(v)
+                except (TypeError, ValueError):
+                    continue
+                if 0.0 <= f <= 1.0:
+                    field_confidence[k] = f
+        if field_confidence and isinstance(extracted, dict):
+            extracted["_field_confidence"] = field_confidence
         debug = (
             ExtractDebug(
                 prompt=prompt,
@@ -218,6 +233,7 @@ class OpenAICompatibleBackend(ModelBackend):
         return ExtractResponse(
             extracted=extracted or {},
             confidence=_clamp01(confidence),
+            field_confidence=field_confidence,
             issues=[str(i) for i in issues],
             debug=debug,
         )

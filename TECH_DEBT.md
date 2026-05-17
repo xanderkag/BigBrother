@@ -1134,7 +1134,51 @@ Worker проверяет `Date.now() - job.timestamp > JOB_MAX_AGE_SECONDS * 10
 
 ---
 
-### F2. Confidence per-field — обещали SLAI через 7 дней
+### ~~F2. Confidence per-field~~ — ✅ закрыто 2026-05-17
+
+**Что сделано:**
+
+1. **Prompt update** (`inference-service/src/inference_service/prompts/extract.py`):
+   - `_RESPONSE_CONTRACT` теперь обязательно требует поле `field_confidence: {<path>: 0..1}`
+   - Минимальный набор: number, date, seller.inn, buyer.inn, total_with_vat
+   - Интерпретация значений объяснена (0.95-1: четко, 0.7-0.94: мелкая неопределённость, …)
+
+2. **Schema** (`inference-service/.../schemas.py`):
+   - `ExtractResponse.field_confidence: dict[str, float]` — новое поле
+
+3. **Backends** (claude.py + openai_compatible.py):
+   - Парсят `field_confidence` из LLM-ответа
+   - Валидируют (числа 0..1, ключи string)
+   - Кладут в `extracted._field_confidence` (convention для meta-полей)
+   - Возвращают в ExtractResponse
+
+4. **Doc-service post-processing** (`pipeline/normalize/field-confidence.ts`):
+   - Извлекает `_field_confidence` из extracted, поднимает на top-level
+     webhook payload (поле `_field_confidence`)
+   - **Калибровка по checksum ИНН**: если checksum невалидный → ×0.5
+     (LLM могла «угадать»). Валидный ИНН → минимум 0.95
+   - **Калибровка по plate**: успешно нормализованный (`normalizePlate`
+     вернул значение) → 0.9 минимум; не нормализуемый → cap 0.4
+   - **Дефолты для критичных полей** (number, date, seller/buyer.inn,
+     total_with_vat): если LLM не указала — ставим 0.7 при наличии
+     значения
+
+5. **Webhook payload** (`webhooks/deliver.ts`):
+   - `WebhookPayload._field_confidence?: Record<string, number>` — новое
+     top-level поле, кладётся в JSON body
+
+6. **Тесты** — 18 unit-тестов в
+   `tests/normalize-field-confidence.spec.ts`:
+   pull-up, валидация значений, дефолты, калибровка checksum/plate,
+   идемпотентность.
+
+**Соответствие требованию SLAI (раздел 4.2 ТЗ):**
+- ✅ Confidence на каждом ключевом поле
+- ✅ Минимум на критичных полях (number, date, seller.inn, buyer.inn, total_with_vat)
+- ✅ Используется для UI «жёлтых» полей и weighted scoring matcher'а
+- ✅ Калибровка снижает риск ложного матча по выдуманному ИНН
+
+См. коммит c этим closing entry.
 
 **Где:** orchestrator + extract-prompt.
 

@@ -15,6 +15,11 @@ export type WebhookPayload = {
   extracted: Record<string, unknown> | null;
   metadata: Record<string, unknown> | null;
   error: string | null;
+  // F2 (2026-05-17): per-field confidence map (поле_path → 0..1).
+  // SLAI matcher использует для weighted scoring. Заполняется
+  // через processFieldConfidence() в orchestrator. См.
+  // pipeline/normalize/field-confidence.ts.
+  _field_confidence?: Record<string, number>;
 };
 
 /**

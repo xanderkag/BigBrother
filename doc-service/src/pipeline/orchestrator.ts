@@ -26,6 +26,7 @@ import { normalizeExtractedFields } from './normalize/extracted-fields.js';
 import { recomputeTotalsFromItems } from './normalize/totals.js';
 import { applyCategoryHints } from './normalize/categories.js';
 import { redactPii } from './normalize/pii-redact.js';
+import { processFieldConfidence } from './normalize/field-confidence.js';
 import { documentTypeResolver, type ResolvedTypeConfig } from './document-type-resolver.js';
 import { jobsDurationSeconds, jobsTotal, ocrEngineDurationSeconds } from '../metrics.js';
 import { runResolutionPipeline } from '../resolution/pipeline.js';
@@ -351,6 +352,15 @@ async function processJobInner(
     }
 
     if (updated && updated.webhook_url) {
+      // F2: per-field confidence — извлекаем `_field_confidence` из extracted
+      // в top-level webhook payload. Калибруем по checksum ИНН и нормализации
+      // госномера. См. pipeline/normalize/field-confidence.ts.
+      const fcResult = processFieldConfidence(
+        updated.extracted as Record<string, unknown> | null,
+      );
+      const extractedAfterFc = fcResult.cleanedExtracted;
+      const fieldConfidence = fcResult.fieldConfidence;
+
       // F4: PII redaction перед отправкой webhook'а. Управляется флагом
       // `metadata.redact_pii: true` который клиент ставит при создании job'а
       // (через query-param `?redact_pii=true` или поле в metadata).
@@ -360,8 +370,8 @@ async function processJobInner(
       const meta = (updated.metadata ?? null) as Record<string, unknown> | null;
       const shouldRedact = meta && (meta.redact_pii === true || meta.redact_pii === 'true');
       const extractedOut = shouldRedact
-        ? redactPii(updated.extracted as Record<string, unknown> | null)
-        : updated.extracted;
+        ? redactPii(extractedAfterFc)
+        : extractedAfterFc;
       const metadataOut = shouldRedact
         ? redactPii(meta)
         : meta;
@@ -378,6 +388,7 @@ async function processJobInner(
           extracted: extractedOut,
           metadata: metadataOut,
           error: updated.error,
+          _field_confidence: Object.keys(fieldConfidence).length > 0 ? fieldConfidence : undefined,
         },
         log,
       );

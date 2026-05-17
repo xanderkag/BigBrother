@@ -120,6 +120,24 @@ class ClaudeBackend(ModelBackend):
         extracted = data.get("extracted") if isinstance(data.get("extracted"), dict) else {}
         confidence = float(data.get("confidence", 0.0) or 0.0)
         issues = data.get("issues") if isinstance(data.get("issues"), list) else []
+        # F2: per-field confidence. LLM возвращает map поле→[0,1]. Валидируем
+        # значения и кладём в `extracted._field_confidence` (с подчёркиванием —
+        # convention для meta-полей, чтобы doc-service не пытался валидировать
+        # это поле как часть бизнес-данных).
+        raw_fc = data.get("field_confidence")
+        field_confidence: dict[str, float] = {}
+        if isinstance(raw_fc, dict):
+            for k, v in raw_fc.items():
+                if not isinstance(k, str):
+                    continue
+                try:
+                    f = float(v)
+                except (TypeError, ValueError):
+                    continue
+                if 0.0 <= f <= 1.0:
+                    field_confidence[k] = f
+        if field_confidence and isinstance(extracted, dict):
+            extracted["_field_confidence"] = field_confidence
         debug = (
             ExtractDebug(
                 prompt=f"[system]\n{system_prompt}\n\n[user]\n{user_prompt}",
@@ -136,6 +154,7 @@ class ClaudeBackend(ModelBackend):
         return ExtractResponse(
             extracted=extracted or {},
             confidence=_clamp01(confidence),
+            field_confidence=field_confidence,
             issues=[str(i) for i in issues],
             debug=debug,
         )
