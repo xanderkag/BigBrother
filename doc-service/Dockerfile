@@ -40,7 +40,7 @@ RUN npm ci || npm install
 # Три задачи:
 #   1. TS → dist/ (backend код)
 #   2. Tailwind input.css → web/vendor/tailwind.css (legacy UI)
-#   3. Vite build → ui/dist/ (новый React UI v2 — раздаётся на /v2/*)
+#   3. Vite build → ui/dist/ (главный React UI — раздаётся на /ui/*)
 # cdn.tailwindcss.com заблокирован в корп.сети, поэтому self-hosted билд CSS.
 FROM deps AS build
 COPY tsconfig.json ./
@@ -73,8 +73,9 @@ COPY migrations ./migrations
 # Берём из build-stage чтобы захватить свежий vendor/tailwind.css.
 COPY --from=build /app/web ./web
 
-# Operator UI v2 (React) — собранный bundle (index.html + assets/*).
-# Маунтится backend'ом на /v2/* (см. server.ts).
+# Operator UI (React) — собранный bundle (index.html + assets/*).
+# Маунтится backend'ом на /ui/* как главный UI (см. server.ts).
+# Старый vanilla web/ остаётся на /ui-legacy/* как страховка.
 COPY --from=build /app/ui/dist ./ui/dist
 
 # Storage volume mount point — must match STORAGE_DIR in .env.

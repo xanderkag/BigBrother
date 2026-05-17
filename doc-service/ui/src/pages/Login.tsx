@@ -83,8 +83,8 @@ export default function LoginPage() {
           </form>
 
           <div className="text-center text-xs text-slate-500">
-            <a href="/ui/" className="hover:underline">
-              Открыть старый UI →
+            <a href="/ui-legacy/" className="hover:underline">
+              Старая версия (legacy) →
             </a>
           </div>
         </div>

@@ -1,6 +1,6 @@
 /**
  * Тонкий API-клиент над fetch. Добавляет Bearer-токен из localStorage,
- * парсит JSON, на 401 — чистит токен и редиректит на /v2/login.
+ * парсит JSON, на 401 — чистит токен и редиректит на /ui/login.
  *
  * Не используем axios — fetch более чем достаточно, экономим bundle size.
  *
@@ -32,8 +32,8 @@ async function request<T>(
   if (res.status === 401) {
     clearToken();
     // soft redirect — пользователь увидит login screen
-    if (location.pathname !== '/v2/login') {
-      location.href = '/v2/login';
+    if (location.pathname !== '/ui/login') {
+      location.href = '/ui/login';
     }
     throw new ApiError(401, null, 'unauthorized');
   }

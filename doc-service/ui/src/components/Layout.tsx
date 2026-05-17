@@ -48,11 +48,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </div>
         <div className="flex items-center gap-2 text-sm">
           <a
-            href="/ui/"
+            href="/ui-legacy/"
             className="rounded-lg px-3 py-1.5 text-slate-600 hover:bg-slate-100"
-            title="Старый UI (полный набор экранов)"
+            title="Старая версия UI (страховка на случай rollback'а)"
           >
-            Старый UI →
+            Legacy →
           </a>
           <span className="hidden font-mono text-xs text-slate-400 lg:inline">
             {location.pathname}
@@ -62,7 +62,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             className="btn-ghost"
             onClick={() => {
               clearToken();
-              window.location.href = '/v2/login';
+              window.location.href = '/ui/login';
             }}
           >
             Выйти

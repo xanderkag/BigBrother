@@ -1,6 +1,6 @@
-# parsedocs UI v2 (React)
+# parsedocs UI (React)
 
-Новый operator UI на Vite + React + Tailwind. Маунтится backend'ом на `/v2/*`. Старый vanilla-JS UI продолжает работать на `/ui/*` пока v2 догоняет по фичам.
+Главный operator UI на Vite + React + Tailwind. Маунтится backend'ом на `/ui/*`. Старая vanilla-JS версия осталась на `/ui-legacy/*` как страховка для rollback'а (удалим через 1-2 месяца уверенной эксплуатации).
 
 ## Запуск (dev)
 
@@ -24,7 +24,7 @@ VITE_BACKEND_URL=http://10.10.13.10:8085 npm run dev
 npm run build
 ```
 
-Складывается в `ui/dist/`. Backend (`doc-service/src/server.ts`) автоматически подхватывает эту папку при старте и маунтит на `/v2/*`. Если папки нет — endpoint `/v2/*` не регистрируется, /v2 просто 404.
+Складывается в `ui/dist/`. Backend (`doc-service/src/server.ts`) автоматически подхватывает эту папку при старте и маунтит на `/ui/*`. Если папки нет — endpoint `/ui/*` не регистрируется (на проде это значит UI вообще не работает; в dev'е используем `npm run dev`).
 
 В Docker сборка происходит автоматически в build-stage Dockerfile'а.
 
@@ -52,14 +52,14 @@ ui/
 │       ├── Login.tsx
 │       └── JobDetail.tsx
 ├── package.json
-├── vite.config.ts            # base: '/v2/', proxy /api → backend
+├── vite.config.ts            # base: '/ui/', proxy /api → backend
 └── tailwind.config.js
 ```
 
 ## Что уже есть в v2
 
 - [x] Login (API token из `parsdocs.token` совмещён со старым UI)
-- [x] Job Detail (`/v2/jobs/:id`) — PDF слева, extracted data справа, actions сверху
+- [x] Job Detail (`/ui/jobs/:id`) — PDF слева, extracted data справа, actions сверху
 - [x] PDF viewer на react-pdf (canvas, без браузерного chrome)
 - [x] ExtractedDataPanel: Form/JSON режим, секции Реквизиты/Продавец/Покупатель/Items/Flags
 - [x] Validation banner sticky
@@ -69,13 +69,13 @@ ui/
 
 ## Что мигрировать дальше
 
-- [ ] Jobs list (`/v2/jobs`) — таблица с фильтром по status/document_type
-- [ ] Upload (`/v2/upload`) — drag-drop, bulk
+- [ ] Jobs list (`/ui/jobs`) — таблица с фильтром по status/document_type
+- [ ] Upload (`/ui/upload`) — drag-drop, bulk
 - [ ] Dashboard (`/v2`) — операционные метрики
-- [ ] Review queue (`/v2/review`) — needs_review с быстрым approve
+- [ ] Review queue (`/ui/review`) — needs_review с быстрым approve
 - [ ] Document types CRUD
 - [ ] Provider settings CRUD
 - [ ] Audit log viewer
 - [ ] Edit extracted data (inline JSON editor)
 
-После феат-парити со старым UI: поменять backend prefix `/v2/` → `/ui/` и старый UI отправить в `/ui-legacy/` на 1-2 месяца, потом удалить `web/`.
+После феат-парити со старым UI: поменять backend prefix `/ui/` → `/ui/` и старый UI отправить в `/ui-legacy/` на 1-2 месяца, потом удалить `web/`.

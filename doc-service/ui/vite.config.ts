@@ -6,9 +6,9 @@ import { fileURLToPath, URL } from 'node:url';
  * Vite config для doc-service UI v2 (React).
  *
  * Особенности:
- *   - `base: '/v2/'` — приложение сервится Fastify бэкендом на /v2/* через
+ *   - `base: '/ui/'` — приложение сервится Fastify бэкендом на /ui/* через
  *     fastify-static (см. server.ts регистрацию). React Router тоже
- *     использует basename='/v2' для согласованности.
+ *     использует basename='/ui' для согласованности.
  *
  *   - dev-сервер проксирует /api/v1/* и /healthz на backend (default :8085)
  *     чтобы можно было разрабатывать UI без сборки в backend dist.
@@ -17,7 +17,7 @@ import { fileURLToPath, URL } from 'node:url';
  *     указать `workerSrc` URL'ом. Решение: import.meta.url-based worker.
  */
 export default defineConfig({
-  base: '/v2/',
+  base: '/ui/',
   plugins: [react()],
   resolve: {
     alias: {

@@ -11,8 +11,8 @@
        vendor/tailwind.css из web/input.css (см. npm run build:css).
        Раньше использовался Play CDN, но cdn.tailwindcss.com блокируется
        в корпоративных сетях — переехали на self-host. -->
-  <link rel="stylesheet" href="/ui/vendor/tailwind.css">
-  <script defer src="/ui/vendor/alpine.min.js"></script>
+  <link rel="stylesheet" href="/ui-legacy/vendor/tailwind.css">
+  <script defer src="/ui-legacy/vendor/alpine.min.js"></script>
 
   <!--
     Шрифты: используем системный стек (Segoe UI / SF / Roboto на mobile).
@@ -152,6 +152,6 @@
     <main id="view" class="flex-1 overflow-y-auto"></main>
   </div>
 
-  <script type="module" src="/ui/app.js"></script>
+  <script type="module" src="/ui-legacy/app.js"></script>
 </body>
 </html>
