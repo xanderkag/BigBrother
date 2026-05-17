@@ -39,6 +39,7 @@
 | **19. GPU v2 text — YandexGPT-5 Lite** | RTX 4000 Ada 20 ГБ VRAM | **YandexGPT-5 Lite 8B (GGUF)** | **31 сек/файл (5.1 мин на 10)** | F1 items 80%, type/number/date 100% | 80% ИНН, **30% total** — самая компактная (5 GB), но арифметика хуже Phi-4 |
 | **20. GPU v2 text — T-Pro 32B** | RTX 4000 Ada 20 ГБ VRAM | **T-Pro 32B (T-Банк, GGUF)** | **116 сек/файл (19.4 мин на 10)** | F1 items 80%, type/number/date 100% | 80% ИНН, **60% total** — равен Phi-4 по точности, но в 3.5× медленнее |
 | **21. Cloud API — Claude Sonnet 4.6** ⭐ production target | Anthropic API через inference-service `BACKEND=claude` | **claude-sonnet-4-6** | **7.7 сек/файл (1.3 мин на 10)** ⚡ | F1 items 70%, type/number/date 90%, **ИНН 70%**, total **50%** | **9/10 valid JSON** (1 invoice failed — pre-filled `{` нужен). **$0.0165/doc → $25/мес** для 50 doc/day. Самая быстрая |
+| **22. Cloud Claude + F14 + F15** ⭐⭐ | Anthropic API | **claude-sonnet-4-6** | 13.4 сек/файл (2.2 мин на 10) | **F1 items 80%, type/number/date 100%, ИНН 80%, total 60%** | **10/10 valid JSON**, cache hit **62-83%** уже на первом цикле. $0.0200/doc → $30/мес. Сравнялся с Gemma 27B по точности при 5× скорости |
 
 ---
 
@@ -122,6 +123,71 @@ messages=[
   проверяем когда придут PDF от SLAI
 
 **Используем для пилота SLAI.** F14 + F15 — приоритет на этой неделе.
+
+---
+
+## Прогон #22 — после F14 + F15 (там же 2026-05-17, через 30 мин)
+
+| Метрика | До (#21) | **После F14+F15** | Delta |
+|---|---|---|---|
+| Valid JSON | 9/10 | **10/10** | +10 п.п. ✅ |
+| type_match | 90% | **100%** | +10 п.п. ✅ |
+| number_match | 90% | **100%** | +10 п.п. ✅ |
+| date_match | 90% | **100%** | +10 п.п. ✅ |
+| seller_inn_match | 70% | **80%** | +10 п.п. ✅ |
+| buyer_inn_match | 70% | **80%** | +10 п.п. ✅ |
+| **items_F1** | 70% | **80%** | +10 п.п. ✅ |
+| **total_match** | 50% | **60%** | +10 п.п. ✅ |
+| Cache hit | 0% | **62-83%** | ✅ first cycle |
+| Time / 10 | 1.3 мин | 2.2 мин | -69% (длинный prompt) |
+| Cost / 10 | $0.165 | $0.200 | +21% |
+
+**Что сработало:**
+
+- **F14 (prompt-only)** через `claude.py` + жёсткое требование «ответ должен начинаться `{`» в `_RESPONSE_CONTRACT`.
+  Assistant message prefill API Sonnet 4.6 НЕ поддерживает («This model does not support assistant message prefill»),
+  поэтому форсим формат через инструкцию. Парсер `_parse_json()` fallback'ом находит outermost `{...}` — двойная защита.
+- **F15** — расширил `_STATIC_BUILTIN_HEADER` с 1049 до **~1700 tokens**: добавил описание 13 типов документов
+  (что у каждого внутри, какие поля), детальные правила извлечения, **few-shot пример УПД** (input → output).
+  Это не только перешагнуло порог 1024 для cache, но и подтолкнуло качество за счёт примеров.
+
+**Cost paradox:** cost вырос несмотря на cache. Причина — длинный prompt дороже даже cached
+($0.30 per 1M cache read vs $3 normal — но cache > 5× длинней наш). На длинных сессиях
+(пилот работает часами) cache сильнее проявится. Точная цифра по prod: измерим через
+1 неделю реального трафика.
+
+**Per-file (8/8 нормальных документов с полным TNDSB∑):**
+
+```
+AKT-synth-01                       4/4   [TNDSB∑]   9.4s   cache=82%
+AKT-synth-02                       4/4   [TNDSB∑]   9.9s   cache=82%
+TTN-synth-01                       3/3   [TNDSB]    8.8s   cache=82%   ← TTN не имеет total в gt
+TTN-synth-02                       2/2   [TNDSB]    8.7s   cache=82%
+UPD-synth-01                      20/20  [TNDSB∑]  28.6s   cache=62%   ← multipage без MultiPass!
+UPD-synth-02                      15/15  [TNDSB∑]  20.0s   cache=67%
+invoice-synth-01                   5/5   [TNDSB∑]  13.4s   cache=79%   ← было BAD-JSON
+invoice-synth-02                  10/10  [TNDSB∑]  17.5s   cache=74%
+payment_order-synth-01             0/0   [TND]      8.1s   cache=83%
+payment_order-synth-02             0/0   [TND]      9.7s   cache=83%
+```
+
+**Сравнение с топ-локальными — Claude теперь на уровне:**
+
+| Метрика | Claude Sonnet 4.6 + F14+F15 | Gemma 27B | Phi-4 14B |
+|---|---|---|---|
+| Время / 10 | **2.2 мин** | 11.5 мин | 5.6 мин |
+| items_F1 | **80%** | 80% | 80% |
+| ИНН | **80%** | 80% | 80% |
+| total_match | 60% | 50% | **60%** |
+| type/number/date | **100%** | 100% | 100% |
+| valid_json | **10/10** | 10/10 | 10/10 |
+| Cost / doc | $0.020 | $0 | $0 |
+| Cost / мес (50/day) | $30 | $0 | $0 |
+| Готовность к prod | ⭐⭐ SLAI пилот | да | да |
+
+**Итог:** Claude Sonnet 4.6 после F14+F15 **сравнялся с Gemma 27B по точности
+при 5× скорости**. На грязных реальных сканах ожидается перевес Claude за счёт
+устойчивости к OCR-шуму. **Production-ready для пилота SLAI.**
 
 ---
 

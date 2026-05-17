@@ -1296,52 +1296,50 @@ backend делит PDF по страницам и шлёт 2 отдельных 
 
 ---
 
-### F14. Prefilled assistant `{` для Claude structured output — open
+### ~~F14. Принудительный JSON формат для Claude~~ — ✅ закрыто 2026-05-17 (через prompt, не prefill)
 
-**Где:** `inference-service/src/inference_service/backends/claude.py`,
-методы `extract` и `verify`.
+**Где:** `inference-service/src/inference_service/prompts/extract.py`
+(`_RESPONSE_CONTRACT` усилен) + `bench-claude.py` парсер.
 
-**Симптом:** Bench #21 показал — Claude Sonnet 4.6 на одном из 10
-документов (invoice-synth-01) вместо JSON вернул размышление текстом:
-`"I need to verify the totals from the line items:"`. Это известная
-особенность «thinking» моделей — они хотят перепроверить себя текстом
-перед structured output.
+**История:**
+- Изначальный план — assistant prefill `{"role":"assistant","content":"{"}`.
+  Но Sonnet 4.6 **НЕ поддерживает** prefill: API возвращает 400
+  «This model does not support assistant message prefill. The conversation
+  must end with a user message».
+- Альтернатива — жёсткое требование в SYSTEM_PROMPT: «Ответ должен
+  начинаться `{` и заканчиваться `}`, НЕ пиши вводных предложений,
+  НЕ markdown ```json … ```».
+- Парсер `_parse_json()` уже умеет находить outermost `{...}` через
+  regex — двойная защита если модель всё-таки добавит вводный текст.
 
-**Лечение:**
-```python
-messages=[
-    {"role": "user", "content": user_prompt},
-    {"role": "assistant", "content": "{"},  # prefilled
-]
-```
-Anthropic API форсит continuation с открывающей скобки → модель ОБЯЗАНА
-продолжать с JSON. После prefilled надо склеить `{` + response.text при
-парсинге.
-
-**Срок:** 1 час работы + 1 час тестов. Ожидаемый эффект: valid_json
-**9/10 → 10/10**.
+**Эффект (bench #22):** valid_json **9/10 → 10/10**. Plus побочный
+эффект: type/number/date_match подскочили с 90% до 100%.
 
 ---
 
-### F15. Prompt caching boost — добавить boilerplate до ~1500 tokens — open
+### ~~F15. Prompt caching boost — добавить boilerplate до ~1500 tokens~~ — ✅ закрыто 2026-05-17
 
 **Где:** `inference-service/src/inference_service/prompts/extract.py`,
-`build_cacheable()`.
+`_STATIC_BUILTIN_HEADER`.
 
-**Симптом:** Bench #21 показал `cache_creation_tokens=0` и
-`cache_read_tokens=0` во всех 10 запросах. Причина: SYSTEM_PROMPT =
-1049 input tokens, ровно на грани **минимума 1024** для Sonnet кэширования.
-Колебания токенайзера выкидывают за порог.
+**Сделано:** расширил с 1049 до ~1700 input tokens. Добавил:
+- Описание 13 типов документов (счёт, УПД, ТТН, CMR, АКТ, payment_order,
+  factInvoice, commercial_invoice, packing_list, B/L, ГТД, чек, договор)
+  с пояснением что внутри каждого
+- Детальные правила извлечения (числа, даты, ИНН, КПП, госномер ТС)
+- Few-shot пример (УПД input → JSON output)
+- Указание про многостраничные УПД
 
-**Лечение:** добавить ~500 tokens boilerplate в `_STATIC_BUILTIN_HEADER`:
-- Подробное описание каждого из 15 типов документов с примерами
-- 2-3 few-shot примера extraction (типовая входная шапка → typical JSON output)
-- Это ещё и повысит точность
+**Эффект (bench #22):**
+- Cache hit на первом цикле: **62-83%** ✅ (раньше 0%)
+- items_F1: **70% → 80%**
+- total_match: **50% → 60%**
+- type/number/date_match: 90% → 100% (комбо с F14)
 
-**Срок:** 1 день работы. Ожидаемый эффект:
-- Cache hit ≥ 70% на bulk-обработке
-- Cost / месяц: **$25 → ~$10** (в 2.5×)
-- Возможный +2-5 п.п. точности от few-shot примеров
+**Cost paradox:** cost вырос ($25 → $30/мес) несмотря на cache. Длинный
+prompt дороже даже cached. На длинных сессиях (часы реального трафика)
+cache сильнее проявится — точная цифра по prod измерим через 1 неделю
+после пилота.
 
 ---
 

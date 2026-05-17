@@ -104,6 +104,13 @@ class ClaudeBackend(ModelBackend):
             text=text, schema=schema, hint=hint, prompt_override=prompt_override
         )
         started = time.monotonic()
+        # F14 v2: assistant prefill `{` НЕ работает на Claude Sonnet 4.6+
+        # (API возвращает 400 "This model does not support assistant
+        # message prefill. The conversation must end with a user message").
+        # Альтернатива — жёсткое требование в SYSTEM_PROMPT начинать ответ
+        # сразу с `{` (см. prompts/extract.py _STATIC_BUILTIN_HEADER) +
+        # извлекать JSON через `_parse_json()` который умеет находить
+        # outermost {...} даже если модель добавит вводный текст.
         raw, usage = await self._complete_with_usage(
             messages=[{"role": "user", "content": user_prompt}],
             system_prompt=system_prompt,
