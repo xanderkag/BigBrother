@@ -255,6 +255,47 @@ async function main() {
     prefix: '/ui/',
     decorateReply: false,
   });
+
+  // --- Operator UI v2 (React) at /v2/* ---
+  //
+  // Новый UI на Vite + React. Билдится в `ui/dist/` (см. ui/package.json:
+  // `npm run build`). Если папки нет (dev mode без сборки) — мы её просто
+  // не маунтим и /v2 возвращает 404; разработчик использует `npm run dev`
+  // в ui/ который запускает vite на :5173 с proxy на API.
+  //
+  // Когда фичи v2 догонят старый UI — поменяем prefix '/v2/' → '/ui/' и
+  // отправим старый в /legacy/. До тех пор оба живут параллельно.
+  const uiV2Dir = join(here, '..', 'ui', 'dist');
+  try {
+    const { statSync, readFileSync } = await import('node:fs');
+    statSync(uiV2Dir); // throws ENOENT если папки нет
+    await app.register(staticFiles, {
+      root: uiV2Dir,
+      prefix: '/v2/',
+      decorateReply: false,
+      wildcard: false,
+    });
+    // SPA fallback — React Router использует HTML5 history. Любой
+    // GET /v2/* path, под который нет файла на диске, отдаёт index.html
+    // и роутинг разруливает уже React Router в браузере.
+    //
+    // Читаем index.html один раз на старте — он маленький (~1KB) и не
+    // меняется между релизами, кэш в памяти безопасен. decorateReply:
+    // false на static-registration значит sendFile() недоступен, поэтому
+    // отдаём buffer вручную через reply.type().send().
+    const indexHtml = readFileSync(join(uiV2Dir, 'index.html'));
+    app.setNotFoundHandler((req, reply) => {
+      if (req.url.startsWith('/v2/') && req.method === 'GET') {
+        reply.type('text/html').send(indexHtml);
+        return;
+      }
+      reply.code(404).send({ error: 'not found' });
+    });
+    app.log.info({ uiV2Dir }, 'UI v2 (React) mounted at /v2/');
+  } catch {
+    app.log.info('UI v2 build not found (ui/dist/) — only /ui/ legacy UI available');
+  }
+
   // Bare GET / → UI. Nothing else should live at the root.
   app.get('/', async (_req, reply) => {
     reply.redirect('/ui/', 302);

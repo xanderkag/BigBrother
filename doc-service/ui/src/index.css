@@ -1,0 +1,107 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Design tokens — соответствуют существующим из web/input.css но в
+ * @layer components чтобы их можно было переопределять отдельными
+ * утилитами в JSX. Используем для согласованности при миграции
+ * (старый UI на vanilla JS + новый UI на React имеют одни и те же
+ * визуальные элементы пока идёт постепенная миграция).
+ */
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-slate-200 bg-white shadow-sm;
+  }
+  .card-header {
+    @apply flex items-center justify-between border-b border-slate-200 px-5 py-3;
+  }
+  .card-title {
+    @apply text-base font-semibold text-slate-900;
+  }
+  .card-body {
+    @apply px-5 py-4;
+  }
+  .card-section {
+    @apply border-t border-slate-200 px-5 py-4;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium
+           transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply btn bg-brand-600 text-white hover:bg-brand-700;
+  }
+  .btn-secondary {
+    @apply btn bg-slate-100 text-slate-900 hover:bg-slate-200;
+  }
+  .btn-ghost {
+    @apply btn text-slate-700 hover:bg-slate-100;
+  }
+  .btn-success {
+    @apply btn bg-emerald-600 text-white hover:bg-emerald-700;
+  }
+  .btn-danger {
+    @apply btn bg-rose-600 text-white hover:bg-rose-700;
+  }
+
+  .badge {
+    @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium;
+  }
+  .badge-slate {
+    @apply badge bg-slate-100 text-slate-700;
+  }
+  .badge-indigo {
+    @apply badge bg-indigo-100 text-indigo-700;
+  }
+  .badge-emerald {
+    @apply badge bg-emerald-100 text-emerald-700;
+  }
+  .badge-amber {
+    @apply badge bg-amber-100 text-amber-800;
+  }
+  .badge-rose {
+    @apply badge bg-rose-100 text-rose-700;
+  }
+  .badge-sky {
+    @apply badge bg-sky-100 text-sky-700;
+  }
+
+  .form-input,
+  .form-select,
+  .form-textarea {
+    @apply block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm
+           text-slate-900 placeholder-slate-400 shadow-sm
+           focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500;
+  }
+  .form-label {
+    @apply mb-1 block text-sm font-medium text-slate-700;
+  }
+
+  .warning-banner {
+    @apply flex gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900;
+  }
+  .error-banner {
+    @apply flex gap-3 rounded-lg border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-900;
+  }
+}
+
+/* react-pdf base styles */
+.react-pdf__Page__canvas {
+  margin: 0 auto;
+  display: block;
+}
+.react-pdf__Document {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
