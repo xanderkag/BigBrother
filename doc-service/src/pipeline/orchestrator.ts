@@ -27,6 +27,8 @@ import { recomputeTotalsFromItems } from './normalize/totals.js';
 import { applyCategoryHints } from './normalize/categories.js';
 import { redactPii } from './normalize/pii-redact.js';
 import { processFieldConfidence } from './normalize/field-confidence.js';
+import { enrichItemsWithSlaiCategoryIds } from './normalize/slai-enrichment.js';
+import { slaiCategoriesRepo } from '../storage/slai-categories.js';
 import { documentTypeResolver, type ResolvedTypeConfig } from './document-type-resolver.js';
 import { jobsDurationSeconds, jobsTotal, ocrEngineDurationSeconds } from '../metrics.js';
 import { runResolutionPipeline } from '../resolution/pipeline.js';
@@ -724,6 +726,22 @@ export async function runDocumentPipeline(
     const withCategories = applyCategoryHints(extracted);
     if (withCategories && withCategories !== extracted) {
       extracted = withCategories;
+    }
+
+    // F13 polish: обогащение items[]._slai_category_id из lookup-table.
+    // Если SLAI команда настроила mapping (our_hint в slai_category_map)
+    // через sync events / UI — каждый item получит прямой SLAI ID, и
+    // их matcher сможет найти Nomenclature без extra lookup. Если
+    // lookup пустой (sync ещё не запущен) — no-op, без задержки.
+    try {
+      const hintToSlaiId = await slaiCategoriesRepo.loadHintToIdMap();
+      const enriched = enrichItemsWithSlaiCategoryIds(extracted, hintToSlaiId);
+      if (enriched && enriched !== extracted) {
+        extracted = enriched;
+      }
+    } catch (err) {
+      // Не блокируем pipeline на ошибке lookup'а — best-effort обогащение.
+      log.warn({ err }, 'SLAI category enrichment skipped (DB error)');
     }
 
     const tValidate = Date.now();

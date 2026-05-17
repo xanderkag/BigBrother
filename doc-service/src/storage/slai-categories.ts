@@ -185,4 +185,29 @@ export const slaiCategoriesRepo = {
     );
     return res.rows as SlaiCategoryMapRow[];
   },
+
+  /**
+   * F13 polish: bulk-load `our_hint → slai_category_id` карта. Используется
+   * orchestrator'ом для обогащения items[]._slai_category_id после
+   * applyCategoryHints. Возвращает только активные категории и только те,
+   * у которых operator/sweeper заполнил `our_hint`.
+   *
+   * Если у нескольких SLAI-категорий тот же our_hint (например 3 подкатегории
+   * молочки → все "food") — побеждает первая по usage_count_30d DESC. Это
+   * грубое приближение: чаще используемая категория — наиболее вероятный
+   * матч. Перфектное решение требует subcategory mapping, отложено.
+   */
+  async loadHintToIdMap(): Promise<Map<string, number>> {
+    const res = await db.query(
+      `SELECT DISTINCT ON (our_hint) our_hint, slai_category_id
+         FROM slai_category_map
+        WHERE active = true AND our_hint IS NOT NULL
+        ORDER BY our_hint, usage_count_30d DESC`,
+    );
+    const map = new Map<string, number>();
+    for (const row of res.rows as Array<{ our_hint: string; slai_category_id: number }>) {
+      map.set(row.our_hint, row.slai_category_id);
+    }
+    return map;
+  },
 };
