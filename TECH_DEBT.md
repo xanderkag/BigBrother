@@ -1455,14 +1455,14 @@ cache сильнее проявится — точная цифра по prod и
 | ~~**F17**~~ | ~~Новый тип `transport_invoice` (ТН формы 2013)~~ — ✅ закрыто 2026-05-17 | — | — |
 | ~~**F18**~~ | ~~Новый тип `waybill` (путевой лист)~~ — ✅ закрыто 2026-05-17 | — | — |
 | ~~**F19**~~ | ~~Bank-реквизиты в invoice schema~~ — ✅ закрыто 2026-05-17 (PARTY schema расширен + prompt) | — | — |
-| **F20** | One-shot `metadata.prompt_override` для reprocess (опционально) | 2 дня | low — ждём явный запрос SLAI |
+| ~~**F20**~~ | ~~One-shot `metadata.prompt_override` для reprocess~~ — ✅ закрыто 2026-05-17 | — | — |
 | ~~**F21**~~ | ~~`GET /jobs/:id/raw-text` endpoint~~ — ✅ закрыто 2026-05-17 | — | — |
 | ~~**F22**~~ | ~~Case-insensitive document_type lookup~~ — ✅ закрыто 2026-05-17 (SLAI_ALIASES map + uppercase/lowercase fallback) | — | — |
-| **F23** | Tesseract китайский упрощённый (Aliexpress) | 1 час | low — Фаза 2 ВЭД |
-| **F24** | Tesseract турецкий | 1 час | low — Фаза 2 |
-| **F25** | Tesseract польский | 1 час | low — Фаза 2 |
-| **F26** | API-param `metadata.tesseract_langs` (опционально) | 2 часа | low |
-| **F27** | `metadata.delete_after_processing` flag | 1 день | low — ждём запрос SLAI |
+| ~~**F23**~~ | ~~Tesseract китайский (chi-sim)~~ — ✅ закрыто 2026-05-17 (Dockerfile + Docker-rebuild) | — | — |
+| ~~**F24**~~ | ~~Tesseract турецкий (tur)~~ — ✅ закрыто 2026-05-17 | — | — |
+| ~~**F25**~~ | ~~Tesseract польский (pol)~~ — ✅ закрыто 2026-05-17 | — | — |
+| ~~**F26**~~ | ~~API-param `metadata.tesseract_langs`~~ — ✅ закрыто 2026-05-17 (per-job override через OcrInput.tesseractLangsOverride) | — | — |
+| ~~**F27**~~ | ~~`metadata.delete_after_processing` flag~~ — ✅ закрыто 2026-05-17 (immediate delete после webhook) | — | — |
 
 **Блокер старта:** golden dataset из `~/Desktop/SLAI/test-docs/` —
 15 PDF + 15 .gt.json для invoice / request / ttn. Запросили у SLAI scp /

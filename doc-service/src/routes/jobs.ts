@@ -726,10 +726,22 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
       // Прогоняем тот же pipeline что и в воркере, но без OCR-фазы.
       // hint — текущий documentType (или document_hint, если type ещё не определён).
       const hint = job.document_type ?? job.document_hint ?? undefined;
-      const post = await runDocumentPipeline(job.raw_text, { hint }, req.log as never, {
-        jobId: job.id,
-        reprocess: true,
-      });
+      // F20: per-job prompt_override из metadata. Используется для повторного
+      // прогона с другим LLM-промптом без правки document_type.llm_prompt.
+      const meta = (job.metadata as Record<string, unknown> | null) ?? {};
+      const promptOverride =
+        typeof meta.prompt_override === 'string' && meta.prompt_override.length > 0
+          ? (meta.prompt_override as string)
+          : undefined;
+      const post = await runDocumentPipeline(
+        job.raw_text,
+        { hint, promptOverride },
+        req.log as never,
+        {
+          jobId: job.id,
+          reprocess: true,
+        },
+      );
 
       // OCR confidence сохраняем как было — он не менялся. Парсер-сторону пересчитываем.
       const previousOcrConfidence =

@@ -29,6 +29,7 @@ import { redactPii } from './normalize/pii-redact.js';
 import { processFieldConfidence } from './normalize/field-confidence.js';
 import { enrichItemsWithSlaiCategoryIds } from './normalize/slai-enrichment.js';
 import { slaiCategoriesRepo } from '../storage/slai-categories.js';
+import { removeStoredFile } from '../storage/files.js';
 import { documentTypeResolver, type ResolvedTypeConfig } from './document-type-resolver.js';
 import { jobsDurationSeconds, jobsTotal, ocrEngineDurationSeconds } from '../metrics.js';
 import { runResolutionPipeline } from '../resolution/pipeline.js';
@@ -176,11 +177,24 @@ async function processJobInner(
     const disableExternalOcr =
       metaForRouter._disable_external_ocr === true ||
       metaForRouter._disable_external_ocr === 'true';
+    // F26: per-job override Tesseract languages. Если metadata.tesseract_langs
+    // содержит "rus+eng+chi_sim" — этот язык-pack будет использован вместо
+    // env-default. Допустимые языки определяются установленными в Docker
+    // tessdata packs (см. Dockerfile: rus/eng/chi_sim/tur/pol).
+    const tesseractLangsOverride =
+      typeof metaForRouter.tesseract_langs === 'string' && metaForRouter.tesseract_langs.length > 0
+        ? (metaForRouter.tesseract_langs as string)
+        : undefined;
+    // F20: per-job override LLM-промпта (см. runDocumentPipeline.options.promptOverride)
+    const promptOverride =
+      typeof metaForRouter.prompt_override === 'string' && metaForRouter.prompt_override.length > 0
+        ? (metaForRouter.prompt_override as string)
+        : undefined;
 
     await stepEvent('ocr', 'started', { details: { mime: job.mime_type } });
     const ocrStart = Date.now();
     ocr = await runOcrChain(
-      { filePath: job.file_path, mimeType: job.mime_type },
+      { filePath: job.file_path, mimeType: job.mime_type, tesseractLangsOverride },
       log,
       {
         documentType: job.document_hint ?? undefined,
@@ -199,7 +213,7 @@ async function processJobInner(
     // фазы из вернувшегося timings объекта. Подробности — в details.
     const post = await runDocumentPipeline(
       ocr.text,
-      { hint: documentType ?? undefined },
+      { hint: documentType ?? undefined, promptOverride },
       log,
       { jobId },
       timings,
@@ -394,6 +408,25 @@ async function processJobInner(
         },
         log,
       );
+
+      // F27 (SLAI ТЗ): immediate delete оригинала после webhook delivery
+      // если клиент попросил через metadata.delete_after_processing.
+      // Use case: документы с PII (паспорт водителя в ТТН) — клиент не
+      // хочет чтобы оригинал лежал у нас 30 дней default retention.
+      // jobs.file_path NULLed для аудита (БД-row остаётся).
+      const wantsDelete =
+        meta && (meta.delete_after_processing === true || meta.delete_after_processing === 'true');
+      if (wantsDelete && updated.file_path) {
+        try {
+          await removeStoredFile(updated.file_path);
+          await jobsRepo.markFileDeleted(updated.id);
+          log.info({ jobId, file_path: updated.file_path }, 'file deleted after processing (F27)');
+        } catch (err) {
+          // Best-effort — не блокируем основной pipeline. Sweeper подберёт
+          // через 30 дней если immediate delete не удался.
+          log.warn({ err, jobId }, 'F27 immediate delete failed; sweeper will retry');
+        }
+      }
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -449,7 +482,7 @@ async function processJobInner(
  * Exported so the smoke CLI can reuse the same engine wiring.
  */
 export async function runOcrChain(
-  input: { filePath: string; mimeType: string },
+  input: { filePath: string; mimeType: string; tesseractLangsOverride?: string },
   log: Logger,
   options: { documentType?: string; disableExternalOcr?: boolean } = {},
 ): Promise<OcrResult> {
@@ -558,7 +591,7 @@ export async function runOcrChain(
  */
 export async function runDocumentPipeline(
   rawText: string,
-  options: { hint?: DocumentTypeSlug },
+  options: { hint?: DocumentTypeSlug; promptOverride?: string },
   log: Logger,
   context: Record<string, unknown> = {},
   /** Опц. mutable timings — заполняются по ходу выполнения шагов. */
@@ -652,7 +685,12 @@ export async function runDocumentPipeline(
       // Кастомная инструкция админа (если задана) → пробрасывается
       // парсером в LLM-клиент → попадает как `prompt_override` в
       // inference-service → заменяет builtin prompt для этого типа.
-      llmPrompt: typeConfig.llmPrompt ?? undefined,
+      //
+      // F20 (SLAI ТЗ): per-job override через options.promptOverride
+      // приоритетнее чем per-type llmPrompt. Use case: оператор хочет
+      // переспросить документ с другим промптом для одного конкретного
+      // job (через `POST /jobs/:id/reprocess` с metadata.prompt_override).
+      llmPrompt: options.promptOverride ?? typeConfig.llmPrompt ?? undefined,
     });
     const parserMs = Date.now() - tParser;
     if (timings) timings.extract_ms = parserMs;

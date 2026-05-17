@@ -47,17 +47,19 @@ export class TesseractEngine implements OcrEngine {
 
   async run(input: OcrInput): Promise<OcrResult> {
     const started = Date.now();
+    // F26: per-job override через input.tesseractLangsOverride
+    const langs = input.tesseractLangsOverride || this.languages;
 
     if (PDF_MIMES.has(input.mimeType)) {
-      return this.runOnPdf(input, started);
+      return this.runOnPdf(input, started, langs);
     }
-    return this.runOnImage(input.filePath, started);
+    return this.runOnImage(input.filePath, started, langs);
   }
 
-  private async runOnImage(filePath: string, started: number): Promise<OcrResult> {
+  private async runOnImage(filePath: string, started: number, langs: string): Promise<OcrResult> {
     const text = (
       await tesseract.recognize(filePath, {
-        lang: this.languages,
+        lang: langs,
         oem: 1,
         psm: 3,
       })
@@ -70,11 +72,11 @@ export class TesseractEngine implements OcrEngine {
     };
   }
 
-  private async runOnPdf(input: OcrInput, started: number): Promise<OcrResult> {
+  private async runOnPdf(input: OcrInput, started: number, langs: string): Promise<OcrResult> {
     // A5: use orchestrator-provided pages when available — avoids a second
     // pdftoppm call on the same file if vision-llm is tried afterwards.
     if (input.rasterizedPages && input.rasterizedPages.length > 0) {
-      return this.processPages(input.rasterizedPages, started);
+      return this.processPages(input.rasterizedPages, started, langs);
     }
 
     // Fallback: rasterize independently (e.g., called standalone in tests
@@ -91,19 +93,19 @@ export class TesseractEngine implements OcrEngine {
         .sort()
         .map((f) => join(workDir, f));
 
-      return this.processPages(pageFiles, started);
+      return this.processPages(pageFiles, started, langs);
     } finally {
       await rm(workDir, { recursive: true, force: true });
     }
   }
 
   /** Run tesseract on an already-rasterized list of page PNG paths. */
-  private async processPages(pageFiles: string[], started: number): Promise<OcrResult> {
+  private async processPages(pageFiles: string[], started: number, langs: string): Promise<OcrResult> {
     const pages: Array<{ text: string; confidence: number }> = [];
     for (const pf of pageFiles) {
       const pageText = (
         await tesseract.recognize(pf, {
-          lang: this.languages,
+          lang: langs,
           oem: 1,
           psm: 3,
         })

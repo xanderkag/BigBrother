@@ -1,16 +1,27 @@
 FROM node:22-slim AS base
 
 # System dependencies for OCR pipeline:
-#   tesseract-ocr           — OCR engine binary (called via node-tesseract-ocr)
-#   tesseract-ocr-rus/eng   — language packs for Russian and English documents
-#   poppler-utils           — pdftoppm / pdfinfo, used to rasterize scanned PDFs for tesseract
-#   libheif-examples        — heif-convert binary для HEIC/HEIF (iPhone-фото) → JPG
-#                             перед основным pipeline. См. src/pipeline/preprocess/heic.ts
-#   ca-certificates         — outbound TLS to LLM/Yandex
+#   tesseract-ocr             — OCR engine binary (called via node-tesseract-ocr)
+#   tesseract-ocr-rus/eng     — language packs (Россия + ENG для смешанных)
+#   tesseract-ocr-chi-sim     — F23 (SLAI ТЗ Фаза 2): китайский упрощённый
+#                                для упаковочных листов AliExpress / 1688
+#   tesseract-ocr-tur         — F24: турецкий для импорта из Турции
+#   tesseract-ocr-pol         — F25: польский для торговли с Польшей
+#   poppler-utils             — pdftoppm / pdfinfo, rasterize PDF → PNG для tesseract
+#   libheif-examples          — heif-convert для HEIC/HEIF (iPhone-фото) → JPG.
+#                                См. src/pipeline/preprocess/heic.ts
+#   ca-certificates           — outbound TLS to LLM/Yandex
+#
+# По дефолту TESSERACT_LANGS=rus+eng в .env (без китайского/турецкого/польского,
+# чтобы не тратить время на лишние языки). Per-job override через
+# metadata.tesseract_langs (F26).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr \
     tesseract-ocr-rus \
     tesseract-ocr-eng \
+    tesseract-ocr-chi-sim \
+    tesseract-ocr-tur \
+    tesseract-ocr-pol \
     poppler-utils \
     libheif-examples \
     ca-certificates \

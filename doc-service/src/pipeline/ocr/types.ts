@@ -10,6 +10,17 @@ export type OcrInput = {
    * and cleans it up after the chain completes (A5 fix — no double rasterization).
    */
   rasterizedPages?: string[];
+  /**
+   * F26 (SLAI ТЗ): per-job override Tesseract languages. Если задан —
+   * используется вместо `TESSERACT_LANGS` env-default. Формат как у Tesseract
+   * (плюс через `+`): `rus+eng+chi_sim`. Допустимые языки определяются
+   * установленными в Docker tessdata pack'ами (см. Dockerfile).
+   *
+   * Use case: SLAI logist шлёт packing list с AliExpress на китайском, в
+   * `metadata.tesseract_langs: "rus+eng+chi_sim"`. Без override — Tesseract
+   * читает только rus+eng и не справится с китайскими иероглифами.
+   */
+  tesseractLangsOverride?: string;
 };
 
 export type OcrResult = {
