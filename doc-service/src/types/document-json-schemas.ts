@@ -240,6 +240,154 @@ const CMR_SCHEMA = {
   },
 } as const;
 
+// F16 (SLAI ТЗ): заявка на перевозку.
+// Документ-первичка между заказчиком логистики (client) и исполнителем
+// (carrier/экспедитором). Создаётся ДО фактической перевозки, фиксирует
+// договорённости: что везём, откуда-куда, какой машиной/водителем,
+// в какие сроки, за какую ставку.
+//
+// Часто использует «открытый рынок» — поля vehicle/trailer/driver
+// могут быть пустыми (carrier подбирает машину позже). Multi-stop —
+// route.loading и route.unloading могут быть массивами.
+//
+// См. SLAI ТЗ v1.0 раздел 3.2 для примера JSON и acceptance критериев.
+const TRANSPORT_REQUEST_SCHEMA = {
+  type: 'object',
+  properties: {
+    number: { type: 'string', description: 'Номер заявки' },
+    date: { type: 'string', description: DATE_DESCRIPTION },
+    client: {
+      ...PARTY,
+      description: 'Заказчик логистических услуг (грузовладелец)',
+    },
+    carrier: {
+      ...PARTY,
+      description: 'Исполнитель — перевозчик или экспедитор',
+    },
+    route: {
+      type: 'object',
+      description:
+        'Маршрут перевозки. Для multi-stop точки могут быть массивами; ' +
+        'для одного pickup → одного drop — объектами.',
+      properties: {
+        loading: {
+          // Либо одна точка (object), либо несколько (array of objects).
+          // JSON Schema oneOf — но мы оставляем permissive (LLM выберет
+          // адекватный тип по контексту).
+          type: ['object', 'array'],
+          description: 'Точка(и) погрузки',
+          properties: {
+            name: { type: 'string', description: 'Название склада/площадки' },
+            address: { type: 'string' },
+            city: { type: 'string' },
+            datetime: { type: 'string', description: 'Срок подачи под погрузку (ISO 8601)' },
+            contact: { type: 'string', description: 'Контактное лицо на точке + телефон' },
+          },
+        },
+        unloading: {
+          type: ['object', 'array'],
+          description: 'Точка(и) разгрузки',
+          properties: {
+            name: { type: 'string' },
+            address: { type: 'string' },
+            city: { type: 'string' },
+            datetime: { type: 'string', description: 'Срок доставки' },
+            contact: { type: 'string' },
+          },
+        },
+        intermediate_stops: {
+          type: 'array',
+          items: { type: 'object' },
+          description: 'Промежуточные остановки (перегрузка / consolidation)',
+        },
+      },
+    },
+    cargo: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Наименование груза' },
+        weight_t: { type: 'number', description: 'Масса груза в тоннах' },
+        volume_m3: { type: 'number', description: 'Объём груза в м³' },
+        places: { type: 'number', description: 'Количество мест (паллет/коробов)' },
+        temperature: {
+          type: 'string',
+          description: 'Температурный режим как написан ("+4°C ÷ +6°C", "-18°C", "охлаждённый")',
+        },
+        dangerous_class: { type: 'string', description: 'Класс ADR/ДОПОГ если опасный груз' },
+        customs_info: {
+          type: 'string',
+          description: 'Таможенная информация для международных перевозок',
+        },
+      },
+    },
+    vehicle: {
+      type: 'object',
+      description:
+        'Транспортное средство. NULL если открытый рынок (carrier подбирает машину после заявки)',
+      properties: {
+        plate: { type: 'string', description: 'Гос.номер тягача (А123БВ77 или 3-знач регион)' },
+        model: { type: 'string', description: 'Марка и модель (MAN TGX 18.440, ...)' },
+        vin: { type: 'string' },
+        year: { type: 'number', description: 'Год выпуска' },
+        capacity_t: { type: 'number', description: 'Грузоподъёмность, тонн' },
+      },
+    },
+    trailer: {
+      type: 'object',
+      description: 'Прицеп/полуприцеп (опционально)',
+      properties: {
+        plate: { type: 'string' },
+        model: { type: 'string' },
+        type: {
+          type: 'string',
+          description: 'Тип кузова: "изотерм", "тент", "рефрижератор", "контейнеровоз", "цистерна"',
+        },
+        volume_m3: { type: 'number' },
+      },
+    },
+    driver: {
+      type: 'object',
+      description: 'Водитель. NULL если открытый рынок',
+      properties: {
+        fio: { type: 'string' },
+        license: { type: 'string', description: 'Номер вод.удостоверения' },
+        passport: { type: 'string', description: 'Серия+номер паспорта' },
+        phone: { type: 'string' },
+      },
+    },
+    rate: {
+      type: 'object',
+      description: 'Стоимость перевозки',
+      properties: {
+        amount: { type: 'number', description: 'Сумма к оплате' },
+        currency: { type: 'string', description: 'ISO 4217 (RUB по умолчанию)' },
+        vat_included: { type: 'boolean', description: '`true` если сумма включает НДС' },
+        vat_rate: { type: 'number', description: 'Ставка НДС перевозчика (0 / 10 / 20)' },
+        payment_terms: {
+          type: 'string',
+          description:
+            'Условия оплаты как написаны ("Безнал, 10 банковских дней", "100% предоплата", "По факту"))',
+        },
+      },
+    },
+    additional_terms: {
+      type: 'string',
+      description: 'Дополнительные условия / штрафы / договорные пункты',
+    },
+    contact_responsible: {
+      type: 'object',
+      description: 'Ответственный за заявку (логист со стороны заказчика)',
+      properties: {
+        fio: { type: 'string' },
+        phone: { type: 'string' },
+        email: { type: 'string' },
+      },
+    },
+    parent_contract_number: { type: 'string', description: 'Номер договора-основания' },
+    parent_contract_date: { type: 'string', description: 'Дата договора-основания' },
+  },
+} as const;
+
 // F17 (SLAI ТЗ): транспортная накладная формы 2013 (новая ТН).
 // Утверждена Постановлением Правительства РФ № 272 от 15.04.2011 и
 // заменила собой форму 1-Т (ТТН) с 2013 года. Используется когда
@@ -519,6 +667,7 @@ export const DOCUMENT_JSON_SCHEMAS: Record<DocumentType, Record<string, unknown>
 export const EXTENDED_SCHEMAS: Record<string, Record<string, unknown>> = {
   waybill: WAYBILL_SCHEMA,
   transport_invoice: TRANSPORT_INVOICE_SCHEMA,
+  transport_request: TRANSPORT_REQUEST_SCHEMA,
 };
 
 export const EXPECTED_FIELDS: Record<DocumentType, string[]> = {
@@ -548,6 +697,17 @@ export const EXTENDED_EXPECTED_FIELDS: Record<string, string[]> = {
     'loading_point',
     'unloading_point',
     'cargo_summary',
+  ],
+  // F16: заявка на перевозку — критичные поля для SLAI matcher acceptance ≥ 90%
+  // (vehicle/driver могут быть null для открытого рынка → не в обязательных)
+  transport_request: [
+    'number',
+    'date',
+    'client',
+    'carrier',
+    'route',
+    'cargo',
+    'rate',
   ],
 };
 

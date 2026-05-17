@@ -79,6 +79,12 @@ def _load_classifier_rules() -> list[tuple[str, re.Pattern[str], float]]:
             r"|условия\s+перевозки.{0,500}стоимость\s+услуг\s+перевозки",
             re.IGNORECASE | re.DOTALL,
         ), 1.1),
+        # F16 (SLAI ТЗ): заявка на перевозку
+        ("transport_request", re.compile(
+            r"заявка\s+(?:№|на\s+перевозку|на\s+транспортные\s+услуги|на\s+автоперевозку)"
+            r"|заявка-договор\s+на\s+перевозку",
+            re.IGNORECASE,
+        ), 1.0),
     ]
 
 

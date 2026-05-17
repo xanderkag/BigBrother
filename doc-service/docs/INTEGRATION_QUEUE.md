@@ -340,3 +340,6 @@ F9 — изменено в `inference-service/.env.example`:
 | 2026-05-17 | Q1 RESOLVED — прогон Claude Sonnet 4.6 на синт. PDF: $0.0165/doc, F1 70%, 4× быстрее локальных. Найдены F14 (prefilled `{`) и F15 (cache boost). Model_id в `.env.example` исправлен с фейкового `claude-sonnet-4-7-20260301` на реальный `claude-sonnet-4-6`. |
 | 2026-05-17 | F14 + F15 закрыты: prompt-based JSON enforcement + расширенный SYSTEM_PROMPT с 13 типов + few-shot. Bench #22: 10/10 valid JSON, cache 62-83%, items_F1 80%, type/number/date 100%. Claude сравнялся с Gemma 27B при 5× скорости. |
 | 2026-05-17 | Q9 ANSWERED — получено ТЗ SLAI v1.0 (18 типов в 3 фазы, 8 open questions). Наш ответ в `PARSDOCS_REPLY_TO_SLAI_TZ.md`. Заведены 12 новых долгов F16-F27. Блокер: ждём golden dataset (15 PDF). |
+| 2026-05-17 | F2 закрыто — per-field confidence end-to-end: prompt → backend → calibration → webhook. 18 unit-тестов. |
+| 2026-05-17 | F18 (waybill), F19 (bank), F21 (raw-text), F22 (slug aliases) закрыты — quick wins по SLAI ТЗ. |
+| 2026-05-17 | F17 (transport_invoice форма 2013), F16 (transport_request) закрыты. **Все 10 типов Фазы 1 SLAI ТЗ покрыты**. Создан `Desktop\parsdocs-validation-bench\SLAI_SYNC_QUEUE.md` для async-вопросов к SLAI команде. |
