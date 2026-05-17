@@ -240,6 +240,133 @@ const CMR_SCHEMA = {
   },
 } as const;
 
+// F17 (SLAI ТЗ): транспортная накладная формы 2013 (новая ТН).
+// Утверждена Постановлением Правительства РФ № 272 от 15.04.2011 и
+// заменила собой форму 1-Т (ТТН) с 2013 года. Используется когда
+// автомобильный перевозчик не является продавцом и нужен отдельный
+// документ перевозки.
+//
+// Отличия от старой ТТН (форма 1-Т):
+//   - НЕТ товарного раздела (раздел 1 ТТН-1.2)
+//   - Графа «Условия перевозки» (вода, температура, опасный груз)
+//   - Графа 15 «Стоимость услуг перевозки»
+//   - Графы 6 и 7 «Сроки доставки»
+//   - 4 точки подписей: отправитель / водитель-приём / водитель-сдача / получатель
+//
+// Слаg = `transport_invoice` (наш каноничный), SLAI шлёт его так же.
+const TRANSPORT_INVOICE_SCHEMA = {
+  type: 'object',
+  properties: {
+    number: { type: 'string', description: 'Номер ТН' },
+    date: { type: 'string', description: DATE_DESCRIPTION },
+    shipper: { ...PARTY, description: 'Грузоотправитель (графа 1)' },
+    consignee: { ...PARTY, description: 'Грузополучатель (графа 2)' },
+    carrier: { ...PARTY, description: 'Перевозчик (графа 10)' },
+    payer: { ...PARTY, description: 'Плательщик за перевозку (если отличается от отправителя)' },
+    cargo_description: {
+      type: 'string',
+      description: 'Общее описание груза (графа 3). НЕ таблица — описание текстом',
+    },
+    items: {
+      ...ITEMS_ARRAY,
+      description:
+        'Если в ТН есть приложение со списком позиций (необязательно для формы 2013). ' +
+        'Чаще груз указан одной строкой в cargo_description',
+    },
+    cargo_summary: {
+      type: 'object',
+      description: 'Сводные характеристики груза (графа 4)',
+      properties: {
+        places: { type: 'number', description: 'Количество грузовых мест' },
+        weight_gross: { type: 'number', description: 'Масса брутто, кг' },
+        weight_nett: { type: 'number', description: 'Масса нетто, кг' },
+        volume_m3: { type: 'number', description: 'Объём груза, м³' },
+        dangerous_class: { type: 'string', description: 'Класс опасности (если ADR/ДОПОГ)' },
+      },
+    },
+    conditions: {
+      type: 'object',
+      description: 'Условия перевозки (графа 8) — климат, температура, особые требования',
+      properties: {
+        temperature_min_c: { type: 'number' },
+        temperature_max_c: { type: 'number' },
+        humidity: { type: 'string' },
+        special_marks: { type: 'string', description: 'Особые отметки (хрупкое, не кантовать, …)' },
+      },
+    },
+    declared_value: {
+      type: 'number',
+      description: 'Заявленная стоимость груза (графа 5) — для определения ответственности перевозчика',
+    },
+    delivery_terms: {
+      type: 'object',
+      description: 'Графы 6 (приём груза) и 7 (выдача груза)',
+      properties: {
+        pickup_datetime: { type: 'string', description: 'Срок подачи под погрузку' },
+        delivery_datetime: { type: 'string', description: 'Срок доставки' },
+      },
+    },
+    vehicle: {
+      type: 'object',
+      description: 'ТС (графы 11 + 13)',
+      properties: {
+        plate: { type: 'string', description: 'Гос.номер тягача (А123БВ77)' },
+        model: { type: 'string', description: 'Модель ТС' },
+        trailer_plate: { type: 'string', description: 'Номер прицепа/полуприцепа' },
+        trailer_model: { type: 'string' },
+        weight_unladen: { type: 'number', description: 'Снаряжённая масса ТС' },
+      },
+    },
+    driver: {
+      type: 'object',
+      properties: {
+        fio: { type: 'string', description: 'ФИО водителя' },
+        license: { type: 'string', description: 'Серия и номер вод.удостоверения' },
+        phone: { type: 'string' },
+      },
+    },
+    loading_point: {
+      type: 'object',
+      description: 'Точка погрузки (графа 6)',
+      properties: {
+        address: { type: 'string' },
+        city: { type: 'string' },
+        country: { type: 'string', description: 'ISO 3166 alpha-2 (RU, KZ, BY)' },
+      },
+    },
+    unloading_point: {
+      type: 'object',
+      description: 'Точка разгрузки (графа 7)',
+      properties: {
+        address: { type: 'string' },
+        city: { type: 'string' },
+        country: { type: 'string' },
+      },
+    },
+    service_cost: {
+      type: 'object',
+      description: 'Стоимость услуг перевозки (графа 15)',
+      properties: {
+        amount: { type: 'number', description: 'Сумма к оплате перевозчику' },
+        currency: { type: 'string', description: 'ISO 4217 (RUB по умолчанию)' },
+        vat_rate: { type: 'number', description: 'Ставка НДС перевозчика, %' },
+        vat_amount: { type: 'number' },
+        amount_with_vat: { type: 'number' },
+      },
+    },
+    forwarder: {
+      ...PARTY,
+      description: 'Экспедитор (графа 9), если перевозка осуществляется через экспедитора',
+    },
+    transport_docs: {
+      type: 'array',
+      description: 'Прилагаемые документы (паспорт груза, сертификат, СНТ, …)',
+      items: { type: 'string' },
+    },
+    distance_km: { type: 'number', description: 'Расстояние перевозки в километрах' },
+  },
+} as const;
+
 // F18 (SLAI ТЗ): путевой лист.
 // Это документ для водителя на грузовое (форма 4-С), легковое (4-П) или
 // такси (ПЛ-1). Подтверждает выезд ТС на маршрут, расход топлива,
@@ -391,6 +518,7 @@ export const DOCUMENT_JSON_SCHEMAS: Record<DocumentType, Record<string, unknown>
  */
 export const EXTENDED_SCHEMAS: Record<string, Record<string, unknown>> = {
   waybill: WAYBILL_SCHEMA,
+  transport_invoice: TRANSPORT_INVOICE_SCHEMA,
 };
 
 export const EXPECTED_FIELDS: Record<DocumentType, string[]> = {
@@ -408,6 +536,19 @@ export const EXPECTED_FIELDS: Record<DocumentType, string[]> = {
  */
 export const EXTENDED_EXPECTED_FIELDS: Record<string, string[]> = {
   waybill: ['number', 'date', 'organization', 'vehicle', 'driver', 'route', 'odometer_start'],
+  // F17: ТН формы 2013 — обязательные поля для acceptance
+  transport_invoice: [
+    'number',
+    'date',
+    'shipper',
+    'consignee',
+    'carrier',
+    'vehicle',
+    'driver',
+    'loading_point',
+    'unloading_point',
+    'cargo_summary',
+  ],
 };
 
 /**
