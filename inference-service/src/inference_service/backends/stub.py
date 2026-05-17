@@ -62,6 +62,11 @@ def _load_classifier_rules() -> list[tuple[str, re.Pattern[str], float]]:
         ("AKT",         re.compile(r"\bакт\b\s+(оказанных|выполненных|сдачи)|акт\s+об\s+оказании", re.IGNORECASE), 0.95),
         ("invoice",     re.compile(r"\bсч[её]т\s+на\s+оплату\b|\bсч[её]т\s+№", re.IGNORECASE), 0.9),
         ("invoice",     re.compile(r"\bсч[её]т\b", re.IGNORECASE), 0.6),
+        # F18 (SLAI ТЗ): путевой лист (4-С грузовой, 4-П легковой, ПЛ-1 такси).
+        # NB: Python re тоже не очень любит \b с кириллицей в re.IGNORECASE,
+        # хотя проблема меньше чем у JS. Убираем \b — специфичности биграмм
+        # "путевой лист" достаточно (нет других документов с такой парой).
+        ("waybill",     re.compile(r"путевой\s+лист|форма\s+4-С|форма\s+4-П|форма\s+ПЛ-1", re.IGNORECASE), 1.0),
     ]
 
 

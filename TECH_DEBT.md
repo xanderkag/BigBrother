@@ -1396,7 +1396,7 @@ cache сильнее проявится — точная цифра по prod и
 |---|---|---|---|
 | **F16** | Новый тип `transport_request` (заявка на перевозку) | 3-5 дней | high |
 | **F17** | Новый тип `transport_invoice` (ТН формы 2013) | 2-3 дня | medium |
-| **F18** | Новый тип `waybill` (путевой лист) | 2 дня | medium |
+| ~~**F18**~~ | ~~Новый тип `waybill` (путевой лист)~~ — ✅ закрыто 2026-05-17 | — | — |
 | ~~**F19**~~ | ~~Bank-реквизиты в invoice schema~~ — ✅ закрыто 2026-05-17 (PARTY schema расширен + prompt) | — | — |
 | **F20** | One-shot `metadata.prompt_override` для reprocess (опционально) | 2 дня | low — ждём явный запрос SLAI |
 | ~~**F21**~~ | ~~`GET /jobs/:id/raw-text` endpoint~~ — ✅ закрыто 2026-05-17 | — | — |

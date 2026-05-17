@@ -240,6 +240,118 @@ const CMR_SCHEMA = {
   },
 } as const;
 
+// F18 (SLAI ТЗ): путевой лист.
+// Это документ для водителя на грузовое (форма 4-С), легковое (4-П) или
+// такси (ПЛ-1). Подтверждает выезд ТС на маршрут, расход топлива,
+// прохождение пред-/после-рейсового медосмотра водителя и техосмотра ТС.
+// В отличие от ТТН — не имеет товарной части (груз указывается общим
+// объёмом / весом / маршрутом, без перечисления позиций).
+const WAYBILL_SCHEMA = {
+  type: 'object',
+  properties: {
+    number: { type: 'string', description: 'Номер путевого листа' },
+    date: { type: 'string', description: DATE_DESCRIPTION },
+    form: {
+      type: 'string',
+      description: 'Форма путевого листа: "4-С" (грузовой), "4-П" (легковой), "ПЛ-1" (такси) или иная',
+    },
+    organization: {
+      ...PARTY,
+      description: 'Организация-владелец ТС (юр.лицо или ИП)',
+    },
+    vehicle: {
+      type: 'object',
+      properties: {
+        plate: { type: 'string', description: 'Госномер ТС (А123БВ77 или с трёхзначным регионом)' },
+        model: { type: 'string', description: 'Марка/модель ТС (KamAZ-5320, MAN TGX 18.440, ...)' },
+        type: {
+          type: 'string',
+          description: 'Тип ТС: "грузовой", "легковой", "автобус", "тягач", "самосвал", ...',
+        },
+        vin: { type: 'string' },
+        registration_certificate: { type: 'string', description: 'Серия и номер СТС/ПТС' },
+      },
+    },
+    trailer: {
+      type: 'object',
+      description: 'Прицеп (опционально)',
+      properties: {
+        plate: { type: 'string' },
+        model: { type: 'string' },
+      },
+    },
+    driver: {
+      type: 'object',
+      properties: {
+        fio: { type: 'string', description: 'ФИО водителя' },
+        license: { type: 'string', description: 'Номер вод.удостоверения (XX XX 123456)' },
+        tab_number: { type: 'string', description: 'Табельный номер сотрудника' },
+        passport: { type: 'string', description: 'Серия и номер паспорта (если указан)' },
+      },
+    },
+    route: {
+      type: 'object',
+      properties: {
+        departure_point: { type: 'string', description: 'Откуда (адрес/название точки)' },
+        destination_point: { type: 'string', description: 'Куда' },
+        intermediate_stops: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Промежуточные остановки (адреса/названия)',
+        },
+        purpose: {
+          type: 'string',
+          description: 'Цель поездки: "перевозка груза", "доставка", "командировка", и т.п.',
+        },
+      },
+    },
+    departure_time: {
+      type: 'string',
+      description: 'Время выезда из гаража (YYYY-MM-DDTHH:MM:SS или HH:MM)',
+    },
+    return_time: { type: 'string', description: 'Время возврата в гараж' },
+    odometer_start: { type: 'number', description: 'Показания спидометра при выезде, км' },
+    odometer_end: { type: 'number', description: 'Показания спидометра при возврате, км' },
+    distance_total: { type: 'number', description: 'Пробег за рейс, км' },
+    fuel: {
+      type: 'object',
+      properties: {
+        fuel_type: { type: 'string', description: 'Тип топлива: "ДТ" (дизель), "АИ-92", "АИ-95", "газ", "ГБО"' },
+        rate_per_100km: { type: 'number', description: 'Норма расхода, л/100км' },
+        issued_volume: { type: 'number', description: 'Выдано топлива, л' },
+        remaining_start: { type: 'number', description: 'Остаток в баке при выезде, л' },
+        remaining_end: { type: 'number', description: 'Остаток в баке при возврате, л' },
+        consumed_volume: { type: 'number', description: 'Фактически израсходовано, л' },
+      },
+    },
+    medical_check: {
+      type: 'object',
+      description: 'Предрейсовый медосмотр водителя',
+      properties: {
+        passed: { type: 'boolean' },
+        timestamp: { type: 'string', description: 'Время прохождения медосмотра' },
+        doctor_signature: { type: 'string', description: 'ФИО медработника' },
+      },
+    },
+    technical_check: {
+      type: 'object',
+      description: 'Предрейсовый техосмотр ТС',
+      properties: {
+        passed: { type: 'boolean' },
+        timestamp: { type: 'string' },
+        mechanic_signature: { type: 'string', description: 'ФИО механика' },
+      },
+    },
+    cargo_description: {
+      type: 'string',
+      description:
+        'Краткое описание груза без перечисления позиций. Если есть детальная номенклатура — она в отдельной ТТН',
+    },
+    cargo_weight: { type: 'number', description: 'Общая масса груза, кг (если указано)' },
+    notes: { type: 'string', description: 'Произвольные заметки в путевом листе' },
+  },
+} as const;
+
 const AKT_SCHEMA = {
   type: 'object',
   properties: {
@@ -271,6 +383,16 @@ export const DOCUMENT_JSON_SCHEMAS: Record<DocumentType, Record<string, unknown>
   AKT: AKT_SCHEMA,
 };
 
+/**
+ * F18: схемы для типов выходящих за `DOCUMENT_TYPES` (builtin'ы).
+ * `waybill` живёт только через миграцию + DB-row в `document_types`, в этой
+ * мапе — для UI/документации/тестов. Production-pipeline их подхватывает
+ * через `documentTypesRepo` (не через hardcoded fallback).
+ */
+export const EXTENDED_SCHEMAS: Record<string, Record<string, unknown>> = {
+  waybill: WAYBILL_SCHEMA,
+};
+
 export const EXPECTED_FIELDS: Record<DocumentType, string[]> = {
   invoice: ['number', 'date', 'seller', 'buyer', 'total', 'items'],
   factInvoice: ['number', 'date', 'seller', 'buyer', 'total', 'vat', 'vat_summary', 'items'],
@@ -278,6 +400,14 @@ export const EXPECTED_FIELDS: Record<DocumentType, string[]> = {
   TTN: ['number', 'date', 'shipper', 'consignee', 'cargo', 'vehicle', 'items'],
   CMR: ['number', 'date', 'sender', 'recipient', 'carrier', 'items'],
   AKT: ['number', 'date', 'party_a', 'party_b', 'total', 'items'],
+};
+
+/**
+ * F18: expected_fields для типов вне `DocumentType`. Эти поля используются
+ * для acceptance criteria SLAI ТЗ — `params.missing[]` в pipeline result.
+ */
+export const EXTENDED_EXPECTED_FIELDS: Record<string, string[]> = {
+  waybill: ['number', 'date', 'organization', 'vehicle', 'driver', 'route', 'odometer_start'],
 };
 
 /**
