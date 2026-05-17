@@ -50,24 +50,38 @@
 
 ### Q1. ANTHROPIC_API_KEY для F11 baseline bench
 
-- **Status:** OPEN
+- **Status:** ANSWERED (USER ответил A — генерирует свой ключ)
 - **Asked:** 2026-05-16
 - **From:** CLAUDE
 - **To:** USER
-- **Что нужно:** Anthropic API key чтобы прогнать Claude Sonnet 4.7 на corpus-gt и получить production baseline вместо Gemma 12B
-- **Что сделать когда ответят:**
-  1. Положить в provider_settings (через UI или env) на staging
-  2. Адаптировать bench.py чтобы вызывать через inference-service вместо прямо Ollama
-  3. Прогнать `bench.py --model claude-sonnet-4-7-20260301 --mode text` через inference
-  4. Сравнить через compare.py — ожидаем F1 items ≥ 0.85, total ≥ 0.7
-  5. Обновить MODEL_REPORT.md прогон #19
-  6. Push в 3 ремоута
+- **Что нужно:** Anthropic API key
+- **Что сделать когда ключ придёт:**
+  1. USER кладёт ключ в env переменную `ANTHROPIC_API_KEY` на своей машине
+     (или передаёт Claude напрямую в чате — Claude положит в `.env.local`
+     **только локально**, не коммитит)
+  2. Claude запускает на сервере подготовку:
+     ```bash
+     # на kb-docker
+     export ANTHROPIC_API_KEY=sk-ant-...
+     cd /tmp/vision-test-v2
+     pip install anthropic
+     # bench-claude.py уже на месте после scp с Desktop
+     python3 bench-claude.py --model claude-sonnet-4-7-20260301 --warmup
+     ```
+  3. Claude прогоняет `python3 compare.py --bench-json results/claude-sonnet-4-7-20260301__claude_api.json --gt-dir gts`
+  4. Claude обновляет MODEL_REPORT.md прогон #19 — F1 items, total_match, ИНН, category, **+стоимость на 10 файлов и экстраполяция $/мес для 50 doc/day**
+  5. Push в 3 ремоута
+
+**Инфраструктура подготовлена:**
+- `Desktop/parsdocs-validation-bench/bench-claude.py` — bench с Anthropic SDK + cache_control (F8) + cost calc
+- Использует тот же `SCHEMA_BLOCK` что и bench.py — fair comparison против Gemma/Mistral
+- compare.py отрабатывает без изменений на output
 
 #### Question / Context
-В проде SLAI пилота используется Claude API (F9 уже переключила default на Sonnet 4.7). Но мы ещё не прогнали Claude на наших 10 синтетических PDF — все baseline'ы только для локальных моделей. **SLAI рекомендует получить отдельный ключ** (не делиться их prod-ключом) — это вопрос продактов обеих сторон.
+В проде SLAI пилота используется Claude API (F9 уже переключила default на Sonnet 4.7). Но мы ещё не прогнали Claude на наших 10 синтетических PDF — все baseline'ы только для локальных моделей. **SLAI рекомендует получить отдельный ключ** (не делиться их prod-ключом).
 
-#### Answer
-<ждём>
+#### Answer (2026-05-17, USER)
+Вариант A — генерирую свой ключ сейчас, прогоняем синт тесты.
 
 ---
 
