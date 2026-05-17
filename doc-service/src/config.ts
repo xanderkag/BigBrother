@@ -144,6 +144,20 @@ const ConfigSchema = z.object({
     timeoutMs: numberFromEnv(10000),
     maxAttempts: numberFromEnv(5),
   }),
+
+  /**
+   * F13: SLAI continuous category sync (inbound webhook от SLAI к нам).
+   * См. PARSDOCS_CATEGORY_SYNC_REPLY.md секция 5 — 2 отдельных HMAC
+   * секрета (один для исходящих от нас, второй для входящих от SLAI),
+   * чтобы можно было ротировать независимо.
+   *
+   * Если `toParsdocsHmacSecret` пустой — endpoint `/api/v1/integrations/slai/sync/*`
+   * fail-closed (401 на любой запрос). Это безопасный default для прода
+   * пока обмен ключами с SLAI не завершён (см. S3 в SLAI_SYNC_QUEUE.md).
+   */
+  slai: z.object({
+    toParsdocsHmacSecret: z.string().optional(),
+  }),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -197,6 +211,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       hmacSecret: env.WEBHOOK_HMAC_SECRET ?? '',
       timeoutMs: env.WEBHOOK_TIMEOUT_MS,
       maxAttempts: env.WEBHOOK_MAX_ATTEMPTS,
+    },
+    slai: {
+      toParsdocsHmacSecret: env.SLAI_TO_PARSDOCS_HMAC_SECRET || undefined,
     },
   });
 }

@@ -1414,7 +1414,62 @@ prompt'ы под их форматы.
 
 ---
 
-### F13. Webhook receiver для SLAI continuous category sync — open
+### ~~F13. Webhook receiver для SLAI continuous category sync~~ — ✅ MVP закрыто 2026-05-17
+
+**MVP реализован end-to-end:**
+
+1. **Миграция 0020** — таблицы:
+   - `slai_category_map` — текущий снимок lookup (slai_category_id → our_hint)
+     с индексами по active / our_hint / usage_count_30d
+   - `sync_inbox` — очередь events с UNIQUE event_id (идемпотентность)
+
+2. **`src/security/hmac-verify.ts`** — timing-safe HMAC SHA-256 verify:
+   - `verifyHmacSignature(body, header, secret)` — низкоуровневый
+   - `verifySlaiSignature(body, headers, secret)` — высокоуровневый
+     (проверяет header `X-SLAI-Signature` + `X-SLAI-Version: v1`)
+   - Использует `crypto.timingSafeEqual` против timing attack
+   - Fail-closed: если secret не настроен → 401 на любой запрос
+
+3. **`src/storage/slai-categories.ts`** — Postgres-based storage:
+   - `enqueueEvent` с идемпотентностью через ON CONFLICT (event_id)
+   - `listPending` / `markProcessed` / `recordFailure` для будущего sweeper'а
+   - `upsertMapping` (для snapshot reconciler) + `findById` / `findByName`
+   - `deactivate` для category.deleted events
+
+4. **`src/routes/integrations/slai-sync.ts`** — 2 endpoint'а:
+   - `POST /api/v1/integrations/slai/sync/nomenclature` (events)
+   - `POST /api/v1/integrations/slai/sync/nomenclature/snapshot` (daily)
+   - Zod-валидация payload по схемам из PARSDOCS_CATEGORY_SYNC_REPLY.md
+   - MVP: события применяются синхронно к lookup-table (без отдельного
+     sweeper'а — это в roadmap'е если будет нужно офлайн-обработку)
+
+5. **Config** — `SLAI_TO_PARSDOCS_HMAC_SECRET` env var, fail-closed
+   default (пустой = endpoint не работает).
+
+6. **17 unit-тестов** в `tests/hmac-verify.spec.ts`:
+   - валидная подпись / неправильный секрет / tampered body
+   - sha256= префикс / hex без префикса
+   - empty header / empty secret / invalid hex / shortened hex
+   - Buffer vs string body
+   - UTF-8 кириллица — те же байты, та же подпись
+   - version v1 принимается, v2 отклоняется
+   - case-insensitive headers
+   - fail-closed когда секрет не настроен
+
+**Что в roadmap (НЕ MVP):**
+- Background sweeper для асинхронной обработки sync_inbox (если нагрузка
+  заставит — сейчас sync-применение в handler'е работает за миллисекунды)
+- Redis cache для lookup (TTL 5 мин) — добавим если увидим latency
+- Cron для daily snapshot reconciler (auto compare snapshot vs current)
+- Интеграция в `applyCategoryHints` orchestrator'а — читать из
+  lookup-table, обогащать наш keyword-mapper
+
+**Блокеры для запуска endpoint'а:**
+- S3 в SLAI_SYNC_QUEUE.md — нужен `SLAI_TO_PARSDOCS_HMAC_SECRET`
+  от SLAI команды (генерируется через `openssl rand -hex 32`)
+- Миграция должна быть применена (`npm run migrate:up` на проде)
+
+См. коммит c этим closing entry.
 
 **Где:** новый `src/routes/integrations/slai-sync.ts` + storage layer.
 

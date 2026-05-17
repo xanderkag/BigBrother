@@ -16,6 +16,7 @@ import {
 import { config } from './config.js';
 import { documentTypesRoutes } from './routes/document-types.js';
 import { jobsRoutes } from './routes/jobs.js';
+import { slaiSyncRoutes } from './routes/integrations/slai-sync.js';
 import { healthRoutes } from './routes/health.js';
 import { metricsRoutes } from './routes/metrics.js';
 import { operationalMetricsRoutes } from './routes/operational-metrics.js';
@@ -235,6 +236,11 @@ async function main() {
   await app.register(operationalMetricsRoutes, { prefix: '/api/v1' });
   await app.register(referenceListsRoutes, { prefix: '/api/v1' });
   await app.register(resolutionRoutes, { prefix: '/api/v1' });
+
+  // F13: SLAI category sync receiver. Не использует Bearer auth — защищается
+  // своим HMAC (X-SLAI-Signature). Поэтому регистрируется БЕЗ префикса
+  // (полные paths внутри route файла).
+  await app.register(slaiSyncRoutes);
 
   // --- Operator UI: static files at /ui, redirect / → /ui/ ---
   //
