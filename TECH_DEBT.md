@@ -1353,10 +1353,10 @@ cache сильнее проявится — точная цифра по prod и
 | **F16** | Новый тип `transport_request` (заявка на перевозку) | 3-5 дней | high |
 | **F17** | Новый тип `transport_invoice` (ТН формы 2013) | 2-3 дня | medium |
 | **F18** | Новый тип `waybill` (путевой лист) | 2 дня | medium |
-| **F19** | Bank-реквизиты (bank/bik/account/corr_account) в invoice schema | 1 день | high |
+| ~~**F19**~~ | ~~Bank-реквизиты в invoice schema~~ — ✅ закрыто 2026-05-17 (PARTY schema расширен + prompt) | — | — |
 | **F20** | One-shot `metadata.prompt_override` для reprocess (опционально) | 2 дня | low — ждём явный запрос SLAI |
-| **F21** | `GET /jobs/:id/raw-text` endpoint | 0.5 дня | medium |
-| **F22** | Case-insensitive document_type lookup (синк slug'ов между SLAI/нашими) | 1 час | low |
+| ~~**F21**~~ | ~~`GET /jobs/:id/raw-text` endpoint~~ — ✅ закрыто 2026-05-17 | — | — |
+| ~~**F22**~~ | ~~Case-insensitive document_type lookup~~ — ✅ закрыто 2026-05-17 (SLAI_ALIASES map + uppercase/lowercase fallback) | — | — |
 | **F23** | Tesseract китайский упрощённый (Aliexpress) | 1 час | low — Фаза 2 ВЭД |
 | **F24** | Tesseract турецкий | 1 час | low — Фаза 2 |
 | **F25** | Tesseract польский | 1 час | low — Фаза 2 |

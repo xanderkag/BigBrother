@@ -99,21 +99,61 @@ export class DocumentTypeResolver {
    * are in-memory.
    */
   async get(slug: string): Promise<DocumentTypeRow | null> {
-    const cached = this.cache.get(slug);
-    if (cached && Date.now() - cached.at < this.ttlMs) {
-      return cached.row;
+    // F22 (2026-05-17): case-insensitive lookup + SLAI alias map.
+    // SLAI ТЗ v1 использует нейминг отличный от наших исторических slug'ов
+    // (services_act ≠ AKT, tax_invoice ≠ factInvoice, upd ≠ UPD).
+    // Чтобы не делать миграцию данных в БД — расширяем candidates list
+    // и пробуем каждый. Первый найденный row возвращается.
+    const candidates = this.expandSlugCandidates(slug);
+    for (const candidate of candidates) {
+      const cached = this.cache.get(candidate);
+      if (cached && Date.now() - cached.at < this.ttlMs) {
+        if (cached.row) return cached.row;
+        continue;
+      }
+      let row: DocumentTypeRow | null;
+      try {
+        row = await documentTypesRepo.findBySlug(candidate);
+      } catch {
+        // DB hiccup — don't poison the cache, just say "no entry" for now
+        // so the caller falls back to hardcoded behaviour. We can revisit
+        // if this masks real DB outages in production.
+        return null;
+      }
+      this.cache.set(candidate, { row, at: Date.now() });
+      if (row) return row;
     }
-    let row: DocumentTypeRow | null;
-    try {
-      row = await documentTypesRepo.findBySlug(slug);
-    } catch {
-      // DB hiccup — don't poison the cache, just say "no entry" for now
-      // so the caller falls back to hardcoded behaviour. We can revisit
-      // if this masks real DB outages in production.
-      return null;
+    return null;
+  }
+
+  /**
+   * F22: расширить slug в список candidate'ов которые искать в БД.
+   * Порядок важен: пробуем сначала точное совпадение, потом alias'ы,
+   * потом регистр-варианты. Первый найденный row побеждает.
+   *
+   * SLAI_ALIASES — explicit map от их нейминга к нашему историческому
+   * (см. PARSDOCS_REPLY_TO_SLAI_TZ.md секция 2.1). Расширяется по мере
+   * появления новых типов в их ТЗ.
+   */
+  private expandSlugCandidates(slug: string): string[] {
+    const SLAI_ALIASES: Record<string, string> = {
+      services_act: 'AKT',
+      tax_invoice: 'factInvoice',
+      // upd/ttn/cmr попадают через uppercase ниже — не нужны в alias map
+    };
+    const result: string[] = [slug];
+    const lowered = slug.toLowerCase();
+    if (SLAI_ALIASES[lowered] && !result.includes(SLAI_ALIASES[lowered])) {
+      result.push(SLAI_ALIASES[lowered]);
     }
-    this.cache.set(slug, { row, at: Date.now() });
-    return row;
+    const upper = slug.toUpperCase();
+    if (upper !== slug && !result.includes(upper)) {
+      result.push(upper);
+    }
+    if (lowered !== slug && !result.includes(lowered)) {
+      result.push(lowered);
+    }
+    return result;
   }
 
   /**

@@ -404,6 +404,44 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // F21: GET /jobs/:id/raw-text — отдаёт сохранённый OCR-текст.
+  // Используется SLAI / другими интеграторами для отладки когда
+  // status=needs_review (чтобы оператор увидел что именно распознал
+  // Tesseract до LLM-структурирования). Также пригоден для повторного
+  // запуска extract'а через POST /jobs/:id/reprocess.
+  // Намеренно без response Zod-schema — возвращаем text/plain.
+  r.get(
+    '/jobs/:id/raw-text',
+    {
+      schema: {
+        tags: ['jobs'],
+        summary: 'Получить сырой OCR-текст распознанного документа',
+        description:
+          'Возвращает `raw_text` job\'а — текст, который OCR-движок ' +
+          '(Tesseract / pdf-text / vision-llm / yandex) извлёк из документа ' +
+          'ДО LLM-структурирования. Подходит для debug и retry. Если у job ' +
+          'нет raw_text (OCR провалился / job ещё в очереди) — возвращает 404.',
+        security: [{ bearerAuth: [] }],
+        params: JobIdParam,
+      },
+    },
+    async (req, reply) => {
+      const job = await jobsRepo.findById(req.params.id);
+      if (!job) {
+        reply.code(404);
+        return { error: 'job not found' };
+      }
+      if (!(await requireProjectAccess(req, reply, job.project_id))) return reply;
+      if (!job.raw_text) {
+        reply.code(404);
+        return { error: 'job has no raw_text (OCR did not complete or job was failed before extraction)' };
+      }
+      reply.type('text/plain; charset=utf-8');
+      reply.send(job.raw_text);
+      return reply;
+    },
+  );
+
   // GET /jobs/:id/file — отдаёт исходный загруженный документ.
   // Используется UI для preview оригинала рядом с extracted JSON.
   // После retention-чистки (jobs.file_path NULLed) возвращает 410.

@@ -34,6 +34,15 @@ const PARTY = {
     inn: { type: 'string', description: INN_DESCRIPTION },
     kpp: { type: 'string', description: KPP_DESCRIPTION },
     address: { type: 'string' },
+    // F19 (2026-05-17): банковские реквизиты для invoice / payment_order /
+    // других платёжных документов. Все поля optional — модель заполняет
+    // только то что нашла в документе. Для документов без банк-блока
+    // (CMR, путевой лист) останутся пустыми.
+    bank: { type: 'string', description: 'Наименование банка' },
+    bik: { type: 'string', description: 'БИК банка (9 цифр)' },
+    account: { type: 'string', description: 'Расчётный счёт (20 цифр)' },
+    corr_account: { type: 'string', description: 'Корреспондентский счёт банка (20 цифр)' },
+    phone: { type: 'string', description: 'Контактный телефон в формате +7XXXXXXXXXX' },
   },
 } as const;
 
