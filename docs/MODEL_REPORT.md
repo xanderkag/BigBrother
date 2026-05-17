@@ -38,6 +38,90 @@
 | **18. GPU v2 vision — Mistral Small 3.1** ⭐ | RTX 4000 Ada 20 ГБ VRAM | **Mistral Small 3.1 (image)** | **50 сек/файл (8.4 мин на 10)** | F1 items 79%, type/number/date **100%**, **ИНН 80%** | Первая vision-модель с реальным ИНН (vs 0% у MiniCPM-V) |
 | **19. GPU v2 text — YandexGPT-5 Lite** | RTX 4000 Ada 20 ГБ VRAM | **YandexGPT-5 Lite 8B (GGUF)** | **31 сек/файл (5.1 мин на 10)** | F1 items 80%, type/number/date 100% | 80% ИНН, **30% total** — самая компактная (5 GB), но арифметика хуже Phi-4 |
 | **20. GPU v2 text — T-Pro 32B** | RTX 4000 Ada 20 ГБ VRAM | **T-Pro 32B (T-Банк, GGUF)** | **116 сек/файл (19.4 мин на 10)** | F1 items 80%, type/number/date 100% | 80% ИНН, **60% total** — равен Phi-4 по точности, но в 3.5× медленнее |
+| **21. Cloud API — Claude Sonnet 4.6** ⭐ production target | Anthropic API через inference-service `BACKEND=claude` | **claude-sonnet-4-6** | **7.7 сек/файл (1.3 мин на 10)** ⚡ | F1 items 70%, type/number/date 90%, **ИНН 70%**, total **50%** | **9/10 valid JSON** (1 invoice failed — pre-filled `{` нужен). **$0.0165/doc → $25/мес** для 50 doc/day. Самая быстрая |
+
+---
+
+## Прогон #21 — Claude Sonnet 4.6 (production target SLAI пилота)
+
+**Дата:** 2026-05-17. Прогон через `bench-claude.py` напрямую к Anthropic API.
+`temperature=0`, `max_tokens=4096`, `system` с `cache_control: ephemeral`.
+
+| Метрика | Значение |
+|---|---|
+| Время на 10 файлов | **1 мин 17 сек** (в **4× быстрее** Gemma 12B text, **15× быстрее** T-Pro 32B) |
+| Avg сек/файл | 7.7 (range 2.4–22.4) |
+| Valid JSON | 9/10 (1 BAD — invoice-01) |
+| type / number / date_match | 90% / 90% / 90% |
+| seller / buyer ИНН | 70% / 70% |
+| items_F1 | 70% |
+| total_match | 50% |
+| **Cost / 10 файлов** | **$0.165** |
+| **Cost / документ** | **$0.0165** |
+| **Cost / месяц (50 doc/day)** | **$25** |
+
+### Per-file (6/8 нормальных документов с полным TNDSB∑)
+
+```
+AKT-synth-01                       4/4   [TNDSB∑]   4.9s
+AKT-synth-02                       4/4   [TNDSB∑]   5.0s
+TTN-synth-01                       3/3   [TNDSB]    4.3s
+TTN-synth-02                       2/2   [TNDSB]    3.5s
+UPD-synth-01                      20/20  [TNDSB∑]  22.4s  ← multipage без MultiPass!
+UPD-synth-02                      15/15  [TNDSB∑]  12.6s
+invoice-synth-01                   0/5   [-]       10.4s  ← BAD-JSON
+invoice-synth-02                  10/10  [TNDSB∑]   8.9s
+payment_order-synth-01             0/0   [TND]      2.4s
+payment_order-synth-02             0/0   [TND]      2.5s
+```
+
+### Известный issue (F14 new) — invoice-01 BAD-JSON
+
+Claude вместо JSON вернул: `"I need to verify the totals from the line items:"` —
+размышление текстом перед ответом. Это **regression** для structured output
+который чинится в одну строку:
+
+```python
+# В backends/claude.py:
+messages=[
+    {"role": "user", "content": user_prompt},
+    {"role": "assistant", "content": "{"},  # ← prefilled, форсит JSON continuation
+]
+```
+
+Заведено как **F14** в TECH_DEBT. 1 час работы → ожидаем 10/10 valid JSON.
+
+### Prompt caching не сработал (F15 new)
+
+`cache_creation_tokens=0` и `cache_read_tokens=0` во всех 10 запросах.
+Наш SYSTEM_PROMPT = **1049 input tokens**, ровно на грани минимума Sonnet
+(**1024 tokens**). Небольшие колебания токенайзера выкидывают за порог.
+
+**Лечение (F15):** добавить ~500 tokens boilerplate (описание схемы каждого
+из 15 типов документов + примеры извлечения) до **~1500 tokens** total.
+После этого cache hit ≥ 70% на bulk → cost **с $25 до ~$10/мес**.
+
+### Сравнение с локальными топ-моделями
+
+| Метрика | Claude Sonnet 4.6 | Gemma 27B text | Phi-4 14B |
+|---|---|---|---|
+| Время / 10 файлов | **1.3 мин** ⚡ | 11.5 мин | 5.6 мин |
+| items_F1 | 70% | 80% | 80% |
+| ИНН match | 70% | 80% | 80% |
+| total_match | 50% | 50% | **60%** |
+| Cost (per doc) | $0.0165 | $0 (электр.) | $0 |
+| Готовность к prod | ⭐ да (SLAI пилот) | да | да |
+
+**Вердикт по синтетике:**
+- Claude **на 5-10 п.п. хуже** по точности чем топ-локальные модели
+- Но в **4-9× быстрее**
+- После F14 (prefilled `{`) — догонит локальные по valid_json
+- После F15 (cache boost) — cost упадёт в 2.5× до ~$10/мес
+- **На реальных грязных сканах** ожидается обратное: Claude должен обогнать
+  локальные за счёт понимания контекста и устойчивости к OCR-шуму. Это
+  проверяем когда придут PDF от SLAI
+
+**Используем для пилота SLAI.** F14 + F15 — приоритет на этой неделе.
 
 ---
 

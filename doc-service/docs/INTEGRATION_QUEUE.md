@@ -50,7 +50,7 @@
 
 ### Q1. ANTHROPIC_API_KEY для F11 baseline bench
 
-- **Status:** ANSWERED (USER ответил A — генерирует свой ключ)
+- **Status:** RESOLVED (2026-05-17)
 - **Asked:** 2026-05-16
 - **From:** CLAUDE
 - **To:** USER
@@ -82,6 +82,21 @@
 
 #### Answer (2026-05-17, USER)
 Вариант A — генерирую свой ключ сейчас, прогоняем синт тесты.
+
+#### Resolution (2026-05-17, Claude)
+- Прогон выполнен через `bench-claude.py` на 10 синтетических PDF
+- Модель: `claude-sonnet-4-6` (после фикса фейкового `claude-sonnet-4-7-20260301`)
+- Результаты в MODEL_REPORT.md прогон #21:
+  - **1.3 мин на 10 файлов** (в 4-9× быстрее локальных топ-моделей)
+  - 9/10 valid JSON, items_F1 70%, ИНН 70%, total 50%
+  - **Cost: $0.0165/doc → $25/мес для 50 doc/day**
+- Найдены 2 issue для prod-tuning (заведены как F14 + F15):
+  - F14: prefilled `{` для structured output (10/10 valid JSON)
+  - F15: prompt caching boost через boilerplate ($25 → $10/мес)
+- `.env.example` исправлен на правильный model_id `claude-sonnet-4-6`
+- API key пользователя был использован один раз для прогона, сразу удалён
+  из env, в git не попал. **USER должен ротировать ключ в Anthropic Console**
+  (попал в чат-историю).
 
 ---
 
@@ -278,3 +293,4 @@ F9 — изменено в `inference-service/.env.example`:
 | 2026-05-16 | Файл создан как `Desktop\OPEN_QUESTIONS.md`. 5 active questions: Q1-Q5. |
 | 2026-05-16 | Переехал в git: `doc-service/docs/INTEGRATION_QUEUE.md` (рекомендация SLAI A vs B). Q2, Q3 RESOLVED. Добавлены Q7, Q8 от SLAI. |
 | 2026-05-17 | Q7 RESOLVED — review matcher/HMAC/target_entity_hint, файл `PARSDOCS_Q7_MATCHER_REVIEW.md`. Q8 переведено из ANSWERED в RESOLVED (action plan был выполнен ещё `4087510`). |
+| 2026-05-17 | Q1 RESOLVED — прогон Claude Sonnet 4.6 на синт. PDF: $0.0165/doc, F1 70%, 4× быстрее локальных. Найдены F14 (prefilled `{`) и F15 (cache boost). Model_id в `.env.example` исправлен с фейкового `claude-sonnet-4-7-20260301` на реальный `claude-sonnet-4-6`. |

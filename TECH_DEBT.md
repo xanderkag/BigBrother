@@ -1296,6 +1296,55 @@ backend делит PDF по страницам и шлёт 2 отдельных 
 
 ---
 
+### F14. Prefilled assistant `{` для Claude structured output — open
+
+**Где:** `inference-service/src/inference_service/backends/claude.py`,
+методы `extract` и `verify`.
+
+**Симптом:** Bench #21 показал — Claude Sonnet 4.6 на одном из 10
+документов (invoice-synth-01) вместо JSON вернул размышление текстом:
+`"I need to verify the totals from the line items:"`. Это известная
+особенность «thinking» моделей — они хотят перепроверить себя текстом
+перед structured output.
+
+**Лечение:**
+```python
+messages=[
+    {"role": "user", "content": user_prompt},
+    {"role": "assistant", "content": "{"},  # prefilled
+]
+```
+Anthropic API форсит continuation с открывающей скобки → модель ОБЯЗАНА
+продолжать с JSON. После prefilled надо склеить `{` + response.text при
+парсинге.
+
+**Срок:** 1 час работы + 1 час тестов. Ожидаемый эффект: valid_json
+**9/10 → 10/10**.
+
+---
+
+### F15. Prompt caching boost — добавить boilerplate до ~1500 tokens — open
+
+**Где:** `inference-service/src/inference_service/prompts/extract.py`,
+`build_cacheable()`.
+
+**Симптом:** Bench #21 показал `cache_creation_tokens=0` и
+`cache_read_tokens=0` во всех 10 запросах. Причина: SYSTEM_PROMPT =
+1049 input tokens, ровно на грани **минимума 1024** для Sonnet кэширования.
+Колебания токенайзера выкидывают за порог.
+
+**Лечение:** добавить ~500 tokens boilerplate в `_STATIC_BUILTIN_HEADER`:
+- Подробное описание каждого из 15 типов документов с примерами
+- 2-3 few-shot примера extraction (типовая входная шапка → typical JSON output)
+- Это ещё и повысит точность
+
+**Срок:** 1 день работы. Ожидаемый эффект:
+- Cache hit ≥ 70% на bulk-обработке
+- Cost / месяц: **$25 → ~$10** (в 2.5×)
+- Возможный +2-5 п.п. точности от few-shot примеров
+
+---
+
 ### F13. Webhook receiver для SLAI continuous category sync — open
 
 **Где:** новый `src/routes/integrations/slai-sync.ts` + storage layer.
