@@ -1,16 +1,27 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { isAuthenticated } from '@/lib/auth';
 import LoginPage from '@/pages/Login';
+import DashboardPage from '@/pages/Dashboard';
+import JobsListPage from '@/pages/JobsList';
 import JobDetailPage from '@/pages/JobDetail';
+import UploadPage from '@/pages/Upload';
 import Layout from '@/components/Layout';
 
 /**
- * App routes — пока минимальные, по мере миграции добавляем jobs list,
- * upload, document-types и т.д. Для v2.0 — только Login + Job Detail
- * (главный фикс UI по жалобе на лишнее пустое пространство).
+ * App routes — UI v2.
  *
- * Все маршруты внутри Layout проверяют isAuthenticated() через
- * RequireAuth wrapper — если нет токена, редирект на /login.
+ * Phase 1 + 2 экраны:
+ *   /            → Dashboard (операционные метрики)
+ *   /jobs        → JobsList (таблица всех документов)
+ *   /jobs/:id    → JobDetail (PDF + extracted data)
+ *   /upload      → Upload (drag-drop)
+ *   /login       → Login (если нет токена в localStorage)
+ *
+ * Всё внутри Layout проверяется через RequireAuth — нет токена →
+ * редирект на /login. Layout рендерит общий header с навигацией.
+ *
+ * Остальные экраны (admin, audit log, providers и т.д.) остались в
+ * старом /ui/ — Layout содержит deep-link «Старый UI →».
  */
 export default function App() {
   return (
@@ -22,8 +33,11 @@ export default function App() {
           <RequireAuth>
             <Layout>
               <Routes>
+                <Route index element={<DashboardPage />} />
+                <Route path="jobs" element={<JobsListPage />} />
                 <Route path="jobs/:jobId" element={<JobDetailPage />} />
-                <Route path="*" element={<DefaultRedirect />} />
+                <Route path="upload" element={<UploadPage />} />
+                <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
             </Layout>
           </RequireAuth>
@@ -38,16 +52,4 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
     return <Navigate to="/login" replace />;
   }
   return <>{children}</>;
-}
-
-/**
- * Старый UI пока живёт на /ui/, и базовая страница / у нас не
- * реализована — отправляем туда тех, кто ткнул куда-то не туда.
- * Когда мигрируем jobs list, заменим на <JobsListPage />.
- */
-function DefaultRedirect() {
-  if (typeof window !== 'undefined') {
-    window.location.href = '/ui/';
-  }
-  return null;
 }

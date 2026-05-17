@@ -1,16 +1,17 @@
-import { Link, useLocation } from 'react-router-dom';
+import { Link, NavLink, useLocation } from 'react-router-dom';
 import { clearToken } from '@/lib/auth';
 
 /**
- * Top-level layout v2: тонкий sticky header + контентная область
- * на весь viewport. Sidebar отсутствует (вернём когда мигрируем
- * jobs list + admin pages). Цель — максимум места под content.
+ * Top-level layout v2: sticky header с навигацией между основными
+ * экранами (Dashboard / Jobs / Upload). Sidebar отсутствует —
+ * экономим горизонтальное пространство, остальные экраны (admin,
+ * audit log) уйдут в выпадающее меню когда мигрируем их.
  */
 export default function Layout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   return (
     <div className="flex h-full flex-col">
-      <header className="sticky top-0 z-20 flex items-center justify-between border-b border-slate-200 bg-white px-6 py-3 shadow-sm">
+      <header className="sticky top-0 z-20 flex items-center justify-between border-b border-slate-200 bg-white px-6 py-2.5 shadow-sm">
         <div className="flex items-center gap-6">
           <Link to="/" className="flex items-center gap-2 font-semibold text-slate-900">
             <svg
@@ -27,17 +28,24 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             </span>
           </Link>
           <nav className="flex items-center gap-1 text-sm">
-            <a
-              href="/ui/"
-              className="rounded-lg px-3 py-1.5 text-slate-600 hover:bg-slate-100"
-              title="Старый UI (полный набор экранов)"
-            >
-              Все экраны →
-            </a>
+            <NavItem to="/" end>
+              Dashboard
+            </NavItem>
+            <NavItem to="/jobs">Документы</NavItem>
+            <NavItem to="/upload">Загрузить</NavItem>
           </nav>
         </div>
         <div className="flex items-center gap-2 text-sm">
-          <span className="text-slate-500">{location.pathname}</span>
+          <a
+            href="/ui/"
+            className="rounded-lg px-3 py-1.5 text-slate-600 hover:bg-slate-100"
+            title="Старый UI (полный набор экранов)"
+          >
+            Старый UI →
+          </a>
+          <span className="hidden font-mono text-xs text-slate-400 lg:inline">
+            {location.pathname}
+          </span>
           <button
             type="button"
             className="btn-ghost"
@@ -52,5 +60,31 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       </header>
       <main className="flex-1 overflow-auto bg-slate-50">{children}</main>
     </div>
+  );
+}
+
+function NavItem({
+  to,
+  end,
+  children,
+}: {
+  to: string;
+  end?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <NavLink
+      to={to}
+      end={end}
+      className={({ isActive }) =>
+        `rounded-lg px-3 py-1.5 font-medium transition-colors ${
+          isActive
+            ? 'bg-brand-50 text-brand-700'
+            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+        }`
+      }
+    >
+      {children}
+    </NavLink>
   );
 }

@@ -12,9 +12,90 @@ import type { Job } from '@/lib/types';
 
 export const jobsKeys = {
   all: ['jobs'] as const,
+  list: (filters: ListJobsFilters) => ['jobs', 'list', filters] as const,
   detail: (id: string) => ['jobs', id] as const,
   file: (id: string) => ['jobs', id, 'file'] as const,
 };
+
+export interface ListJobsFilters {
+  status?: string;
+  document_type?: string;
+  organization_id?: string;
+  project_id?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+}
+
+interface ListJobsResponse {
+  items: Job[];
+  limit: number;
+  offset: number;
+}
+
+/**
+ * Список job'ов с фильтрами и пагинацией. Сервер возвращает один
+ * page; для total count'а сейчас нет endpoint'а — используем
+ * "есть/нет ещё одна страница" эвристику (items.length === limit).
+ */
+export function useJobsList(filters: ListJobsFilters = {}) {
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(filters)) {
+    if (v !== undefined && v !== null && v !== '') {
+      params.set(k, String(v));
+    }
+  }
+  const qs = params.toString();
+  return useQuery({
+    queryKey: jobsKeys.list(filters),
+    queryFn: () =>
+      api.get<ListJobsResponse>(`/api/v1/jobs${qs ? '?' + qs : ''}`),
+    // Авто-refresh каждые 10s — даёт live-updates для pending/processing
+    // job'ов без ручного refresh кнопки. Stale 5s — мгновенный показ
+    // кэша при возврате на страницу, фоновый refetch.
+    refetchInterval: 10_000,
+    staleTime: 5_000,
+  });
+}
+
+/**
+ * Multipart upload через POST /api/v1/jobs. Возвращает { job_id, status }.
+ * Прогресс upload'а не репортится — используем стандартный fetch без
+ * XMLHttpRequest. Если потребуется progress bar — заменим на XHR.
+ */
+interface UploadInput {
+  file: File;
+  documentHint?: string;
+  webhookUrl?: string;
+  metadata?: Record<string, unknown>;
+}
+
+interface UploadResponse {
+  job_id: string;
+  status: string;
+}
+
+export function useUploadJob() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: UploadInput): Promise<UploadResponse> => {
+      const fd = new FormData();
+      fd.append('file', input.file);
+      if (input.documentHint) fd.append('document_hint', input.documentHint);
+      if (input.webhookUrl) fd.append('webhook_url', input.webhookUrl);
+      if (input.metadata) fd.append('metadata', JSON.stringify(input.metadata));
+      return api.post<UploadResponse>('/api/v1/jobs', undefined, {
+        body: fd,
+        // не ставим Content-Type — fetch сам выставит multipart boundary
+      });
+    },
+    onSuccess: () => {
+      // Инвалидируем список — новый job там скоро появится
+      qc.invalidateQueries({ queryKey: jobsKeys.all });
+    },
+  });
+}
 
 export function useJob(jobId: string) {
   return useQuery({
