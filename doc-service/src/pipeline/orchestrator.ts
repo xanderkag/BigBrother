@@ -6,7 +6,6 @@ import { join } from 'node:path';
 import type { Logger } from 'pino';
 import { config } from '../config.js';
 import { jobsRepo } from '../storage/jobs.js';
-import { deliverWebhook } from '../webhooks/deliver.js';
 import type { OcrEngine, OcrInput, OcrResult } from './ocr/types.js';
 
 const execP = promisify(exec);
@@ -23,9 +22,7 @@ import type { LlmClient, LlmExtractDebug } from './llm/types.js';
 import type { DocumentTypeSlug } from '../types/documents.js';
 import { validateExtractedWithResolver } from './validation/index.js';
 import { runPostExtractNormalization } from './normalize/run.js';
-import { redactPii } from './normalize/pii-redact.js';
-import { processFieldConfidence } from './normalize/field-confidence.js';
-import { removeStoredFile } from '../storage/files.js';
+import { deliverFinalizedJobWebhook } from './webhook-delivery.js';
 import { documentTypeResolver, type ResolvedTypeConfig } from './document-type-resolver.js';
 import { jobsDurationSeconds, jobsTotal, ocrEngineDurationSeconds } from '../metrics.js';
 import { runResolutionPipeline } from '../resolution/pipeline.js';
@@ -364,65 +361,10 @@ async function processJobInner(
     }
 
     if (updated && updated.webhook_url) {
-      // F2: per-field confidence — извлекаем `_field_confidence` из extracted
-      // в top-level webhook payload. Калибруем по checksum ИНН и нормализации
-      // госномера. См. pipeline/normalize/field-confidence.ts.
-      const fcResult = processFieldConfidence(
-        updated.extracted as Record<string, unknown> | null,
-      );
-      const extractedAfterFc = fcResult.cleanedExtracted;
-      const fieldConfidence = fcResult.fieldConfidence;
-
-      // F4: PII redaction перед отправкой webhook'а. Управляется флагом
-      // `metadata.redact_pii: true` который клиент ставит при создании job'а
-      // (через query-param `?redact_pii=true` или поле в metadata).
-      // Если редактим — extracted и metadata пишутся в payload в редактированном
-      // виде; БД-хранилище остаётся как было (для аудита и переотправки
-      // оператором). См. routes/jobs.ts и pipeline/normalize/pii-redact.ts.
-      const meta = (updated.metadata ?? null) as Record<string, unknown> | null;
-      const shouldRedact = meta && (meta.redact_pii === true || meta.redact_pii === 'true');
-      const extractedOut = shouldRedact
-        ? redactPii(extractedAfterFc)
-        : extractedAfterFc;
-      const metadataOut = shouldRedact
-        ? redactPii(meta)
-        : meta;
-
-      await deliverWebhook(
-        jobId,
-        updated.webhook_url,
-        {
-          job_id: updated.id,
-          status: updated.status,
-          document_type: updated.document_type,
-          confidence: updated.confidence === null ? null : Number(updated.confidence),
-          ocr_engine: updated.ocr_engine,
-          extracted: extractedOut,
-          metadata: metadataOut,
-          error: updated.error,
-          _field_confidence: Object.keys(fieldConfidence).length > 0 ? fieldConfidence : undefined,
-        },
-        log,
-      );
-
-      // F27 (SLAI ТЗ): immediate delete оригинала после webhook delivery
-      // если клиент попросил через metadata.delete_after_processing.
-      // Use case: документы с PII (паспорт водителя в ТТН) — клиент не
-      // хочет чтобы оригинал лежал у нас 30 дней default retention.
-      // jobs.file_path NULLed для аудита (БД-row остаётся).
-      const wantsDelete =
-        meta && (meta.delete_after_processing === true || meta.delete_after_processing === 'true');
-      if (wantsDelete && updated.file_path) {
-        try {
-          await removeStoredFile(updated.file_path);
-          await jobsRepo.markFileDeleted(updated.id);
-          log.info({ jobId, file_path: updated.file_path }, 'file deleted after processing (F27)');
-        } catch (err) {
-          // Best-effort — не блокируем основной pipeline. Sweeper подберёт
-          // через 30 дней если immediate delete не удался.
-          log.warn({ err, jobId }, 'F27 immediate delete failed; sweeper will retry');
-        }
-      }
+      // F2 (field_confidence) + F4 (PII redaction) + F27 (immediate delete)
+      // вынесены в webhook-delivery.ts чтобы processJobInner оставался
+      // сфокусированным на основном pipeline'е.
+      await deliverFinalizedJobWebhook(updated, jobId, log);
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
