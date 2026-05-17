@@ -20,6 +20,17 @@ export type WebhookPayload = {
   // через processFieldConfidence() в orchestrator. См.
   // pipeline/normalize/field-confidence.ts.
   _field_confidence?: Record<string, number>;
+  // F5 (2026-05-17): multi-document PDF — массив найденных документов
+  // с их страничными диапазонами. Заполняется ТОЛЬКО если в PDF
+  // найдено > 1 типа документа (иначе backwards-compatible single-doc
+  // через `extracted`). См. pipeline/multidoc/types.ts.
+  documents?: Array<{
+    page_range: string;
+    document_type: string | null;
+    confidence: number;
+    extracted: Record<string, unknown>;
+    field_confidence?: Record<string, number>;
+  }>;
 };
 
 /**

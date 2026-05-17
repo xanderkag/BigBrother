@@ -1288,7 +1288,64 @@ provider_settings UI оператор может переключить на Opu
 
 ---
 
-### F5. Multi-document PDF (`documents: Array<>`)
+### F5. Multi-document PDF (`documents: Array<>`) — 🟡 skeleton готов 2026-05-17
+
+**Сделано (skeleton):**
+
+1. `src/pipeline/multidoc/types.ts`:
+   - `PageClassification` — результат классификации одной страницы
+     (page, document_type, confidence, text_preview)
+   - `DocumentSegment` — последовательность страниц одного типа
+     (document_type, page_from, page_to, confidence, combined_text)
+   - `ExtractedDocumentEntry` — финальный entry для webhook payload
+   - `formatPageRange()` helper («1» / «2-4»)
+
+2. `src/pipeline/multidoc/splitter.ts`:
+   - `splitPagesIntoSegments(pages, texts, opts)` — greedy consecutive
+     grouping. Параметры:
+     * `minConfidenceForNewSegment` (default 0.4) — низкоуверенные
+       страницы присоединяются к предыдущему сегменту
+     * `minTextLengthForClassification` (default 100 chars) — пустые
+       страницы тоже присоединяются (не открывают свой сегмент)
+   - `isMultiDocument(segments)` — heuristic: реальный multi-doc только
+     если ≥ 2 сегментов с разными типами и confidence ≥ 0.6
+     Это backwards-compat: если все одного типа, single-doc pipeline.
+
+3. `src/webhooks/deliver.ts`:
+   - `WebhookPayload.documents?: Array<...>` — новое опциональное поле.
+     Заполняется ТОЛЬКО для реального multi-doc. Single-doc → `extracted`
+     как обычно (v1 backwards-compatible).
+
+4. 16 unit-тестов в `tests/multidoc-splitter.spec.ts`:
+   - single-doc (одна или N страниц одного типа)
+   - multi-doc (счёт + ТТН, 3 разных типа подряд)
+   - combined_text объединяет через \n\n
+   - low-confidence страница присоединяется к предыдущему
+   - пустая страница (короткий текст) присоединяется к предыдущему
+   - null document_type на странице — присоединяется
+   - `isMultiDocument` heuristic: < 2 сегментов / одного типа / low conf → false
+
+**Что ещё нужно для полного F5 (НЕ skeleton, остаётся работа):**
+
+5. **PDF rasterizer → per-page OCR**: уже есть pdftoppm для PDF → PNG,
+   надо обернуть в loop по страницам и вызвать Tesseract per-page.
+   Сейчас pdf-text engine выдаёт весь текст одним блоком — нужно
+   модифицировать чтобы возвращал array of page-texts. 2-3 дня работы.
+
+6. **Per-segment extract**: orchestrator вызывает `extract` на
+   `segment.combined_text` для каждого сегмента, собирает результаты
+   в `documents: Array<ExtractedDocumentEntry>`. 2 дня.
+
+7. **Webhook payload**: при multi-doc — заполнить `documents`, в
+   `extracted` оставить доминирующий (наибольший сегмент). 1 день.
+
+8. **Tests на orchestrator integration**: PDF с двумя документами →
+   разделили → каждый отдельно обработали → webhook содержит оба. 2 дня.
+
+**Срок остатка:** 7-9 дней работы по плану.
+
+См. PARSDOCS_REPLY_TO_SLAI_TZ.md секция «Q1 Multi-document PDF» и
+SLAI_OUR_REPLY.md секция 9.4.
 
 **Где:** orchestrator + API response shape (v2 breaking).
 
