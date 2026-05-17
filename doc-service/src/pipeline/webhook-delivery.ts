@@ -31,6 +31,7 @@ import { jobsRepo, type JobRow } from '../storage/jobs.js';
 import { removeStoredFile } from '../storage/files.js';
 import { redactPii } from './normalize/pii-redact.js';
 import { processFieldConfidence } from './normalize/field-confidence.js';
+import { normalizeSlugForApi } from '../types/slug-normalize.js';
 
 /**
  * Доставить webhook для финализированного job'а, применив F2/F4
@@ -68,9 +69,12 @@ export async function deliverFinalizedJobWebhook(
     jobId,
     updated.webhook_url!,
     {
+      // 2026-05-18 (SLAI Issue #4): обязательное поле контракта v1.
+      version: 'v1',
       job_id: updated.id,
       status: updated.status,
-      document_type: updated.document_type,
+      // 2026-05-18 (SLAI Issue #3): нормализация slug → lowercase snake_case.
+      document_type: normalizeSlugForApi(updated.document_type),
       confidence: updated.confidence === null ? null : Number(updated.confidence),
       ocr_engine: updated.ocr_engine,
       extracted: extractedOut,

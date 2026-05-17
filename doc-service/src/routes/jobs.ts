@@ -28,6 +28,7 @@ import { projectsRepo } from '../storage/projects.js';
 import { sanitizeMetadata } from '../storage/metadata-sanitizer.js';
 import { SYSTEM_DEFAULT_ORG_ID, SYSTEM_DEFAULT_PROJECT_ID } from '../auth.js';
 import { deliverWebhook } from '../webhooks/deliver.js';
+import { normalizeSlugForApi } from '../types/slug-normalize.js';
 import {
   getEffectiveScope,
   requireProjectAccess,
@@ -655,9 +656,12 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
       // чтобы deliverWebhook начинал с попытки №1.
       await jobsRepo.resetWebhookAttempts(req.params.id);
       const payload = {
+        // SLAI Issue #4: обязательный version field в контракте v1.
+        version: 'v1' as const,
         job_id: job.id,
         status: job.status,
-        document_type: job.document_type ?? null,
+        // SLAI Issue #3: outbound slug normalize (TTN→ttn, etc.).
+        document_type: normalizeSlugForApi(job.document_type ?? null),
         confidence: job.confidence !== null ? Number(job.confidence) : null,
         ocr_engine: job.ocr_engine ?? null,
         extracted: (job.extracted as Record<string, unknown> | null) ?? null,

@@ -2,6 +2,7 @@ import type { Logger } from 'pino';
 import { config } from '../config.js';
 import { jobsRepo as defaultJobsRepo, type JobRow } from '../storage/jobs.js';
 import { deliverWebhook, type WebhookPayload } from '../webhooks/deliver.js';
+import { normalizeSlugForApi } from '../types/slug-normalize.js';
 
 /**
  * Automatic webhook re-delivery sweeper (A4 remainder).
@@ -74,9 +75,12 @@ export function startWebhookSweeper(
       for (const row of stale) {
         if (!row.webhook_url) continue; // should not happen given SQL filter
         const payload: WebhookPayload = {
+          // SLAI Issue #4: обязательный version field.
+          version: 'v1',
           job_id: row.id,
           status: row.status,
-          document_type: row.document_type ?? null,
+          // SLAI Issue #3: outbound slug normalize.
+          document_type: normalizeSlugForApi(row.document_type ?? null),
           confidence: row.confidence !== null ? Number(row.confidence) : null,
           ocr_engine: row.ocr_engine ?? null,
           extracted: (row.extracted as Record<string, unknown> | null) ?? null,

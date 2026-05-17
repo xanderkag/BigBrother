@@ -7,6 +7,15 @@ import { webhookAttemptsTotal } from '../metrics.js';
 import type { Logger } from 'pino';
 
 export type WebhookPayload = {
+  /**
+   * Версия контракта вебхука. Введена 2026-05-18 после SLAI EOD-отчёта
+   * (Issue #4) — их валидатор ожидает `version` как обязательное поле,
+   * без него возвращает HTTP 400 «Missing job_id or version».
+   *
+   * Текущее значение всегда 'v1'. Если контракт меняется ломающе —
+   * бампаем до 'v2', SLAI-сторона решает что делать со старыми.
+   */
+  version: 'v1';
   job_id: string;
   status: string;
   document_type: string | null;
@@ -54,6 +63,14 @@ export async function deliverWebhook(
         method: 'POST',
         headers: {
           'content-type': 'application/json',
+          // 2026-05-18 (SLAI Issue #5): дублируем подпись под их header'ом.
+          // SLAI ищет `X-Parsdocs-Signature` (см. их HMAC verifier);
+          // старый `x-docservice-signature` оставляем для backwards-compat
+          // на случай если другие потребители завязались на него. Через
+          // 1-2 месяца после миграции SLAI старый header можно убрать.
+          'x-parsdocs-signature': `sha256=${signature}`,
+          'x-parsdocs-job-id': jobId,
+          'x-parsdocs-attempt': String(attempt),
           'x-docservice-signature': `sha256=${signature}`,
           'x-docservice-job-id': jobId,
           'x-docservice-attempt': String(attempt),

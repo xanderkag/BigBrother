@@ -1,5 +1,6 @@
 import { db } from '../db.js';
 import { normalizeExtracted } from './normalize-extracted.js';
+import { normalizeSlugForApi } from '../types/slug-normalize.js';
 import type { DocumentTypeSlug, JobStatus, OcrEngineName } from '../types/documents.js';
 
 /**
@@ -819,8 +820,13 @@ class JobsRepo {
     return {
       job_id: row.id,
       status: row.status,
-      document_type: row.document_type,
-      document_hint: row.document_hint,
+      // 2026-05-18 (SLAI Issue #3): outbound-нормализация слагов.
+      // Исторические TTN/UPD/CMR/AKT/factInvoice конвертируются в
+      // lowercase snake_case (ttn/upd/cmr/services_act/tax_invoice).
+      // Внутри БД и pipeline'а слаги остаются как были — это только
+      // фасад наружу. См. types/slug-normalize.ts header.
+      document_type: normalizeSlugForApi(row.document_type),
+      document_hint: normalizeSlugForApi(row.document_hint),
       confidence: row.confidence === null ? null : Number(row.confidence),
       ocr_engine: row.ocr_engine,
       raw_text: row.raw_text,
