@@ -1,12 +1,18 @@
+import { useEffect, useRef, useState } from 'react';
 import { Link, NavLink, useLocation } from 'react-router-dom';
 import { clearToken } from '@/lib/auth';
 import { useJobsList } from '@/queries/jobs';
 
 /**
  * Top-level layout v2: sticky header с навигацией между основными
- * экранами (Dashboard / Jobs / Upload). Sidebar отсутствует —
- * экономим горизонтальное пространство, остальные экраны (admin,
- * audit log) уйдут в выпадающее меню когда мигрируем их.
+ * экранами + dropdown «Админ» для CRUD-страниц.
+ *
+ * Navigation:
+ *   Главное (всегда видно): Dashboard / Документы / На проверке / Загрузить
+ *   Админ ▾ (dropdown): Типы документов / Провайдеры / Audit log
+ *
+ * Sidebar отсутствует — экономим горизонтальное пространство, при
+ * width < lg dropdown справляется лучше любого collapse'а.
  */
 export default function Layout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
@@ -37,6 +43,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               <ReviewNavLabel />
             </NavItem>
             <NavItem to="/upload">Загрузить</NavItem>
+            <AdminDropdown />
           </nav>
         </div>
         <div className="flex items-center gap-2 text-sm">
@@ -106,6 +113,91 @@ function NavItem({
           isActive
             ? 'bg-brand-50 text-brand-700'
             : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+        }`
+      }
+    >
+      {children}
+    </NavLink>
+  );
+}
+
+/**
+ * Admin dropdown: типы документов, провайдеры, audit log. Открывается
+ * на клик, закрывается на клик вне или на любом NavLink внутри
+ * (через onClick handler).
+ */
+function AdminDropdown() {
+  const [open, setOpen] = useState(false);
+  const location = useLocation();
+  const ref = useRef<HTMLDivElement>(null);
+
+  // Close на клик вне
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [open]);
+
+  // Close на переход
+  useEffect(() => {
+    setOpen(false);
+  }, [location.pathname]);
+
+  const isAdminActive =
+    location.pathname.startsWith('/document-types') ||
+    location.pathname.startsWith('/providers') ||
+    location.pathname.startsWith('/audit-log');
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        className={`flex items-center gap-1 rounded-lg px-3 py-1.5 font-medium transition-colors ${
+          isAdminActive
+            ? 'bg-brand-50 text-brand-700'
+            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+        }`}
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
+        Админ
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 24 24"
+          fill="currentColor"
+          className={`h-3 w-3 transition-transform ${open ? 'rotate-180' : ''}`}
+        >
+          <path
+            fillRule="evenodd"
+            d="M12 15.75l-7-7 1.5-1.5L12 12.75l5.5-5.5 1.5 1.5z"
+            clipRule="evenodd"
+          />
+        </svg>
+      </button>
+
+      {open && (
+        <div className="absolute left-0 top-full mt-1 w-56 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg">
+          <DropdownItem to="/document-types">Типы документов</DropdownItem>
+          <DropdownItem to="/providers">Провайдеры (LLM/OCR)</DropdownItem>
+          <DropdownItem to="/audit-log">Audit log</DropdownItem>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DropdownItem({ to, children }: { to: string; children: React.ReactNode }) {
+  return (
+    <NavLink
+      to={to}
+      className={({ isActive }) =>
+        `block px-4 py-2 text-sm transition-colors ${
+          isActive
+            ? 'bg-brand-50 font-medium text-brand-700'
+            : 'text-slate-700 hover:bg-slate-50'
         }`
       }
     >
