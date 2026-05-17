@@ -22,13 +22,9 @@ import { dynamicLlm } from './llm/provider-resolver.js';
 import type { LlmClient, LlmExtractDebug } from './llm/types.js';
 import type { DocumentTypeSlug } from '../types/documents.js';
 import { validateExtractedWithResolver } from './validation/index.js';
-import { normalizeExtractedFields } from './normalize/extracted-fields.js';
-import { recomputeTotalsFromItems } from './normalize/totals.js';
-import { applyCategoryHints } from './normalize/categories.js';
+import { runPostExtractNormalization } from './normalize/run.js';
 import { redactPii } from './normalize/pii-redact.js';
 import { processFieldConfidence } from './normalize/field-confidence.js';
-import { enrichItemsWithSlaiCategoryIds } from './normalize/slai-enrichment.js';
-import { slaiCategoriesRepo } from '../storage/slai-categories.js';
 import { removeStoredFile } from '../storage/files.js';
 import { documentTypeResolver, type ResolvedTypeConfig } from './document-type-resolver.js';
 import { jobsDurationSeconds, jobsTotal, ocrEngineDurationSeconds } from '../metrics.js';
@@ -740,46 +736,12 @@ export async function runDocumentPipeline(
       );
     }
 
-    // Нормализация идентификаторов перед валидацией: ИНН без пробелов/дефисов,
-    // госномер в кириллице. Validator получит чистые значения, а интеграторам
-    // (SLAI matcher) уходит явный канал `_normalized_fields` для exact-match.
-    const normalized = normalizeExtractedFields(extracted);
+    // Pipeline post-extract нормализации — 4 шага в строгом порядке.
+    // F1 ИНН/plate → F7 totals → F6 category keyword → F13 SLAI enrichment.
+    // Детали порядка и почему — см. normalize/run.ts header.
+    const normalized = await runPostExtractNormalization(extracted, log);
     if (normalized && normalized !== extracted) {
       extracted = normalized;
-    }
-
-    // F7: пересчитать total_with_vat / total_without_vat / vat_amount если
-    // расходятся с суммой items[]. В bench v2 total_match был 20% — модель
-    // плохо суммирует длинные таблицы. После пересчёта должно стать ~100%
-    // для документов с items[].
-    const recomputed = recomputeTotalsFromItems(extracted);
-    if (recomputed && recomputed !== extracted) {
-      extracted = recomputed;
-    }
-
-    // F6: категоризация items[].name через keyword-mapper (не через LLM).
-    // bench v2 показал что Gemma угадывает категорию только в 1% случаев.
-    // Keyword-mapper детерминирован и легко расширяется под новые категории
-    // (после получения hist от SLAI).
-    const withCategories = applyCategoryHints(extracted);
-    if (withCategories && withCategories !== extracted) {
-      extracted = withCategories;
-    }
-
-    // F13 polish: обогащение items[]._slai_category_id из lookup-table.
-    // Если SLAI команда настроила mapping (our_hint в slai_category_map)
-    // через sync events / UI — каждый item получит прямой SLAI ID, и
-    // их matcher сможет найти Nomenclature без extra lookup. Если
-    // lookup пустой (sync ещё не запущен) — no-op, без задержки.
-    try {
-      const hintToSlaiId = await slaiCategoriesRepo.loadHintToIdMap();
-      const enriched = enrichItemsWithSlaiCategoryIds(extracted, hintToSlaiId);
-      if (enriched && enriched !== extracted) {
-        extracted = enriched;
-      }
-    } catch (err) {
-      // Не блокируем pipeline на ошибке lookup'а — best-effort обогащение.
-      log.warn({ err }, 'SLAI category enrichment skipped (DB error)');
     }
 
     const tValidate = Date.now();
