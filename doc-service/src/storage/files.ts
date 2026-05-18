@@ -137,6 +137,12 @@ export const ACCEPTED_DOCUMENT_MIMES: ReadonlySet<string> = new Set([
   'application/vnd.ms-excel',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   'application/vnd.ms-excel.sheet.macroEnabled.12',
+  // Legacy .xls (BIFF8) детектится `file-type` пакетом как
+  // application/x-cfb (OLE Compound File Binary — общий контейнер для
+  // MS Office 97-2003). Принимаем при условии что extension .xls;
+  // если внутри окажется .doc/.ppt — sheetjs упадёт с понятной ошибкой
+  // на runtime в XlsxEngine.
+  'application/x-cfb',
 ]);
 
 export type DetectedFileType = { ext: string; mime: string };

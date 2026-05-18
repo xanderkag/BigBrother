@@ -28,6 +28,10 @@ const XLS_MIMES = new Set([
   'application/vnd.ms-excel',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   'application/vnd.ms-excel.sheet.macroEnabled.12',
+  // 2026-05-18: legacy .xls детектится `file-type` как x-cfb (OLE Compound).
+  // Принимаем при условии что filePath заканчивается на .xls — иначе sheetjs
+  // упадёт с понятной ошибкой и job → failed.
+  'application/x-cfb',
 ]);
 
 /** Защита от мегабольших sheets — на LLM это всё равно гнать бессмысленно. */
