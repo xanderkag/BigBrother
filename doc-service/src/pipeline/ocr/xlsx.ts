@@ -21,7 +21,11 @@
  * См. doc-service/docs/PARSDOCS_XLSX_SUPPORT_TZ.md для архитектуры
  * и edge cases.
  */
-import * as XLSX from 'xlsx';
+// xlsx — CommonJS пакет; в Node ESM `import * as XLSX from 'xlsx'`
+// даёт namespace без working функций. Default import + named utils
+// работают корректно через esModuleInterop.
+import xlsxPkg from 'xlsx';
+const XLSX = xlsxPkg;
 import type { OcrEngine, OcrInput, OcrResult } from './types.js';
 
 const XLS_MIMES = new Set([
