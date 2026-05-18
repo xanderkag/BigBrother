@@ -53,10 +53,29 @@ async function request<T>(
         /* ignore */
       }
     }
-    const msg =
-      (body && typeof body === 'object' && 'error' in body
-        ? String((body as { error: unknown }).error)
-        : undefined) ?? `HTTP ${res.status}`;
+    // Fastify zod-validation возвращает body вида
+    //   {statusCode: 400, error: "Bad Request", message: "params/id must match …"}
+    // где `error` — это просто статус-текст HTTP (бесполезный), а реальная
+    // причина — в `message`. Стандартный наш ApiResponse имеет {error: "<text>"}.
+    // Берём message > error > HTTP-fallback, чтобы пользователь видел причину,
+    // а не «Bad Request».
+    const errVal = (body && typeof body === 'object' && 'error' in body
+      ? String((body as { error: unknown }).error)
+      : undefined);
+    const msgVal = (body && typeof body === 'object' && 'message' in body
+      ? String((body as { message: unknown }).message)
+      : undefined);
+    let msg: string;
+    if (msgVal && (errVal === 'Bad Request' || errVal === 'Internal Server Error' || !errVal)) {
+      // Fastify-стиль: предпочитаем message
+      msg = msgVal;
+    } else if (errVal) {
+      msg = errVal;
+    } else {
+      msg = `HTTP ${res.status}`;
+    }
+    // Приставляем код для контекста (без повторного HTTP-префикса).
+    if (!msg.match(/^HTTP\s/)) msg = `${res.status}: ${msg}`;
     throw new ApiError(res.status, body, msg);
   }
 
