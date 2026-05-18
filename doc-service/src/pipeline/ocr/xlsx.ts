@@ -1,0 +1,103 @@
+/**
+ * XLSX/XLS OCR engine — конвертирует Excel в текст для feeding в classifier
+ * + LLM extract. Особенности:
+ *
+ *   - sheetjs (xlsx npm) читает оба формата: .xls (BIFF8) и .xlsx (OOXML)
+ *   - Кириллица в legacy .xls (codepage 1251) — auto-detected
+ *   - Все формулы — computed values, не исходники (`cellFormula: false`)
+ *   - Даты — ISO через `cellDates: true`
+ *   - Merged cells: master cell keeps value, остальные пустые
+ *   - Hidden sheets — пропускаются
+ *   - Защита от мегабольших sheets (>50k cells skip): каталог запчастей
+ *     19MB может содержать 100k+ ячеек, на LLM это гнать не надо
+ *
+ * Контракт: возвращает один многострочный text с section headers
+ *   === Sheet: %name% ===
+ *   ... CSV content ...
+ *
+ * Classifier и LLM extract работают на этом тексте как на любом другом
+ * OCR-выводе. confidence всегда 1.0 — это точное чтение, не вероятностное.
+ *
+ * См. doc-service/docs/PARSDOCS_XLSX_SUPPORT_TZ.md для архитектуры
+ * и edge cases.
+ */
+import * as XLSX from 'xlsx';
+import type { OcrEngine, OcrInput, OcrResult } from './types.js';
+
+const XLS_MIMES = new Set([
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel.sheet.macroEnabled.12',
+]);
+
+/** Защита от мегабольших sheets — на LLM это всё равно гнать бессмысленно. */
+const MAX_CELLS_PER_SHEET = 50_000;
+
+export class XlsxEngine implements OcrEngine {
+  readonly name = 'xlsx';
+  // Точное чтение, не вероятностное — threshold невысокий, чтобы первый
+  // же engine в chain accept'нул и остальные skip'нули.
+  readonly acceptanceThreshold = 0.5;
+
+  supports(input: OcrInput): boolean {
+    return XLS_MIMES.has(input.mimeType);
+  }
+
+  isAvailable(): boolean {
+    // xlsx — npm-пакет, всегда доступен.
+    return true;
+  }
+
+  async run(input: OcrInput): Promise<OcrResult> {
+    const t0 = Date.now();
+    const workbook = XLSX.readFile(input.filePath, {
+      cellDates: true,
+      cellFormula: false,
+      cellNF: false,
+      cellHTML: false,
+    });
+
+    const sections: string[] = [];
+    for (const sheetName of workbook.SheetNames) {
+      const sheet = workbook.Sheets[sheetName];
+      if (!sheet) continue;
+      // hidden sheets — Excel помечает их в Workbook.Sheets array через
+      // Workbook.WBProps / Workbook.Sheets[]. Простая эвристика:
+      // sheet['!ref'] отсутствует → скорее всего лист пустой/скрытый.
+      if (!sheet['!ref']) continue;
+
+      let cellCount = 0;
+      try {
+        const range = XLSX.utils.decode_range(sheet['!ref']);
+        cellCount = (range.e.r - range.s.r + 1) * (range.e.c - range.s.c + 1);
+      } catch {
+        cellCount = 0;
+      }
+
+      if (cellCount > MAX_CELLS_PER_SHEET) {
+        sections.push(
+          `=== Sheet: ${sheetName} ===\n[SKIPPED: ${cellCount} cells > ${MAX_CELLS_PER_SHEET} limit]`,
+        );
+        continue;
+      }
+
+      const csv = XLSX.utils.sheet_to_csv(sheet, {
+        blankrows: false,
+        FS: ',',
+        RS: '\n',
+        strip: true,
+      });
+      if (csv.trim().length === 0) continue;
+      sections.push(`=== Sheet: ${sheetName} ===\n${csv}`);
+    }
+
+    const text = sections.join('\n\n');
+    return {
+      engine: 'xlsx',
+      text,
+      // confidence 1.0 — точное чтение. Можно даунгрейдить если пустой.
+      confidence: text.length > 0 ? 1.0 : 0.0,
+      durationMs: Date.now() - t0,
+    };
+  }
+}

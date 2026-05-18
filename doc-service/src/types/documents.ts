@@ -33,7 +33,7 @@ export function isBuiltinDocumentType(slug: string): slug is BuiltinDocumentType
 export const JOB_STATUSES = ['pending', 'processing', 'done', 'failed', 'needs_review'] as const;
 export type JobStatus = (typeof JOB_STATUSES)[number];
 
-export const OCR_ENGINES = ['pdf-text', 'tesseract', 'vision-llm', 'yandex'] as const;
+export const OCR_ENGINES = ['pdf-text', 'tesseract', 'vision-llm', 'yandex', 'xlsx'] as const;
 export type OcrEngineName = (typeof OCR_ENGINES)[number];
 
 // --- Schemas for `extracted` payloads, one per document type. ---

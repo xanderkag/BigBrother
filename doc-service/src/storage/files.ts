@@ -72,6 +72,12 @@ function guessExt(mime: string): string {
     case 'image/bmp': return '.bmp';
     case 'image/tiff': return '.tiff';
     case 'image/webp': return '.webp';
+    // 2026-05-18: XLSX support для CI/PL/Price list от поставщиков ВЭД
+    case 'application/vnd.ms-excel': return '.xls';
+    case 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+      return '.xlsx';
+    case 'application/vnd.ms-excel.sheet.macroEnabled.12':
+      return '.xlsm';
     default: return '';
   }
 }
@@ -125,6 +131,12 @@ export const ACCEPTED_DOCUMENT_MIMES: ReadonlySet<string> = new Set([
   // src/pipeline/preprocess/heic.ts
   'image/heic',
   'image/heif',
+  // 2026-05-18: XLS/XLSX от поставщиков ВЭД (CI/PL, Price list).
+  // Парсятся sheetjs через XlsxEngine в src/pipeline/ocr/xlsx.ts.
+  // Не идёт через preprocess — engine читает напрямую.
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel.sheet.macroEnabled.12',
 ]);
 
 export type DetectedFileType = { ext: string; mime: string };
