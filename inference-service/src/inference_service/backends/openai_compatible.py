@@ -255,15 +255,48 @@ class OpenAICompatibleBackend(ModelBackend):
     ) -> VisionResponse:
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         data_url = _image_to_data_url(image)
+        # 2026-05-18: усиленный prompt после refusal Qwen 32B VL на EAC scan'е.
+        # Без force-инструкции модель отказывалась «Извините, я не могу
+        # просматривать изображения...». Текущий prompt explicitly запрещает
+        # отказы и refusal-фразы. Если всё-таки откажется — detect ниже.
         instruction = prompt or (
-            "Прочитай и точно перепиши весь видимый текст на изображении. "
-            "Сохрани переносы строк и структуру таблиц (используй | для столбцов). "
-            "Не комментируй, выводи только текст."
+            "Ты — OCR-движок. Твоя единственная задача — точно "
+            "транскрибировать ВЕСЬ видимый на изображении текст.\n\n"
+            "ПРАВИЛА:\n"
+            "1. Не отказывай, не извиняйся, не объясняй что ты можешь или "
+            "не можешь сделать — изображение УЖЕ получено и ОБЯЗАНО быть "
+            "транскрибировано.\n"
+            "2. Сохраняй переносы строк и структуру таблиц (используй | "
+            "для разделителей столбцов).\n"
+            "3. Не пиши предисловий типа «На изображении...» — сразу текст.\n"
+            "4. Если текст на иностранном языке — транскрибируй как есть, "
+            "без перевода.\n"
+            "5. Если изображение пустое или нечитаемое — верни единственное "
+            "слово EMPTY (без точек, без объяснений).\n\n"
+            "Сейчас транскрибируй текст:"
         )
         text = await self._complete_with_image(data_url, instruction, model_override=model_override)
+
+        # Refusal detection — если модель всё-таки отказала, понижаем
+        # confidence до 0.1 чтобы fallback chain (tesseract) подобрал.
+        refusal_patterns = [
+            "извините",
+            "я не могу",
+            "не могу просмат",
+            "не могу обра",
+            "i cannot",
+            "i'm sorry",
+            "i apologize",
+            "i am unable",
+            "as an ai",
+        ]
+        text_lower = text[:500].lower()
+        is_refusal = any(p in text_lower for p in refusal_patterns)
+        confidence = 0.1 if is_refusal else 0.75
+
         # OpenAI API не возвращает confidence — фиксированное значение,
         # которое doc-service комбинирует с парсер-уровневым.
-        return VisionResponse(text=text, confidence=0.75)
+        return VisionResponse(text=text, confidence=confidence)
 
     async def verify(
         self,

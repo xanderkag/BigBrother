@@ -385,6 +385,33 @@ class JobsRepo {
   }
 
   /**
+   * Stuck-processing jobs — те что застряли в status='processing' без
+   * прогресса worker'а. Типовая причина: worker рестартован/убит, BullMQ
+   * остался без consumer'а, job завис в active queue.
+   *
+   * Эвристика: status='processing' AND updated_at старше graceSeconds.
+   * `updated_at` обновляется на каждом step (pipeline_steps append),
+   * поэтому worker, который реально работает, не попадёт в выборку.
+   * Если worker молчит graceSeconds (default = LLM_TIMEOUT_MS / 1000 + buffer),
+   * значит job orphan'нулся.
+   *
+   * Возвращаем эти jobs для re-enqueue'я. processJobInner идемпотентен
+   * (повторное finalize OK), так что race с реально работающим worker'ом
+   * безопасен в худшем случае.
+   */
+  async findStuckProcessing(graceSeconds: number, limit = 50): Promise<JobRow[]> {
+    const { rows } = await db.query<JobRow>(
+      `SELECT * FROM jobs
+       WHERE status = 'processing'
+         AND updated_at < now() - ($1 || ' seconds')::interval
+       ORDER BY updated_at ASC
+       LIMIT $2`,
+      [String(graceSeconds), limit],
+    );
+    return rows;
+  }
+
+  /**
    * Terminal-state jobs (done / failed / needs_review) older than retention
    * whose source file is still on disk. `file_path IS NOT NULL` is the
    * "already cleaned up" gate — we NULL it inside `markFileDeleted` so
