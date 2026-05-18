@@ -9,28 +9,31 @@ import ReviewQueuePage from '@/pages/ReviewQueue';
 import DocumentTypesPage from '@/pages/DocumentTypes';
 import ProvidersPage from '@/pages/Providers';
 import AuditLogPage from '@/pages/AuditLog';
+import SettingsPage from '@/pages/Settings';
+import TenantsPage from '@/pages/Tenants';
+import ReferenceListsPage, { ReferenceListEntriesPage } from '@/pages/ReferenceLists';
+import TestLabPage from '@/pages/TestLab';
 import Layout from '@/components/Layout';
-import PageStub from '@/components/PageStub';
 
 /**
- * App routes — UI v2.
+ * App routes — UI v2 (feature-parity со старым vanilla UI, legacy теперь
+ * только страховка на случай rollback'а — будет удалён после стабильной
+ * работы 1-2 месяца).
  *
- * Phase 1-4 экраны (полная feature-parity со старым UI):
- *   /                  → Dashboard (операционные метрики)
- *   /jobs              → JobsList (таблица всех документов)
- *   /jobs/:id          → JobDetail (PDF + extracted data + edit)
- *   /upload            → Upload (drag-drop)
- *   /review            → ReviewQueue (needs_review с bulk approve)
- *   /document-types    → CRUD типов документов
- *   /providers         → CRUD LLM/OCR провайдеров
- *   /audit-log         → Audit log viewer
- *   /login             → Login (если нет токена в localStorage)
- *
- * Stubs (страницы запланированы, пока ведут в legacy через PageStub):
- *   /settings          → Settings (dashboard конфига)
- *   /tenants           → Tenants (orgs/projects/users)
- *   /reference-lists   → Справочники
- *   /test-lab          → Тестовая лаборатория
+ *   /                       → Dashboard (операционные метрики)
+ *   /jobs                   → JobsList (таблица всех документов)
+ *   /jobs/:id               → JobDetail (PDF + extracted data + edit)
+ *   /upload                 → Upload (bulk drag-drop)
+ *   /review                 → ReviewQueue (needs_review с bulk approve)
+ *   /document-types         → CRUD типов документов
+ *   /providers              → CRUD LLM/OCR провайдеров
+ *   /audit-log              → Audit log viewer
+ *   /settings               → Settings (snapshot конфига + статус LLM)
+ *   /tenants                → Organizations / projects / users (admin)
+ *   /reference-lists        → Список типов справочников
+ *   /reference-lists/:slug  → Записи конкретного справочника
+ *   /test-lab               → Тестовая лаборатория (single doc + provider picker)
+ *   /login                  → Login (если нет токена в localStorage)
  *
  * Всё внутри Layout проверяется через RequireAuth — нет токена →
  * редирект на /login.
@@ -53,46 +56,14 @@ export default function App() {
                 <Route path="document-types" element={<DocumentTypesPage />} />
                 <Route path="providers" element={<ProvidersPage />} />
                 <Route path="audit-log" element={<AuditLogPage />} />
+                <Route path="settings" element={<SettingsPage />} />
+                <Route path="tenants" element={<TenantsPage />} />
+                <Route path="reference-lists" element={<ReferenceListsPage />} />
                 <Route
-                  path="settings"
-                  element={
-                    <PageStub
-                      title="Настройки"
-                      description="Dashboard конфигурации сервиса: пороги OCR, провайдеры, лимиты, sweeper'ы, sessions. Переезд на React в работе."
-                      legacyHash="settings"
-                    />
-                  }
+                  path="reference-lists/:slug"
+                  element={<ReferenceListEntriesPage />}
                 />
-                <Route
-                  path="tenants"
-                  element={
-                    <PageStub
-                      title="Организации"
-                      description="Управление организациями, проектами и пользователями (multi-tenant админка). Переезд на React в работе."
-                      legacyHash="tenants"
-                    />
-                  }
-                />
-                <Route
-                  path="reference-lists"
-                  element={
-                    <PageStub
-                      title="Справочники"
-                      description="Справочники контрагентов и номенклатуры для привязки документов. Переезд на React в работе."
-                      legacyHash="reference-lists"
-                    />
-                  }
-                />
-                <Route
-                  path="test-lab"
-                  element={
-                    <PageStub
-                      title="Тестовая лаборатория"
-                      description="Прогон документа через конкретные модели, сравнение результатов, калибровка порогов. Переезд на React в работе."
-                      legacyHash="test-lab"
-                    />
-                  }
-                />
+                <Route path="test-lab" element={<TestLabPage />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
             </Layout>
