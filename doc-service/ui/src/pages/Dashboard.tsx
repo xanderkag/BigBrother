@@ -80,8 +80,27 @@ export default function DashboardPage() {
       )}
 
       {isLoading && !data && (
-        <div className="card">
-          <div className="card-body text-sm text-slate-500 dark:text-slate-400 dark:text-slate-500">Загрузка метрик…</div>
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            {[1, 2, 3, 4].map((i) => (
+              <div key={i} className="card">
+                <div className="card-body space-y-3">
+                  <div className="h-3 w-24 animate-pulse rounded bg-slate-100 dark:bg-slate-800/60" />
+                  <div className="h-8 w-20 animate-pulse rounded bg-slate-200 dark:bg-slate-800" />
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            {[1, 2].map((i) => (
+              <div key={i} className="card">
+                <div className="card-body space-y-3">
+                  <div className="h-3 w-32 animate-pulse rounded bg-slate-100 dark:bg-slate-800/60" />
+                  <div className="h-24 animate-pulse rounded bg-slate-100 dark:bg-slate-800/60" />
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, NavLink, useLocation } from 'react-router-dom';
 import { clearToken } from '@/lib/auth';
 import { useJobsList } from '@/queries/jobs';
+import { useCurrentUser } from '@/queries/me';
+import { useOrganizations } from '@/queries/tenants';
+import { useWorkspaceOrgId } from '@/lib/workspace';
 import { cycleTheme, getTheme, type ThemeChoice } from '@/lib/theme';
 
 /**
@@ -32,9 +35,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
             </svg>
             parsedocs
-            <span className="ml-1 rounded bg-brand-100 px-1.5 py-0.5 text-xs font-medium text-brand-700 dark:bg-brand-900/40 dark:text-brand-300">
-              v2
-            </span>
           </Link>
           <nav className="flex items-center gap-1 text-sm">
             <NavItem to="/" end>
@@ -49,14 +49,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           </nav>
         </div>
         <div className="flex items-center gap-2 text-sm">
-          <a
-            href="/ui-legacy/"
-            className="rounded-lg px-3 py-1.5 text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
-            title="Старая версия UI (страховка на случай rollback'а)"
-          >
-            Legacy →
-          </a>
-          <span className="hidden font-mono text-xs text-slate-400 dark:text-slate-500 lg:inline">
+          <WorkspaceSwitcher />
+          <span className="hidden font-mono text-xs text-slate-400 dark:text-slate-500 xl:inline">
             {location.pathname}
           </span>
           <ThemeToggle />
@@ -113,6 +107,73 @@ function ThemeToggle() {
         </svg>
       )}
     </button>
+  );
+}
+
+/**
+ * Workspace switcher — выбор текущей организации.
+ *
+ * Для super_admin: dropdown со всеми orgs из /api/v1/organizations.
+ * Для обычного юзера: readonly-badge с именем своей org (нет выбора).
+ *
+ * Выбранный orgId хранится в localStorage('workspace.orgId') и читается
+ * другими страницами (RefLists, фильтры по org) через useWorkspaceOrgId().
+ */
+function WorkspaceSwitcher() {
+  const me = useCurrentUser();
+  const orgs = useOrganizations();
+  const [orgId, setOrgId] = useWorkspaceOrgId();
+
+  const isSuperAdmin = me.data?.is_super_admin ?? false;
+  const orgList = orgs.data?.items ?? [];
+
+  // Auto-set default org для super_admin'а: первая non-system, для обычного
+  // юзера — его own org. Делаем один раз когда orgId ещё не выставлен.
+  useEffect(() => {
+    if (orgId || !me.data) return;
+    if (isSuperAdmin) {
+      const def = orgList.find((o) => o.type !== 'system') ?? orgList[0];
+      if (def) setOrgId(def.id);
+    } else if (me.data.organization_id) {
+      setOrgId(me.data.organization_id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [me.data, orgList.length]);
+
+  if (me.isLoading) {
+    return <div className="h-8 w-32 animate-pulse rounded bg-slate-100 dark:bg-slate-800/60" />;
+  }
+  if (!me.data) return null;
+
+  // Обычный юзер — readonly badge
+  if (!isSuperAdmin) {
+    const myOrg = orgList.find((o) => o.id === me.data?.organization_id);
+    if (!myOrg) return null;
+    return (
+      <span
+        className="hidden rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-300 sm:inline-block"
+        title={`Ваша организация: ${myOrg.name}`}
+      >
+        {myOrg.name}
+      </span>
+    );
+  }
+
+  // super_admin — dropdown
+  if (orgList.length === 0) return null;
+  return (
+    <select
+      className="hidden rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700 hover:bg-slate-50 focus:border-brand-500 focus:outline-none dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 sm:inline-block"
+      value={orgId ?? ''}
+      onChange={(e) => setOrgId(e.target.value || null)}
+      title="Выбрать организацию для контекста"
+    >
+      {orgList.map((o) => (
+        <option key={o.id} value={o.id}>
+          {o.name}
+        </option>
+      ))}
+    </select>
   );
 }
 

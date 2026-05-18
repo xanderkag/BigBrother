@@ -951,6 +951,29 @@ SGLang, TGI) выставляют OpenAI Chat Completions API; теперь pars
 
 ---
 
+### UI-2. Mobile-responsive React UI — 🗄️ backlog (2026-05-18)
+
+**Где:** `doc-service/ui/src/` — все страницы с таблицами (JobsList, Tenants, Providers, DocumentTypes, AuditLog, ReferenceLists).
+
+**Симптом:** На экранах ≤768px (телефоны, планшеты в портрете) таблицы либо обрезаются `overflow-x-auto`, либо требуют горизонтального скролла, либо колонки наезжают друг на друга. Sticky header в Layout тоже не оптимизирован под узкие экраны (admin-dropdown может уйти за край).
+
+**Почему отложено:**
+- Бизнес-юзеры (бухгалтерия) работают **с десктопа** в офисе — основной канал не страдает.
+- Mobile нужен только админу «глянуть статус на ходу» — крайне редкий сценарий пока.
+- Полный rework таблиц (карточный режим на `<sm:`, sticky первая колонка, hidden secondary cols, sheet-based formy) — 4-6 часов работы, не блокер для пилота SLAI.
+
+**Когда вернуться:** если появится требование «бухгалтер смотрит статус с телефона дома» или метрики покажут заметную долю mobile-сессий.
+
+**Лечение:**
+1. Card-mode для таблиц на `<md:` через CSS Grid + media query
+2. Hidden secondary columns (`hidden md:table-cell`) для второстепенных полей
+3. Drawer (sheet) для admin-dropdown вместо top-aligned меню
+4. Touch-friendly размеры кнопок (min 44×44px по гайдлайнам Apple/Material)
+
+**Оценка:** 4-6 часов на все 6 таблиц + Layout.
+
+---
+
 ## 🚛 SLAI integration debt (ТЗ от 2026-05-16, ждём ответ разработчика SLAI)
 
 См. `Desktop/parsdocs-validation-bench/SLAI_QUESTIONS.md` (мы → SLAI),

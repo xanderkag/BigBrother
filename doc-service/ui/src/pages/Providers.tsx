@@ -86,17 +86,26 @@ export default function ProvidersPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-            {isLoading && (
-              <tr>
-                <td colSpan={8} className="px-4 py-6 text-center text-slate-500 dark:text-slate-400 dark:text-slate-500">
-                  Загрузка…
-                </td>
-              </tr>
-            )}
+            {isLoading &&
+              [1, 2, 3, 4].map((i) => (
+                <tr key={`skel-${i}`}>
+                  {Array.from({ length: 8 }).map((_, j) => (
+                    <td key={j} className="px-4 py-3">
+                      <div className="h-3 w-16 animate-pulse rounded bg-slate-100 dark:bg-slate-800/60" />
+                    </td>
+                  ))}
+                </tr>
+              ))}
             {!isLoading && items.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-4 py-6 text-center text-slate-400 dark:text-slate-500">
-                  Провайдеры не настроены.
+                <td colSpan={8} className="px-4 py-10 text-center">
+                  <p className="font-medium text-slate-700 dark:text-slate-300">
+                    Провайдеры не настроены
+                  </p>
+                  <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                    Добавьте API-ключи Anthropic / OpenAI / Yandex и адреса
+                    локальных моделей через «+ Добавить провайдера».
+                  </p>
                 </td>
               </tr>
             )}

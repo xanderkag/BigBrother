@@ -170,8 +170,15 @@ export default function ReviewQueuePage() {
 
       {/* List */}
       {isLoading && (
-        <div className="card">
-          <div className="card-body text-sm text-slate-500 dark:text-slate-400 dark:text-slate-500">Загрузка…</div>
+        <div className="space-y-2">
+          {[1, 2, 3, 4].map((i) => (
+            <div key={i} className="card">
+              <div className="card-body space-y-2">
+                <div className="h-4 w-48 animate-pulse rounded bg-slate-100 dark:bg-slate-800/60" />
+                <div className="h-3 w-3/4 animate-pulse rounded bg-slate-100 dark:bg-slate-800/60" />
+              </div>
+            </div>
+          ))}
         </div>
       )}
 

@@ -87,17 +87,26 @@ export default function DocumentTypesPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-            {isLoading && (
-              <tr>
-                <td colSpan={7} className="px-4 py-6 text-center text-slate-500 dark:text-slate-400 dark:text-slate-500">
-                  Загрузка…
-                </td>
-              </tr>
-            )}
+            {isLoading &&
+              [1, 2, 3, 4, 5].map((i) => (
+                <tr key={`skel-${i}`}>
+                  {Array.from({ length: 7 }).map((_, j) => (
+                    <td key={j} className="px-4 py-3">
+                      <div className="h-3 w-20 animate-pulse rounded bg-slate-100 dark:bg-slate-800/60" />
+                    </td>
+                  ))}
+                </tr>
+              ))}
             {!isLoading && items.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-4 py-6 text-center text-slate-400 dark:text-slate-500">
-                  Типы не найдены.
+                <td colSpan={7} className="px-4 py-10 text-center">
+                  <p className="font-medium text-slate-700 dark:text-slate-300">
+                    Типы документов не настроены
+                  </p>
+                  <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                    Добавьте первый тип через «+ Создать» — задайте слаг,
+                    поля и инструкцию для LLM.
+                  </p>
                 </td>
               </tr>
             )}

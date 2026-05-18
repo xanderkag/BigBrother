@@ -9,6 +9,7 @@ import {
   shortId,
 } from '@/lib/format';
 import type { Job, JobStatus } from '@/lib/types';
+import { EmptyState, SkeletonTable } from '@/components/Skeleton';
 
 /**
  * JobsList — таблица всех загруженных документов с фильтрами по
@@ -156,66 +157,99 @@ export default function JobsListPage() {
       )}
 
       {/* Table */}
-      <div className="card overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead className="bg-slate-50 dark:bg-slate-900/40 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400 dark:text-slate-500">
-              <tr>
-                <th className="px-4 py-2">ID</th>
-                <th className="px-4 py-2">Файл</th>
-                <th className="px-4 py-2">Статус</th>
-                <th className="px-4 py-2">Тип</th>
-                <th className="px-4 py-2 text-right">Размер</th>
-                <th className="px-4 py-2 text-right">Confidence</th>
-                <th className="px-4 py-2">Создан</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-              {items.length === 0 && !isLoading && (
+      {isLoading && items.length === 0 ? (
+        <SkeletonTable rows={8} columns={7} />
+      ) : !isLoading && items.length === 0 ? (
+        <EmptyState
+          title={
+            status || documentType
+              ? 'По текущим фильтрам ничего не найдено'
+              : 'Документов ещё нет'
+          }
+          description={
+            status || documentType
+              ? 'Попробуйте сбросить фильтры или изменить параметры поиска.'
+              : 'Загрузите первый документ — система определит тип, извлечёт поля и покажет результат.'
+          }
+          icon={
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 24 24"
+              fill="currentColor"
+              className="h-12 w-12"
+            >
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <path d="M14 2v6h6" />
+            </svg>
+          }
+          cta={
+            status || documentType ? (
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => setSearchParams({})}
+              >
+                ✕ Сбросить фильтры
+              </button>
+            ) : (
+              <Link to="/upload" className="btn-primary">
+                + Загрузить документ
+              </Link>
+            )
+          }
+        />
+      ) : (
+        <div className="card overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-slate-50 dark:bg-slate-900/40 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
                 <tr>
-                  <td colSpan={7} className="px-4 py-10 text-center text-slate-400 dark:text-slate-500">
-                    Документов нет.{' '}
-                    <Link to="/upload" className="text-brand-600 dark:text-brand-400 hover:underline">
-                      Загрузить первый →
-                    </Link>
-                  </td>
+                  <th className="px-4 py-2">ID</th>
+                  <th className="px-4 py-2">Файл</th>
+                  <th className="px-4 py-2">Статус</th>
+                  <th className="px-4 py-2">Тип</th>
+                  <th className="px-4 py-2 text-right">Размер</th>
+                  <th className="px-4 py-2 text-right">Confidence</th>
+                  <th className="px-4 py-2">Создан</th>
                 </tr>
-              )}
-              {items.map((j) => (
-                <JobRow key={j.id} job={j} />
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Pagination */}
-        {(hasPrev || hasNext) && (
-          <div className="flex items-center justify-between border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/40 px-4 py-2 text-sm">
-            <div className="text-slate-600 dark:text-slate-400 dark:text-slate-500">
-              Страница {Math.floor(offset / PAGE_SIZE) + 1}
-              {offset > 0 && ` (от ${offset + 1})`}
-            </div>
-            <div className="flex gap-2">
-              <button
-                type="button"
-                className="btn-secondary"
-                disabled={!hasPrev}
-                onClick={() => updateOffset(Math.max(0, offset - PAGE_SIZE))}
-              >
-                ← Назад
-              </button>
-              <button
-                type="button"
-                className="btn-secondary"
-                disabled={!hasNext}
-                onClick={() => updateOffset(offset + PAGE_SIZE)}
-              >
-                Вперёд →
-              </button>
-            </div>
+              </thead>
+              <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                {items.map((j) => (
+                  <JobRow key={j.id} job={j} />
+                ))}
+              </tbody>
+            </table>
           </div>
-        )}
-      </div>
+
+          {/* Pagination */}
+          {(hasPrev || hasNext) && (
+            <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-4 py-2 text-sm dark:border-slate-800 dark:bg-slate-900/40">
+              <div className="text-slate-600 dark:text-slate-400">
+                Страница {Math.floor(offset / PAGE_SIZE) + 1}
+                {offset > 0 && ` (от ${offset + 1})`}
+              </div>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  disabled={!hasPrev}
+                  onClick={() => updateOffset(Math.max(0, offset - PAGE_SIZE))}
+                >
+                  ← Назад
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  disabled={!hasNext}
+                  onClick={() => updateOffset(offset + PAGE_SIZE)}
+                >
+                  Вперёд →
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

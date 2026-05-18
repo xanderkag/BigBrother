@@ -1,87 +1,46 @@
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
+  useCreateReferenceListType,
+  useDeactivateEntry,
+  useReactivateEntry,
   useReferenceListEntries,
   useReferenceListTypes,
   type ReferenceListEntry,
   type ReferenceListType,
 } from '@/queries/referenceLists';
-import { useOrganizations } from '@/queries/tenants';
+import { useWorkspaceOrgId } from '@/lib/workspace';
 
 const PAGE_SIZE = 50;
 
 /**
  * ReferenceLists — список типов справочников + просмотр записей.
- * org_id берётся пока через селект организаций (workspace switcher
- * подключим позже когда сделаем общий workspace state).
+ * Активная организация берётся из WorkspaceSwitcher в Layout.tsx.
  *
  * Создание/синхронизация справочников — задача внешней системы
  * (WMS/ERP) через POST /reference-list-types, не из UI.
  */
 export default function ReferenceListsPage() {
-  const orgs = useOrganizations();
-  const orgList = orgs.data?.items ?? [];
+  const [orgId] = useWorkspaceOrgId();
 
-  // Выбор организации persist в localStorage чтобы при возврате на
-  // страницу не выбирать заново.
-  const [orgId, setOrgId] = useState<string>(() =>
-    typeof window !== 'undefined' ? localStorage.getItem('rl-org') ?? '' : '',
-  );
-
-  const handleSetOrg = (id: string) => {
-    setOrgId(id);
-    if (id) localStorage.setItem('rl-org', id);
-    else localStorage.removeItem('rl-org');
-  };
-
-  // Дефолт: если org ещё не выбрана, и список загрузился — берём
-  // первую отличную от system. Это покрывает 90% юзкейсов «открыл
-  // страницу и сразу видишь свои справочники».
-  if (!orgId && orgList.length > 0) {
-    const def = orgList.find((o) => o.type !== 'system') ?? orgList[0];
-    if (def) {
-      // setState side-effect в render — допустимо только если идемпотент,
-      // здесь оно так. Альтернатива — useEffect с зависимостью.
-      handleSetOrg(def.id);
-    }
-  }
-
-  const types = useReferenceListTypes(orgId || null);
+  const types = useReferenceListTypes(orgId);
 
   return (
     <div className="mx-auto max-w-5xl space-y-4 p-6">
-      <header className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">
-            Справочники
-          </h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400">
-            Справочники контрагентов и номенклатуры для привязки документов к
-            бизнес-сущностям.
-          </p>
-        </div>
-        <div className="min-w-[220px]">
-          <label className="form-label">Организация</label>
-          <select
-            className="form-select"
-            value={orgId}
-            onChange={(e) => handleSetOrg(e.target.value)}
-            disabled={orgs.isLoading}
-          >
-            <option value="">— выберите —</option>
-            {orgList.map((o) => (
-              <option key={o.id} value={o.id}>
-                {o.name}
-              </option>
-            ))}
-          </select>
-        </div>
+      <header>
+        <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">
+          Справочники
+        </h1>
+        <p className="text-sm text-slate-500 dark:text-slate-400">
+          Справочники контрагентов и номенклатуры для привязки документов к
+          бизнес-сущностям. Активная организация — в шапке справа.
+        </p>
       </header>
 
       {!orgId && (
         <div className="card">
           <div className="card-body text-sm text-slate-500 dark:text-slate-400">
-            Выберите организацию, чтобы увидеть её справочники.
+            Выберите организацию в правом верхнем углу, чтобы увидеть её справочники.
           </div>
         </div>
       )}
@@ -96,22 +55,111 @@ export default function ReferenceListsPage() {
         </div>
       )}
 
-      {orgId && types.data && types.data.length === 0 && (
-        <div className="card">
-          <div className="card-body space-y-2 text-center">
-            <p className="text-sm text-slate-500 dark:text-slate-400">
-              Справочников в этой организации ещё нет.
-            </p>
-            <p className="text-xs text-slate-400 dark:text-slate-500">
-              Создаются при первой синхронизации из WMS/ERP через{' '}
-              <code className="font-mono">POST /api/v1/reference-list-types</code>.
+      {orgId && types.data && (
+        <>
+          <CreateTypeForm orgId={orgId} />
+          {types.data.length === 0 ? (
+            <div className="card">
+              <div className="card-body space-y-2 text-center">
+                <p className="text-sm text-slate-500 dark:text-slate-400">
+                  Справочников в этой организации ещё нет.
+                </p>
+                <p className="text-xs text-slate-400 dark:text-slate-500">
+                  Создайте первый через форму выше — затем загрузите записи
+                  через WMS/ERP push в{' '}
+                  <code className="font-mono">POST /api/v1/reference-list-types/:slug/sync</code>.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <TypesTable types={types.data} />
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function CreateTypeForm({ orgId }: { orgId: string }) {
+  const [open, setOpen] = useState(false);
+  const [slug, setSlug] = useState('');
+  const [label, setLabel] = useState('');
+  const [hint, setHint] = useState('');
+  const create = useCreateReferenceListType();
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!slug.trim() || !label.trim()) return;
+    try {
+      await create.mutateAsync({
+        organization_id: orgId,
+        slug: slug.trim(),
+        label: label.trim(),
+        search_hint: hint.trim() || null,
+      });
+      setSlug('');
+      setLabel('');
+      setHint('');
+      setOpen(false);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  return (
+    <div className="card overflow-hidden">
+      <div className="card-header">
+        <h2 className="card-title">Новый справочник</h2>
+        <button type="button" className="btn-secondary text-xs" onClick={() => setOpen((v) => !v)}>
+          {open ? 'Скрыть' : '+ Создать'}
+        </button>
+      </div>
+      {open && (
+        <form onSubmit={submit} className="space-y-3 px-5 py-4">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <label className="form-label">Слаг (machine-readable)</label>
+              <input
+                type="text"
+                className="form-input font-mono"
+                value={slug}
+                onChange={(e) => setSlug(e.target.value)}
+                placeholder="cargo_units"
+                pattern="[a-z][a-z0-9_-]*"
+                title="Только нижний регистр, цифры, дефис, подчёркивание; начинается с буквы"
+                required
+              />
+            </div>
+            <div>
+              <label className="form-label">Название</label>
+              <input
+                type="text"
+                className="form-input"
+                value={label}
+                onChange={(e) => setLabel(e.target.value)}
+                placeholder="Единицы измерения грузов"
+                required
+              />
+            </div>
+          </div>
+          <div>
+            <label className="form-label">Подсказка поиска (опц.)</label>
+            <input
+              type="text"
+              className="form-input"
+              value={hint}
+              onChange={(e) => setHint(e.target.value)}
+              placeholder="Палет, контейнер, рулон…"
+            />
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Показывается LLM-агенту при resolution. Что-то вроде «как
+              опознать запись этого справочника в тексте документа».
             </p>
           </div>
-        </div>
-      )}
-
-      {orgId && types.data && types.data.length > 0 && (
-        <TypesTable types={types.data} />
+          <button type="submit" className="btn-primary" disabled={create.isPending}>
+            {create.isPending ? 'Создаём…' : 'Создать тип справочника'}
+          </button>
+        </form>
       )}
     </div>
   );
@@ -180,13 +228,12 @@ function TypesTable({ types }: { types: ReferenceListType[] }) {
 
 export function ReferenceListEntriesPage() {
   const { slug } = useParams<{ slug: string }>();
-  const orgId =
-    typeof window !== 'undefined' ? localStorage.getItem('rl-org') ?? '' : '';
+  const [orgId] = useWorkspaceOrgId();
 
   const [q, setQ] = useState('');
   const [offset, setOffset] = useState(0);
 
-  const entries = useReferenceListEntries(slug ?? null, orgId || null, {
+  const entries = useReferenceListEntries(slug ?? null, orgId, {
     q: q.trim() || undefined,
     limit: PAGE_SIZE,
     offset,
@@ -218,11 +265,7 @@ export function ReferenceListEntriesPage() {
       {!orgId && (
         <div className="card">
           <div className="card-body text-sm text-slate-500 dark:text-slate-400">
-            Сначала выберите организацию на{' '}
-            <Link to="/reference-lists" className="text-brand-600 hover:underline dark:text-brand-400">
-              странице справочников
-            </Link>
-            .
+            Выберите организацию в правом верхнем углу шапки.
           </div>
         </div>
       )}
@@ -274,11 +317,12 @@ export function ReferenceListEntriesPage() {
                       <Th>Ключи поиска</Th>
                       <Th>Статус</Th>
                       <Th>Синхр.</Th>
+                      <Th />
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
                     {items.map((e) => (
-                      <EntryRow key={e.id} e={e} />
+                      <EntryRow key={e.id} e={e} slug={slug ?? ''} orgId={orgId ?? ''} />
                     ))}
                   </tbody>
                 </table>
@@ -314,7 +358,36 @@ export function ReferenceListEntriesPage() {
   );
 }
 
-function EntryRow({ e }: { e: ReferenceListEntry }) {
+function EntryRow({
+  e,
+  slug,
+  orgId,
+}: {
+  e: ReferenceListEntry;
+  slug: string;
+  orgId: string;
+}) {
+  const deactivate = useDeactivateEntry();
+  const reactivate = useReactivateEntry();
+
+  const handleDeactivate = async () => {
+    if (!confirm(`Деактивировать "${e.display_name}"? Запись скроется из resolution, но останется в БД.`))
+      return;
+    try {
+      await deactivate.mutateAsync({ entryId: e.id, organization_id: orgId, slug });
+    } catch (err) {
+      alert(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleReactivate = async () => {
+    try {
+      await reactivate.mutateAsync({ entryId: e.id, organization_id: orgId, slug });
+    } catch (err) {
+      alert(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   return (
     <tr className="hover:bg-slate-50 dark:hover:bg-slate-900/40">
       <td className="px-4 py-2 font-mono text-xs text-slate-500 dark:text-slate-400">
@@ -335,6 +408,29 @@ function EntryRow({ e }: { e: ReferenceListEntry }) {
       </td>
       <td className="px-4 py-2 text-xs text-slate-500 dark:text-slate-400">
         {fmtDate(e.synced_at ?? e.updated_at)}
+      </td>
+      <td className="px-4 py-2 text-right">
+        {e.is_active ? (
+          <button
+            type="button"
+            className="btn-ghost text-xs text-rose-600 dark:text-rose-400"
+            disabled={deactivate.isPending}
+            onClick={handleDeactivate}
+            title="Soft-delete: запись скрывается из resolution"
+          >
+            ✕ Деактивировать
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="btn-ghost text-xs"
+            disabled={reactivate.isPending}
+            onClick={handleReactivate}
+            title="Вернуть запись в активные"
+          >
+            ↻ Восстановить
+          </button>
+        )}
       </td>
     </tr>
   );

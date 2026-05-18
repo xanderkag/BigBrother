@@ -592,7 +592,14 @@ function Td({
 
 function LoadingRow() {
   return (
-    <div className="px-5 py-6 text-sm text-slate-400 dark:text-slate-500">Загрузка…</div>
+    <div className="space-y-2 px-5 py-4">
+      {[1, 2, 3].map((i) => (
+        <div
+          key={i}
+          className="h-8 animate-pulse rounded bg-slate-100 dark:bg-slate-800/60"
+        />
+      ))}
+    </div>
   );
 }
 
