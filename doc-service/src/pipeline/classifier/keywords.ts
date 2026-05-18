@@ -35,6 +35,21 @@ import type { Classifier, ClassificationResult } from './types.js';
 
 const HEADER_WINDOW = 4000; // первые 4 KB обычно достаточно — header всегда в начале
 
+/**
+ * Position-based weight boost (2026-05-18). Real-case: контракт ВЭД
+ * содержит ссылку «согласно действующему Прайс-листу» во 2-м KB текста.
+ * Если оба keyword'а («КОНТРАКТ №» в title chars 0-300 и «Прайс-лист»
+ * в chars 1500-2000) имеют equal weight, побеждает first-found или
+ * длиннее match — неустойчиво.
+ *
+ * Решение: pattern matched в первых TITLE_BOOST_WINDOW chars
+ * (default 500) получает effective weight × TITLE_BOOST_MULTIPLIER (1.5).
+ * Это даёт title-position priority — signature pattern в заголовке
+ * естественно побеждает упоминание в body.
+ */
+const TITLE_BOOST_WINDOW = 500;
+const TITLE_BOOST_MULTIPLIER = 1.5;
+
 // A6: единый источник правил — shared/classifier-rules.json в корне репо.
 // При загрузке из dist/ путь: dist/pipeline/classifier/ → ../../../../shared/
 // При загрузке через ts-node/tsx: src/pipeline/classifier/ → ../../../../shared/
@@ -100,8 +115,13 @@ export class KeywordClassifier implements Classifier {
       const m = rule.pattern.exec(haystack);
       if (!m) continue;
       candidates += 1;
-      if (this.beats(best, rule.weight, m[0])) {
-        best = { type: rule.type, confidence: rule.weight, matched: m[0] };
+      // Same title-position boost как в DB stage.
+      const isInTitle = m.index !== undefined && m.index < TITLE_BOOST_WINDOW;
+      const effectiveWeight = isInTitle
+        ? rule.weight * TITLE_BOOST_MULTIPLIER
+        : rule.weight;
+      if (this.beats(best, effectiveWeight, m[0])) {
+        best = { type: rule.type, confidence: effectiveWeight, matched: m[0] };
       }
     }
 
@@ -154,8 +174,14 @@ export class KeywordClassifier implements Classifier {
       const m = rule.pattern.exec(haystack);
       if (!m) continue;
       candidates += 1;
-      if (this.beats(best, rule.weight, m[0])) {
-        best = { type: rule.type, confidence: rule.weight, matched: m[0] };
+      // Position-based boost: match'и в title (первые TITLE_BOOST_WINDOW
+      // chars) сильнее. `m.index` — позиция начала матча в haystack.
+      const isInTitle = m.index !== undefined && m.index < TITLE_BOOST_WINDOW;
+      const effectiveWeight = isInTitle
+        ? rule.weight * TITLE_BOOST_MULTIPLIER
+        : rule.weight;
+      if (this.beats(best, effectiveWeight, m[0])) {
+        best = { type: rule.type, confidence: effectiveWeight, matched: m[0] };
       }
     }
     if (!best) return null;
