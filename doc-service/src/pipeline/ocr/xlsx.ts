@@ -66,6 +66,12 @@ export class XlsxEngine implements OcrEngine {
     });
 
     const sections: string[] = [];
+    // F5 multi-sheet support: каждый sheet — отдельный «page» в
+    // OcrResult.pages. Orchestrator может детектировать что в xlsx
+    // больше одного content-sheet'а и пустить per-sheet classify
+    // → multi-doc extract path.
+    const pages: Array<{ text: string; confidence: number }> = [];
+
     for (const sheetName of workbook.SheetNames) {
       const sheet = workbook.Sheets[sheetName];
       if (!sheet) continue;
@@ -83,9 +89,9 @@ export class XlsxEngine implements OcrEngine {
       }
 
       if (cellCount > MAX_CELLS_PER_SHEET) {
-        sections.push(
-          `=== Sheet: ${sheetName} ===\n[SKIPPED: ${cellCount} cells > ${MAX_CELLS_PER_SHEET} limit]`,
-        );
+        const marker = `=== Sheet: ${sheetName} ===\n[SKIPPED: ${cellCount} cells > ${MAX_CELLS_PER_SHEET} limit]`;
+        sections.push(marker);
+        // Не добавляем в pages (skipped → не годится для split)
         continue;
       }
 
@@ -96,7 +102,9 @@ export class XlsxEngine implements OcrEngine {
         strip: true,
       });
       if (csv.trim().length === 0) continue;
-      sections.push(`=== Sheet: ${sheetName} ===\n${csv}`);
+      const section = `=== Sheet: ${sheetName} ===\n${csv}`;
+      sections.push(section);
+      pages.push({ text: section, confidence: 1.0 });
     }
 
     const text = sections.join('\n\n');
@@ -105,6 +113,10 @@ export class XlsxEngine implements OcrEngine {
       text,
       // confidence 1.0 — точное чтение. Можно даунгрейдить если пустой.
       confidence: text.length > 0 ? 1.0 : 0.0,
+      // F5: per-sheet pages для multi-doc detection в orchestrator.
+      // Если pages.length > 1 и sheets классифицируются разными типами —
+      // запускается per-sheet extract pipeline.
+      pages,
       durationMs: Date.now() - t0,
     };
   }

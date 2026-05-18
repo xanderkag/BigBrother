@@ -28,6 +28,8 @@ import { deliverFinalizedJobWebhook } from './webhook-delivery.js';
 import { documentTypeResolver, type ResolvedTypeConfig } from './document-type-resolver.js';
 import { jobsDurationSeconds, jobsTotal, ocrEngineDurationSeconds } from '../metrics.js';
 import { runResolutionPipeline } from '../resolution/pipeline.js';
+import { tryMultiDoc } from './multidoc/runner.js';
+import { processFieldConfidence } from './normalize/field-confidence.js';
 
 // --- Wire dependencies once at module load. The pipeline is stateless beyond this.
 //
@@ -231,10 +233,51 @@ async function processJobInner(
       throw new OcrRefusedError(ocr.engine, refusal);
     }
 
+    // ── F5 Multi-doc detection (xlsx multi-sheet, MVP) ──────────────────
+    // Если OCR engine выдал множество страниц (xlsx с несколькими sheets'ами),
+    // классифицируем каждую отдельно. Если sheets имеют разные types →
+    // запускаем per-segment extract pipeline. Иначе fall back на обычный
+    // single-doc. Полный PDF F5 (per-page raster + classify) — отдельный
+    // sprint, нужен page-level OCR.
+    let multiDocResult: Awaited<ReturnType<typeof tryMultiDoc>> = null;
+    if (ocr.pages && ocr.pages.length > 1) {
+      multiDocResult = await tryMultiDoc(ocr, {
+        classifier,
+        extractSegment: async (text, type, segLog) => {
+          const segPipeline = await runDocumentPipeline(
+            text,
+            { hint: type, promptOverride },
+            segLog,
+            { jobId, segment: type },
+          );
+          const fcResult = processFieldConfidence(segPipeline.extracted);
+          return {
+            extracted: fcResult.cleanedExtracted,
+            fieldConfidence: fcResult.fieldConfidence,
+          };
+        },
+        log,
+      });
+      if (multiDocResult) {
+        await stepEvent('multidoc.detected', 'done', {
+          details: {
+            sheets: ocr.pages.length,
+            segments: multiDocResult.length,
+            types: multiDocResult.map((d) => d.document_type),
+          },
+        });
+      }
+    }
+
     // ── Classify + Parse + Validate (внутри runDocumentPipeline) ───────────
     // Мы не лезем во внутренности runDocumentPipeline (это shared smoke/test
     // surface), а пишем агрегированный шаг "pipeline" с timing'ом каждой
     // фазы из вернувшегося timings объекта. Подробности — в details.
+    //
+    // F5: даже при multi-doc запускаем full pipeline один раз — это даст
+    // primary document_type + extracted для job row (backwards compat).
+    // documents[] из multi-doc идёт в extracted._multidoc_documents и
+    // потом в webhook payload.documents.
     const post = await runDocumentPipeline(
       ocr.text,
       { hint: documentType ?? undefined, promptOverride },
@@ -290,6 +333,14 @@ async function processJobInner(
     const extractedToStore: Record<string, unknown> = { ...extractedClean };
     if (post.validationIssues.length > 0) {
       extractedToStore._issues = post.validationIssues;
+    }
+    // F5: если нашли multi-doc — сохраняем массив всех найденных документов
+    // в служебном поле. Webhook delivery подхватит его как payload.documents.
+    // Primary doc (для job.extracted) — это single-doc pipeline result выше,
+    // обеспечивает backwards compatibility для receiver'ов которые читают
+    // только extracted.
+    if (multiDocResult && multiDocResult.length > 0) {
+      extractedToStore._multidoc_documents = multiDocResult;
     }
 
     const updated = await jobsRepo.finalize(jobId, {

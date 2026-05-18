@@ -54,6 +54,31 @@ export async function deliverFinalizedJobWebhook(
   const extractedAfterFc = fcResult.cleanedExtracted;
   const fieldConfidence = fcResult.fieldConfidence;
 
+  // F5: multi-doc extraction. Если orchestrator положил
+  // `_multidoc_documents` в extracted — это массив найденных документов
+  // (для multi-sheet xlsx или multi-page PDF когда внутри один файл с
+  // несколькими типами). Вытаскиваем для webhook payload.documents и
+  // убираем из extracted (это служебное поле).
+  const multidocRaw = extractedAfterFc?._multidoc_documents;
+  const documents =
+    Array.isArray(multidocRaw) && multidocRaw.length > 0
+      ? (multidocRaw as Array<{
+          page_range: string;
+          document_type: string | null;
+          confidence: number;
+          extracted: Record<string, unknown>;
+          field_confidence?: Record<string, number>;
+        }>).map((d) => ({
+          ...d,
+          document_type: normalizeSlugForApi(d.document_type),
+        }))
+      : undefined;
+  const extractedNoMultidoc: Record<string, unknown> | null = extractedAfterFc
+    ? Object.fromEntries(
+        Object.entries(extractedAfterFc).filter(([k]) => k !== '_multidoc_documents'),
+      )
+    : null;
+
   // F4: PII redaction перед отправкой webhook'а. Управляется флагом
   // `metadata.redact_pii: true` который клиент ставит при создании job'а
   // (через query-param `?redact_pii=true` или поле в metadata).
@@ -62,7 +87,7 @@ export async function deliverFinalizedJobWebhook(
   // оператором). См. routes/jobs.ts и pipeline/normalize/pii-redact.ts.
   const meta = (updated.metadata ?? null) as Record<string, unknown> | null;
   const shouldRedact = meta && (meta.redact_pii === true || meta.redact_pii === 'true');
-  const extractedOut = shouldRedact ? redactPii(extractedAfterFc) : extractedAfterFc;
+  const extractedOut = shouldRedact ? redactPii(extractedNoMultidoc) : extractedNoMultidoc;
   const metadataOut = shouldRedact ? redactPii(meta) : meta;
 
   await deliverWebhook(
@@ -81,6 +106,9 @@ export async function deliverFinalizedJobWebhook(
       metadata: metadataOut,
       error: updated.error,
       _field_confidence: Object.keys(fieldConfidence).length > 0 ? fieldConfidence : undefined,
+      // F5: массив найденных документов если xlsx/PDF был multi-doc.
+      // При single-doc отсутствует (backwards compat).
+      documents,
     },
     log,
   );
