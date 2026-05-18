@@ -40,13 +40,13 @@ export default function DashboardPage() {
     <div className="mx-auto max-w-7xl space-y-4 p-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-slate-900">Дашборд</h1>
+          <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">Дашборд</h1>
           {data && (
-            <p className="mt-1 text-xs text-slate-500">
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">
               Обновлено {formatDateTime(data.generated_at)} ·{' '}
               <button
                 type="button"
-                className="text-brand-600 hover:underline"
+                className="text-brand-600 dark:text-brand-400 hover:underline"
                 onClick={() => refetch()}
                 disabled={isFetching}
               >
@@ -55,15 +55,15 @@ export default function DashboardPage() {
             </p>
           )}
         </div>
-        <div className="flex rounded-lg bg-slate-100 p-0.5 text-sm">
+        <div className="flex rounded-lg bg-slate-100 dark:bg-slate-800 p-0.5 text-sm">
           {WINDOWS.map((w) => (
             <button
               key={w.value}
               type="button"
               className={`rounded px-3 py-1 ${
                 window === w.value
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900'
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-sm'
+                  : 'text-slate-600 dark:text-slate-400 dark:text-slate-500 hover:text-slate-900 dark:text-slate-100'
               }`}
               onClick={() => setWindow(w.value)}
             >
@@ -81,7 +81,7 @@ export default function DashboardPage() {
 
       {isLoading && !data && (
         <div className="card">
-          <div className="card-body text-sm text-slate-500">Загрузка метрик…</div>
+          <div className="card-body text-sm text-slate-500 dark:text-slate-400 dark:text-slate-500">Загрузка метрик…</div>
         </div>
       )}
 
@@ -177,11 +177,11 @@ export default function DashboardPage() {
             <div className="card">
               <div className="card-header">
                 <h3 className="card-title">По типам документов</h3>
-                <span className="text-xs text-slate-500">{data.by_type.length} типов</span>
+                <span className="text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">{data.by_type.length} типов</span>
               </div>
               <div className="overflow-x-auto">
                 <table className="min-w-full text-sm">
-                  <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                  <thead className="bg-slate-50 dark:bg-slate-900/40 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400 dark:text-slate-500">
                     <tr>
                       <th className="px-4 py-2">Тип</th>
                       <th className="px-4 py-2 text-right">Всего</th>
@@ -193,40 +193,40 @@ export default function DashboardPage() {
                       <th className="px-4 py-2 text-right">LLM %</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-200">
+                  <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
                     {data.by_type.map((t) => (
-                      <tr key={t.slug} className="hover:bg-slate-50">
+                      <tr key={t.slug} className="hover:bg-slate-50 dark:bg-slate-900/40">
                         <td className="px-4 py-2">
                           <Link
                             to={`/jobs?document_type=${t.slug}`}
-                            className="font-medium text-slate-900 hover:underline"
+                            className="font-medium text-slate-900 dark:text-slate-100 hover:underline"
                           >
                             {t.slug}
                           </Link>
                         </td>
                         <td className="px-4 py-2 text-right font-mono">{formatNumber(t.total)}</td>
                         <td className="px-4 py-2 text-right">
-                          <span className="font-mono text-emerald-700">{formatNumber(t.done)}</span>
+                          <span className="font-mono text-emerald-700 dark:text-emerald-300">{formatNumber(t.done)}</span>
                         </td>
                         <td className="px-4 py-2 text-right">
                           {t.needs_review > 0 ? (
-                            <span className="font-mono text-amber-700">
+                            <span className="font-mono text-amber-700 dark:text-amber-300">
                               {formatNumber(t.needs_review)}
                             </span>
                           ) : (
-                            <span className="text-slate-400">—</span>
+                            <span className="text-slate-400 dark:text-slate-500">—</span>
                           )}
                         </td>
                         <td className="px-4 py-2 text-right">
                           {t.failed > 0 ? (
-                            <span className="font-mono text-rose-700">
+                            <span className="font-mono text-rose-700 dark:text-rose-300">
                               {formatNumber(t.failed)}
                             </span>
                           ) : (
-                            <span className="text-slate-400">—</span>
+                            <span className="text-slate-400 dark:text-slate-500">—</span>
                           )}
                         </td>
-                        <td className="px-4 py-2 text-right font-mono text-slate-600">
+                        <td className="px-4 py-2 text-right font-mono text-slate-600 dark:text-slate-400 dark:text-slate-500">
                           {fmtMs(t.latency_p95_ms)}
                         </td>
                         <td className="px-4 py-2 text-right font-mono">
@@ -234,7 +234,7 @@ export default function DashboardPage() {
                             ? formatPercent(t.avg_confidence)
                             : '—'}
                         </td>
-                        <td className="px-4 py-2 text-right font-mono text-slate-600">
+                        <td className="px-4 py-2 text-right font-mono text-slate-600 dark:text-slate-400 dark:text-slate-500">
                           {formatPercent(t.llm_fallback_rate)}
                         </td>
                       </tr>
@@ -269,18 +269,18 @@ function KpiCard({
 }) {
   const valueClass =
     tone === 'emerald'
-      ? 'text-emerald-700'
+      ? 'text-emerald-700 dark:text-emerald-300'
       : tone === 'amber'
-      ? 'text-amber-700'
+      ? 'text-amber-700 dark:text-amber-300'
       : tone === 'rose'
-      ? 'text-rose-700'
-      : 'text-slate-900';
+      ? 'text-rose-700 dark:text-rose-300'
+      : 'text-slate-900 dark:text-slate-100';
 
   const inner = (
     <div className="card-body">
-      <div className="text-xs uppercase tracking-wide text-slate-500">{label}</div>
+      <div className="text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400 dark:text-slate-500">{label}</div>
       <div className={`mt-1 text-2xl font-semibold ${valueClass}`}>{value}</div>
-      {hint && <div className="mt-1 text-xs text-slate-500">{hint}</div>}
+      {hint && <div className="mt-1 text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">{hint}</div>}
     </div>
   );
 
@@ -297,8 +297,8 @@ function KpiCard({
 function Stat({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex items-baseline justify-between">
-      <span className="text-xs text-slate-500">{label}</span>
-      <span className="font-mono text-sm text-slate-900">{value}</span>
+      <span className="text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">{label}</span>
+      <span className="font-mono text-sm text-slate-900 dark:text-slate-100">{value}</span>
     </div>
   );
 }

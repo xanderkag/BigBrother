@@ -4,6 +4,11 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter } from 'react-router-dom';
 import App from './App';
 import './index.css';
+import { initTheme } from '@/lib/theme';
+
+// Применяем сохранённую тему до первого render'а — иначе вспышка
+// белого фона на dark-режиме при загрузке страницы.
+initTheme();
 
 // pdfjs worker — react-pdf использует pdfjs-dist под капотом. Указываем
 // worker через import.meta.url чтобы Vite собрал его как отдельный chunk.

@@ -40,22 +40,22 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="flex h-full items-center justify-center bg-slate-50 p-6">
+    <div className="flex h-full items-center justify-center bg-slate-50 dark:bg-slate-900/40 p-6">
       <div className="card w-full max-w-md">
         <div className="card-body space-y-5">
           <div className="text-center">
-            <div className="mb-2 inline-flex items-center gap-2 text-2xl font-semibold text-slate-900">
+            <div className="mb-2 inline-flex items-center gap-2 text-2xl font-semibold text-slate-900 dark:text-slate-100">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
                 viewBox="0 0 24 24"
                 fill="currentColor"
-                className="h-7 w-7 text-brand-600"
+                className="h-7 w-7 text-brand-600 dark:text-brand-400"
               >
                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
               </svg>
               parsedocs
             </div>
-            <p className="text-sm text-slate-500">Введите API-токен для входа</p>
+            <p className="text-sm text-slate-500 dark:text-slate-400 dark:text-slate-500">Введите API-токен для входа</p>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -82,7 +82,7 @@ export default function LoginPage() {
             </button>
           </form>
 
-          <div className="text-center text-xs text-slate-500">
+          <div className="text-center text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">
             <a href="/ui-legacy/" className="hover:underline">
               Старая версия (legacy) →
             </a>

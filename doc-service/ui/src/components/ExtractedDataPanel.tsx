@@ -51,7 +51,7 @@ export default function ExtractedDataPanel({ extracted, issues }: Props) {
   if (!extracted) {
     return (
       <div className="card">
-        <div className="card-body text-sm text-slate-500">Данные ещё не извлечены.</div>
+        <div className="card-body text-sm text-slate-500 dark:text-slate-400 dark:text-slate-500">Данные ещё не извлечены.</div>
       </div>
     );
   }
@@ -61,11 +61,11 @@ export default function ExtractedDataPanel({ extracted, issues }: Props) {
       <div className="card-header">
         <div className="flex items-center gap-3">
           <h3 className="card-title">Extracted data</h3>
-          <div className="flex rounded-lg bg-slate-100 p-0.5 text-xs">
+          <div className="flex rounded-lg bg-slate-100 dark:bg-slate-800 p-0.5 text-xs">
             <button
               type="button"
               className={`rounded px-2 py-1 ${
-                viewMode === 'form' ? 'bg-brand-600 text-white' : 'text-slate-700'
+                viewMode === 'form' ? 'bg-brand-600 text-white' : 'text-slate-700 dark:text-slate-300'
               }`}
               onClick={() => updateView('form')}
             >
@@ -74,7 +74,7 @@ export default function ExtractedDataPanel({ extracted, issues }: Props) {
             <button
               type="button"
               className={`rounded px-2 py-1 ${
-                viewMode === 'json' ? 'bg-brand-600 text-white' : 'text-slate-700'
+                viewMode === 'json' ? 'bg-brand-600 text-white' : 'text-slate-700 dark:text-slate-300'
               }`}
               onClick={() => updateView('json')}
             >
@@ -275,7 +275,7 @@ function FormView({
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div>
-      <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+      <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 dark:text-slate-500">
         {title}
       </h4>
       <dl className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">{children}</dl>
@@ -297,12 +297,12 @@ function Field({
   const display = renderValue(value);
   return (
     <div className={wide ? 'sm:col-span-2' : undefined}>
-      <dt className="text-xs text-slate-500">{label}</dt>
+      <dt className="text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">{label}</dt>
       <dd
         className={`mt-0.5 text-sm ${
           highlight
             ? 'rounded bg-amber-50 px-1.5 py-0.5 font-medium text-amber-900'
-            : 'text-slate-900'
+            : 'text-slate-900 dark:text-slate-100'
         }`}
       >
         {display}
@@ -332,12 +332,12 @@ function ItemsTable({ items }: { items: Array<Record<string, unknown>> }) {
   );
   return (
     <div>
-      <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-        Позиции <span className="font-normal text-slate-400">({items.length})</span>
+      <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 dark:text-slate-500">
+        Позиции <span className="font-normal text-slate-400 dark:text-slate-500">({items.length})</span>
       </h4>
-      <div className="overflow-auto rounded-lg border border-slate-200">
+      <div className="overflow-auto rounded-lg border border-slate-200 dark:border-slate-800">
         <table className="min-w-full text-sm">
-          <thead className="bg-slate-50 text-xs uppercase text-slate-500">
+          <thead className="bg-slate-50 dark:bg-slate-900/40 text-xs uppercase text-slate-500 dark:text-slate-400 dark:text-slate-500">
             <tr>
               <th className="px-3 py-2 text-left">№</th>
               <th className="px-3 py-2 text-left">Наименование</th>
@@ -348,11 +348,11 @@ function ItemsTable({ items }: { items: Array<Record<string, unknown>> }) {
               {hasCategories && <th className="px-3 py-2 text-left">Категория</th>}
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-200">
+          <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
             {items.map((it, i) => (
-              <tr key={i} className="hover:bg-slate-50">
-                <td className="px-3 py-2 text-slate-500">{i + 1}</td>
-                <td className="px-3 py-2 font-medium text-slate-900">{String(it.name ?? '—')}</td>
+              <tr key={i} className="hover:bg-slate-50 dark:bg-slate-900/40">
+                <td className="px-3 py-2 text-slate-500 dark:text-slate-400 dark:text-slate-500">{i + 1}</td>
+                <td className="px-3 py-2 font-medium text-slate-900 dark:text-slate-100">{String(it.name ?? '—')}</td>
                 <td className="px-3 py-2 text-right">{formatNumber(it.qty as number)}</td>
                 <td className="px-3 py-2 text-right">{formatMoney(it.price as number, '')}</td>
                 <td className="px-3 py-2 text-right">

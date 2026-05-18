@@ -36,8 +36,8 @@ export default function DocumentTypesPage() {
     <div className="mx-auto max-w-6xl space-y-4 p-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-slate-900">Типы документов</h1>
-          <p className="mt-1 text-sm text-slate-500">
+          <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">Типы документов</h1>
+          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400 dark:text-slate-500">
             Справочник зарегистрированных типов. Влияет на классификацию, regex
             парсеры и LLM-промпты.
           </p>
@@ -75,7 +75,7 @@ export default function DocumentTypesPage() {
 
       <div className="card overflow-hidden">
         <table className="min-w-full text-sm">
-          <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+          <thead className="bg-slate-50 dark:bg-slate-900/40 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400 dark:text-slate-500">
             <tr>
               <th className="px-4 py-2">Slug</th>
               <th className="px-4 py-2">Название</th>
@@ -86,25 +86,25 @@ export default function DocumentTypesPage() {
               <th className="px-4 py-2"></th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-200">
+          <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
             {isLoading && (
               <tr>
-                <td colSpan={7} className="px-4 py-6 text-center text-slate-500">
+                <td colSpan={7} className="px-4 py-6 text-center text-slate-500 dark:text-slate-400 dark:text-slate-500">
                   Загрузка…
                 </td>
               </tr>
             )}
             {!isLoading && items.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-4 py-6 text-center text-slate-400">
+                <td colSpan={7} className="px-4 py-6 text-center text-slate-400 dark:text-slate-500">
                   Типы не найдены.
                 </td>
               </tr>
             )}
             {items.map((t) => (
-              <tr key={t.slug} className="hover:bg-slate-50">
-                <td className="px-4 py-2 font-mono text-xs text-slate-700">{t.slug}</td>
-                <td className="px-4 py-2 font-medium text-slate-900">
+              <tr key={t.slug} className="hover:bg-slate-50 dark:bg-slate-900/40">
+                <td className="px-4 py-2 font-mono text-xs text-slate-700 dark:text-slate-300">{t.slug}</td>
+                <td className="px-4 py-2 font-medium text-slate-900 dark:text-slate-100">
                   {t.display_name}
                   {t.is_builtin && (
                     <span className="badge-slate ml-2" title="Встроенный тип">
@@ -112,13 +112,13 @@ export default function DocumentTypesPage() {
                     </span>
                   )}
                 </td>
-                <td className="px-4 py-2 text-slate-600">
-                  {t.parser_kind ?? <span className="text-slate-400">—</span>}
+                <td className="px-4 py-2 text-slate-600 dark:text-slate-400 dark:text-slate-500">
+                  {t.parser_kind ?? <span className="text-slate-400 dark:text-slate-500">—</span>}
                 </td>
-                <td className="px-4 py-2 text-slate-600">
+                <td className="px-4 py-2 text-slate-600 dark:text-slate-400 dark:text-slate-500">
                   <span className="text-xs">{(t.expected_fields ?? []).length}</span>
                 </td>
-                <td className="px-4 py-2 text-slate-600">
+                <td className="px-4 py-2 text-slate-600 dark:text-slate-400 dark:text-slate-500">
                   <span className="text-xs">{(t.classification_keywords ?? []).length}</span>
                 </td>
                 <td className="px-4 py-2">
@@ -441,7 +441,7 @@ function DocumentTypeEditor({
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center justify-between gap-2 border-t border-slate-200 bg-slate-50 px-5 py-3">
+        <div className="flex shrink-0 items-center justify-between gap-2 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/40 px-5 py-3">
           <div>
             {!isNew && !initial.is_builtin && (
               <button

@@ -97,8 +97,8 @@ export default function ReviewQueuePage() {
     <div className="mx-auto max-w-6xl space-y-4 p-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-slate-900">Очередь проверки</h1>
-          <p className="mt-1 text-sm text-slate-500">
+          <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">Очередь проверки</h1>
+          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400 dark:text-slate-500">
             Документы со статусом{' '}
             <span className="badge-amber">needs_review</span> — требуют ручной проверки
             оператором перед отправкой webhook'а клиенту.
@@ -139,7 +139,7 @@ export default function ReviewQueuePage() {
                   ? `Выбрано: ${selected.size} из ${items.length}`
                   : `В очереди: ${items.length}`}
                 {data?.items.length === PAGE_SIZE && (
-                  <span className="ml-2 text-amber-700">(показаны первые {PAGE_SIZE})</span>
+                  <span className="ml-2 text-amber-700 dark:text-amber-300">(показаны первые {PAGE_SIZE})</span>
                 )}
               </span>
             </div>
@@ -171,7 +171,7 @@ export default function ReviewQueuePage() {
       {/* List */}
       {isLoading && (
         <div className="card">
-          <div className="card-body text-sm text-slate-500">Загрузка…</div>
+          <div className="card-body text-sm text-slate-500 dark:text-slate-400 dark:text-slate-500">Загрузка…</div>
         </div>
       )}
 
@@ -192,8 +192,8 @@ export default function ReviewQueuePage() {
                 />
               </svg>
             </div>
-            <p className="text-lg font-medium text-slate-900">Все проверены ✓</p>
-            <p className="mt-1 text-sm text-slate-500">
+            <p className="text-lg font-medium text-slate-900 dark:text-slate-100">Все проверены ✓</p>
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400 dark:text-slate-500">
               В очереди нет документов на проверке.
             </p>
           </div>
@@ -249,22 +249,22 @@ function ReviewRow({
           <div className="flex items-center gap-2">
             <Link
               to={`/jobs/${job.id}`}
-              className="truncate font-medium text-slate-900 hover:underline"
+              className="truncate font-medium text-slate-900 dark:text-slate-100 hover:underline"
             >
               {job.file_name}
             </Link>
             {job.document_type && (
               <span className="badge-indigo shrink-0">{job.document_type}</span>
             )}
-            <span className="font-mono text-xs text-slate-400">{shortId(job.id, 8)}</span>
+            <span className="font-mono text-xs text-slate-400 dark:text-slate-500">{shortId(job.id, 8)}</span>
           </div>
 
-          <div className="mt-1 flex items-center gap-3 text-xs text-slate-500">
+          <div className="mt-1 flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">
             <span>{formatFileSize(job.file_size)}</span>
             {job.confidence !== null && (
               <span
                 className={
-                  Number(job.confidence) >= 0.6 ? 'text-amber-700' : 'text-rose-700'
+                  Number(job.confidence) >= 0.6 ? 'text-amber-700 dark:text-amber-300' : 'text-rose-700 dark:text-rose-300'
                 }
               >
                 confidence {formatPercent(Number(job.confidence))}
@@ -295,7 +295,7 @@ function ReviewRow({
                   </div>
                 ))}
                 {issues.length > 2 && (
-                  <div className="text-amber-700">+ ещё {issues.length - 2}</div>
+                  <div className="text-amber-700 dark:text-amber-300">+ ещё {issues.length - 2}</div>
                 )}
               </div>
             </div>

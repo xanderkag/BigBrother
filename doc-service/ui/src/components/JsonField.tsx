@@ -72,7 +72,7 @@ export default function JsonField({ label, value, onChange, hint, rows = 6 }: Pr
         spellCheck={false}
         placeholder="{} или оставьте пустым = null"
       />
-      {hint && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
+      {hint && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">{hint}</p>}
       {error && <p className="mt-1 text-xs text-rose-600">{error}</p>}
     </div>
   );

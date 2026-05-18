@@ -52,12 +52,12 @@ export default function PdfViewer({ fileUrl, mimeType }: PdfViewerProps) {
     return (
       <div
         ref={containerRef}
-        className="flex h-full w-full flex-col items-center justify-start overflow-auto bg-slate-100 p-4"
+        className="flex h-full w-full flex-col items-center justify-start overflow-auto bg-slate-100 dark:bg-slate-800 p-4"
       >
         <img
           src={fileUrl}
           alt="Document preview"
-          className="max-w-full rounded-lg border border-slate-200 bg-white shadow-sm"
+          className="max-w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm"
         />
       </div>
     );
@@ -66,13 +66,13 @@ export default function PdfViewer({ fileUrl, mimeType }: PdfViewerProps) {
   return (
     <div
       ref={containerRef}
-      className="relative flex h-full w-full flex-col overflow-hidden bg-slate-100"
+      className="relative flex h-full w-full flex-col overflow-hidden bg-slate-100 dark:bg-slate-800"
     >
       <div className="flex-1 overflow-auto p-4">
         <Document
           file={fileUrl}
           onLoadSuccess={onLoadSuccess}
-          loading={<div className="p-6 text-sm text-slate-500">Загрузка PDF…</div>}
+          loading={<div className="p-6 text-sm text-slate-500 dark:text-slate-400 dark:text-slate-500">Загрузка PDF…</div>}
           error={
             <div className="error-banner m-4">
               Не удалось загрузить PDF. Попробуйте обновить страницу.
@@ -85,7 +85,7 @@ export default function PdfViewer({ fileUrl, mimeType }: PdfViewerProps) {
             renderTextLayer={true}
             renderAnnotationLayer={true}
             loading={
-              <div className="flex h-96 items-center justify-center text-sm text-slate-500">
+              <div className="flex h-96 items-center justify-center text-sm text-slate-500 dark:text-slate-400 dark:text-slate-500">
                 Рендеринг страницы…
               </div>
             }
@@ -94,7 +94,7 @@ export default function PdfViewer({ fileUrl, mimeType }: PdfViewerProps) {
       </div>
 
       {/* Bottom toolbar — sticky над content'ом. */}
-      <div className="flex shrink-0 items-center justify-between border-t border-slate-200 bg-white px-4 py-2 text-sm">
+      <div className="flex shrink-0 items-center justify-between border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2 text-sm">
         <div className="flex items-center gap-2">
           {numPages && numPages > 1 && (
             <>
@@ -107,7 +107,7 @@ export default function PdfViewer({ fileUrl, mimeType }: PdfViewerProps) {
               >
                 ←
               </button>
-              <span className="font-mono text-slate-700">
+              <span className="font-mono text-slate-700 dark:text-slate-300">
                 {pageNumber} / {numPages}
               </span>
               <button
@@ -121,7 +121,7 @@ export default function PdfViewer({ fileUrl, mimeType }: PdfViewerProps) {
               </button>
             </>
           )}
-          {numPages === 1 && <span className="text-slate-500">1 страница</span>}
+          {numPages === 1 && <span className="text-slate-500 dark:text-slate-400 dark:text-slate-500">1 страница</span>}
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -133,7 +133,7 @@ export default function PdfViewer({ fileUrl, mimeType }: PdfViewerProps) {
           >
             −
           </button>
-          <span className="font-mono w-12 text-center text-slate-700">
+          <span className="font-mono w-12 text-center text-slate-700 dark:text-slate-300">
             {Math.round(scale * 100)}%
           </span>
           <button

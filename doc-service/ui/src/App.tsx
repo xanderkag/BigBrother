@@ -10,6 +10,7 @@ import DocumentTypesPage from '@/pages/DocumentTypes';
 import ProvidersPage from '@/pages/Providers';
 import AuditLogPage from '@/pages/AuditLog';
 import Layout from '@/components/Layout';
+import PageStub from '@/components/PageStub';
 
 /**
  * App routes — UI v2.
@@ -24,6 +25,12 @@ import Layout from '@/components/Layout';
  *   /providers         → CRUD LLM/OCR провайдеров
  *   /audit-log         → Audit log viewer
  *   /login             → Login (если нет токена в localStorage)
+ *
+ * Stubs (страницы запланированы, пока ведут в legacy через PageStub):
+ *   /settings          → Settings (dashboard конфига)
+ *   /tenants           → Tenants (orgs/projects/users)
+ *   /reference-lists   → Справочники
+ *   /test-lab          → Тестовая лаборатория
  *
  * Всё внутри Layout проверяется через RequireAuth — нет токена →
  * редирект на /login.
@@ -46,6 +53,46 @@ export default function App() {
                 <Route path="document-types" element={<DocumentTypesPage />} />
                 <Route path="providers" element={<ProvidersPage />} />
                 <Route path="audit-log" element={<AuditLogPage />} />
+                <Route
+                  path="settings"
+                  element={
+                    <PageStub
+                      title="Настройки"
+                      description="Dashboard конфигурации сервиса: пороги OCR, провайдеры, лимиты, sweeper'ы, sessions. Переезд на React в работе."
+                      legacyHash="settings"
+                    />
+                  }
+                />
+                <Route
+                  path="tenants"
+                  element={
+                    <PageStub
+                      title="Организации"
+                      description="Управление организациями, проектами и пользователями (multi-tenant админка). Переезд на React в работе."
+                      legacyHash="tenants"
+                    />
+                  }
+                />
+                <Route
+                  path="reference-lists"
+                  element={
+                    <PageStub
+                      title="Справочники"
+                      description="Справочники контрагентов и номенклатуры для привязки документов. Переезд на React в работе."
+                      legacyHash="reference-lists"
+                    />
+                  }
+                />
+                <Route
+                  path="test-lab"
+                  element={
+                    <PageStub
+                      title="Тестовая лаборатория"
+                      description="Прогон документа через конкретные модели, сравнение результатов, калибровка порогов. Переезд на React в работе."
+                      legacyHash="test-lab"
+                    />
+                  }
+                />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
             </Layout>

@@ -1,6 +1,10 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
+  // Dark mode по классу `dark` на <html>. Управляется через useTheme()
+  // (см. src/lib/theme.ts) — toggle в header + persist в localStorage,
+  // fallback prefers-color-scheme при первом заходе.
+  darkMode: 'class',
   theme: {
     extend: {
       colors: {

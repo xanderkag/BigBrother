@@ -80,8 +80,8 @@ export default function ExtractedEditor({ jobId, initial, onClose, onSaved }: Pr
           </button>
         </div>
         <div className="flex-1 overflow-hidden p-5">
-          <p className="mb-3 text-xs text-slate-500">
-            Перезаписывает поле <code className="rounded bg-slate-100 px-1">extracted</code>{' '}
+          <p className="mb-3 text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">
+            Перезаписывает поле <code className="rounded bg-slate-100 dark:bg-slate-800 px-1">extracted</code>{' '}
             целиком. После сохранения статус job'а станет{' '}
             <span className="badge-emerald">done</span>. Backend пере-валидирует payload по
             правилам типа документа — если найдутся issues, они появятся в job снова.
@@ -98,7 +98,7 @@ export default function ExtractedEditor({ jobId, initial, onClose, onSaved }: Pr
             </div>
           )}
         </div>
-        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-slate-200 bg-slate-50 px-5 py-3">
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/40 px-5 py-3">
           <button type="button" className="btn-secondary" onClick={onClose}>
             Отмена
           </button>

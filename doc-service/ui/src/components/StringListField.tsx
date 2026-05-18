@@ -46,7 +46,7 @@ export default function StringListField({
         spellCheck={false}
         placeholder="по одному значению на строку"
       />
-      {hint && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
+      {hint && <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">{hint}</p>}
     </div>
   );
 }

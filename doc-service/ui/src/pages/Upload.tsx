@@ -189,7 +189,7 @@ export default function UploadPage() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-5 p-6">
-      <h1 className="text-2xl font-semibold text-slate-900">Загрузить документы</h1>
+      <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">Загрузить документы</h1>
 
       {/* Drop zone */}
       <div
@@ -199,7 +199,7 @@ export default function UploadPage() {
         }}
         onDragLeave={() => setDragOver(false)}
         onDrop={onDrop}
-        className={`relative rounded-xl border-2 border-dashed bg-white p-10 text-center transition-colors ${
+        className={`relative rounded-xl border-2 border-dashed bg-white dark:bg-slate-900 p-10 text-center transition-colors ${
           dragOver
             ? 'border-brand-500 bg-brand-50'
             : 'border-slate-300 hover:border-slate-400'
@@ -211,7 +211,7 @@ export default function UploadPage() {
           fill="none"
           stroke="currentColor"
           strokeWidth={1.5}
-          className="mx-auto mb-3 h-12 w-12 text-slate-400"
+          className="mx-auto mb-3 h-12 w-12 text-slate-400 dark:text-slate-500"
         >
           <path
             strokeLinecap="round"
@@ -219,9 +219,9 @@ export default function UploadPage() {
             d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3"
           />
         </svg>
-        <p className="text-sm text-slate-600">
+        <p className="text-sm text-slate-600 dark:text-slate-400 dark:text-slate-500">
           Перетащите файлы сюда или{' '}
-          <label className="cursor-pointer font-medium text-brand-600 hover:underline">
+          <label className="cursor-pointer font-medium text-brand-600 dark:text-brand-400 hover:underline">
             выберите вручную
             <input
               type="file"
@@ -232,7 +232,7 @@ export default function UploadPage() {
             />
           </label>
         </p>
-        <p className="mt-1 text-xs text-slate-400">
+        <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
           PDF, JPG, PNG, HEIC, BMP, TIFF, WebP — до 50 MB каждый
         </p>
       </div>
@@ -335,18 +335,18 @@ export default function UploadPage() {
           </div>
           <div className="card-body p-0">
             <table className="min-w-full text-sm">
-              <tbody className="divide-y divide-slate-200">
+              <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
                 {recent.map((r) => (
-                  <tr key={r.jobId} className="hover:bg-slate-50">
+                  <tr key={r.jobId} className="hover:bg-slate-50 dark:bg-slate-900/40">
                     <td className="px-5 py-2">
                       <Link
                         to={`/jobs/${r.jobId}`}
-                        className="font-medium text-slate-900 hover:underline"
+                        className="font-medium text-slate-900 dark:text-slate-100 hover:underline"
                       >
                         {r.fileName}
                       </Link>
                     </td>
-                    <td className="px-5 py-2 text-right text-slate-500">
+                    <td className="px-5 py-2 text-right text-slate-500 dark:text-slate-400 dark:text-slate-500">
                       {formatFileSize(r.size)}
                     </td>
                     <td className="px-5 py-2">
@@ -354,13 +354,13 @@ export default function UploadPage() {
                         <span className="badge-indigo">{r.documentHint}</span>
                       )}
                     </td>
-                    <td className="px-5 py-2 text-right font-mono text-xs text-slate-500">
+                    <td className="px-5 py-2 text-right font-mono text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">
                       {formatDateTime(r.uploadedAt)}
                     </td>
                     <td className="px-5 py-2 text-right">
                       <Link
                         to={`/jobs/${r.jobId}`}
-                        className="font-mono text-xs text-brand-600 hover:underline"
+                        className="font-mono text-xs text-brand-600 dark:text-brand-400 hover:underline"
                       >
                         {shortId(r.jobId)}
                       </Link>
@@ -385,25 +385,25 @@ function QueueRow({
 }) {
   const statusInfo =
     item.status === 'done'
-      ? { label: '✓ загружен', cls: 'text-emerald-700' }
+      ? { label: '✓ загружен', cls: 'text-emerald-700 dark:text-emerald-300' }
       : item.status === 'failed'
-      ? { label: '✕ ошибка', cls: 'text-rose-700' }
+      ? { label: '✕ ошибка', cls: 'text-rose-700 dark:text-rose-300' }
       : item.status === 'uploading'
       ? { label: '⟳ грузится…', cls: 'text-sky-700' }
-      : { label: 'в очереди', cls: 'text-slate-500' };
+      : { label: 'в очереди', cls: 'text-slate-500 dark:text-slate-400 dark:text-slate-500' };
 
   return (
-    <div className="flex items-center gap-3 rounded-lg bg-slate-50 px-3 py-2 text-sm">
+    <div className="flex items-center gap-3 rounded-lg bg-slate-50 dark:bg-slate-900/40 px-3 py-2 text-sm">
       <span className="flex-1 truncate">
-        <FileIcon mime={item.file.type} className="mr-2 inline h-4 w-4 text-slate-400" />
+        <FileIcon mime={item.file.type} className="mr-2 inline h-4 w-4 text-slate-400 dark:text-slate-500" />
         {item.file.name}
       </span>
-      <span className="font-mono text-xs text-slate-500">{formatFileSize(item.file.size)}</span>
+      <span className="font-mono text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">{formatFileSize(item.file.size)}</span>
       <span className={`text-xs ${statusInfo.cls}`}>{statusInfo.label}</span>
       {item.jobId && (
         <Link
           to={`/jobs/${item.jobId}`}
-          className="font-mono text-xs text-brand-600 hover:underline"
+          className="font-mono text-xs text-brand-600 dark:text-brand-400 hover:underline"
         >
           {shortId(item.jobId)}
         </Link>
@@ -416,7 +416,7 @@ function QueueRow({
       {item.status === 'queued' && (
         <button
           type="button"
-          className="text-slate-400 hover:text-rose-600"
+          className="text-slate-400 dark:text-slate-500 hover:text-rose-600"
           onClick={() => onRemove(item.id)}
           aria-label="Убрать из очереди"
         >

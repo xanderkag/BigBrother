@@ -39,8 +39,8 @@ export default function ProvidersPage() {
     <div className="mx-auto max-w-6xl space-y-4 p-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-slate-900">Провайдеры</h1>
-          <p className="mt-1 text-sm text-slate-500">
+          <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">Провайдеры</h1>
+          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400 dark:text-slate-500">
             LLM (Anthropic / OpenAI / Ollama) и OCR (Yandex Vision) — креды и
             URL'ы для динамической резолюции в pipeline'е.
           </p>
@@ -73,7 +73,7 @@ export default function ProvidersPage() {
 
       <div className="card overflow-hidden">
         <table className="min-w-full text-sm">
-          <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+          <thead className="bg-slate-50 dark:bg-slate-900/40 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400 dark:text-slate-500">
             <tr>
               <th className="px-4 py-2">ID</th>
               <th className="px-4 py-2">Тип</th>
@@ -85,17 +85,17 @@ export default function ProvidersPage() {
               <th className="px-4 py-2"></th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-200">
+          <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
             {isLoading && (
               <tr>
-                <td colSpan={8} className="px-4 py-6 text-center text-slate-500">
+                <td colSpan={8} className="px-4 py-6 text-center text-slate-500 dark:text-slate-400 dark:text-slate-500">
                   Загрузка…
                 </td>
               </tr>
             )}
             {!isLoading && items.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-4 py-6 text-center text-slate-400">
+                <td colSpan={8} className="px-4 py-6 text-center text-slate-400 dark:text-slate-500">
                   Провайдеры не настроены.
                 </td>
               </tr>
@@ -151,14 +151,14 @@ function ProviderRow({
   };
 
   return (
-    <tr className="hover:bg-slate-50">
-      <td className="px-4 py-2 font-mono text-xs text-slate-700">{provider.id}</td>
+    <tr className="hover:bg-slate-50 dark:bg-slate-900/40">
+      <td className="px-4 py-2 font-mono text-xs text-slate-700 dark:text-slate-300">{provider.id}</td>
       <td className="px-4 py-2">
         <span className={provider.kind === 'llm' ? 'badge-indigo' : 'badge-sky'}>
           {provider.kind}
         </span>
       </td>
-      <td className="px-4 py-2 font-medium text-slate-900">
+      <td className="px-4 py-2 font-medium text-slate-900 dark:text-slate-100">
         {provider.display_name}
         {provider.is_default && (
           <span className="badge-emerald ml-2" title="Default для этого типа">
@@ -166,17 +166,17 @@ function ProviderRow({
           </span>
         )}
       </td>
-      <td className="px-4 py-2 font-mono text-xs text-slate-600">
-        {provider.base_url ?? <span className="text-slate-400">—</span>}
+      <td className="px-4 py-2 font-mono text-xs text-slate-600 dark:text-slate-400 dark:text-slate-500">
+        {provider.base_url ?? <span className="text-slate-400 dark:text-slate-500">—</span>}
       </td>
-      <td className="px-4 py-2 text-slate-600">
-        {provider.model ?? <span className="text-slate-400">—</span>}
+      <td className="px-4 py-2 text-slate-600 dark:text-slate-400 dark:text-slate-500">
+        {provider.model ?? <span className="text-slate-400 dark:text-slate-500">—</span>}
       </td>
-      <td className="px-4 py-2 font-mono text-xs text-slate-600">
+      <td className="px-4 py-2 font-mono text-xs text-slate-600 dark:text-slate-400 dark:text-slate-500">
         {provider.has_api_key ? (
-          provider.api_key_masked ?? <span className="text-emerald-700">set</span>
+          provider.api_key_masked ?? <span className="text-emerald-700 dark:text-emerald-300">set</span>
         ) : (
-          <span className="text-slate-400">—</span>
+          <span className="text-slate-400 dark:text-slate-500">—</span>
         )}
       </td>
       <td className="px-4 py-2">
@@ -223,7 +223,7 @@ function ProviderRow({
         {testResult && (
           <div
             className={`mt-1 text-xs ${
-              testResult.ok ? 'text-emerald-700' : 'text-rose-700'
+              testResult.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-rose-700 dark:text-rose-300'
             }`}
           >
             {testResult.ok
@@ -430,7 +430,7 @@ function ProviderEditor({
             <label className="form-label">
               API key{' '}
               {!isNew && initial?.has_api_key && (
-                <span className="text-xs font-normal text-slate-500">
+                <span className="text-xs font-normal text-slate-500 dark:text-slate-400 dark:text-slate-500">
                   (текущий: {initial.api_key_masked ?? 'установлен'} — пусто = не менять)
                 </span>
               )}
@@ -499,7 +499,7 @@ function ProviderEditor({
           {error && <div className="error-banner sm:col-span-2">{error}</div>}
         </div>
 
-        <div className="flex shrink-0 items-center justify-between border-t border-slate-200 bg-slate-50 px-5 py-3">
+        <div className="flex shrink-0 items-center justify-between border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/40 px-5 py-3">
           <div>
             {!isNew && (
               <button

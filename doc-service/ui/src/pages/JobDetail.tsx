@@ -46,7 +46,7 @@ export default function JobDetailPage() {
 
   if (isLoading) {
     return (
-      <div className="flex h-full items-center justify-center text-sm text-slate-500">
+      <div className="flex h-full items-center justify-center text-sm text-slate-500 dark:text-slate-400 dark:text-slate-500">
         Загрузка job'а…
       </div>
     );
@@ -70,11 +70,11 @@ export default function JobDetailPage() {
   return (
     <div className="flex h-full flex-col">
       {/* Top bar — title + meta + actions */}
-      <div className="shrink-0 border-b border-slate-200 bg-white px-6 py-3">
+      <div className="shrink-0 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-6 py-3">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h1 className="truncate text-lg font-semibold text-slate-900">
+              <h1 className="truncate text-lg font-semibold text-slate-900 dark:text-slate-100">
                 {job.file_name}
               </h1>
               <StatusBadge status={job.status} />
@@ -82,14 +82,14 @@ export default function JobDetailPage() {
                 <span className="badge-indigo">{job.document_type}</span>
               )}
             </div>
-            <div className="mt-1 flex items-center gap-4 text-xs text-slate-500">
+            <div className="mt-1 flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">
               <span className="font-mono">{shortId(job.id)}</span>
               <span>{formatFileSize(job.file_size)}</span>
               <span>{job.mime_type}</span>
               {job.confidence !== null && (
                 <span>
                   confidence{' '}
-                  <span className="font-medium text-slate-700">
+                  <span className="font-medium text-slate-700 dark:text-slate-300">
                     {formatPercent(Number(job.confidence))}
                   </span>{' '}
                   via {job.ocr_engine ?? '—'}
@@ -139,18 +139,18 @@ export default function JobDetailPage() {
       {/* Main grid: 2-колоночный layout */}
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-px bg-slate-200 lg:grid-cols-[1fr_minmax(420px,40%)]">
         {/* PDF слева */}
-        <div className="min-h-0 bg-white">
+        <div className="min-h-0 bg-white dark:bg-slate-900">
           {fileUrl ? (
             <PdfViewer fileUrl={fileUrl} mimeType={job.mime_type} />
           ) : (
-            <div className="flex h-full items-center justify-center text-sm text-slate-500">
+            <div className="flex h-full items-center justify-center text-sm text-slate-500 dark:text-slate-400 dark:text-slate-500">
               Загрузка файла…
             </div>
           )}
         </div>
 
         {/* Data справа */}
-        <div className="flex min-h-0 flex-col gap-3 overflow-auto bg-slate-50 p-4">
+        <div className="flex min-h-0 flex-col gap-3 overflow-auto bg-slate-50 dark:bg-slate-900/40 p-4">
           <ValidationBanner issues={issues} />
 
           <ExtractedDataPanel extracted={job.extracted} issues={issues} />
@@ -204,7 +204,7 @@ function FieldConfidenceCard({ fc }: { fc: Record<string, number> }) {
       <div className="card-body space-y-2">
         {entries.map(([k, v]) => (
           <div key={k} className="flex items-center gap-3 text-sm">
-            <span className="w-40 truncate text-slate-700">{k}</span>
+            <span className="w-40 truncate text-slate-700 dark:text-slate-300">{k}</span>
             <div className="relative h-2 flex-1 overflow-hidden rounded-full bg-slate-200">
               <div
                 className={`absolute inset-y-0 left-0 ${
@@ -217,7 +217,7 @@ function FieldConfidenceCard({ fc }: { fc: Record<string, number> }) {
                 style={{ width: `${Math.max(0, Math.min(1, v)) * 100}%` }}
               />
             </div>
-            <span className="w-12 text-right font-mono text-xs text-slate-600">
+            <span className="w-12 text-right font-mono text-xs text-slate-600 dark:text-slate-400 dark:text-slate-500">
               {formatPercent(v)}
             </span>
           </div>
@@ -244,17 +244,17 @@ function PipelineStepsCard({
               <span
                 className={`w-24 font-mono text-xs ${
                   s.status === 'done'
-                    ? 'text-emerald-700'
+                    ? 'text-emerald-700 dark:text-emerald-300'
                     : s.status === 'failed'
-                    ? 'text-rose-700'
-                    : 'text-slate-500'
+                    ? 'text-rose-700 dark:text-rose-300'
+                    : 'text-slate-500 dark:text-slate-400 dark:text-slate-500'
                 }`}
               >
                 {s.status}
               </span>
-              <span className="flex-1 truncate text-slate-700">{s.step}</span>
+              <span className="flex-1 truncate text-slate-700 dark:text-slate-300">{s.step}</span>
               {s.duration_ms !== undefined && (
-                <span className="font-mono text-xs text-slate-500">{s.duration_ms} ms</span>
+                <span className="font-mono text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">{s.duration_ms} ms</span>
               )}
             </li>
           ))}

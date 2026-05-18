@@ -76,7 +76,7 @@ export default function JobsListPage() {
   return (
     <div className="mx-auto max-w-7xl space-y-4 p-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold text-slate-900">Документы</h1>
+        <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">Документы</h1>
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -141,7 +141,7 @@ export default function JobsListPage() {
               ✕ Сбросить
             </button>
           )}
-          <div className="ml-auto text-sm text-slate-500">
+          <div className="ml-auto text-sm text-slate-500 dark:text-slate-400 dark:text-slate-500">
             {isLoading ? 'Загрузка…' : `${items.length} строк`}
             {hasNext && ' (есть ещё)'}
           </div>
@@ -159,7 +159,7 @@ export default function JobsListPage() {
       <div className="card overflow-hidden">
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
-            <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+            <thead className="bg-slate-50 dark:bg-slate-900/40 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400 dark:text-slate-500">
               <tr>
                 <th className="px-4 py-2">ID</th>
                 <th className="px-4 py-2">Файл</th>
@@ -170,12 +170,12 @@ export default function JobsListPage() {
                 <th className="px-4 py-2">Создан</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-200">
+            <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
               {items.length === 0 && !isLoading && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-10 text-center text-slate-400">
+                  <td colSpan={7} className="px-4 py-10 text-center text-slate-400 dark:text-slate-500">
                     Документов нет.{' '}
-                    <Link to="/upload" className="text-brand-600 hover:underline">
+                    <Link to="/upload" className="text-brand-600 dark:text-brand-400 hover:underline">
                       Загрузить первый →
                     </Link>
                   </td>
@@ -190,8 +190,8 @@ export default function JobsListPage() {
 
         {/* Pagination */}
         {(hasPrev || hasNext) && (
-          <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-4 py-2 text-sm">
-            <div className="text-slate-600">
+          <div className="flex items-center justify-between border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/40 px-4 py-2 text-sm">
+            <div className="text-slate-600 dark:text-slate-400 dark:text-slate-500">
               Страница {Math.floor(offset / PAGE_SIZE) + 1}
               {offset > 0 && ` (от ${offset + 1})`}
             </div>
@@ -222,8 +222,8 @@ export default function JobsListPage() {
 
 function JobRow({ job }: { job: Job }) {
   return (
-    <tr className="hover:bg-slate-50">
-      <td className="px-4 py-2 font-mono text-xs text-slate-500">
+    <tr className="hover:bg-slate-50 dark:bg-slate-900/40">
+      <td className="px-4 py-2 font-mono text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">
         <Link to={`/jobs/${job.id}`} className="hover:underline">
           {shortId(job.id, 8)}
         </Link>
@@ -231,7 +231,7 @@ function JobRow({ job }: { job: Job }) {
       <td className="px-4 py-2">
         <Link
           to={`/jobs/${job.id}`}
-          className="block max-w-[300px] truncate font-medium text-slate-900 hover:underline"
+          className="block max-w-[300px] truncate font-medium text-slate-900 dark:text-slate-100 hover:underline"
         >
           {job.file_name}
         </Link>
@@ -239,7 +239,7 @@ function JobRow({ job }: { job: Job }) {
       <td className="px-4 py-2">
         <StatusBadge status={job.status} />
       </td>
-      <td className="px-4 py-2 text-slate-700">
+      <td className="px-4 py-2 text-slate-700 dark:text-slate-300">
         {job.document_type ? (
           <span className="badge-indigo">{job.document_type}</span>
         ) : job.document_hint ? (
@@ -247,10 +247,10 @@ function JobRow({ job }: { job: Job }) {
             {job.document_hint}
           </span>
         ) : (
-          <span className="text-slate-400">—</span>
+          <span className="text-slate-400 dark:text-slate-500">—</span>
         )}
       </td>
-      <td className="px-4 py-2 text-right font-mono text-slate-700">
+      <td className="px-4 py-2 text-right font-mono text-slate-700 dark:text-slate-300">
         {formatFileSize(job.file_size)}
       </td>
       <td className="px-4 py-2 text-right">
@@ -258,19 +258,19 @@ function JobRow({ job }: { job: Job }) {
           <span
             className={`font-mono ${
               Number(job.confidence) >= 0.85
-                ? 'text-emerald-700'
+                ? 'text-emerald-700 dark:text-emerald-300'
                 : Number(job.confidence) >= 0.6
-                ? 'text-amber-700'
-                : 'text-rose-700'
+                ? 'text-amber-700 dark:text-amber-300'
+                : 'text-rose-700 dark:text-rose-300'
             }`}
           >
             {formatPercent(Number(job.confidence))}
           </span>
         ) : (
-          <span className="text-slate-400">—</span>
+          <span className="text-slate-400 dark:text-slate-500">—</span>
         )}
       </td>
-      <td className="px-4 py-2 text-xs text-slate-500">
+      <td className="px-4 py-2 text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">
         {formatDateTime(job.created_at)}
       </td>
     </tr>
