@@ -40,6 +40,21 @@ export type DocumentTypeRow = {
   confidence_threshold: string | null;        // NUMERIC → string
   regex_fallback_threshold: string | null;    // NUMERIC → string
   classification_keywords: string[];
+  /**
+   * Per-keyword weights, parallel array to classification_keywords (migration
+   * 0023). weight[i] — вес keyword[i]. Higher = higher priority при разрешении
+   * конфликтов между типами. NULL / пустой массив / shorter array → default
+   * 1.0 для всех (или для missing indices).
+   *
+   * Стандартные значения:
+   *   5.0 — very specific signature (e.g. "PRICE LIST №", "N RU Д-")
+   *   3.0 — distinguishable phrase
+   *   1.0 — default (generic)
+   *   0.5–0.9 — explicit downgrade для generic patterns которые часто
+   *             встречаются в других типах (e.g. "Country of origin"
+   *             в commercial_invoice — присутствует и в прайс-листе)
+   */
+  classification_keyword_weights: string[] | null;  // numeric[] → string[]
   metadata: Record<string, unknown> | null;
   resolution_config: Record<string, unknown> | null;  // ResolutionConfig JSON
   created_at: Date;

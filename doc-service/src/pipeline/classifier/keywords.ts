@@ -126,8 +126,19 @@ export class KeywordClassifier implements Classifier {
 
     const compiled: CompiledRule[] = [];
     for (const row of rows) {
-      const weight = this.weightFromMetadata(row.metadata) ?? 1.0;
-      for (const raw of row.classification_keywords) {
+      // Per-keyword weights (migration 0023) — parallel array к
+      // classification_keywords. Default 1.0 для missing/null/short entries.
+      // Fallback: row.metadata.classification_weight (legacy single-value).
+      const rowDefault = this.weightFromMetadata(row.metadata) ?? 1.0;
+      const weights = row.classification_keyword_weights ?? [];
+      for (let i = 0; i < row.classification_keywords.length; i += 1) {
+        const raw = row.classification_keywords[i];
+        if (raw === undefined) continue;
+        const rawWeight = weights[i];
+        const weight =
+          rawWeight !== undefined && rawWeight !== null
+            ? Number(rawWeight)
+            : rowDefault;
         try {
           compiled.push({ type: row.slug, pattern: new RegExp(raw, 'i'), weight });
         } catch {
@@ -148,14 +159,26 @@ export class KeywordClassifier implements Classifier {
       }
     }
     if (!best) return null;
-    return { ...best, candidatesCount: candidates };
+    // Outbound clamp: classifier weight живёт в [0, ∞] для internal
+    // scoring (specific patterns могут иметь weight 5.0 vs generic 1.0),
+    // но confidence в API контракте — [0, 1]. weight≥1 → confidence=1.0.
+    return {
+      ...best,
+      confidence: Math.min(1.0, best.confidence),
+      candidatesCount: candidates,
+    };
   }
 
-  /** Per-rule весов в UI ещё нет — можно класть в metadata.classification_weight. */
+  /**
+   * Legacy fallback: row-level single weight via metadata.classification_weight.
+   * Используется только когда per-keyword weights (classification_keyword_weights)
+   * не заданы. Оставлен для backwards compat — миграция 0023 переводит на
+   * per-keyword array.
+   */
   private weightFromMetadata(metadata: Record<string, unknown> | null): number | null {
     if (!metadata) return null;
     const w = (metadata as Record<string, unknown>).classification_weight;
-    if (typeof w === 'number' && w >= 0 && w <= 1) return w;
+    if (typeof w === 'number' && w >= 0) return w;
     return null;
   }
 
