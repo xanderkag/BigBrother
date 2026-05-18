@@ -14,6 +14,18 @@ export type HttpLlmClientOptions = {
   baseUrl: string;
   apiKey?: string;
   timeoutMs: number;
+  /**
+   * Per-request model override. Если задан — клиент кладёт его в body
+   * каждого вызова `{model: "phi4"}`, и inference-service.openai_compatible
+   * подменит свой default из env на эту модель. Используется когда
+   * `provider_settings.model` отличается от default'а — позволяет роутить
+   * разные документы в Phi-4 / Gemma / Mistral / etc через один и тот же
+   * inference-service контейнер без рестарта.
+   *
+   * Для backends с фиксированной моделью (claude/qwen_vl/stub) этот
+   * параметр игнорируется на стороне inference-service.
+   */
+  model?: string;
 };
 
 export class HttpLlmClient implements LlmClient {
@@ -23,8 +35,12 @@ export class HttpLlmClient implements LlmClient {
     return !!this.opts.baseUrl;
   }
 
+  private withModel<T extends Record<string, unknown>>(body: T): T & { model?: string } {
+    return this.opts.model ? { ...body, model: this.opts.model } : body;
+  }
+
   async classify(text: string): Promise<LlmClassifyResult> {
-    return this.post<LlmClassifyResult>('/v1/classify', { text });
+    return this.post<LlmClassifyResult>('/v1/classify', this.withModel({ text }));
   }
 
   async extract(input: {
@@ -37,29 +53,29 @@ export class HttpLlmClient implements LlmClient {
     // Inference-service ожидает snake_case (Python convention).
     // Перекладываем camelCase → snake_case на сетевой границе.
     const { promptOverride, includeDebug, ...rest } = input;
-    return this.post<LlmExtractResult>('/v1/extract', {
+    return this.post<LlmExtractResult>('/v1/extract', this.withModel({
       ...rest,
       ...(promptOverride ? { prompt_override: promptOverride } : {}),
       ...(includeDebug ? { include_debug: true } : {}),
-    });
+    }));
   }
 
   async visionOcr(input: { imagePath: string; prompt?: string }): Promise<LlmVisionResult> {
     const buf = await readFile(input.imagePath);
-    return this.post<LlmVisionResult>('/v1/vision-ocr', {
+    return this.post<LlmVisionResult>('/v1/vision-ocr', this.withModel({
       image_base64: buf.toString('base64'),
       prompt: input.prompt,
-    });
+    }));
   }
 
   async verify(input: {
     extracted: Record<string, unknown>;
     rawText: string;
   }): Promise<LlmVerifyResult> {
-    return this.post<LlmVerifyResult>('/v1/verify', {
+    return this.post<LlmVerifyResult>('/v1/verify', this.withModel({
       extracted: input.extracted,
       raw_text: input.rawText,
-    });
+    }));
   }
 
   private async post<T>(path: string, body: unknown): Promise<T> {

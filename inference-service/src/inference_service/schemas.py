@@ -15,6 +15,12 @@ DocumentTypeSlug = str
 
 class ClassifyRequest(BaseModel):
     text: str = Field(min_length=1)
+    # Опциональный per-request model override. Если задан — backend использует
+    # эту модель вместо OPENAI_MODEL из env (актуально для openai_compatible —
+    # doc-service передаёт сюда значение из provider_settings.model, что
+    # позволяет роутить разные документы в Phi-4 / Gemma / Mistral / etc.
+    # на лету без рестарта inference-service).
+    model: str | None = None
 
 
 class ClassifyResponse(BaseModel):
@@ -38,6 +44,9 @@ class ExtractRequest(BaseModel):
     # ответ может вырасти на 10-50 KB (объём prompt+raw). Включаем когда
     # точно хотим видеть в UI.
     include_debug: bool = False
+    # Опциональный per-request model override. Если задан — backend использует
+    # эту модель вместо OPENAI_MODEL из env. См. ClassifyRequest.model выше.
+    model: str | None = None
 
     # Allow population by both "schema" (the public name) and "schema_" (Python attr).
     # `schema` is a reserved attribute on BaseModel in Pydantic v1; the alias keeps
@@ -80,6 +89,8 @@ class ExtractResponse(BaseModel):
 class VisionRequest(BaseModel):
     image_base64: str = Field(min_length=1)
     prompt: str | None = None
+    # См. ClassifyRequest.model — для openai_compatible backend'ов с vision.
+    model: str | None = None
 
 
 class VisionResponse(BaseModel):

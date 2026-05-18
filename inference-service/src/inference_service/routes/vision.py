@@ -41,4 +41,6 @@ async def vision_ocr(
             detail=f"image too large: {len(image_bytes)} bytes (max {MAX_IMAGE_BYTES})",
         )
 
-    return await backend.vision_ocr(image_bytes=image_bytes, prompt=body.prompt)
+    return await backend.vision_ocr(
+        image_bytes=image_bytes, prompt=body.prompt, model_override=body.model
+    )

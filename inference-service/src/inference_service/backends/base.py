@@ -25,7 +25,11 @@ class ModelBackend(ABC):
         """True once the backend can serve requests (weights loaded, etc.)."""
 
     @abstractmethod
-    async def classify(self, text: str) -> ClassifyResponse:
+    async def classify(
+        self,
+        text: str,
+        model_override: str | None = None,
+    ) -> ClassifyResponse:
         ...
 
     @abstractmethod
@@ -36,6 +40,7 @@ class ModelBackend(ABC):
         hint: str | None,
         prompt_override: str | None = None,
         include_debug: bool = False,
+        model_override: str | None = None,
     ) -> ExtractResponse:
         """Извлечь структурированные данные из текста.
 
@@ -57,6 +62,7 @@ class ModelBackend(ABC):
         self,
         image_bytes: bytes,
         prompt: str | None,
+        model_override: str | None = None,
     ) -> VisionResponse:
         ...
 
@@ -65,5 +71,6 @@ class ModelBackend(ABC):
         self,
         extracted: dict[str, Any],
         raw_text: str,
+        model_override: str | None = None,
     ) -> VerifyResponse:
         ...

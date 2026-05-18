@@ -79,7 +79,15 @@ class ClaudeBackend(ModelBackend):
 
     # --- Domain methods ---
 
-    async def classify(self, text: str) -> ClassifyResponse:
+    async def classify(
+        self,
+        text: str,
+        model_override: str | None = None,  # noqa: ARG002 — игнорируем, см. ниже
+    ) -> ClassifyResponse:
+        # Claude backend привязан к одной модели в __init__ (anthropic_model_id);
+        # model_override игнорируем — если хочется другую модель, нужен
+        # отдельный backend-инстанс.
+        del model_override
         prompt = classify_prompts.build(text)
         raw = await self._complete_text(prompt)
         data = _parse_json(raw) or {}
@@ -94,7 +102,9 @@ class ClaudeBackend(ModelBackend):
         hint: str | None,
         prompt_override: str | None = None,
         include_debug: bool = False,
+        model_override: str | None = None,  # noqa: ARG002 — ignored, см. classify()
     ) -> ExtractResponse:
+        del model_override
         # F8: prompt caching. Разделяем static (system) и dynamic (user)
         # части — system кэшируется Anthropic'ом на 5 минут, и при
         # последовательных запросах с тем же hint+schema input tokens
@@ -163,7 +173,9 @@ class ClaudeBackend(ModelBackend):
         self,
         image_bytes: bytes,
         prompt: str | None,
+        model_override: str | None = None,  # noqa: ARG002 — ignored
     ) -> VisionResponse:
+        del model_override
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         media_type, image_b64 = _encode_image_for_claude(image)
         instruction = prompt or (
@@ -180,7 +192,9 @@ class ClaudeBackend(ModelBackend):
         self,
         extracted: dict[str, Any],
         raw_text: str,
+        model_override: str | None = None,  # noqa: ARG002 — ignored
     ) -> VerifyResponse:
+        del model_override
         prompt = verify_prompts.build(extracted=extracted, raw_text=raw_text)
         raw = await self._complete_text(prompt)
         data = _parse_json(raw) or {}

@@ -77,7 +77,12 @@ class QwenVlBackend(ModelBackend):
 
     # --- Domain methods ---
 
-    async def classify(self, text: str) -> ClassifyResponse:
+    async def classify(
+        self,
+        text: str,
+        model_override: str | None = None,  # noqa: ARG002 — backend хардкодит модель
+    ) -> ClassifyResponse:
+        del model_override
         prompt = classify_prompts.build(text)
         raw = await self._generate_text(prompt)
         data = _parse_json(raw)
@@ -94,7 +99,9 @@ class QwenVlBackend(ModelBackend):
         hint: str | None,
         prompt_override: str | None = None,
         include_debug: bool = False,
+        model_override: str | None = None,  # noqa: ARG002 — ignored
     ) -> ExtractResponse:
+        del model_override
         prompt = extract_prompts.build(
             text=text, schema=schema, hint=hint, prompt_override=prompt_override
         )
@@ -127,7 +134,9 @@ class QwenVlBackend(ModelBackend):
         self,
         image_bytes: bytes,
         prompt: str | None,
+        model_override: str | None = None,  # noqa: ARG002 — ignored
     ) -> VisionResponse:
+        del model_override
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         instruction = prompt or (
             "Прочитай и точно перепиши весь видимый текст на изображении. "
@@ -143,7 +152,9 @@ class QwenVlBackend(ModelBackend):
         self,
         extracted: dict[str, Any],
         raw_text: str,
+        model_override: str | None = None,  # noqa: ARG002 — ignored
     ) -> VerifyResponse:
+        del model_override
         prompt = verify_prompts.build(extracted=extracted, raw_text=raw_text)
         raw = await self._generate_text(prompt)
         data = _parse_json(raw) or {}

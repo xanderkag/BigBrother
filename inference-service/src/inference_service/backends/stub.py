@@ -97,7 +97,12 @@ class StubBackend(ModelBackend):
     def is_ready(self) -> bool:
         return True
 
-    async def classify(self, text: str) -> ClassifyResponse:
+    async def classify(
+        self,
+        text: str,
+        model_override: str | None = None,  # noqa: ARG002 — stub игнорит
+    ) -> ClassifyResponse:
+        del model_override
         head = text[:4000]
         best: tuple[str, float] | None = None
         for kind, rx, weight in _RULES:
@@ -114,7 +119,9 @@ class StubBackend(ModelBackend):
         hint: str | None,
         prompt_override: str | None = None,
         include_debug: bool = False,
+        model_override: str | None = None,  # noqa: ARG002 — stub игнорит
     ) -> ExtractResponse:
+        del model_override
         # Stub mode: для смоук-тестирования pipeline'а возвращаем mock-данные
         # для известных типов документов. Это позволяет проверить ветки
         # llm_extract / multipass / items[] / per-line validators / resolution
@@ -138,7 +145,9 @@ class StubBackend(ModelBackend):
         self,
         image_bytes: bytes,
         prompt: str | None,
+        model_override: str | None = None,  # noqa: ARG002 — stub игнорит
     ) -> VisionResponse:
+        del model_override
         # Return a placeholder so downstream code can be tested for shape.
         # Confidence is deliberately low so the doc-service router knows
         # this is not real OCR output.
@@ -151,7 +160,9 @@ class StubBackend(ModelBackend):
         self,
         extracted: dict[str, Any],
         raw_text: str,
+        model_override: str | None = None,  # noqa: ARG002 — stub игнорит
     ) -> VerifyResponse:
+        del model_override
         # Pass-through: real verify would normalize dates, money, etc.
         return VerifyResponse(extracted=extracted, issues=[])
 

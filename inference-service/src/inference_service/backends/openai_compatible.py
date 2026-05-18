@@ -175,9 +175,13 @@ class OpenAICompatibleBackend(ModelBackend):
 
     # --- Domain methods ---
 
-    async def classify(self, text: str) -> ClassifyResponse:
+    async def classify(
+        self,
+        text: str,
+        model_override: str | None = None,
+    ) -> ClassifyResponse:
         prompt = classify_prompts.build(text)
-        raw = await self._complete_text(prompt, json_mode=True)
+        raw = await self._complete_text(prompt, json_mode=True, model_override=model_override)
         data = _parse_json(raw) or {}
         type_value = data.get("type") if isinstance(data.get("type"), str) else None
         confidence = float(data.get("confidence", 0.0) or 0.0)
@@ -190,13 +194,16 @@ class OpenAICompatibleBackend(ModelBackend):
         hint: str | None,
         prompt_override: str | None = None,
         include_debug: bool = False,
+        model_override: str | None = None,
     ) -> ExtractResponse:
         prompt = extract_prompts.build(
             text=text, schema=schema, hint=hint, prompt_override=prompt_override
         )
         started = time.monotonic()
         # Версия _complete_text с usage: возвращает (text, usage_dict | None).
-        raw, usage = await self._complete_text_with_usage(prompt, json_mode=True)
+        raw, usage = await self._complete_text_with_usage(
+            prompt, json_mode=True, model_override=model_override
+        )
         duration_ms = int((time.monotonic() - started) * 1000)
         data = _parse_json(raw) or {}
         extracted = data.get("extracted") if isinstance(data.get("extracted"), dict) else {}
@@ -221,7 +228,9 @@ class OpenAICompatibleBackend(ModelBackend):
             ExtractDebug(
                 prompt=prompt,
                 raw_response=raw,
-                model=self.model_id,
+                # Если был model_override — пишем в debug фактически
+                # использованную модель, не self.model_id из env.
+                model=model_override or self.model_id,
                 backend=self.name,
                 duration_ms=duration_ms,
                 prompt_tokens=usage.get("prompt_tokens") if usage else None,
@@ -242,6 +251,7 @@ class OpenAICompatibleBackend(ModelBackend):
         self,
         image_bytes: bytes,
         prompt: str | None,
+        model_override: str | None = None,
     ) -> VisionResponse:
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         data_url = _image_to_data_url(image)
@@ -250,7 +260,7 @@ class OpenAICompatibleBackend(ModelBackend):
             "Сохрани переносы строк и структуру таблиц (используй | для столбцов). "
             "Не комментируй, выводи только текст."
         )
-        text = await self._complete_with_image(data_url, instruction)
+        text = await self._complete_with_image(data_url, instruction, model_override=model_override)
         # OpenAI API не возвращает confidence — фиксированное значение,
         # которое doc-service комбинирует с парсер-уровневым.
         return VisionResponse(text=text, confidence=0.75)
@@ -259,9 +269,10 @@ class OpenAICompatibleBackend(ModelBackend):
         self,
         extracted: dict[str, Any],
         raw_text: str,
+        model_override: str | None = None,
     ) -> VerifyResponse:
         prompt = verify_prompts.build(extracted=extracted, raw_text=raw_text)
-        raw = await self._complete_text(prompt, json_mode=True)
+        raw = await self._complete_text(prompt, json_mode=True, model_override=model_override)
         data = _parse_json(raw) or {}
         normalized = data.get("extracted") if isinstance(data.get("extracted"), dict) else extracted
         issues = data.get("issues") if isinstance(data.get("issues"), list) else []
@@ -269,22 +280,37 @@ class OpenAICompatibleBackend(ModelBackend):
 
     # --- Generation primitives ---
 
-    async def _complete_text(self, prompt: str, json_mode: bool = False) -> str:
+    async def _complete_text(
+        self,
+        prompt: str,
+        json_mode: bool = False,
+        model_override: str | None = None,
+    ) -> str:
         text, _ = await self._complete_with_usage(
             [{"role": "user", "content": prompt}],
             json_mode=json_mode,
+            model_override=model_override,
         )
         return text
 
     async def _complete_text_with_usage(
-        self, prompt: str, json_mode: bool = False
+        self,
+        prompt: str,
+        json_mode: bool = False,
+        model_override: str | None = None,
     ) -> tuple[str, dict[str, int] | None]:
         return await self._complete_with_usage(
             [{"role": "user", "content": prompt}],
             json_mode=json_mode,
+            model_override=model_override,
         )
 
-    async def _complete_with_image(self, data_url: str, instruction: str) -> str:
+    async def _complete_with_image(
+        self,
+        data_url: str,
+        instruction: str,
+        model_override: str | None = None,
+    ) -> str:
         return await self._complete(
             [
                 {
@@ -296,28 +322,40 @@ class OpenAICompatibleBackend(ModelBackend):
                 }
             ],
             json_mode=False,
+            model_override=model_override,
         )
 
     async def _complete(
         self,
         messages: list[dict[str, Any]],
         json_mode: bool,
+        model_override: str | None = None,
     ) -> str:
-        text, _ = await self._complete_with_usage(messages, json_mode)
+        text, _ = await self._complete_with_usage(messages, json_mode, model_override=model_override)
         return text
 
     async def _complete_with_usage(
         self,
         messages: list[dict[str, Any]],
         json_mode: bool,
+        model_override: str | None = None,
     ) -> tuple[str, dict[str, int] | None]:
         # json_mode = response_format={"type": "json_object"} — поддерживают
         # все современные OpenAI-compat серверы (OpenAI, vLLM, Ollama 0.5+,
         # LM Studio). Если backend не поддерживает — упадёт 400; ловим и
         # пробуем без режима. Это даёт мягкую совместимость со старыми
         # llama.cpp-серверами.
+        # Если caller передал model_override (например doc-service выбрал
+        # конкретного провайдера из provider_settings) — используем его,
+        # иначе фолбэк на self.model_id из env. Это позволяет одному
+        # backend-инстансу обслуживать разные модели на лету (Phi-4 /
+        # Gemma / Mistral / etc через тот же inference-service).
+        effective_model = model_override or self.model_id
+        if model_override and model_override != self.model_id:
+            log.info("openai_compatible: using model_override=%s (env default=%s)",
+                     model_override, self.model_id)
         kwargs: dict[str, Any] = {
-            "model": self.model_id,
+            "model": effective_model,
             "messages": messages,
             "max_tokens": self.max_tokens,
             "temperature": 0.0,  # детерминированно для классификации/извлечения

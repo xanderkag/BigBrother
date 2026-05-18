@@ -149,7 +149,17 @@ class DynamicLlmClient implements LlmClient {
     const baseUrl = row.base_url || config.llm.url || null;
     if (!baseUrl) return null;
     const apiKey = row.api_key || config.llm.apiKey;
-    return new HttpLlmClient({ baseUrl, apiKey, timeoutMs: config.llm.timeoutMs });
+    // row.model — конкретный ollama-tag (например "phi4", "gemma3:27b",
+    // "mistral-small3.1"). Если задан — клиент пошлёт его в body запроса,
+    // и inference-service.openai_compatible подменит свой default из env.
+    // Это позволяет иметь несколько provider_settings rows с одним base_url
+    // но разными model — каждая строка = «прогон через эту модель».
+    return new HttpLlmClient({
+      baseUrl,
+      apiKey,
+      timeoutMs: config.llm.timeoutMs,
+      model: row.model || undefined,
+    });
   }
 
   private async resolve(): Promise<LlmClient> {
@@ -177,6 +187,9 @@ class DynamicLlmClient implements LlmClient {
       baseUrl,
       apiKey,
       timeoutMs: config.llm.timeoutMs,
+      // Если is_default-провайдер задал model — пробрасываем его в inference,
+      // иначе inference использует свой OPENAI_MODEL из env.
+      model: dbRow?.model || undefined,
     });
   }
 }

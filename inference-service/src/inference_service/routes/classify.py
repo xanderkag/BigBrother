@@ -14,4 +14,4 @@ async def classify(
     _: None = Depends(require_api_key),
     backend: ModelBackend = Depends(get_backend),
 ) -> ClassifyResponse:
-    return await backend.classify(body.text)
+    return await backend.classify(body.text, model_override=body.model)

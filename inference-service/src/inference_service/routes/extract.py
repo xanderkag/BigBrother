@@ -20,4 +20,5 @@ async def extract(
         hint=body.hint,
         prompt_override=body.prompt_override,
         include_debug=body.include_debug,
+        model_override=body.model,
     )
