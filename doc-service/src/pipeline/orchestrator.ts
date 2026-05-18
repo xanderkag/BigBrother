@@ -7,6 +7,7 @@ import type { Logger } from 'pino';
 import { config } from '../config.js';
 import { jobsRepo } from '../storage/jobs.js';
 import type { OcrEngine, OcrInput, OcrResult } from './ocr/types.js';
+import { detectOcrRefusal, OcrRefusedError } from './ocr/refusal.js';
 
 const execP = promisify(exec);
 import { PdfTextEngine } from './ocr/pdf-text.js';
@@ -204,6 +205,31 @@ async function processJobInner(
       duration_ms: timings.ocr_ms,
       details: { confidence: roundConf(ocr.confidence), text_length: ocr.text.length },
     });
+
+    // ── OCR refusal detection ──────────────────────────────────────────────
+    // Real-case 2026-05-18: на VED-кейсе eac-cert.pdf (скан-сертификат без
+    // текстового слоя) vision-LLM вернул 4× «Извините, я не могу
+    // просматривать изображения». Pipeline принял это за валидный OCR-output,
+    // classifier нашёл NULL, job завершился со status='done' и пустым типом.
+    // Это «тихий провал». Детектируем и валим job явно — оператор сразу
+    // видит причину и решает: переснять документ / попробовать другой OCR /
+    // ручной разбор.
+    const refusal = detectOcrRefusal(ocr.text);
+    if (refusal.isRefusal) {
+      log.warn(
+        { jobId, engine: ocr.engine, coverage: refusal.coverage, preview: refusal.preview },
+        'OCR engine returned refusal sentence — bailing out',
+      );
+      await stepEvent('ocr.refusal', 'failed', {
+        details: {
+          engine: ocr.engine,
+          coverage_percent: Math.round((refusal.coverage ?? 0) * 100),
+          preview: refusal.preview,
+          pattern: refusal.pattern,
+        },
+      });
+      throw new OcrRefusedError(ocr.engine, refusal);
+    }
 
     // ── Classify + Parse + Validate (внутри runDocumentPipeline) ───────────
     // Мы не лезем во внутренности runDocumentPipeline (это shared smoke/test
