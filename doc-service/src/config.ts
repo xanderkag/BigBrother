@@ -116,7 +116,13 @@ const ConfigSchema = z.object({
     // для типов с parser_kind='llm_extract'. Двухпроходный режим разбивает текст
     // на header + items-батчи, что улучшает точность на длинных таблицах и
     // уменьшает риск «потери середины» у недорогих моделей.
-    multipassAutoBytes: numberFromEnv(30_000),
+    //
+    // 2026-05-18: понижен с 30k до 15k байт. Реальный VED-кейс показал что
+    // Qwen 32B на 10.10.28.10 падает с Ollama OOM («model runner has
+    // unexpectedly stopped») на prompt'е >20k chars. Контракт 8MB scan дал
+    // 26.7k chars от tesseract → single-shot OOM. На 15k threshold —
+    // contract/cert/long-CI идут через multipass, что устраняет OOM.
+    multipassAutoBytes: numberFromEnv(15_000),
   }),
 
   tesseractLangs: z.string().default('rus+eng'),
