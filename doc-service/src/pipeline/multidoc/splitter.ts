@@ -123,17 +123,33 @@ export function splitPagesIntoSegments(
  * этого результата классификации? Если все страницы одного типа —
  * нет смысла, single-doc pipeline быстрее и backwards-compatible.
  *
- * Returns true если в результате splitting'а будет ≥ 2 сегментов с
- * разными типами и высоким confidence (т.е. реально multi-doc).
+ * Логика (relaxed 2026-05-18):
+ *   - ≥2 сегмента: обязательно
+ *   - ≥2 сегмента с известным document_type (любым) и confidence ≥0.5
+ *     OR ≥2 сегмента с разными document_type — это multi-doc
+ *
+ * Real-case ci-pl.xls: один sheet «Commercial Invoice», второй
+ * «Packing List». Если classifier дал на оба confident type — multi-doc.
+ * Если на один из них classifier неуверен (null) — оба сегмента всё
+ * равно нужно extract'ить отдельно (через LLM per sheet), потому что
+ * sheets физически разные документы. Поэтому даже 2 segment'а с одним
+ * known типом и одним unknown считаем multi-doc если оба нужно
+ * обработать через LLM.
  */
 export function isMultiDocument(segments: DocumentSegment[]): boolean {
   if (segments.length < 2) return false;
-  // Сколько сегментов с разными типами и high-confidence
-  const distinctTypes = new Set<string>();
+  // Триггерим multi-doc когда хотя бы один сегмент имеет confident type.
+  // Остальные segments runner попробует extract'ить как unknown (через
+  // LLM-classify в processDocumentPipeline). Если все попытки failed —
+  // runner сам возвращает null → fall back to single-doc.
+  //
+  // Раньше требовали ≥2 distinct types с high conf — это бракoвало
+  // valid CI+PL кейсы где classifier неуверен на одном из листов.
+  let typedCount = 0;
   for (const s of segments) {
-    if (s.document_type && s.confidence >= 0.6) {
-      distinctTypes.add(s.document_type);
-    }
+    if (s.document_type && s.confidence >= 0.5) typedCount += 1;
   }
-  return distinctTypes.size >= 2;
+  // Multi-doc если ≥1 segment classified + ≥2 segments total. Runner
+  // решит что делать с unclassified в своём loop'е.
+  return typedCount >= 1;
 }
