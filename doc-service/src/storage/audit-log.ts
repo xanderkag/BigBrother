@@ -153,7 +153,12 @@ class AuditLogRepo {
 
   toApi(row: AuditLogRow) {
     return {
-      id: row.id,
+      // BIGSERIAL → pg возвращает строкой (избегает потери precision >2^53).
+      // Аудит-log id не вырастет до 2^53, кастуем в number чтобы попасть
+      // в response-schema (z.number()). Если эта таблица когда-то будет
+      // расти как jobs — пересмотрим: тогда хранить как string по всей
+      // цепочке (TS-type + schema).
+      id: Number(row.id),
       at: row.at.toISOString(),
       actor: row.actor,
       entity: row.entity,
