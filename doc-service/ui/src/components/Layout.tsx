@@ -1,80 +1,417 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, NavLink, useLocation } from 'react-router-dom';
 import { clearToken } from '@/lib/auth';
 import { useJobsList } from '@/queries/jobs';
 import { useCurrentUser } from '@/queries/me';
 import { useOrganizations } from '@/queries/tenants';
+import { useDocumentTypes } from '@/queries/documentTypes';
+import { useProviders } from '@/queries/providers';
+import { useReferenceListTypes } from '@/queries/referenceLists';
 import { useWorkspaceOrgId } from '@/lib/workspace';
 import { cycleTheme, getTheme, type ThemeChoice } from '@/lib/theme';
+import SearchBox from './SearchBox';
 
 /**
- * Top-level layout v2: sticky header с навигацией между основными
- * экранами + dropdown «Админ» для CRUD-страниц.
+ * Top-level layout v2 (2026-05-19 brutalist redesign):
+ *   - Левый sidebar 240px (workspace + nav со счётчиками + user)
+ *   - Главная зона: breadcrumb-header (тонкая) + content
  *
- * Navigation:
- *   Главное (всегда видно): Dashboard / Документы / На проверке / Загрузить
- *   Админ ▾ (dropdown): Типы документов / Провайдеры / Справочники /
- *                       Организации / Тестовая лаборатория / Настройки / Audit log
+ * Sidebar — основной навигационный путь. Active item подсвечивается
+ * толстой левой полосой акцентного цвета (как в Document AI/Acrobat).
+ * Counts по разделам подтягиваются live: JOBS / REVIEW / DOCUMENT TYPES /
+ * PROVIDERS / TENANTS / REFERENCE LISTS. Все запросы кэшируются TanStack
+ * Query — если та же страница уже их сделала, hit cache.
  *
- * Sidebar отсутствует — экономим горизонтальное пространство, при
- * width < lg dropdown справляется лучше любого collapse'а.
+ * Mobile (< lg): sidebar сворачивается в overlay drawer по клику на
+ * burger в шапке. Десктоп-first — конкурсу хватает.
  */
 export default function Layout({ children }: { children: React.ReactNode }) {
+  const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
+
+  // Закрываем drawer при переходе на новый route
+  useEffect(() => setMobileOpen(false), [location.pathname]);
+
   return (
-    <div className="flex h-full flex-col">
-      <header className="sticky top-0 z-20 flex items-center justify-between border-b border-slate-200 bg-white px-6 py-2.5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-        <div className="flex items-center gap-6">
-          <Link to="/" className="flex items-center gap-2 font-semibold text-slate-900 dark:text-slate-100">
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              viewBox="0 0 24 24"
-              fill="currentColor"
-              className="h-6 w-6 text-brand-600 dark:text-brand-400"
-            >
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-            </svg>
-            parsedocs
-          </Link>
-          <nav className="flex items-center gap-1 text-sm">
-            <NavItem to="/" end>
-              Dashboard
-            </NavItem>
-            <NavItem to="/jobs">Документы</NavItem>
-            <NavItem to="/review">
-              <ReviewNavLabel />
-            </NavItem>
-            <NavItem to="/upload">Загрузить</NavItem>
-            <AdminDropdown />
-          </nav>
-        </div>
-        <div className="flex items-center gap-2 text-sm">
-          <WorkspaceSwitcher />
-          <span className="hidden font-mono text-xs text-slate-400 dark:text-slate-500 xl:inline">
-            {location.pathname}
-          </span>
-          <ThemeToggle />
-          <button
-            type="button"
-            className="btn-ghost"
-            onClick={() => {
-              clearToken();
-              window.location.href = '/ui/login';
-            }}
-          >
-            Выйти
-          </button>
-        </div>
-      </header>
-      <main className="flex-1 overflow-auto bg-slate-50 dark:bg-slate-950">{children}</main>
+    <div className="flex h-full bg-slate-50 dark:bg-slate-950">
+      {/* Sidebar */}
+      <aside
+        className={`fixed inset-y-0 left-0 z-30 flex w-60 shrink-0 flex-col border-r border-slate-200 bg-white transition-transform dark:border-slate-800 dark:bg-slate-900 lg:static lg:translate-x-0 ${
+          mobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
+        }`}
+      >
+        <SidebarHeader />
+        <WorkspaceBlock />
+        <SidebarNav />
+        <SidebarFooter />
+      </aside>
+
+      {/* Mobile overlay */}
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 z-20 bg-slate-900/40 lg:hidden"
+          onClick={() => setMobileOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      {/* Main column */}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <TopBar onBurgerClick={() => setMobileOpen((v) => !v)} />
+        <main className="flex-1 overflow-auto">{children}</main>
+      </div>
     </div>
   );
 }
 
-/**
- * Theme toggle: один клик циклически переключает light → dark → system → light.
- * Иконка отображает текущий режим (солнце / луна / монитор).
- */
+/* ─── Sidebar pieces ─────────────────────────────────────────────── */
+
+function SidebarHeader() {
+  return (
+    <div className="flex items-center gap-2.5 border-b border-slate-200 px-4 py-3.5 dark:border-slate-800">
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm bg-indigo-600 text-white dark:bg-indigo-500">
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 24 24"
+          fill="currentColor"
+          className="h-4 w-4"
+        >
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+        </svg>
+      </div>
+      <div className="min-w-0">
+        <div className="text-sm font-semibold leading-tight text-slate-900 dark:text-slate-100">
+          parsedocs
+        </div>
+        <div className="font-mono text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">
+          doc intelligence
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function WorkspaceBlock() {
+  const me = useCurrentUser();
+  const orgs = useOrganizations();
+  const [orgId, setOrgId] = useWorkspaceOrgId();
+  const isSuperAdmin = me.data?.is_super_admin ?? false;
+  const orgList = orgs.data?.items ?? [];
+
+  useEffect(() => {
+    if (orgId || !me.data) return;
+    if (isSuperAdmin) {
+      const def = orgList.find((o) => o.type !== 'system') ?? orgList[0];
+      if (def) setOrgId(def.id);
+    } else if (me.data.organization_id) {
+      setOrgId(me.data.organization_id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [me.data, orgList.length]);
+
+  const currentOrg = orgList.find((o) => o.id === orgId);
+
+  return (
+    <div className="border-b border-slate-200 px-4 py-3 dark:border-slate-800">
+      <div className="mb-1.5 font-mono text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">
+        workspace
+      </div>
+      {isSuperAdmin && orgList.length > 0 ? (
+        <select
+          className="w-full rounded-sm border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-800 hover:border-slate-300 focus:border-indigo-500 focus:outline-none dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:border-slate-600"
+          value={orgId ?? ''}
+          onChange={(e) => setOrgId(e.target.value || null)}
+          title="Выбрать организацию"
+        >
+          {orgList.map((o) => (
+            <option key={o.id} value={o.id}>
+              {o.name}
+            </option>
+          ))}
+        </select>
+      ) : currentOrg ? (
+        <div className="flex items-center gap-2">
+          <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
+          <span className="truncate text-xs font-medium text-slate-800 dark:text-slate-200">
+            {currentOrg.name}
+          </span>
+        </div>
+      ) : (
+        <div className="h-7 w-full animate-pulse rounded-sm bg-slate-100 dark:bg-slate-800" />
+      )}
+    </div>
+  );
+}
+
+interface NavEntry {
+  to: string;
+  label: string;
+  icon: React.ReactNode;
+  count?: number;
+  /** В каком sidebar-блоке отображать — разделяем основной workflow от admin'а. */
+  end?: boolean;
+}
+
+function SidebarNav() {
+  // Counts. Все эти запросы — обычные ReactQuery hits, кэшируются.
+  // Limit=1 для jobs/review чтобы не качать полный список (нужен только total).
+  const jobsCnt = useJobsList({ limit: 1 });
+  const reviewCnt = useJobsList({ status: 'needs_review', limit: 1 });
+  const docTypes = useDocumentTypes();
+  const providers = useProviders();
+  const tenants = useOrganizations();
+  const [orgId] = useWorkspaceOrgId();
+  const refLists = useReferenceListTypes(orgId);
+
+  // Главные workflow-пункты
+  const main: NavEntry[] = useMemo(
+    () => [
+      { to: '/', end: true, label: 'Dashboard', icon: <IconDashboard /> },
+      { to: '/jobs', label: 'Jobs', icon: <IconFile />, count: jobsCnt.data?.total },
+      { to: '/review', label: 'Review', icon: <IconCircle />, count: reviewCnt.data?.total },
+      { to: '/upload', label: 'Upload', icon: <IconUpload /> },
+      { to: '/test-lab', label: 'Тест. лаборатория', icon: <IconBeaker /> },
+    ],
+    [jobsCnt.data?.total, reviewCnt.data?.total],
+  );
+
+  // Admin / справочники
+  const admin: NavEntry[] = useMemo(
+    () => [
+      { to: '/document-types', label: 'Document Types', icon: <IconGrid />, count: docTypes.data?.items.length },
+      { to: '/providers', label: 'Providers', icon: <IconCircle />, count: providers.data?.items.length },
+      { to: '/audit-log', label: 'Audit Log', icon: <IconList /> },
+      { to: '/tenants', label: 'Tenants', icon: <IconList />, count: tenants.data?.items.length },
+      { to: '/reference-lists', label: 'Reference Lists', icon: <IconList />, count: refLists.data?.length },
+      { to: '/settings', label: 'Settings', icon: <IconGear /> },
+    ],
+    [
+      docTypes.data?.items.length,
+      providers.data?.items.length,
+      tenants.data?.items.length,
+      refLists.data?.length,
+    ],
+  );
+
+  return (
+    <nav className="flex-1 overflow-y-auto px-2 py-3">
+      <div className="space-y-0.5">
+        {main.map((e) => (
+          <NavItem key={e.to} entry={e} />
+        ))}
+      </div>
+      <div className="mt-4 space-y-0.5 border-t border-slate-200 pt-3 dark:border-slate-800">
+        {admin.map((e) => (
+          <NavItem key={e.to} entry={e} />
+        ))}
+      </div>
+    </nav>
+  );
+}
+
+function NavItem({ entry }: { entry: NavEntry }) {
+  return (
+    <NavLink
+      to={entry.to}
+      end={entry.end}
+      className={({ isActive }) =>
+        `group relative flex items-center gap-2.5 rounded-sm px-2.5 py-1.5 font-mono text-[11px] uppercase tracking-wider transition-colors ${
+          isActive
+            ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300'
+            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100'
+        }`
+      }
+    >
+      {({ isActive }) => (
+        <>
+          {/* Left accent border для активного item'а */}
+          {isActive && (
+            <span
+              className="absolute inset-y-0 left-0 w-0.5 bg-indigo-600 dark:bg-indigo-400"
+              aria-hidden="true"
+            />
+          )}
+          <span className="shrink-0 text-slate-400 group-hover:text-current dark:text-slate-500">
+            {entry.icon}
+          </span>
+          <span className="flex-1 truncate">{entry.label}</span>
+          {entry.count !== undefined && (
+            <span
+              className={`shrink-0 rounded-sm px-1 text-[10px] tabular-nums ${
+                isActive
+                  ? 'bg-indigo-200/60 text-indigo-800 dark:bg-indigo-800/40 dark:text-indigo-200'
+                  : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400'
+              }`}
+            >
+              {entry.count}
+            </span>
+          )}
+        </>
+      )}
+    </NavLink>
+  );
+}
+
+function SidebarFooter() {
+  const me = useCurrentUser();
+  const user = me.data;
+  // id у нас UUID — берём первые 2 hex'а как инициалы. Не идеально, но
+  // лучше, чем «??». Для system-токена id='system' → 'SY'.
+  const initials = useMemo(() => {
+    if (!user) return '··';
+    if (user.id === 'system') return 'SY';
+    return user.id.slice(0, 2).toUpperCase();
+  }, [user]);
+  if (!user) {
+    return <div className="h-14 border-t border-slate-200 dark:border-slate-800" />;
+  }
+  return (
+    <div className="flex items-center gap-2.5 border-t border-slate-200 px-3 py-2.5 dark:border-slate-800">
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm bg-slate-200 font-mono text-[11px] font-semibold text-slate-700 dark:bg-slate-700 dark:text-slate-200">
+        {initials}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-mono text-[11px] text-slate-800 dark:text-slate-200" title={user.id}>
+          {user.id === 'system' ? 'system' : user.id.slice(0, 8)}
+        </div>
+        <div className="font-mono text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">
+          {user.is_super_admin ? 'super admin' : user.role ?? 'user'}
+        </div>
+      </div>
+      <button
+        type="button"
+        className="rounded-sm p-1.5 text-slate-400 hover:bg-slate-100 hover:text-rose-600 dark:text-slate-500 dark:hover:bg-slate-800 dark:hover:text-rose-400"
+        onClick={() => {
+          clearToken();
+          window.location.href = '/ui/login';
+        }}
+        title="Выйти"
+        aria-label="Выйти"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+          <path
+            fillRule="evenodd"
+            d="M3 4.25A2.25 2.25 0 0 1 5.25 2h5.5A2.25 2.25 0 0 1 13 4.25v2a.75.75 0 0 1-1.5 0v-2a.75.75 0 0 0-.75-.75h-5.5a.75.75 0 0 0-.75.75v11.5c0 .414.336.75.75.75h5.5a.75.75 0 0 0 .75-.75v-2a.75.75 0 0 1 1.5 0v2A2.25 2.25 0 0 1 10.75 18h-5.5A2.25 2.25 0 0 1 3 15.75V4.25Zm10.47 4.28a.75.75 0 0 1 1.06 0l2.5 2.5a.75.75 0 0 1 0 1.06l-2.5 2.5a.75.75 0 1 1-1.06-1.06l1.22-1.22H7.75a.75.75 0 0 1 0-1.5h6.94l-1.22-1.22a.75.75 0 0 1 0-1.06Z"
+            clipRule="evenodd"
+          />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
+/* ─── Main column top bar ────────────────────────────────────────── */
+
+function TopBar({ onBurgerClick }: { onBurgerClick: () => void }) {
+  const location = useLocation();
+  const me = useCurrentUser();
+  const orgs = useOrganizations();
+  const [orgId] = useWorkspaceOrgId();
+  const currentOrg = orgs.data?.items.find((o) => o.id === orgId);
+
+  // Breadcrumb из pathname.  /jobs/abc → "Jobs / abc…", /tenants → "Tenants"
+  const crumbs = useMemo(() => buildCrumbs(location.pathname), [location.pathname]);
+
+  return (
+    <header className="sticky top-0 z-10 flex h-12 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-4 dark:border-slate-800 dark:bg-slate-900">
+      <div className="flex items-center gap-3 min-w-0">
+        {/* Burger — только на mobile */}
+        <button
+          type="button"
+          className="rounded-sm p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100 lg:hidden"
+          onClick={onBurgerClick}
+          aria-label="Меню"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5">
+            <path fillRule="evenodd" d="M2 4.75A.75.75 0 0 1 2.75 4h14.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 4.75ZM2 10a.75.75 0 0 1 .75-.75h14.5a.75.75 0 0 1 0 1.5H2.75A.75.75 0 0 1 2 10Zm0 5.25a.75.75 0 0 1 .75-.75h14.5a.75.75 0 0 1 0 1.5H2.75a.75.75 0 0 1-.75-.75Z" clipRule="evenodd" />
+          </svg>
+        </button>
+        <nav className="flex min-w-0 items-center gap-2 overflow-hidden font-mono text-xs uppercase tracking-wider">
+          {currentOrg && (
+            <>
+              <span className="truncate text-slate-500 dark:text-slate-400">{currentOrg.name}</span>
+              <ChevronRight />
+            </>
+          )}
+          {crumbs.map((c, i) => (
+            <span key={c.to ?? i} className="flex shrink-0 items-center gap-2">
+              {c.to ? (
+                <Link
+                  to={c.to}
+                  className="text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100"
+                >
+                  {c.label}
+                </Link>
+              ) : (
+                <span className="text-slate-900 dark:text-slate-100">{c.label}</span>
+              )}
+              {i < crumbs.length - 1 && <ChevronRight />}
+            </span>
+          ))}
+        </nav>
+      </div>
+      <div className="flex items-center gap-2 text-xs">
+        <SearchBox />
+        <SystemStatusBadge />
+        <ThemeToggle />
+        {me.data && (
+          <span
+            className="hidden font-mono text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 md:inline"
+            title={me.data.id}
+          >
+            {me.data.is_super_admin ? 'super admin' : me.data.role}
+          </span>
+        )}
+      </div>
+    </header>
+  );
+}
+
+interface Crumb {
+  label: string;
+  to: string | null;
+}
+
+function buildCrumbs(pathname: string): Crumb[] {
+  const parts = pathname.split('/').filter(Boolean);
+  if (parts.length === 0) return [{ label: 'Dashboard', to: null }];
+  const labels: Record<string, string> = {
+    jobs: 'Jobs',
+    review: 'Review',
+    upload: 'Upload',
+    'test-lab': 'Test Lab',
+    'document-types': 'Document Types',
+    providers: 'Providers',
+    'audit-log': 'Audit Log',
+    tenants: 'Tenants',
+    'reference-lists': 'Reference Lists',
+    settings: 'Settings',
+  };
+  return parts.map((p, i) => {
+    const isLast = i === parts.length - 1;
+    const label = labels[p] ?? p;
+    return { label, to: isLast ? null : '/' + parts.slice(0, i + 1).join('/') };
+  });
+}
+
+function ChevronRight() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-3 w-3 text-slate-400 dark:text-slate-600">
+      <path fillRule="evenodd" d="M7.21 14.77a.75.75 0 0 1 .02-1.06L11.168 10 7.23 6.29a.75.75 0 1 1 1.04-1.08l4.5 4.25a.75.75 0 0 1 0 1.08l-4.5 4.25a.75.75 0 0 1-1.06-.02Z" clipRule="evenodd" />
+    </svg>
+  );
+}
+
+function SystemStatusBadge() {
+  // TODO: подвязать на /healthz когда будем сводить с реальным health.
+  return (
+    <span className="hidden items-center gap-1.5 px-2 py-1 text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 sm:inline-flex">
+      <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" />
+      all systems normal
+    </span>
+  );
+}
+
 function ThemeToggle() {
   const [choice, setChoice] = useState<ThemeChoice>(() => getTheme());
   const title =
@@ -86,7 +423,7 @@ function ThemeToggle() {
   return (
     <button
       type="button"
-      className="btn-ghost"
+      className="rounded-sm p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
       onClick={() => setChoice(cycleTheme())}
       title={title}
       aria-label={title}
@@ -110,206 +447,73 @@ function ThemeToggle() {
   );
 }
 
-/**
- * Workspace switcher — выбор текущей организации.
- *
- * Для super_admin: dropdown со всеми orgs из /api/v1/organizations.
- * Для обычного юзера: readonly-badge с именем своей org (нет выбора).
- *
- * Выбранный orgId хранится в localStorage('workspace.orgId') и читается
- * другими страницами (RefLists, фильтры по org) через useWorkspaceOrgId().
- */
-function WorkspaceSwitcher() {
-  const me = useCurrentUser();
-  const orgs = useOrganizations();
-  const [orgId, setOrgId] = useWorkspaceOrgId();
+/* ─── Icons ──────────────────────────────────────────────────────── */
 
-  const isSuperAdmin = me.data?.is_super_admin ?? false;
-  const orgList = orgs.data?.items ?? [];
-
-  // Auto-set default org для super_admin'а: первая non-system, для обычного
-  // юзера — его own org. Делаем один раз когда orgId ещё не выставлен.
-  useEffect(() => {
-    if (orgId || !me.data) return;
-    if (isSuperAdmin) {
-      const def = orgList.find((o) => o.type !== 'system') ?? orgList[0];
-      if (def) setOrgId(def.id);
-    } else if (me.data.organization_id) {
-      setOrgId(me.data.organization_id);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [me.data, orgList.length]);
-
-  if (me.isLoading) {
-    return <div className="h-8 w-32 animate-pulse rounded bg-slate-100 dark:bg-slate-800/60" />;
-  }
-  if (!me.data) return null;
-
-  // Обычный юзер — readonly badge
-  if (!isSuperAdmin) {
-    const myOrg = orgList.find((o) => o.id === me.data?.organization_id);
-    if (!myOrg) return null;
-    return (
-      <span
-        className="hidden rounded-lg bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-300 sm:inline-block"
-        title={`Ваша организация: ${myOrg.name}`}
-      >
-        {myOrg.name}
-      </span>
-    );
-  }
-
-  // super_admin — dropdown
-  if (orgList.length === 0) return null;
+function IconDashboard() {
   return (
-    <select
-      className="hidden rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs text-slate-700 hover:bg-slate-50 focus:border-brand-500 focus:outline-none dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 sm:inline-block"
-      value={orgId ?? ''}
-      onChange={(e) => setOrgId(e.target.value || null)}
-      title="Выбрать организацию для контекста"
-    >
-      {orgList.map((o) => (
-        <option key={o.id} value={o.id}>
-          {o.name}
-        </option>
-      ))}
-    </select>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5">
+      <path d="M3 4.75A1.75 1.75 0 0 1 4.75 3h2.5A1.75 1.75 0 0 1 9 4.75v2.5A1.75 1.75 0 0 1 7.25 9h-2.5A1.75 1.75 0 0 1 3 7.25v-2.5Zm8 0A1.75 1.75 0 0 1 12.75 3h2.5A1.75 1.75 0 0 1 17 4.75v2.5A1.75 1.75 0 0 1 15.25 9h-2.5A1.75 1.75 0 0 1 11 7.25v-2.5ZM3 12.75A1.75 1.75 0 0 1 4.75 11h2.5A1.75 1.75 0 0 1 9 12.75v2.5A1.75 1.75 0 0 1 7.25 17h-2.5A1.75 1.75 0 0 1 3 15.25v-2.5Zm8 0A1.75 1.75 0 0 1 12.75 11h2.5A1.75 1.75 0 0 1 17 12.75v2.5A1.75 1.75 0 0 1 15.25 17h-2.5A1.75 1.75 0 0 1 11 15.25v-2.5Z" />
+    </svg>
   );
 }
 
-/**
- * Label для "На проверке" nav item с live-счётчиком количества
- * needs_review job'ов. Подтягивается через тот же useJobsList что
- * на самой странице — TanStack Query auto-dedupe + cache, поэтому
- * лишних запросов не делает.
- */
-function ReviewNavLabel() {
-  const { data } = useJobsList({ status: 'needs_review', limit: 100 });
-  const count = data?.items.length ?? 0;
+function IconFile() {
   return (
-    <span className="flex items-center gap-1.5">
-      На проверке
-      {count > 0 && (
-        <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
-          {count}
-        </span>
-      )}
-    </span>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5">
+      <path d="M4 4a2 2 0 0 1 2-2h6l4 4v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4Z" />
+    </svg>
   );
 }
 
-function NavItem({
-  to,
-  end,
-  children,
-}: {
-  to: string;
-  end?: boolean;
-  children: React.ReactNode;
-}) {
+function IconCircle() {
   return (
-    <NavLink
-      to={to}
-      end={end}
-      className={({ isActive }) =>
-        `rounded-lg px-3 py-1.5 font-medium transition-colors ${
-          isActive
-            ? 'bg-brand-50 text-brand-700 dark:bg-brand-900/30 dark:text-brand-300'
-            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100'
-        }`
-      }
-    >
-      {children}
-    </NavLink>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3.5 w-3.5">
+      <circle cx="10" cy="10" r="6" />
+    </svg>
   );
 }
 
-/**
- * Admin dropdown: типы документов, провайдеры, audit log + stub-страницы
- * (settings/tenants/reference-lists/test-lab — пока ведут в legacy).
- */
-function AdminDropdown() {
-  const [open, setOpen] = useState(false);
-  const location = useLocation();
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', onDown);
-    return () => document.removeEventListener('mousedown', onDown);
-  }, [open]);
-
-  useEffect(() => {
-    setOpen(false);
-  }, [location.pathname]);
-
-  const isAdminActive =
-    location.pathname.startsWith('/document-types') ||
-    location.pathname.startsWith('/providers') ||
-    location.pathname.startsWith('/reference-lists') ||
-    location.pathname.startsWith('/tenants') ||
-    location.pathname.startsWith('/test-lab') ||
-    location.pathname.startsWith('/settings') ||
-    location.pathname.startsWith('/audit-log');
-
+function IconUpload() {
   return (
-    <div ref={ref} className="relative">
-      <button
-        type="button"
-        className={`flex items-center gap-1 rounded-lg px-3 py-1.5 font-medium transition-colors ${
-          isAdminActive
-            ? 'bg-brand-50 text-brand-700 dark:bg-brand-900/30 dark:text-brand-300'
-            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100'
-        }`}
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-      >
-        Админ
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          viewBox="0 0 24 24"
-          fill="currentColor"
-          className={`h-3 w-3 transition-transform ${open ? 'rotate-180' : ''}`}
-        >
-          <path
-            fillRule="evenodd"
-            d="M12 15.75l-7-7 1.5-1.5L12 12.75l5.5-5.5 1.5 1.5z"
-            clipRule="evenodd"
-          />
-        </svg>
-      </button>
-
-      {open && (
-        <div className="absolute left-0 top-full mt-1 w-56 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-lg dark:border-slate-800 dark:bg-slate-900">
-          <DropdownItem to="/document-types">Типы документов</DropdownItem>
-          <DropdownItem to="/providers">Провайдеры (LLM/OCR)</DropdownItem>
-          <DropdownItem to="/reference-lists">Справочники</DropdownItem>
-          <DropdownItem to="/tenants">Организации</DropdownItem>
-          <DropdownItem to="/test-lab">Тестовая лаборатория</DropdownItem>
-          <DropdownItem to="/settings">Настройки</DropdownItem>
-          <DropdownItem to="/audit-log">Audit log</DropdownItem>
-        </div>
-      )}
-    </div>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5">
+      <path d="M10 2a.75.75 0 0 1 .75.75v9.69l3.22-3.22a.75.75 0 1 1 1.06 1.06l-4.5 4.5a.75.75 0 0 1-1.06 0l-4.5-4.5a.75.75 0 0 1 1.06-1.06l3.22 3.22V2.75A.75.75 0 0 1 10 2ZM3.75 16a.75.75 0 0 0 0 1.5h12.5a.75.75 0 0 0 0-1.5H3.75Z" transform="rotate(180 10 10)" />
+    </svg>
   );
 }
 
-function DropdownItem({ to, children }: { to: string; children: React.ReactNode }) {
+function IconBeaker() {
   return (
-    <NavLink
-      to={to}
-      className={({ isActive }) =>
-        `block px-4 py-2 text-sm transition-colors ${
-          isActive
-            ? 'bg-brand-50 font-medium text-brand-700 dark:bg-brand-900/30 dark:text-brand-300'
-            : 'text-slate-700 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800'
-        }`
-      }
-    >
-      {children}
-    </NavLink>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5">
+      <path d="M8 2.5A.5.5 0 0 1 8.5 2h3a.5.5 0 0 1 0 1H11v3.379l4.146 8.293A1.5 1.5 0 0 1 13.81 17H6.19a1.5 1.5 0 0 1-1.336-2.328L9 6.379V3h-.5a.5.5 0 0 1-.5-.5Z" />
+    </svg>
+  );
+}
+
+function IconGrid() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" className="h-3.5 w-3.5">
+      <rect x="3" y="3" width="6" height="6" />
+      <rect x="11" y="3" width="6" height="6" />
+      <rect x="3" y="11" width="6" height="6" />
+      <rect x="11" y="11" width="6" height="6" />
+    </svg>
+  );
+}
+
+function IconList() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="square" className="h-3.5 w-3.5">
+      <line x1="4" y1="5" x2="16" y2="5" />
+      <line x1="4" y1="10" x2="16" y2="10" />
+      <line x1="4" y1="15" x2="16" y2="15" />
+    </svg>
+  );
+}
+
+function IconGear() {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5">
+      <path fillRule="evenodd" d="M7.84 1.804A1 1 0 0 1 8.82 1h2.36a1 1 0 0 1 .98.804l.331 1.652a6.993 6.993 0 0 1 1.929 1.115l1.598-.54a1 1 0 0 1 1.186.447l1.18 2.044a1 1 0 0 1-.205 1.251l-1.267 1.113a7.047 7.047 0 0 1 0 2.228l1.267 1.113a1 1 0 0 1 .206 1.25l-1.18 2.045a1 1 0 0 1-1.187.447l-1.598-.54a6.993 6.993 0 0 1-1.929 1.115l-.33 1.652a1 1 0 0 1-.98.804H8.82a1 1 0 0 1-.98-.804l-.331-1.652a6.993 6.993 0 0 1-1.929-1.115l-1.598.54a1 1 0 0 1-1.186-.447l-1.18-2.044a1 1 0 0 1 .205-1.251l1.267-1.114a7.05 7.05 0 0 1 0-2.227L1.821 7.773a1 1 0 0 1-.206-1.25l1.18-2.045a1 1 0 0 1 1.187-.447l1.598.54A6.992 6.992 0 0 1 7.51 3.456l.33-1.652ZM10 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" clipRule="evenodd" />
+    </svg>
   );
 }

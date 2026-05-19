@@ -129,6 +129,17 @@ export const ListJobsQuery = z.object({
   project_id: z.string().uuid().optional(),
   from: z.string().datetime().optional().describe('ISO 8601, нижняя граница created_at'),
   to: z.string().datetime().optional().describe('ISO 8601, верхняя граница created_at'),
+  /**
+   * Quick-search free-text. Ищем по:
+   *   - file_name (ILIKE %q%)
+   *   - id (префикс — для shortId-копипасты типа `a8f3c2…`)
+   *   - extracted.{seller_inn, buyer_inn, contract_number, ...} —
+   *     только когда q выглядит как INN (≥6 цифр) или как номер договора.
+   *
+   * Минимум 2 символа, иначе фильтр игнорируется (защита от случайного
+   * полного скана при пустом инпуте).
+   */
+  q: z.string().trim().min(1).max(120).optional().describe('Free-text quick search'),
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
 });
@@ -137,6 +148,14 @@ export const ListJobsResponse = z.object({
   items: z.array(Job),
   limit: z.number(),
   offset: z.number(),
+  /**
+   * Полное число записей подходящих под фильтр (без учёта limit/offset).
+   * Нужен UI-у для отображения «15 of 1284 rows» и tab-счётчиков по
+   * статусам. Optional для backward-compat: старые клиенты не сломаются
+   * от появления нового поля, новые — fallback'аются на items.length
+   * если total отсутствует.
+   */
+  total: z.number().int().nonnegative().optional(),
 });
 
 // --- Health & readiness ---

@@ -3,6 +3,8 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { createReadStream } from 'node:fs';
 import { stat, unlink } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { pipeline } from 'node:stream/promises';
 import { config } from '../config.js';
 import {
   ACCEPTED_DOCUMENT_MIMES,
@@ -34,6 +36,21 @@ import {
   requireProjectAccess,
   requireProjectWrite,
 } from '../authz.js';
+
+/**
+ * SHA-256 stream-hash файла. Используется для idempotent-кэша:
+ * если этот же файл уже обрабатывался в той же организации за
+ * последние N часов — возвращаем кэшированный job_id без новой
+ * пайплайн-обработки.
+ *
+ * Stream через node:stream.pipeline — не загружаем весь файл в
+ * память (важно для PDF на сотни MB).
+ */
+async function computeFileSha256(absolutePath: string): Promise<string> {
+  const hash = createHash('sha256');
+  await pipeline(createReadStream(absolutePath), hash);
+  return hash.digest('hex');
+}
 
 function isValidWebhookUrl(value: string): boolean {
   try {
@@ -314,6 +331,46 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         sanitizedMetadata = { ...(sanitizedMetadata ?? {}), redact_pii: true };
       }
 
+      // ─── Optimization #4: SHA-256 cache lookup ─────────────────────────
+      // Считаем hash файла. Если в БД есть finished job с тем же hash в
+      // этой же организации за последние 24h — возвращаем cached job_id
+      // без новой обработки. Экономит LLM cost при ретраях / повторных
+      // загрузках того же файла.
+      //
+      // Skip cache когда:
+      //   - клиент задал metadata._skip_cache=true (для тестов)
+      //   - есть idempotency-key (он уже сделал свой dedupe выше)
+      //   - принудительно через `?force_reprocess=true` (для админских реrun'ов)
+      const skipCache =
+        (sanitizedMetadata && typeof sanitizedMetadata === 'object' &&
+          (sanitizedMetadata as Record<string, unknown>)._skip_cache === true) ||
+        (req.query as Record<string, unknown> | undefined)?.force_reprocess === 'true';
+
+      const fileSha256 = skipCache
+        ? null
+        : await computeFileSha256(savedFile.absolutePath);
+
+      if (fileSha256 && !skipCache) {
+        const cached = await jobsRepo.findCachedBySha256(
+          fileSha256,
+          scopeOrgId,
+          24, // 24 часа TTL
+        );
+        if (cached) {
+          // Hit! Удаляем только что сохранённый файл (он redundant)
+          await unlink(savedFile.absolutePath).catch(() => undefined);
+          req.log.info(
+            { sha256: fileSha256.slice(0, 12), cached_job_id: cached.id, age_hours: 24 },
+            'SHA-256 cache hit — returning existing job',
+          );
+          reply.code(200);
+          reply.header('x-parsdocs-cached', '1');
+          reply.header('x-parsdocs-cached-job-id', cached.id);
+          return { job_id: cached.id, status: cached.status };
+        }
+        req.log.debug({ sha256: fileSha256.slice(0, 12) }, 'SHA-256 cache miss');
+      }
+
       let job;
       try {
         job = await jobsRepo.create({
@@ -325,6 +382,7 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
           webhookUrl: webhookUrl ?? null,
           metadata: sanitizedMetadata,
           idempotencyKey,
+          fileSha256,
           organizationId: scopeOrgId,
           projectId: scopeProjectId,
           createdByUserId: req.user?.id ?? null,
@@ -817,15 +875,15 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         filters.organization_id = filters.organization_id ?? scope.orgId;
         // Защита от попытки спросить другую организацию.
         if (filters.organization_id !== scope.orgId) {
-          return { items: [], limit: req.query.limit, offset: req.query.offset };
+          return { items: [], limit: req.query.limit, offset: req.query.offset, total: 0 };
         }
       } else if (scope.kind === 'projects') {
         if (scope.projectIds.size === 0) {
-          return { items: [], limit: req.query.limit, offset: req.query.offset };
+          return { items: [], limit: req.query.limit, offset: req.query.offset, total: 0 };
         }
         // Если клиент уточнил project_id — проверяем что он в whitelist'е.
         if (filters.project_id && !scope.projectIds.has(filters.project_id)) {
-          return { items: [], limit: req.query.limit, offset: req.query.offset };
+          return { items: [], limit: req.query.limit, offset: req.query.offset, total: 0 };
         }
         // Если без уточнения — берём первый из доступных (компромисс:
         // на manager'е без явного project_id показываем «один проект»;
@@ -834,11 +892,18 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
           filters.project_id = scope.projectIds.values().next().value as string;
         }
       }
-      const items = await jobsRepo.list(filters);
+      // list + count в параллель — Postgres сам параллелит, JS-уровень
+      // тоже не блокируется. Count нужен UI-у для tab-счётчиков и
+      // pagination footer'а («15 of 1284 rows»).
+      const [items, total] = await Promise.all([
+        jobsRepo.list(filters),
+        jobsRepo.count(filters),
+      ]);
       return {
         items: items.map((j) => jobsRepo.toApi(j)),
         limit: req.query.limit,
         offset: req.query.offset,
+        total,
       };
     },
   );

@@ -24,6 +24,8 @@ export interface ListJobsFilters {
   project_id?: string;
   from?: string;
   to?: string;
+  /** Free-text quick-search по file_name / id / INN. */
+  q?: string;
   limit?: number;
   offset?: number;
 }
@@ -32,6 +34,8 @@ interface ListJobsResponse {
   items: Job[];
   limit: number;
   offset: number;
+  /** Полное число подходящих записей. Optional для backward-compat. */
+  total?: number;
 }
 
 /**

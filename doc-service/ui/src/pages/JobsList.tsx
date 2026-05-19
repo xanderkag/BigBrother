@@ -1,37 +1,48 @@
-import { useMemo } from 'react';
+import { useMemo, useState, useCallback } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { useJobsList } from '@/queries/jobs';
+import { useQueries, useQueryClient } from '@tanstack/react-query';
+import { useJobsList, useApproveJob, useReprocessJob, jobsKeys } from '@/queries/jobs';
 import { useDocumentTypes } from '@/queries/documentTypes';
+import { api } from '@/lib/api';
+import ConfidenceBar from '@/components/ConfidenceBar';
+import { extractAmounts } from '@/lib/extracted-summary';
 import {
+  formatAge,
   formatDateTime,
-  formatFileSize,
-  formatPercent,
-  shortId,
+  formatMoneyCompact,
+  shortIdSplit,
 } from '@/lib/format';
 import type { Job, JobStatus } from '@/lib/types';
 import { EmptyState, SkeletonTable } from '@/components/Skeleton';
 
 /**
- * JobsList — таблица всех загруженных документов с фильтрами по
- * статусу и типу. Поведение совместимо со старым UI:
- *   - status filter: pending / processing / done / needs_review / failed / approved
- *   - document_type filter — слаги из document-types endpoint'а
- *   - пагинация через offset + limit (50 по умолчанию)
- *   - клик на строку → /v2/jobs/:id
- *   - auto-refresh каждые 10s (TanStack Query refetchInterval)
+ * JobsList — таблица всех загруженных документов.
  *
- * URL state: фильтры и offset хранятся в query params (?status=done)
- * чтобы можно было копировать ссылку и возвращаться к фильтрованному
- * списку через browser history.
+ * UX-design (raund 1, 2026-05-19):
+ *   - Tab-стрипы со счётчиками вместо <select> для статуса
+ *   - Подфильтр с document_type как отдельный strip
+ *   - Расширенный набор колонок: FILE / ID / TYPE / STATUS /
+ *     CONFIDENCE-bar / TOTAL / VAT / ISSUES / ENGINE / AGE
+ *   - ID — split-формат (`a8f3…91c2`) для скана глазами
+ *   - AGE relative (`2 мин / 1 ч`), полная дата в title для tooltip'а
+ *   - TOTAL/VAT/CURRENCY вытаскиваем из job.extracted через helper
+ *
+ * URL state: фильтры и offset хранятся в query params (?status=done).
+ * Auto-refresh 10s — для live updates pending/processing job'ов.
+ *
+ * NOTE: счётчики по статусам — отдельные React Query запросы limit=1
+ * (один на каждый статус), используем `useQueries`. Это N=5 параллельных
+ * запросов с короткой response (только count, items=1 элемент max),
+ * не создаёт давления на API. Альтернатива — добавить /stats endpoint,
+ * пока не хочется трогать backend.
  */
 
-const STATUSES: JobStatus[] = [
-  'pending',
-  'processing',
-  'done',
-  'needs_review',
-  'approved',
-  'failed',
+const STATUS_TABS: { key: '' | JobStatus | 'in_progress'; label: string; cls: string }[] = [
+  { key: '', label: 'Все', cls: '' },
+  { key: 'needs_review', label: 'Нужна проверка', cls: 'text-amber-700 dark:text-amber-300' },
+  { key: 'done', label: 'Готово', cls: 'text-emerald-700 dark:text-emerald-300' },
+  { key: 'failed', label: 'Ошибки', cls: 'text-rose-700 dark:text-rose-300' },
+  { key: 'in_progress', label: 'В работе', cls: 'text-sky-700 dark:text-sky-300' },
 ];
 
 const PAGE_SIZE = 50;
@@ -40,26 +51,76 @@ export default function JobsListPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const status = searchParams.get('status') ?? '';
   const documentType = searchParams.get('document_type') ?? '';
+  const q = searchParams.get('q') ?? '';
   const offset = Number(searchParams.get('offset') ?? 0);
 
+  // Главный фильтрованный список — то что показывается в таблице.
   const filters = useMemo(
     () => ({
       status: status || undefined,
       document_type: documentType || undefined,
+      q: q || undefined,
       limit: PAGE_SIZE,
       offset,
     }),
-    [status, documentType, offset],
+    [status, documentType, q, offset],
   );
 
   const { data, isLoading, error, refetch, isFetching } = useJobsList(filters);
   const { data: docTypes } = useDocumentTypes();
 
+  // Счётчики по статусам — отдельные параллельные запросы limit=1
+  // (нам нужен только response.total). На каждый refetchInterval 15s,
+  // чтобы не давить на API при долгом сидении на странице. Backend
+  // отдаёт total в ListJobsResponse — см. routes/jobs.ts.
+  //
+  // status='in_progress' — синтетический агрегат, складываем processing
+  // и pending в один счётчик (UI-понятие «в работе»).
+  // Counter queries учитывают активный quick-search q — иначе бы tabs
+  // показывали global total «1284 jobs» даже когда табличка отфильтрована
+  // по «invoice» и показывает 3 строки. Это сбивает.
+  const baseFilters = { document_type: documentType || undefined, q: q || undefined } as const;
+  const counterQueries = useQueries({
+    queries: [
+      { key: '', extra: {} },
+      { key: 'needs_review', extra: { status: 'needs_review' } },
+      { key: 'done', extra: { status: 'done' } },
+      { key: 'failed', extra: { status: 'failed' } },
+      { key: 'processing', extra: { status: 'processing' } },
+      { key: 'pending', extra: { status: 'pending' } },
+    ].map(({ key, extra }) => ({
+      queryKey: ['jobs-count', key, documentType, q],
+      queryFn: async () => {
+        const params = new URLSearchParams();
+        const merged = { ...baseFilters, ...extra, limit: 1 };
+        for (const [k, v] of Object.entries(merged)) {
+          if (v !== undefined && v !== null && v !== '') params.set(k, String(v));
+        }
+        const res = await api.get<{ total?: number }>(`/api/v1/jobs?${params}`);
+        return typeof res.total === 'number' ? res.total : undefined;
+      },
+      refetchInterval: 15_000,
+      staleTime: 10_000,
+    })),
+  });
+  const [cAll, cReview, cDone, cFailed, cProc, cPend] = counterQueries;
+  const inProgressSum =
+    cProc.data !== undefined || cPend.data !== undefined
+      ? (cProc.data ?? 0) + (cPend.data ?? 0)
+      : undefined;
+  const counts: Record<string, number | undefined> = {
+    '': cAll.data,
+    needs_review: cReview.data,
+    done: cDone.data,
+    failed: cFailed.data,
+    in_progress: inProgressSum,
+  };
+
   const updateFilter = (key: string, value: string) => {
     const next = new URLSearchParams(searchParams);
     if (value) next.set(key, value);
     else next.delete(key);
-    next.delete('offset'); // сброс пагинации при смене фильтра
+    next.delete('offset');
     setSearchParams(next);
   };
 
@@ -73,11 +134,53 @@ export default function JobsListPage() {
   const items = data?.items ?? [];
   const hasNext = items.length === PAGE_SIZE;
   const hasPrev = offset > 0;
+  const now = useMemo(() => new Date(), [items]); // фиксируем «сейчас» на один рендер
+
+  // ─── Bulk-select state ──────────────────────────────────────────
+  // Set хранит id'ы выбранных job'ов. При смене страницы / фильтра
+  // НЕ сбрасываем — пользователь может листать страницы и накапливать
+  // выбор. Но при unmount страницы — естественно очищается.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const toggleOne = useCallback((id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  const togglePage = useCallback(
+    (pageItems: Job[]) => {
+      const pageIds = pageItems.map((i) => i.id);
+      const allOnPageSelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id));
+      setSelected((prev) => {
+        const next = new Set(prev);
+        if (allOnPageSelected) {
+          pageIds.forEach((id) => next.delete(id));
+        } else {
+          pageIds.forEach((id) => next.add(id));
+        }
+        return next;
+      });
+    },
+    [selected],
+  );
+  const clearSelection = useCallback(() => setSelected(new Set()), []);
+  const pageAllSelected =
+    items.length > 0 && items.every((i) => selected.has(i.id));
+  const pageSomeSelected = items.some((i) => selected.has(i.id));
 
   return (
-    <div className="mx-auto max-w-7xl space-y-4 p-6">
+    <div className="mx-auto max-w-[1600px] space-y-3 p-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">Документы</h1>
+        <div>
+          <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">Документы</h1>
+          {typeof counts[''] === 'number' && (
+            <p className="mt-1 text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">
+              <span className="font-mono">{counts['']}</span> jobs
+            </p>
+          )}
+        </div>
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -94,60 +197,79 @@ export default function JobsListPage() {
         </div>
       </div>
 
-      {/* Filters */}
-      <div className="card">
-        <div className="card-body flex flex-wrap items-end gap-3">
-          <div className="min-w-[180px]">
-            <label htmlFor="f-status" className="form-label">
-              Статус
-            </label>
-            <select
-              id="f-status"
-              className="form-select"
-              value={status}
-              onChange={(e) => updateFilter('status', e.target.value)}
-            >
-              <option value="">Все статусы</option>
-              {STATUSES.map((s) => (
-                <option key={s} value={s}>
-                  {s}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="min-w-[220px]">
-            <label htmlFor="f-type" className="form-label">
-              Тип документа
-            </label>
-            <select
-              id="f-type"
-              className="form-select"
-              value={documentType}
-              onChange={(e) => updateFilter('document_type', e.target.value)}
-            >
-              <option value="">Все типы</option>
-              {(docTypes?.items ?? []).map((t) => (
-                <option key={t.slug} value={t.slug}>
-                  {t.display_name} ({t.slug})
-                </option>
-              ))}
-            </select>
-          </div>
-          {(status || documentType) && (
+      {/* Bulk action bar — заменяет status tabs пока есть выбор */}
+      {selected.size > 0 && (
+        <BulkBar
+          selectedIds={Array.from(selected)}
+          onClear={clearSelection}
+        />
+      )}
+
+      {/* Status tab strip — с счётчиками */}
+      <div className="flex flex-wrap items-center gap-1 border-b border-slate-200 dark:border-slate-800">
+        {STATUS_TABS.map((t) => {
+          const active = (status === t.key) || (t.key === '' && !status);
+          const cnt = counts[t.key];
+          return (
             <button
+              key={t.key || 'all'}
               type="button"
-              className="btn-ghost"
-              onClick={() => setSearchParams({})}
+              onClick={() => updateFilter('status', t.key)}
+              className={`relative -mb-px border-b-2 px-3 py-2 text-sm uppercase tracking-wider transition ${
+                active
+                  ? `border-indigo-600 dark:border-indigo-400 font-medium ${t.cls || 'text-slate-900 dark:text-slate-100'}`
+                  : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+              }`}
             >
-              ✕ Сбросить
+              {t.label}
+              {cnt !== undefined && (
+                <span
+                  className={`ml-2 inline-flex h-5 min-w-[20px] items-center justify-center rounded-sm px-1.5 font-mono text-xs ${
+                    active
+                      ? 'bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300'
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+                  }`}
+                >
+                  {cnt}
+                </span>
+              )}
             </button>
-          )}
-          <div className="ml-auto text-sm text-slate-500 dark:text-slate-400 dark:text-slate-500">
-            {isLoading ? 'Загрузка…' : `${items.length} строк`}
-            {hasNext && ' (есть ещё)'}
-          </div>
-        </div>
+          );
+        })}
       </div>
+
+      {/* Document-type filter strip */}
+      {docTypes && docTypes.items.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1 text-xs">
+          <span className="px-2 py-1 uppercase tracking-wider text-slate-500 dark:text-slate-400">тип:</span>
+          <button
+            type="button"
+            onClick={() => updateFilter('document_type', '')}
+            className={`rounded-sm px-2 py-1 uppercase tracking-wider transition ${
+              !documentType
+                ? 'bg-indigo-600 dark:bg-indigo-500 text-white'
+                : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+            }`}
+          >
+            все
+          </button>
+          {docTypes.items.map((t) => (
+            <button
+              key={t.slug}
+              type="button"
+              onClick={() => updateFilter('document_type', t.slug)}
+              className={`rounded-sm px-2 py-1 uppercase tracking-wider transition ${
+                documentType === t.slug
+                  ? 'bg-indigo-600 dark:bg-indigo-500 text-white'
+                  : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
+              title={t.display_name}
+            >
+              {t.slug}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Error */}
       {error && (
@@ -158,7 +280,7 @@ export default function JobsListPage() {
 
       {/* Table */}
       {isLoading && items.length === 0 ? (
-        <SkeletonTable rows={8} columns={7} />
+        <SkeletonTable rows={8} columns={10} />
       ) : !isLoading && items.length === 0 ? (
         <EmptyState
           title={
@@ -202,20 +324,41 @@ export default function JobsListPage() {
         <div className="card overflow-hidden">
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
-              <thead className="bg-slate-50 dark:bg-slate-900/40 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400">
+              <thead className="bg-slate-50 dark:bg-slate-900/40 text-left text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">
                 <tr>
-                  <th className="px-4 py-2">ID</th>
-                  <th className="px-4 py-2">Файл</th>
-                  <th className="px-4 py-2">Статус</th>
-                  <th className="px-4 py-2">Тип</th>
-                  <th className="px-4 py-2 text-right">Размер</th>
-                  <th className="px-4 py-2 text-right">Confidence</th>
-                  <th className="px-4 py-2">Создан</th>
+                  <th className="w-8 px-3 py-2">
+                    <input
+                      type="checkbox"
+                      className="h-3.5 w-3.5 cursor-pointer rounded-sm border-slate-300 text-indigo-600 focus:ring-1 focus:ring-indigo-500 dark:border-slate-600 dark:bg-slate-700"
+                      checked={pageAllSelected}
+                      ref={(el) => {
+                        if (el) el.indeterminate = !pageAllSelected && pageSomeSelected;
+                      }}
+                      onChange={() => togglePage(items)}
+                      aria-label="Выделить всю страницу"
+                    />
+                  </th>
+                  <th className="px-3 py-2 font-medium">File</th>
+                  <th className="px-3 py-2 font-medium">ID</th>
+                  <th className="px-3 py-2 font-medium">Type</th>
+                  <th className="px-3 py-2 font-medium">Status</th>
+                  <th className="px-3 py-2 font-medium">Confidence</th>
+                  <th className="px-3 py-2 text-right font-medium">Total</th>
+                  <th className="px-3 py-2 text-right font-medium">VAT</th>
+                  <th className="px-3 py-2 text-center font-medium">Issues</th>
+                  <th className="px-3 py-2 font-medium">Engine</th>
+                  <th className="px-3 py-2 font-medium">Age</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
                 {items.map((j) => (
-                  <JobRow key={j.id} job={j} />
+                  <JobRow
+                    key={j.id}
+                    job={j}
+                    now={now}
+                    selected={selected.has(j.id)}
+                    onToggle={() => toggleOne(j.id)}
+                  />
                 ))}
               </tbody>
             </table>
@@ -224,9 +367,10 @@ export default function JobsListPage() {
           {/* Pagination */}
           {(hasPrev || hasNext) && (
             <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50 px-4 py-2 text-sm dark:border-slate-800 dark:bg-slate-900/40">
-              <div className="text-slate-600 dark:text-slate-400">
-                Страница {Math.floor(offset / PAGE_SIZE) + 1}
-                {offset > 0 && ` (от ${offset + 1})`}
+              <div className="font-mono text-xs uppercase tracking-wider text-slate-600 dark:text-slate-400">
+                page {Math.floor(offset / PAGE_SIZE) + 1}
+                {' · '}
+                {items.length} of {counts['']  ?? '…'} rows
               </div>
               <div className="flex gap-2">
                 <button
@@ -254,58 +398,130 @@ export default function JobsListPage() {
   );
 }
 
-function JobRow({ job }: { job: Job }) {
+function JobRow({
+  job,
+  now,
+  selected,
+  onToggle,
+}: {
+  job: Job;
+  now: Date;
+  selected: boolean;
+  onToggle: () => void;
+}) {
+  const amounts = extractAmounts(job.extracted);
+  const fullDate = formatDateTime(job.created_at);
+  const age = formatAge(job.created_at, now);
+
   return (
-    <tr className="hover:bg-slate-50 dark:bg-slate-900/40">
-      <td className="px-4 py-2 font-mono text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">
-        <Link to={`/jobs/${job.id}`} className="hover:underline">
-          {shortId(job.id, 8)}
-        </Link>
+    <tr
+      className={`group ${
+        selected
+          ? 'bg-indigo-50/60 dark:bg-indigo-900/20'
+          : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'
+      }`}
+    >
+      {/* Bulk checkbox */}
+      <td className="px-3 py-2">
+        <input
+          type="checkbox"
+          className="h-3.5 w-3.5 cursor-pointer rounded-sm border-slate-300 text-indigo-600 focus:ring-1 focus:ring-indigo-500 dark:border-slate-600 dark:bg-slate-700"
+          checked={selected}
+          onChange={onToggle}
+          onClick={(e) => e.stopPropagation()}
+          aria-label={`Выделить ${job.file_name}`}
+        />
       </td>
-      <td className="px-4 py-2">
+
+      {/* FILE — иконка + имя */}
+      <td className="px-3 py-2">
         <Link
           to={`/jobs/${job.id}`}
-          className="block max-w-[300px] truncate font-medium text-slate-900 dark:text-slate-100 hover:underline"
+          className="flex items-center gap-2 text-slate-900 dark:text-slate-100 hover:text-indigo-600 dark:hover:text-indigo-400"
         >
-          {job.file_name}
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 20 20"
+            fill="currentColor"
+            className="h-4 w-4 shrink-0 text-slate-400 dark:text-slate-500"
+            aria-hidden="true"
+          >
+            <path d="M4 4a2 2 0 0 1 2-2h6l4 4v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4Z" />
+          </svg>
+          <span className="max-w-[260px] truncate" title={job.file_name}>
+            {job.file_name}
+          </span>
         </Link>
       </td>
-      <td className="px-4 py-2">
-        <StatusBadge status={job.status} />
+
+      {/* ID — split */}
+      <td className="px-3 py-2 font-mono text-xs text-slate-500 dark:text-slate-400" title={job.id}>
+        {shortIdSplit(job.id)}
       </td>
-      <td className="px-4 py-2 text-slate-700 dark:text-slate-300">
+
+      {/* TYPE — бейдж */}
+      <td className="px-3 py-2 text-xs">
         {job.document_type ? (
-          <span className="badge-indigo">{job.document_type}</span>
+          <span className="badge-indigo uppercase">{job.document_type}</span>
         ) : job.document_hint ? (
-          <span className="badge-slate" title="hint от клиента">
+          <span className="badge-slate uppercase" title="hint от клиента">
             {job.document_hint}
           </span>
         ) : (
           <span className="text-slate-400 dark:text-slate-500">—</span>
         )}
       </td>
-      <td className="px-4 py-2 text-right font-mono text-slate-700 dark:text-slate-300">
-        {formatFileSize(job.file_size)}
+
+      {/* STATUS — бейдж */}
+      <td className="px-3 py-2">
+        <StatusBadge status={job.status} />
       </td>
-      <td className="px-4 py-2 text-right">
-        {job.confidence !== null ? (
-          <span
-            className={`font-mono ${
-              Number(job.confidence) >= 0.85
-                ? 'text-emerald-700 dark:text-emerald-300'
-                : Number(job.confidence) >= 0.6
-                ? 'text-amber-700 dark:text-amber-300'
-                : 'text-rose-700 dark:text-rose-300'
-            }`}
-          >
-            {formatPercent(Number(job.confidence))}
-          </span>
+
+      {/* CONFIDENCE — горизонтальная полоска */}
+      <td className="px-3 py-2">
+        <ConfidenceBar value={job.confidence !== null ? Number(job.confidence) : null} />
+      </td>
+
+      {/* TOTAL — сумма с НДС */}
+      <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-700 dark:text-slate-300">
+        {amounts.total !== null ? (
+          formatMoneyCompact(amounts.total, amounts.currency)
         ) : (
-          <span className="text-slate-400 dark:text-slate-500">—</span>
+          <span className="text-slate-400 dark:text-slate-600">—</span>
         )}
       </td>
-      <td className="px-4 py-2 text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">
-        {formatDateTime(job.created_at)}
+
+      {/* VAT */}
+      <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-500 dark:text-slate-400">
+        {amounts.vat !== null ? (
+          formatMoneyCompact(amounts.vat, amounts.currency)
+        ) : (
+          <span className="text-slate-400 dark:text-slate-600">—</span>
+        )}
+      </td>
+
+      {/* ISSUES */}
+      <td className="px-3 py-2 text-center">
+        {amounts.issuesCount > 0 ? (
+          <span
+            className="inline-flex h-5 min-w-[24px] items-center justify-center rounded-sm bg-amber-100 px-1.5 font-mono text-xs font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+            title={`${amounts.issuesCount} валидационных проблем`}
+          >
+            {amounts.issuesCount}
+          </span>
+        ) : (
+          <span className="text-slate-300 dark:text-slate-700">—</span>
+        )}
+      </td>
+
+      {/* ENGINE */}
+      <td className="px-3 py-2 font-mono text-xs text-slate-500 dark:text-slate-400">
+        {job.ocr_engine ?? <span className="text-slate-300 dark:text-slate-700">—</span>}
+      </td>
+
+      {/* AGE — relative */}
+      <td className="px-3 py-2 font-mono text-xs text-slate-500 dark:text-slate-400" title={fullDate}>
+        {age}
       </td>
     </tr>
   );
@@ -322,5 +538,110 @@ function StatusBadge({ status }: { status: string }) {
       : status === 'processing' || status === 'pending'
       ? 'badge-sky'
       : 'badge-slate';
-  return <span className={cls}>{status}</span>;
+  return <span className={`${cls} uppercase`}>{status}</span>;
+}
+
+/**
+ * Bulk action bar — appears когда selected.size > 0. Заменяет статусные
+ * табы на verticalном пространстве (важно — не двигает контент таблицы
+ * вниз, ощущается как «контекстный switch»).
+ *
+ * Approve / Reprocess работают через параллельные one-shot вызовы —
+ * не делаем bulk-endpoint backend'а ради 1 RTT (5 параллельных POST
+ * не нагружают сервер заметно). Если в будущем кто-то будет бить по
+ * 100+ jobs — переделаем на `/jobs/bulk-approve` с массивом id.
+ */
+function BulkBar({
+  selectedIds,
+  onClear,
+}: {
+  selectedIds: string[];
+  onClear: () => void;
+}) {
+  const qc = useQueryClient();
+  const approve = useApproveJob();
+  const reprocess = useReprocessJob();
+  const [running, setRunning] = useState<null | 'approve' | 'reprocess'>(null);
+  const [progress, setProgress] = useState<{ done: number; failed: number } | null>(null);
+
+  const runBulk = useCallback(
+    async (kind: 'approve' | 'reprocess') => {
+      if (running) return;
+      const confirmMsg =
+        kind === 'approve'
+          ? `Одобрить ${selectedIds.length} документ(ов)? Действие пометит их статусом approved.`
+          : `Перепрогнать ${selectedIds.length} документ(ов)? Это запустит OCR/LLM заново для каждого.`;
+      if (!window.confirm(confirmMsg)) return;
+      setRunning(kind);
+      setProgress({ done: 0, failed: 0 });
+      const mutate = kind === 'approve' ? approve.mutateAsync : reprocess.mutateAsync;
+
+      // Параллельно, но с allSettled — частичный успех допустим
+      const results = await Promise.allSettled(selectedIds.map((id) => mutate(id)));
+      let done = 0;
+      let failed = 0;
+      for (const r of results) {
+        if (r.status === 'fulfilled') done++;
+        else failed++;
+      }
+      setProgress({ done, failed });
+      // Полный refetch списка — статусы поменялись
+      qc.invalidateQueries({ queryKey: jobsKeys.all });
+      // Очищаем выбор после успеха (или хотя бы partial успеха)
+      if (done > 0) onClear();
+      setRunning(null);
+      if (failed > 0) {
+        window.alert(
+          `Готово: ${done} успешно, ${failed} с ошибкой.\n` +
+            `Часть документов могла отказать — например approve работает только на needs_review.`,
+        );
+      }
+    },
+    [running, selectedIds, approve, reprocess, qc, onClear],
+  );
+
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-sm border border-indigo-200 bg-indigo-50 px-3 py-2 dark:border-indigo-800 dark:bg-indigo-900/30">
+      <span className="font-mono text-xs uppercase tracking-wider text-indigo-800 dark:text-indigo-200">
+        <span className="rounded-sm bg-indigo-600 px-1.5 py-0.5 font-semibold text-white">
+          {selectedIds.length}
+        </span>{' '}
+        выбрано
+      </span>
+      <div className="h-4 w-px bg-indigo-300 dark:bg-indigo-700" />
+      <button
+        type="button"
+        className="btn-success disabled:opacity-50"
+        disabled={!!running}
+        onClick={() => runBulk('approve')}
+      >
+        {running === 'approve' ? 'Одобряю…' : `Одобрить ✓`}
+      </button>
+      <button
+        type="button"
+        className="btn-secondary disabled:opacity-50"
+        disabled={!!running}
+        onClick={() => runBulk('reprocess')}
+      >
+        {running === 'reprocess' ? 'Перепрогон…' : 'Перепрогнать'}
+      </button>
+      {progress && !running && (
+        <span className="font-mono text-xs text-slate-600 dark:text-slate-400">
+          {progress.done} ok
+          {progress.failed > 0 && (
+            <span className="text-rose-600 dark:text-rose-400">
+              , {progress.failed} fail
+            </span>
+          )}
+        </span>
+      )}
+      <button
+        type="button"
+        className="ml-auto rounded-sm px-2 py-1 font-mono text-xs uppercase tracking-wider text-indigo-700 hover:bg-indigo-100 dark:text-indigo-300 dark:hover:bg-indigo-800/50"
+        onClick={onClear}
+      >
+        ✕ Снять выбор
+      </button>
+    </div>
+  );
 }

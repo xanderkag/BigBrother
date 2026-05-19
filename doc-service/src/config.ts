@@ -40,11 +40,20 @@ const ConfigSchema = z.object({
   // Процедура ротации — отдельная миграция (см. TECH_DEBT).
   secretsEncryptionKey: z.string().default(''),
 
-  // Number of jobs the BullMQ worker processes in parallel. Tesseract is
-  // CPU-bound and single-threaded — bumping past 1 doesn't speed up
-  // tesseract-heavy workloads on a single CPU core. Increase only when the
-  // workload is mostly LLM/network bound or you have multiple cores.
-  workerConcurrency: numberFromEnv(1),
+  // Number of jobs the BullMQ worker processes in parallel.
+  //
+  // 2026-05-18: bumped default 1 → 2.
+  // Reasoning: LLM extract — main bottleneck в pipeline (100-600 сек
+  // per doc на Qwen 32B), а сам LLM запрос идёт сетью на GPU-узел
+  // (10.10.28.10), который сам queue'ит запросы. Pipeline до этого
+  // (OCR + classify) — CPU-bound, но мы имеем 2+ CPU cores. С
+  // concurrency=2 один worker может classify свежий job пока другой
+  // ждёт ответ Qwen → ~1.5-2× throughput.
+  //
+  // Bump до 3+ только при GPU-узлах с параллельным KV-cache (vLLM)
+  // или multi-tenant Ollama. На single Qwen 32B Ollama serial'ит
+  // запросы, поэтому effective speedup capped at OCR-stage parallel.
+  workerConcurrency: numberFromEnv(2),
 
   // I2: Hard deadline for job processing. If a job has been sitting in the
   // queue longer than this, it is failed unconditionally (no more retries).

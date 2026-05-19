@@ -116,6 +116,13 @@ export type JobRow = {
   started_at: Date | null;
   finished_at: Date | null;
   idempotency_key: string | null;
+  /**
+   * SHA-256 хэш файла-источника (migration 0027). Заполняется при upload.
+   * Используется для cache lookup — при повторной загрузке того же файла
+   * возвращаем cached job_id без новой обработки. nullable для legacy
+   * jobs до миграции 0027.
+   */
+  file_sha256: string | null;
   last_llm_call: LlmCallTrace | null;
   /** Tenant scope — заполняется при create, обязательное поле в БД. */
   organization_id: string;
@@ -157,6 +164,12 @@ export type CreateJobInput = {
   webhookUrl: string | null;
   metadata: unknown;
   idempotencyKey?: string | null;
+  /**
+   * SHA-256 hash файла (hex lowercase, 64 chars). Вычисляется в
+   * routes/jobs.ts при upload через streaming hash. Используется для
+   * cache lookup при повторной загрузке того же файла.
+   */
+  fileSha256?: string | null;
   /** Tenant scope. Если не задан — caller (route) использует default. */
   organizationId: string;
   projectId: string;
@@ -172,6 +185,11 @@ export type ListFilters = {
   /** Tenant-фильтр. Если не задан — super_admin видит всё. */
   organization_id?: string;
   project_id?: string;
+  /**
+   * Free-text quick-search: ищет по file_name (ILIKE), id (prefix) и
+   * выбранным extracted-полям (INN, contract_number). См. buildJobsFilter.
+   */
+  q?: string;
   limit: number;
   offset: number;
 };
@@ -202,9 +220,10 @@ class JobsRepo {
       `INSERT INTO jobs (
          file_name, file_path, file_size, mime_type,
          document_hint, webhook_url, metadata, idempotency_key,
+         file_sha256,
          organization_id, project_id, created_by_user_id
        )
-       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12)
        RETURNING *`,
       [
         input.fileName,
@@ -215,12 +234,41 @@ class JobsRepo {
         input.webhookUrl,
         input.metadata == null ? null : JSON.stringify(input.metadata),
         input.idempotencyKey ?? null,
+        input.fileSha256 ?? null,
         input.organizationId,
         input.projectId,
         input.createdByUserId ?? null,
       ],
     );
     return rows[0]!;
+  }
+
+  /**
+   * SHA-256 cache lookup. Returns job с тем же hash в той же организации
+   * со status='done' age < N часов. Если найден — caller возвращает
+   * cached job_id без обработки.
+   *
+   * Возвращает только finished jobs — pending/processing не cached
+   * (могут провалиться, и пользователь застрял на их результате).
+   * `extracted_corrected_at` не учитываем — даже если оператор правил
+   * extracted, hash файла тот же, return cache OK.
+   */
+  async findCachedBySha256(
+    sha256: string,
+    organizationId: string,
+    maxAgeHours: number,
+  ): Promise<JobRow | null> {
+    const { rows } = await db.query<JobRow>(
+      `SELECT * FROM jobs
+       WHERE file_sha256 = $1
+         AND organization_id = $2
+         AND status = 'done'
+         AND created_at > now() - ($3 || ' hours')::interval
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [sha256, organizationId, String(maxAgeHours)],
+    );
+    return rows[0] ?? null;
   }
 
   async findById(id: string): Promise<JobRow | null> {
@@ -791,7 +839,12 @@ class JobsRepo {
     };
   }
 
-  async list(filters: ListFilters): Promise<JobRow[]> {
+  /**
+   * Собирает WHERE-условия и параметры для `list` / `count`. Возвращает
+   * `{ where, params }`, где `params` ещё не содержит limit/offset.
+   * Идентичные условия для обеих операций — общая правда о фильтрах.
+   */
+  private buildJobsFilter(filters: ListFilters): { where: string[]; params: unknown[] } {
     const where: string[] = [];
     const params: unknown[] = [];
     if (filters.status) {
@@ -818,6 +871,37 @@ class JobsRepo {
       params.push(filters.to);
       where.push(`created_at <= $${params.length}`);
     }
+    if (filters.q && filters.q.trim().length >= 1) {
+      // Quick-search: ILIKE по file_name + prefix-match по id (UUID
+      // приводим к text, чтобы LIKE работал). Для INN — поиск в JSONB,
+      // если q состоит только из цифр и достаточно длинный.
+      const q = filters.q.trim();
+      const like = `%${q.replace(/[\\%_]/g, (m) => '\\' + m)}%`;
+      params.push(like);
+      const likeIdx = params.length;
+      params.push(`${q.replace(/[\\%_]/g, (m) => '\\' + m)}%`);
+      const idPrefixIdx = params.length;
+      const clauses: string[] = [
+        `file_name ILIKE $${likeIdx}`,
+        `id::text ILIKE $${idPrefixIdx}`,
+      ];
+      // Если q — цифры (≥6 символов): пробуем как INN в extracted.
+      // Узкий список ключей — не сканируем весь JSONB.
+      const isDigits = /^\d{6,}$/.test(q);
+      if (isDigits) {
+        params.push(q);
+        const innIdx = params.length;
+        clauses.push(`extracted->>'seller_inn' = $${innIdx}`);
+        clauses.push(`extracted->>'buyer_inn' = $${innIdx}`);
+        clauses.push(`extracted->>'inn' = $${innIdx}`);
+      }
+      where.push(`(${clauses.join(' OR ')})`);
+    }
+    return { where, params };
+  }
+
+  async list(filters: ListFilters): Promise<JobRow[]> {
+    const { where, params } = this.buildJobsFilter(filters);
     params.push(filters.limit);
     params.push(filters.offset);
     const sql = `SELECT * FROM jobs
@@ -826,6 +910,26 @@ class JobsRepo {
                  LIMIT $${params.length - 1} OFFSET $${params.length}`;
     const { rows } = await db.query<JobRow>(sql, params);
     return rows;
+  }
+
+  /**
+   * Считает total для пагинации / UI-табов («Done 9», «Needs review 3»).
+   * Использует те же фильтры что `list`, но без limit/offset.
+   * Возвращает number (BIGINT → парсим вручную, pg по умолчанию
+   * отдаёт строку для bigint, но count(*) у нас всегда влезает в int).
+   */
+  async count(filters: Omit<ListFilters, 'limit' | 'offset'>): Promise<number> {
+    const { where, params } = this.buildJobsFilter({
+      ...filters,
+      // count не использует limit/offset, передаём фиктивные чтобы тип
+      // ListFilters не ругался
+      limit: 0,
+      offset: 0,
+    } as ListFilters);
+    const sql = `SELECT COUNT(*)::bigint AS c FROM jobs
+                 ${where.length ? 'WHERE ' + where.join(' AND ') : ''}`;
+    const { rows } = await db.query<{ c: string }>(sql, params);
+    return Number(rows[0]?.c ?? 0);
   }
 
   /**
