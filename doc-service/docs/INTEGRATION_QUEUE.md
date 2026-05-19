@@ -92,58 +92,6 @@
 
 
 
-### Q1. ANTHROPIC_API_KEY для F11 baseline bench
-
-- **Status:** RESOLVED (2026-05-17)
-- **Asked:** 2026-05-16
-- **From:** CLAUDE
-- **To:** USER
-- **Что нужно:** Anthropic API key
-- **Что сделать когда ключ придёт:**
-  1. USER кладёт ключ в env переменную `ANTHROPIC_API_KEY` на своей машине
-     (или передаёт Claude напрямую в чате — Claude положит в `.env.local`
-     **только локально**, не коммитит)
-  2. Claude запускает на сервере подготовку:
-     ```bash
-     # на kb-docker
-     export ANTHROPIC_API_KEY=sk-ant-...
-     cd /tmp/vision-test-v2
-     pip install anthropic
-     # bench-claude.py уже на месте после scp с Desktop
-     python3 bench-claude.py --model claude-sonnet-4-7-20260301 --warmup
-     ```
-  3. Claude прогоняет `python3 compare.py --bench-json results/claude-sonnet-4-7-20260301__claude_api.json --gt-dir gts`
-  4. Claude обновляет MODEL_REPORT.md прогон #19 — F1 items, total_match, ИНН, category, **+стоимость на 10 файлов и экстраполяция $/мес для 50 doc/day**
-  5. Push в 3 ремоута
-
-**Инфраструктура подготовлена:**
-- `Desktop/parsdocs-validation-bench/bench-claude.py` — bench с Anthropic SDK + cache_control (F8) + cost calc
-- Использует тот же `SCHEMA_BLOCK` что и bench.py — fair comparison против Gemma/Mistral
-- compare.py отрабатывает без изменений на output
-
-#### Question / Context
-В проде SLAI пилота используется Claude API (F9 уже переключила default на Sonnet 4.7). Но мы ещё не прогнали Claude на наших 10 синтетических PDF — все baseline'ы только для локальных моделей. **SLAI рекомендует получить отдельный ключ** (не делиться их prod-ключом).
-
-#### Answer (2026-05-17, USER)
-Вариант A — генерирую свой ключ сейчас, прогоняем синт тесты.
-
-#### Resolution (2026-05-17, Claude)
-- Прогон выполнен через `bench-claude.py` на 10 синтетических PDF
-- Модель: `claude-sonnet-4-6` (после фикса фейкового `claude-sonnet-4-7-20260301`)
-- Результаты в MODEL_REPORT.md прогон #21:
-  - **1.3 мин на 10 файлов** (в 4-9× быстрее локальных топ-моделей)
-  - 9/10 valid JSON, items_F1 70%, ИНН 70%, total 50%
-  - **Cost: $0.0165/doc → $25/мес для 50 doc/day**
-- Найдены 2 issue для prod-tuning (заведены как F14 + F15):
-  - F14: prefilled `{` для structured output (10/10 valid JSON)
-  - F15: prompt caching boost через boilerplate ($25 → $10/мес)
-- `.env.example` исправлен на правильный model_id `claude-sonnet-4-6`
-- API key пользователя был использован один раз для прогона, сразу удалён
-  из env, в git не попал. **USER должен ротировать ключ в Anthropic Console**
-  (попал в чат-историю).
-
----
-
 ### Q4. Service-token для SLAI side
 
 - **Status:** OPEN
@@ -192,79 +140,31 @@ SLAI оценили (Q5 в их `SLAI_REPLY_v2.md`): **2-3 недели**, с р
 
 ---
 
-### Q7. Подтверждение что наш implementation matcher / target_entity_hint / HMAC verify подходит под SLAI видение
+## Resolved Questions (последние 7 дней)
 
-- **Status:** RESOLVED
-- **Asked:** 2026-05-16
-- **From:** SLAI_DEV
-- **To:** PARSDOCS_DEV / USER
+### Q1. ANTHROPIC_API_KEY для F11 baseline bench
 
-#### Answer (2026-05-17, Claude/parsdocs)
-См. `doc-service/docs/PARSDOCS_Q7_MATCHER_REVIEW.md` (этот же commit).
+- **Status:** RESOLVED (2026-05-17)
+- **From:** CLAUDE → USER
+- **Resolution:** прогон Claude Sonnet 4.6 на 10 синтетических PDF (1.3 мин total, 9/10 valid JSON, items_F1 70%, Cost $0.0165/doc → $25/мес для 50 doc/day). MODEL_REPORT.md прогон #21. Найдены F14/F15 (закрыты 2026-05-17). USER должен ротировать ключ в Anthropic Console.
 
-**Принципиально устраивает.** Их matcher:
-- ✅ Правильные сигналы (vehicle.plate primary, ИНН secondary)
-- ✅ Threshold-логика лучше нашего предложения: HIGH ≥ 70 + (top ≥ 2× second)
-  защищает от ложного auto-attach когда два кандидата равноценны
-- ✅ Терминология shipper / consignee / carrier правильнее нашего seller/buyer
-- ✅ HMAC verify timing-safe — best practice
-- ✅ `target_entity_hint` auto-detect через vehicle.plate — совпало с нашим
-  предложением, наш explicit hint в JSON опционален
-- ✅ `Document.metadata.matched_fields` для audit — отличная идея
+---
 
-**3 уточнения (не блокеры) к SLAI:**
-1. Используется ли `vehicle.driver` ФИО в scoring? Если да — вес? Если нет — добавлять?
-2. Учитывается ли `doc.number` против `transportation.reference` / `transfer.documents[].number`?
-3. Учитывается ли route (`from_city` / `to_city`) match?
+### Q7. SLAI matcher / target_entity_hint / HMAC verify review
 
-#### Resolution
-- Файл `doc-service/docs/PARSDOCS_Q7_MATCHER_REVIEW.md` создан и запушен
-- TECH_DEBT.md F13: добавлено явное требование использовать `crypto.timingSafeEqual`
-  при имплементации inbound HMAC verify (best practice)
-- 3 уточнения зависают как nice-to-have, обсудим на пилоте по
-  `Document.metadata.matched_fields` статистике
+- **Status:** RESOLVED (2026-05-17)
+- **From:** SLAI_DEV → PARSDOCS_DEV
+- **Resolution:** ответ в `doc-service/docs/PARSDOCS_Q7_MATCHER_REVIEW.md` — их matcher принципиально устраивает (правильные сигналы plate/ИНН, threshold HIGH≥70+2×, timing-safe HMAC, `target_entity_hint` auto-detect). 3 nice-to-have уточнения зависли до пилота.
 
 ---
 
 ### Q8. 7 open questions по continuous category sync
 
-- **Status:** RESOLVED
-- **Asked:** 2026-05-16
-- **From:** SLAI_DEV
-- **To:** PARSDOCS_DEV / CLAUDE
-
-#### Question / Context
-Они переходят от разового hist'а на непрерывный bidirectional sync. Цель — чтобы через 6 месяцев когда логисты добавят 30 новых типов груза, parsdocs не отстал.
-
-**Архитектура:** realtime webhook (debounce 10 сек, event-driven) + nightly full snapshot (safety net).
-
-**7 вопросов от них:**
-1. Есть ли уже у нас webhook receiver / какой URL?
-2. Какой объём готовы переваривать?
-3. Как parsdocs реагирует на изменения (lookup-table / retrain / просто лог)?
-4. Format snapshot их JSON ок?
-5. HMAC secret — единый или отдельный?
-6. Versioning header vs URL?
-7. Failure handling — retry+queue или fire-and-forget?
-
-#### Answer (2026-05-16, Claude/parsdocs)
-См. `doc-service/docs/PARSDOCS_CATEGORY_SYNC_REPLY.md` (этот же commit). Сжато:
-1. **Нет существующего receiver**, поднимаем новый `POST /api/v1/integrations/slai/sync/nomenclature` (events) + `/snapshot` (daily). На staging — `https://parsedocs.taipit.ru/...`
-2. 50-100 webhooks/day + 1 snapshot/day = ~150 запросов/день — **комфортно**, никаких лимитов не нужно ставить
-3. **Lookup-table** в Redis с TTL 24ч (back-up в Postgres `slai_category_map`). Никакого retrain — наш classifier rule-based (keyword-mapper)
-4. **Их JSON ок**, не переизобретаем
-5. **2 отдельных HMAC секрета**: `PARSDOCS_TO_SLAI_HMAC_SECRET` (наши webhook'и) и `SLAI_TO_PARSDOCS_HMAC_SECRET` (их sync). Разные ротации — независимо
-6. **Header `X-SLAI-Version: v1`** — да, в URL не надо
-7. **Retry с backoff** на их стороне (3 попытки), мы дополнительно записываем failed events в `sync_inbox` для повторной обработки. Snapshot — safety net на случай потери events
-
-#### Resolution
-- Файл-ответ `doc-service/docs/PARSDOCS_CATEGORY_SYNC_REPLY.md` создан и запушен
-- Новый долг F13 в `TECH_DEBT.md`: webhook receiver + lookup-table + snapshot обработчик (5-7 дней работы)
-- Ждём подтверждения SLAI что наши 7 ответов их устраивают → потом стартуют TypeORM hooks
+- **Status:** RESOLVED (2026-05-16)
+- **From:** SLAI_DEV → PARSDOCS_DEV / CLAUDE
+- **Resolution:** ответ в `doc-service/docs/PARSDOCS_CATEGORY_SYNC_REPLY.md` — receiver `POST /api/v1/integrations/slai/sync/nomenclature` + `/snapshot`, Redis lookup-table TTL 24ч, 2 отдельных HMAC секрета, header `X-SLAI-Version: v1`, retry-с-backoff + `sync_inbox`. F13 (closed) в TECH_DEBT_ARCHIVE.
 
 ---
-
-## Resolved Questions (последние 7 дней)
 
 ### Q2. SLAI ответ на наш SLAI_OUR_REPLY.md
 

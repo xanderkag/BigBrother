@@ -912,44 +912,9 @@ SGLang, TGI) выставляют OpenAI Chat Completions API; теперь pars
 
 ---
 
-### CP7. Multi-tenant foundation (когда понадобится)
-
-**Где:** schema-wide
-
-**Симптом:** Платформа сейчас single-tenant. Если завтра появится клиент со своими типами/правилами — придётся вводить tenancy с нуля.
-
-**Лечение:** Добавить `tenant_id` в `jobs` и `document_types`. Auth middleware резолвит `tenant_id` из токена. Document types становятся scoped per-tenant (builtin = глобальные, custom = per-tenant). Это **не делать сейчас** — добавить когда появится второй потребитель.
-
-**Оценка:** 1-2 недели после первого реального запроса от не-нашего клиента.
-
----
-
 ## 🟠 Important (укусит при ramp-up)
 
-### I6. Yandex Vision контракт не выверен — 🗄️ deep backlog (2026-05-15)
-
-**Где:** `doc-service/src/pipeline/ocr/yandex.ts:50-66`
-
-**Симптом:** Body shape (`folderId` / `analyze_specs` / `mime_type`) написан по памяти. Гарантированно сломается при первом вызове.
-
-**Почему отложено:**
-- В проде Yandex выключен (`YANDEX_VISION_API_KEY=`) — путь кода не задевается
-- I8 закрыт: PII-документы (TTN, CMR) и так не попадают в Yandex даже если включить (env-флаг `YANDEX_DISABLE_FOR_PII` + per-job `_disable_external_ocr`)
-- Нужен реальный API-ключ Yandex Cloud и тестовый folder для VCR-записи — внешний actor, ждёт бизнес-кейс
-
-**Когда вернуться:** если появится требование обрабатывать через Yandex (например, скан-документы без PII, для которых другие OCR-движки дают плохой результат). Поднимать вместе с I8 — auto-detect PII классификатором (сейчас определяется только по `document_hint`).
-
-**Лечение:** `curl` к Yandex API с одним документом, сверить request/response, поправить shape. Желательно — добавить Yandex API в integration-тесты с записанным VCR-ответом.
-
-**Оценка:** 2 часа на сверку + 2 часа на VCR-моки + получение API-ключа от Yandex Cloud.
-
----
-
-### Phase F — доп. типы документов (отложено)
-
-Доверенность М-2/М-2а, путевой лист 4-С/4-П, МХ-1/МХ-3, заявка на перевозку, складской ордер М-11, инвойс-проформа. Реализуются через UI Document Types когда появится конкретный бизнес-запрос — не блочит prod-deploy с текущими 15 типами.
-
----
+> **CP7, I6, Phase F** перенесены в `TECH_DEBT_ARCHIVE.md` → раздел «Deferred backlog (snapshot 2026-05-19)». Триггеры возврата записаны там.
 
 ### UI-2. Mobile-responsive React UI — 🗄️ backlog (2026-05-18)
 
