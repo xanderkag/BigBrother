@@ -1,44 +1,104 @@
-import { useState } from 'react';
-import { Link } from 'react-router-dom';
-import { useJobsList, useApproveJob } from '@/queries/jobs';
+import { useState, useMemo } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { useJobsList, useApproveJob, useReprocessJob } from '@/queries/jobs';
+import { useDocumentTypes } from '@/queries/documentTypes';
+import ConfidenceBar from '@/components/ConfidenceBar';
+import { extractAmounts } from '@/lib/extracted-summary';
 import {
+  formatAge,
   formatDateTime,
-  formatPercent,
-  shortId,
   formatFileSize,
+  formatMoneyCompact,
+  shortIdSplit,
 } from '@/lib/format';
+import { isSynthetic, matchesOrigin, type DocOrigin } from '@/lib/synthetic';
 import type { Job } from '@/lib/types';
 
 /**
- * Review queue — список job'ов в статусе needs_review с инструментами
- * для быстрого одобрения. Эквивалент `#review` в старом UI.
+ * Review queue v2 (2026-05-19 refactor):
  *
- * UX-фокус — операторская проверка батчами:
- *   - Каждая карточка показывает превью что вызвало review (validation
- *     issues + low confidence), чтобы оператор быстро решал
- *   - Approve кнопка на каждой строке (без перехода в детальный view)
- *   - Bulk approve checkbox'ами для очевидно-OK кейсов
- *   - Клик на имя файла → детальный JobDetail для углублённого осмотра
+ *   - Stats-header сверху: total / by document_type / by origin / top issues
+ *   - Filter strips:
+ *       * Origin: все / реальные / синтетика
+ *       * Document type: все / UPD / TORG-12 / ...
+ *       * Issue category: все / INN / суммы / даты / другие
+ *   - Group-by-doc_type сворачиваемые секции (collapsible details)
+ *   - Каждая карточка:
+ *       * filename + synth-бейдж + doc_type
+ *       * confidence-bar + size + age
+ *       * **Extracted preview** — топ-4 поля (seller, buyer, total, date)
+ *         с подсветкой полей-проблем (упомянуты в _issues)
+ *       * Issues list (как и было)
+ *       * Actions: Открыть / Перепрогнать / Одобрить
+ *   - Bulk approve через checkbox + sticky bar
  *
- * Backend bulk-approve endpoint'а пока нет — bulk = последовательные
- * POST /jobs/:id/approve. Это достаточно для review-queue размером
- * < 100 (типичный кейс). Если очередь вырастет — добавим bulk-endpoint
- * на backend'е.
+ * Backend bulk-approve endpoint'а нет — bulk = последовательные
+ * POST /jobs/:id/approve. Параллелить не хотим: webhook delivery на
+ * approve, не хотим заваливать клиентские системы пачкой webhooks.
  */
 
-const PAGE_SIZE = 100;
+const PAGE_SIZE = 200;
+
+/**
+ * Категория issue по ключевым словам в тексте. Это эвристика для
+ * UI-фильтра; backend не даёт структурированной классификации issue'ов
+ * (они хранятся как массив строк в `_issues`).
+ */
+type IssueCategory = 'inn' | 'amounts' | 'dates' | 'other';
+
+function classifyIssue(text: string): IssueCategory {
+  const t = text.toLowerCase();
+  if (t.includes('инн') || t.includes('inn') || t.includes('кпп')) return 'inn';
+  if (t.includes('сумм') || t.includes('total') || t.includes('ндс') || t.includes('vat')) return 'amounts';
+  if (t.includes('дата') || t.includes('date')) return 'dates';
+  return 'other';
+}
 
 export default function ReviewQueuePage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const documentType = searchParams.get('document_type') ?? '';
+  const origin = (searchParams.get('origin') as DocOrigin) || 'all';
+  const issueCat = (searchParams.get('issue') as IssueCategory | '') || '';
+
   const { data, isLoading, error, refetch, isFetching } = useJobsList({
     status: 'needs_review',
+    document_type: documentType || undefined,
     limit: PAGE_SIZE,
   });
+  const { data: docTypes } = useDocumentTypes();
   const approve = useApproveJob();
+  const reprocess = useReprocessJob();
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkRunning, setBulkRunning] = useState(false);
 
-  const items = data?.items ?? [];
+  // Filter chain: origin (client) + issue category (client)
+  const allItems = data?.items ?? [];
+  const items = useMemo(() => {
+    return allItems.filter((j) => {
+      if (!matchesOrigin(j.file_name, origin)) return false;
+      if (issueCat) {
+        const issues = jobIssues(j);
+        if (!issues.some((i) => classifyIssue(i) === issueCat)) return false;
+      }
+      return true;
+    });
+  }, [allItems, origin, issueCat]);
+
+  // Stats — по unfiltered набору. Показывают «общую картину» что в
+  // очереди, фильтры её сужают для работы.
+  const stats = useMemo(() => computeStats(allItems), [allItems]);
+  const total = data?.total ?? allItems.length;
+
+  // Group by doc_type — для удобной навигации когда очередь >20 items
+  const grouped = useMemo(() => groupByDocType(items), [items]);
+
+  const updateFilter = (key: string, value: string) => {
+    const next = new URLSearchParams(searchParams);
+    if (value) next.set(key, value);
+    else next.delete(key);
+    setSearchParams(next);
+  };
 
   const toggleSelected = (jobId: string) => {
     setSelected((prev) => {
@@ -49,30 +109,24 @@ export default function ReviewQueuePage() {
     });
   };
 
-  const toggleAll = () => {
-    if (selected.size === items.length) {
-      setSelected(new Set());
-    } else {
-      setSelected(new Set(items.map((j) => j.id)));
-    }
+  const toggleAllVisible = () => {
+    const visibleIds = items.map((j) => j.id);
+    const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allSelected) visibleIds.forEach((id) => next.delete(id));
+      else visibleIds.forEach((id) => next.add(id));
+      return next;
+    });
   };
 
-  /**
-   * Одобряет все выбранные job'ы последовательно. Останавливается на
-   * первой ошибке (показывает её и сохраняет в selected неодобренные).
-   *
-   * Не делаем параллельно — backend approve дёргает finalize +
-   * webhook delivery, не хотим заваливать клиентские системы пачкой
-   * webhooks разом.
-   */
   const bulkApprove = async () => {
     if (selected.size === 0) return;
     if (!confirm(`Одобрить ${selected.size} job'ов? Это вызовет webhook delivery.`)) {
       return;
     }
     setBulkRunning(true);
-    const toApprove = Array.from(selected);
-    for (const jobId of toApprove) {
+    for (const jobId of Array.from(selected)) {
       try {
         await approve.mutateAsync(jobId);
         setSelected((prev) => {
@@ -93,28 +147,35 @@ export default function ReviewQueuePage() {
     refetch();
   };
 
+  const allVisibleSelected =
+    items.length > 0 && items.every((i) => selected.has(i.id));
+
   return (
-    <div className="mx-auto max-w-6xl space-y-4 p-6">
-      <div className="flex items-center justify-between">
+    <div className="mx-auto max-w-[1400px] space-y-4 p-6">
+      {/* Header + meta */}
+      <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">Очередь проверки</h1>
-          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400 dark:text-slate-500">
+          <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">
+            Очередь проверки
+          </h1>
+          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
             Документы со статусом{' '}
-            <span className="badge-amber">needs_review</span> — требуют ручной проверки
-            оператором перед отправкой webhook'а клиенту.
+            <span className="badge-amber">needs_review</span> — требуют ручной
+            проверки перед отправкой webhook'а клиенту.
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            className="btn-ghost"
-            disabled={isFetching}
-            onClick={() => refetch()}
-          >
-            {isFetching ? 'Обновляю…' : '↻ Обновить'}
-          </button>
-        </div>
+        <button
+          type="button"
+          className="btn-secondary"
+          disabled={isFetching}
+          onClick={() => refetch()}
+        >
+          {isFetching ? 'Обновляю…' : '↻ Обновить'}
+        </button>
       </div>
+
+      {/* Stats grid */}
+      <ReviewStats stats={stats} total={total} visibleCount={items.length} />
 
       {error && (
         <div className="error-banner">
@@ -122,53 +183,97 @@ export default function ReviewQueuePage() {
         </div>
       )}
 
-      {/* Bulk actions bar — sticky */}
+      {/* Filters */}
+      <div className="space-y-2 border-y border-slate-200 py-3 dark:border-slate-800">
+        <FilterStrip
+          label="источник"
+          options={[
+            { value: '', label: 'все' },
+            { value: 'real', label: 'реальные' },
+            { value: 'synth', label: 'синтетика' },
+          ]}
+          active={origin === 'all' ? '' : origin}
+          onChange={(v) => updateFilter('origin', v)}
+        />
+        {docTypes && docTypes.items.length > 0 && (
+          <FilterStrip
+            label="тип"
+            options={[
+              { value: '', label: 'все' },
+              ...docTypes.items.map((t) => ({
+                value: t.slug,
+                label: t.slug,
+                count: stats.byDocType[t.slug],
+              })),
+            ].filter((o) => o.value === '' || (stats.byDocType[o.value] ?? 0) > 0)}
+            active={documentType}
+            onChange={(v) => updateFilter('document_type', v)}
+          />
+        )}
+        <FilterStrip
+          label="проблема"
+          options={[
+            { value: '', label: 'все' },
+            { value: 'inn', label: 'ИНН/КПП', count: stats.byIssueCategory.inn },
+            { value: 'amounts', label: 'Суммы', count: stats.byIssueCategory.amounts },
+            { value: 'dates', label: 'Даты', count: stats.byIssueCategory.dates },
+            { value: 'other', label: 'Другое', count: stats.byIssueCategory.other },
+          ].filter((o) => o.value === '' || (o.count ?? 0) > 0)}
+          active={issueCat}
+          onChange={(v) => updateFilter('issue', v)}
+        />
+      </div>
+
+      {/* Bulk bar */}
       {items.length > 0 && (
-        <div className="card sticky top-0 z-10">
-          <div className="card-body flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <input
-                type="checkbox"
-                checked={selected.size === items.length && items.length > 0}
-                onChange={toggleAll}
-                className="h-4 w-4 rounded border-slate-300"
-                aria-label="Выбрать все"
-              />
-              <span className="text-sm">
-                {selected.size > 0
-                  ? `Выбрано: ${selected.size} из ${items.length}`
-                  : `В очереди: ${items.length}`}
-                {data?.items.length === PAGE_SIZE && (
-                  <span className="ml-2 text-amber-700 dark:text-amber-300">(показаны первые {PAGE_SIZE})</span>
-                )}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              {selected.size > 0 && (
+        <div className="sticky top-0 z-10 flex items-center justify-between rounded-sm border border-slate-200 bg-white px-3 py-2 dark:border-slate-800 dark:bg-slate-900">
+          <div className="flex items-center gap-3">
+            <input
+              type="checkbox"
+              checked={allVisibleSelected}
+              ref={(el) => {
+                if (el) el.indeterminate = !allVisibleSelected && items.some((i) => selected.has(i.id));
+              }}
+              onChange={toggleAllVisible}
+              className="h-3.5 w-3.5 cursor-pointer rounded-sm border-slate-300 text-indigo-600"
+              aria-label="Выбрать все видимые"
+            />
+            <span className="font-mono text-xs uppercase tracking-wider text-slate-700 dark:text-slate-300">
+              {selected.size > 0 ? (
                 <>
-                  <button
-                    type="button"
-                    className="btn-ghost"
-                    onClick={() => setSelected(new Set())}
-                  >
-                    Снять выделение
-                  </button>
-                  <button
-                    type="button"
-                    className="btn-success"
-                    disabled={bulkRunning}
-                    onClick={bulkApprove}
-                  >
-                    {bulkRunning ? `Одобряю…` : `Одобрить ${selected.size}`}
-                  </button>
+                  <span className="rounded-sm bg-indigo-600 px-1.5 py-0.5 text-white">
+                    {selected.size}
+                  </span>{' '}
+                  выбрано из {items.length}
                 </>
+              ) : (
+                `в очереди ${items.length}${items.length !== total ? ` (отфильтровано из ${total})` : ''}`
               )}
-            </div>
+            </span>
           </div>
+          {selected.size > 0 && (
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => setSelected(new Set())}
+              >
+                Снять
+              </button>
+              <button
+                type="button"
+                className="btn-success"
+                disabled={bulkRunning}
+                onClick={bulkApprove}
+              >
+                {bulkRunning ? 'Одобряю…' : `Одобрить ${selected.size}`}
+              </button>
+            </div>
+          )}
         </div>
       )}
 
-      {/* List */}
+      {/* Loading */}
       {isLoading && (
         <div className="space-y-2">
           {[1, 2, 3, 4].map((i) => (
@@ -182,15 +287,16 @@ export default function ReviewQueuePage() {
         </div>
       )}
 
+      {/* Empty state */}
       {!isLoading && items.length === 0 && (
         <div className="card">
           <div className="card-body py-12 text-center">
-            <div className="mx-auto mb-3 inline-flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100">
+            <div className="mx-auto mb-3 inline-flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100 dark:bg-emerald-900/40">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
                 viewBox="0 0 24 24"
                 fill="currentColor"
-                className="h-7 w-7 text-emerald-600"
+                className="h-7 w-7 text-emerald-600 dark:text-emerald-400"
               >
                 <path
                   fillRule="evenodd"
@@ -199,128 +305,463 @@ export default function ReviewQueuePage() {
                 />
               </svg>
             </div>
-            <p className="text-lg font-medium text-slate-900 dark:text-slate-100">Все проверены ✓</p>
-            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400 dark:text-slate-500">
-              В очереди нет документов на проверке.
+            <p className="text-lg font-medium text-slate-900 dark:text-slate-100">
+              {allItems.length === 0 ? 'Очередь пуста ✓' : 'По фильтрам ничего не найдено'}
             </p>
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+              {allItems.length === 0
+                ? 'Документов на проверке нет — оператор может отдыхать.'
+                : 'Попробуйте сбросить фильтры или изменить параметры.'}
+            </p>
+            {allItems.length > 0 && (
+              <button
+                type="button"
+                className="btn-secondary mt-3"
+                onClick={() => setSearchParams({})}
+              >
+                ✕ Сбросить фильтры
+              </button>
+            )}
           </div>
         </div>
       )}
 
-      <div className="space-y-2">
-        {items.map((job) => (
-          <ReviewRow
-            key={job.id}
-            job={job}
-            checked={selected.has(job.id)}
-            onToggle={() => toggleSelected(job.id)}
-            onApprove={() => approve.mutate(job.id)}
-            isApproving={approve.isPending && approve.variables === job.id}
-          />
-        ))}
-      </div>
+      {/* Groups */}
+      {grouped.map(([docType, jobs]) => (
+        <details key={docType} open className="card">
+          <summary className="card-header flex cursor-pointer items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-xs uppercase tracking-wider text-slate-700 dark:text-slate-300">
+                {docType || '(без типа)'}
+              </span>
+              <span className="rounded-sm bg-slate-100 px-1.5 py-0.5 font-mono text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-400">
+                {jobs.length}
+              </span>
+            </div>
+          </summary>
+          <div className="card-body space-y-2">
+            {jobs.map((job) => (
+              <ReviewRow
+                key={job.id}
+                job={job}
+                checked={selected.has(job.id)}
+                onToggle={() => toggleSelected(job.id)}
+                onApprove={() => approve.mutate(job.id)}
+                onReprocess={() => reprocess.mutate(job.id)}
+                isApproving={approve.isPending && approve.variables === job.id}
+                isReprocessing={reprocess.isPending && reprocess.variables === job.id}
+              />
+            ))}
+          </div>
+        </details>
+      ))}
     </div>
   );
 }
+
+/* ─── Sub-components ────────────────────────────────────────────────── */
+
+interface ReviewStatsData {
+  byDocType: Record<string, number>;
+  bySynth: { synth: number; real: number };
+  byIssueCategory: Record<IssueCategory, number>;
+  topIssues: { text: string; count: number }[];
+  avgConfidence: number | null;
+}
+
+function computeStats(items: Job[]): ReviewStatsData {
+  const byDocType: Record<string, number> = {};
+  const byIssueCategory: Record<IssueCategory, number> = {
+    inn: 0,
+    amounts: 0,
+    dates: 0,
+    other: 0,
+  };
+  const issueCounts: Record<string, number> = {};
+  let synth = 0;
+  let real = 0;
+  let confSum = 0;
+  let confN = 0;
+
+  for (const j of items) {
+    const dt = j.document_type ?? '(unknown)';
+    byDocType[dt] = (byDocType[dt] ?? 0) + 1;
+    if (isSynthetic(j.file_name)) synth++;
+    else real++;
+    if (j.confidence !== null) {
+      confSum += Number(j.confidence);
+      confN++;
+    }
+    for (const iss of jobIssues(j)) {
+      byIssueCategory[classifyIssue(iss)]++;
+      // Топ-issues по нормализованному тексту (без чисел/id)
+      const key = iss.replace(/\d+/g, '#').slice(0, 80);
+      issueCounts[key] = (issueCounts[key] ?? 0) + 1;
+    }
+  }
+
+  const topIssues = Object.entries(issueCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([text, count]) => ({ text, count }));
+
+  return {
+    byDocType,
+    bySynth: { synth, real },
+    byIssueCategory,
+    topIssues,
+    avgConfidence: confN > 0 ? confSum / confN : null,
+  };
+}
+
+function jobIssues(j: Job): string[] {
+  return ((j.extracted as Record<string, unknown> | null)?._issues as string[] | undefined) ?? [];
+}
+
+function groupByDocType(items: Job[]): Array<[string, Job[]]> {
+  const groups: Record<string, Job[]> = {};
+  for (const j of items) {
+    const k = j.document_type ?? '';
+    groups[k] = groups[k] ?? [];
+    groups[k].push(j);
+  }
+  // Сортируем группы по размеру убыванию (самые жирные сверху)
+  return Object.entries(groups).sort((a, b) => b[1].length - a[1].length);
+}
+
+function ReviewStats({
+  stats,
+  total,
+  visibleCount,
+}: {
+  stats: ReviewStatsData;
+  total: number;
+  visibleCount: number;
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <StatCard
+        label="всего"
+        value={String(total)}
+        sub={visibleCount !== total ? `показано ${visibleCount}` : 'все видны'}
+      />
+      <StatCard
+        label="источник"
+        value={`${stats.bySynth.real} / ${stats.bySynth.synth}`}
+        sub="реал / синт"
+      />
+      <StatCard
+        label="средняя conf"
+        value={
+          stats.avgConfidence !== null
+            ? `${(stats.avgConfidence * 100).toFixed(0)}%`
+            : '—'
+        }
+        sub={
+          stats.avgConfidence === null
+            ? 'нет данных'
+            : stats.avgConfidence < 0.6
+            ? 'низкая'
+            : stats.avgConfidence < 0.85
+            ? 'средняя'
+            : 'высокая'
+        }
+      />
+      <StatCard
+        label="топ-проблема"
+        value={
+          stats.topIssues[0]
+            ? String(stats.topIssues[0].count)
+            : '0'
+        }
+        sub={
+          stats.topIssues[0]?.text.slice(0, 30) +
+            (stats.topIssues[0]?.text.length > 30 ? '…' : '') || '—'
+        }
+        title={stats.topIssues[0]?.text}
+      />
+    </div>
+  );
+}
+
+function StatCard({
+  label,
+  value,
+  sub,
+  title,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  title?: string;
+}) {
+  return (
+    <div
+      className="rounded-sm border border-slate-200 bg-white px-3 py-2 dark:border-slate-800 dark:bg-slate-900"
+      title={title}
+    >
+      <div className="font-mono text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">
+        {label}
+      </div>
+      <div className="mt-0.5 font-mono text-lg font-semibold tabular-nums text-slate-900 dark:text-slate-100">
+        {value}
+      </div>
+      {sub && (
+        <div className="font-mono text-[10px] text-slate-500 dark:text-slate-500">
+          {sub}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FilterStrip({
+  label,
+  options,
+  active,
+  onChange,
+}: {
+  label: string;
+  options: { value: string; label: string; count?: number }[];
+  active: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-1 text-xs">
+      <span className="w-20 shrink-0 px-2 py-1 font-mono uppercase tracking-wider text-slate-500 dark:text-slate-400">
+        {label}:
+      </span>
+      {options.map((o) => (
+        <button
+          key={o.value || 'all'}
+          type="button"
+          onClick={() => onChange(o.value)}
+          className={`flex items-center gap-1 rounded-sm px-2 py-1 font-mono uppercase tracking-wider transition ${
+            active === o.value
+              ? 'bg-indigo-600 dark:bg-indigo-500 text-white'
+              : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+          }`}
+        >
+          {o.label}
+          {o.count !== undefined && (
+            <span
+              className={`tabular-nums ${
+                active === o.value ? 'text-indigo-100' : 'text-slate-400 dark:text-slate-600'
+              }`}
+            >
+              {o.count}
+            </span>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/* ─── ReviewRow ──────────────────────────────────────────────────────── */
+
+/**
+ * Top-N полей из extracted для preview. Не показываем всё — это карточка
+ * в списке, нужен скан глазами. Фокус: «кто, кому, сколько, когда».
+ */
+const PREVIEW_FIELDS: { key: string; label: string }[] = [
+  { key: 'seller_name', label: 'Продавец' },
+  { key: 'buyer_name', label: 'Покупатель' },
+  { key: 'document_number', label: '№' },
+  { key: 'document_date', label: 'Дата' },
+];
 
 function ReviewRow({
   job,
   checked,
   onToggle,
   onApprove,
+  onReprocess,
   isApproving,
+  isReprocessing,
 }: {
   job: Job;
   checked: boolean;
   onToggle: () => void;
   onApprove: () => void;
+  onReprocess: () => void;
   isApproving: boolean;
+  isReprocessing: boolean;
 }) {
-  const issues =
-    ((job.extracted as Record<string, unknown> | null)?._issues as
-      | string[]
-      | undefined) ?? [];
+  const issues = jobIssues(job);
+  const amounts = extractAmounts(job.extracted);
+  const fc =
+    (job.extracted as Record<string, unknown> | null)?._field_confidence as
+      | Record<string, number>
+      | undefined;
+  const synth = isSynthetic(job.file_name);
+
+  // Поля, которые упомянуты в issues (для подсветки) — простая эвристика
+  const flaggedFields = useMemo(() => {
+    const set = new Set<string>();
+    for (const iss of issues) {
+      const lower = iss.toLowerCase();
+      if (lower.includes('инн') || lower.includes('inn')) {
+        set.add('seller_inn');
+        set.add('buyer_inn');
+      }
+      if (lower.includes('сумм') || lower.includes('total')) {
+        set.add('total_with_vat');
+        set.add('vat_amount');
+      }
+      if (lower.includes('дата') || lower.includes('date')) {
+        set.add('document_date');
+      }
+    }
+    return set;
+  }, [issues]);
 
   return (
-    <div className="card">
-      <div className="card-body flex items-center gap-4">
+    <div
+      className={`rounded-sm border ${
+        checked
+          ? 'border-indigo-300 bg-indigo-50/40 dark:border-indigo-700 dark:bg-indigo-900/20'
+          : 'border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900'
+      }`}
+    >
+      <div className="flex items-start gap-3 p-3">
         <input
           type="checkbox"
           checked={checked}
           onChange={onToggle}
-          className="h-4 w-4 shrink-0 rounded border-slate-300"
+          className="mt-1 h-3.5 w-3.5 shrink-0 cursor-pointer rounded-sm border-slate-300 text-indigo-600"
           aria-label={`Выбрать ${job.file_name}`}
         />
 
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1 space-y-2">
+          {/* Top line: filename + badges + meta */}
+          <div className="flex flex-wrap items-center gap-2">
             <Link
               to={`/jobs/${job.id}`}
-              className="truncate font-medium text-slate-900 dark:text-slate-100 hover:underline"
+              className="truncate font-medium text-slate-900 hover:text-indigo-600 dark:text-slate-100 dark:hover:text-indigo-400"
+              title={job.file_name}
             >
               {job.file_name}
             </Link>
-            {job.document_type && (
-              <span className="badge-indigo shrink-0">{job.document_type}</span>
-            )}
-            <span className="font-mono text-xs text-slate-400 dark:text-slate-500">{shortId(job.id, 8)}</span>
-          </div>
-
-          <div className="mt-1 flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">
-            <span>{formatFileSize(job.file_size)}</span>
-            {job.confidence !== null && (
+            {synth && (
               <span
-                className={
-                  Number(job.confidence) >= 0.6 ? 'text-amber-700 dark:text-amber-300' : 'text-rose-700 dark:text-rose-300'
-                }
+                className="shrink-0 rounded-sm bg-violet-100 px-1 font-mono text-[10px] uppercase tracking-wider text-violet-700 dark:bg-violet-900/40 dark:text-violet-300"
+                title="Синтетический документ"
               >
-                confidence {formatPercent(Number(job.confidence))}
+                synth
               </span>
             )}
-            <span>создан {formatDateTime(job.created_at)}</span>
+            {job.document_type && (
+              <span className="badge-indigo shrink-0 uppercase">{job.document_type}</span>
+            )}
+            <span
+              className="ml-auto font-mono text-[10px] text-slate-400 dark:text-slate-500"
+              title={job.id}
+            >
+              {shortIdSplit(job.id)}
+            </span>
           </div>
 
-          {/* Issues preview */}
+          {/* Meta line: confidence + size + age */}
+          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
+            <ConfidenceBar
+              value={job.confidence !== null ? Number(job.confidence) : null}
+              width={80}
+            />
+            <span className="font-mono">{formatFileSize(job.file_size)}</span>
+            <span className="font-mono" title={formatDateTime(job.created_at)}>
+              {formatAge(job.created_at)} назад
+            </span>
+            {amounts.total !== null && (
+              <span className="font-mono font-medium text-slate-700 dark:text-slate-300">
+                итог: {formatMoneyCompact(amounts.total, amounts.currency)}
+              </span>
+            )}
+          </div>
+
+          {/* Extracted preview — top fields */}
+          {job.extracted && (
+            <div className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">
+              {PREVIEW_FIELDS.map(({ key, label }) => {
+                const v = (job.extracted as Record<string, unknown>)[key];
+                if (v === null || v === undefined || v === '') return null;
+                const flagged = flaggedFields.has(key);
+                const lowConf = fc?.[key] !== undefined && fc[key] < 0.7;
+                return (
+                  <div key={key} className="flex items-baseline gap-2 text-xs">
+                    <span className="w-24 shrink-0 font-mono uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                      {label}
+                    </span>
+                    <span
+                      className={`truncate font-mono ${
+                        flagged || lowConf
+                          ? 'text-amber-700 dark:text-amber-300'
+                          : 'text-slate-700 dark:text-slate-300'
+                      }`}
+                      title={String(v)}
+                    >
+                      {String(v)}
+                      {lowConf && (
+                        <span className="ml-1 text-[10px] text-amber-600 dark:text-amber-400">
+                          ({(fc![key] * 100).toFixed(0)}%)
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Issues */}
           {issues.length > 0 && (
-            <div className="mt-2 flex gap-2 rounded-md bg-amber-50 px-2 py-1.5 text-xs text-amber-900">
+            <div className="flex gap-2 rounded-sm border-l-2 border-amber-500 bg-amber-50 px-2 py-1.5 text-xs dark:bg-amber-900/20">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
                 viewBox="0 0 24 24"
                 fill="currentColor"
-                className="h-4 w-4 shrink-0 text-amber-600"
+                className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400"
               >
-                <path
-                  fillRule="evenodd"
-                  d="M12 2.25a.75.75 0 0 1 .671.41l9.875 19.5a.75.75 0 0 1-.671 1.09H2.125a.75.75 0 0 1-.671-1.09l9.875-19.5A.75.75 0 0 1 12 2.25Zm0 6a.75.75 0 0 1 .75.75v5a.75.75 0 0 1-1.5 0v-5a.75.75 0 0 1 .75-.75Zm0 11a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z"
-                  clipRule="evenodd"
-                />
+                <path fillRule="evenodd" d="M12 2.25a.75.75 0 0 1 .671.41l9.875 19.5a.75.75 0 0 1-.671 1.09H2.125a.75.75 0 0 1-.671-1.09l9.875-19.5A.75.75 0 0 1 12 2.25Zm0 6a.75.75 0 0 1 .75.75v5a.75.75 0 0 1-1.5 0v-5a.75.75 0 0 1 .75-.75Zm0 11a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" clipRule="evenodd" />
               </svg>
-              <div className="min-w-0">
-                {issues.slice(0, 2).map((iss, i) => (
+              <div className="min-w-0 space-y-0.5 text-amber-900 dark:text-amber-200">
+                {issues.slice(0, 3).map((iss, i) => (
                   <div key={i} className="truncate">
                     {iss}
                   </div>
                 ))}
-                {issues.length > 2 && (
-                  <div className="text-amber-700 dark:text-amber-300">+ ещё {issues.length - 2}</div>
+                {issues.length > 3 && (
+                  <div className="font-mono text-[10px] text-amber-700 dark:text-amber-400">
+                    + ещё {issues.length - 3} проблем
+                  </div>
                 )}
               </div>
             </div>
           )}
         </div>
 
-        <div className="flex shrink-0 items-center gap-2">
-          <Link to={`/jobs/${job.id}`} className="btn-ghost" title="Открыть деталку">
-            Открыть →
+        {/* Actions */}
+        <div className="flex shrink-0 flex-col items-stretch gap-1.5">
+          <Link to={`/jobs/${job.id}`} className="btn-ghost text-center" title="Открыть деталку">
+            Открыть
           </Link>
           <button
             type="button"
-            className="btn-success"
-            disabled={isApproving}
-            onClick={onApprove}
-            title="Одобрить (без открытия)"
+            className="btn-secondary text-xs"
+            disabled={isReprocessing || isApproving}
+            onClick={onReprocess}
+            title="Перепрогнать через pipeline (новый OCR + LLM)"
           >
-            {isApproving ? 'Одобряю…' : '✓'}
+            {isReprocessing ? 'Перепрогон…' : '↻ Перепрогон'}
+          </button>
+          <button
+            type="button"
+            className="btn-success"
+            disabled={isApproving || isReprocessing}
+            onClick={onApprove}
+            title="Одобрить (отправит webhook клиенту)"
+          >
+            {isApproving ? 'Одобряю…' : 'Одобрить ✓'}
           </button>
         </div>
       </div>

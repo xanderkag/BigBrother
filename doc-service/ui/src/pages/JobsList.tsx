@@ -12,6 +12,7 @@ import {
   formatMoneyCompact,
   shortIdSplit,
 } from '@/lib/format';
+import { isSynthetic, matchesOrigin, type DocOrigin } from '@/lib/synthetic';
 import type { Job, JobStatus } from '@/lib/types';
 import { EmptyState, SkeletonTable } from '@/components/Skeleton';
 
@@ -52,6 +53,7 @@ export default function JobsListPage() {
   const status = searchParams.get('status') ?? '';
   const documentType = searchParams.get('document_type') ?? '';
   const q = searchParams.get('q') ?? '';
+  const origin = (searchParams.get('origin') as DocOrigin) || 'all';
   const offset = Number(searchParams.get('offset') ?? 0);
 
   // Главный фильтрованный список — то что показывается в таблице.
@@ -131,10 +133,26 @@ export default function JobsListPage() {
     setSearchParams(next);
   };
 
-  const items = data?.items ?? [];
-  const hasNext = items.length === PAGE_SIZE;
+  // Origin filter работает чисто client-side по имени файла — серверные
+  // фильтры не нужны, потому что синтетика отличается только конвенцией
+  // имени (см. lib/synthetic.ts). Применяется ПОСЛЕ серверного fetch:
+  // pagination footer и tab-счётчики продолжают показывать unfiltered
+  // totals, чтобы пользователь видел масштаб корпуса.
+  const allItems = data?.items ?? [];
+  const items = useMemo(
+    () => allItems.filter((j) => matchesOrigin(j.file_name, origin)),
+    [allItems, origin],
+  );
+  const hasNext = allItems.length === PAGE_SIZE;
   const hasPrev = offset > 0;
   const now = useMemo(() => new Date(), [items]); // фиксируем «сейчас» на один рендер
+
+  // Счётчики synth / real на текущей странице — для info-индикатора
+  const synthOnPage = useMemo(
+    () => allItems.filter((j) => isSynthetic(j.file_name)).length,
+    [allItems],
+  );
+  const realOnPage = allItems.length - synthOnPage;
 
   // ─── Bulk-select state ──────────────────────────────────────────
   // Set хранит id'ы выбранных job'ов. При смене страницы / фильтра
@@ -236,6 +254,30 @@ export default function JobsListPage() {
             </button>
           );
         })}
+      </div>
+
+      {/* Origin filter strip — real / synth / all */}
+      <div className="flex flex-wrap items-center gap-1 text-xs">
+        <span className="px-2 py-1 uppercase tracking-wider text-slate-500 dark:text-slate-400">
+          источник:
+        </span>
+        {(['all', 'real', 'synth'] as DocOrigin[]).map((o) => (
+          <button
+            key={o}
+            type="button"
+            onClick={() => updateFilter('origin', o === 'all' ? '' : o)}
+            className={`rounded-sm px-2 py-1 uppercase tracking-wider transition ${
+              origin === o
+                ? 'bg-indigo-600 dark:bg-indigo-500 text-white'
+                : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+            }`}
+          >
+            {o === 'all' ? 'все' : o === 'real' ? 'реальные' : 'синтетика'}
+          </button>
+        ))}
+        <span className="ml-2 font-mono text-[10px] text-slate-400 dark:text-slate-500">
+          на странице: {realOnPage} real / {synthOnPage} synth
+        </span>
       </div>
 
       {/* Document-type filter strip */}
@@ -433,7 +475,7 @@ function JobRow({
         />
       </td>
 
-      {/* FILE — иконка + имя */}
+      {/* FILE — иконка + имя + synth-бейдж */}
       <td className="px-3 py-2">
         <Link
           to={`/jobs/${job.id}`}
@@ -451,6 +493,14 @@ function JobRow({
           <span className="max-w-[260px] truncate" title={job.file_name}>
             {job.file_name}
           </span>
+          {isSynthetic(job.file_name) && (
+            <span
+              className="shrink-0 rounded-sm bg-violet-100 px-1 font-mono text-[10px] uppercase tracking-wider text-violet-700 dark:bg-violet-900/40 dark:text-violet-300"
+              title="Синтетический документ из gen-synthetic-pdfs"
+            >
+              synth
+            </span>
+          )}
         </Link>
       </td>
 
