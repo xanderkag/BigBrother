@@ -14,6 +14,21 @@ class Settings(BaseSettings):
     # Empty string disables auth — used for local dev. In production set a strong key.
     api_key: str = ""
 
+    # A1 (2026-05-19): hard cap on simultaneous model calls
+    # (extract/classify/vision/verify); set per backend rate limit / GPU
+    # capacity. 0 disables (no admission control). Callers wait inside the
+    # semaphore — we don't 503 early, because upstream doc-service BullMQ
+    # already has its own concurrency limit (default 2) and would just retry.
+    max_concurrent_calls: int = Field(default=16, ge=0)
+
+    # A1 (2026-05-19): route-level admission gate. В отличие от
+    # `max_concurrent_calls` (backend-уровневый семафор, queues), этот гейт
+    # **rejects** запросы выше лимита — отдаёт `503 Retry-After: 2`,
+    # чтобы upstream видел saturation сразу, а не висел на `await sem`.
+    # Default 8 ≈ 2x BullMQ concurrency (4 worker'а x 2 in-flight) с
+    # запасом на бурсты. 0 — отключить гейт (для совместимости / dev).
+    max_concurrent_inflight: int = Field(default=8, ge=0)
+
     # Активный backend. `openai_compat` — универсальный клиент к любому
     # OpenAI-API-совместимому серверу (Ollama, vLLM, llama.cpp, LM Studio,
     # OpenAI proper). Это **предпочтительный путь** для локальных моделей:

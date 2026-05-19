@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends
 
+from ..admission import AdmissionGate, get_admission_gate
 from ..auth import require_api_key
 from ..backends.base import ModelBackend
 from ..deps import get_backend
@@ -13,5 +14,7 @@ async def verify(
     body: VerifyRequest,
     _: None = Depends(require_api_key),
     backend: ModelBackend = Depends(get_backend),
+    gate: AdmissionGate = Depends(get_admission_gate),
 ) -> VerifyResponse:
-    return await backend.verify(extracted=body.extracted, raw_text=body.raw_text)
+    async with gate.acquire():
+        return await backend.verify(extracted=body.extracted, raw_text=body.raw_text)

@@ -103,14 +103,15 @@ class StubBackend(ModelBackend):
         model_override: str | None = None,  # noqa: ARG002 — stub игнорит
     ) -> ClassifyResponse:
         del model_override
-        head = text[:4000]
-        best: tuple[str, float] | None = None
-        for kind, rx, weight in _RULES:
-            if rx.search(head) and (best is None or weight > best[1]):
-                best = (kind, weight)
-        if best is None:
-            return ClassifyResponse(type=None, confidence=0.0)
-        return ClassifyResponse(type=best[0], confidence=best[1])  # type: ignore[arg-type]
+        async with self._admit():
+            head = text[:4000]
+            best: tuple[str, float] | None = None
+            for kind, rx, weight in _RULES:
+                if rx.search(head) and (best is None or weight > best[1]):
+                    best = (kind, weight)
+            if best is None:
+                return ClassifyResponse(type=None, confidence=0.0)
+            return ClassifyResponse(type=best[0], confidence=best[1])  # type: ignore[arg-type]
 
     async def extract(
         self,
@@ -130,16 +131,17 @@ class StubBackend(ModelBackend):
         # Mock — это НЕ реальное извлечение. Данные синтетические и
         # детерминированные (одинаковые для всех документов одного типа).
         # Для прода используйте Claude/OpenAI/Qwen-бэкенды.
-        mock = _build_mock_extract(hint)
-        note = f"stub backend mock-extract (hint={hint}, mocked={bool(mock)}"
-        if prompt_override:
-            note += f", prompt_override len={len(prompt_override)}"
-        note += ")"
-        return ExtractResponse(
-            extracted=mock or {},
-            confidence=0.7 if mock else 0.0,
-            issues=[note],
-        )
+        async with self._admit():
+            mock = _build_mock_extract(hint)
+            note = f"stub backend mock-extract (hint={hint}, mocked={bool(mock)}"
+            if prompt_override:
+                note += f", prompt_override len={len(prompt_override)}"
+            note += ")"
+            return ExtractResponse(
+                extracted=mock or {},
+                confidence=0.7 if mock else 0.0,
+                issues=[note],
+            )
 
     async def vision_ocr(
         self,
@@ -151,10 +153,11 @@ class StubBackend(ModelBackend):
         # Return a placeholder so downstream code can be tested for shape.
         # Confidence is deliberately low so the doc-service router knows
         # this is not real OCR output.
-        return VisionResponse(
-            text=f"[stub vision-ocr: {len(image_bytes)} bytes received]",
-            confidence=0.1,
-        )
+        async with self._admit():
+            return VisionResponse(
+                text=f"[stub vision-ocr: {len(image_bytes)} bytes received]",
+                confidence=0.1,
+            )
 
     async def verify(
         self,
@@ -164,7 +167,8 @@ class StubBackend(ModelBackend):
     ) -> VerifyResponse:
         del model_override
         # Pass-through: real verify would normalize dates, money, etc.
-        return VerifyResponse(extracted=extracted, issues=[])
+        async with self._admit():
+            return VerifyResponse(extracted=extracted, issues=[])
 
 
 # ─── Mock-extract для смоук-тестирования pipeline'а ──────────────────────────

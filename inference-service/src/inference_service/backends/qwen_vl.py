@@ -84,7 +84,8 @@ class QwenVlBackend(ModelBackend):
     ) -> ClassifyResponse:
         del model_override
         prompt = classify_prompts.build(text)
-        raw = await self._generate_text(prompt)
+        async with self._admit():
+            raw = await self._generate_text(prompt)
         data = _parse_json(raw)
         if data is None:
             return ClassifyResponse(type=None, confidence=0.0)
@@ -105,9 +106,10 @@ class QwenVlBackend(ModelBackend):
         prompt = extract_prompts.build(
             text=text, schema=schema, hint=hint, prompt_override=prompt_override
         )
-        started = time.monotonic()
-        raw = await self._generate_text(prompt)
-        duration_ms = int((time.monotonic() - started) * 1000)
+        async with self._admit():
+            started = time.monotonic()
+            raw = await self._generate_text(prompt)
+            duration_ms = int((time.monotonic() - started) * 1000)
         data = _parse_json(raw) or {}
         extracted = data.get("extracted") if isinstance(data.get("extracted"), dict) else {}
         confidence = float(data.get("confidence", 0.0) or 0.0)
@@ -143,7 +145,8 @@ class QwenVlBackend(ModelBackend):
             "Сохрани переносы строк и структуру таблиц (используй | для столбцов). "
             "Не комментируй, выводи только текст."
         )
-        text = await self._generate_with_image(image, instruction)
+        async with self._admit():
+            text = await self._generate_with_image(image, instruction)
         # Confidence isn't directly available from a generative VLM; return
         # a moderate default. doc-service combines this with parser-side score.
         return VisionResponse(text=text, confidence=0.7)
@@ -156,7 +159,8 @@ class QwenVlBackend(ModelBackend):
     ) -> VerifyResponse:
         del model_override
         prompt = verify_prompts.build(extracted=extracted, raw_text=raw_text)
-        raw = await self._generate_text(prompt)
+        async with self._admit():
+            raw = await self._generate_text(prompt)
         data = _parse_json(raw) or {}
         normalized = data.get("extracted") if isinstance(data.get("extracted"), dict) else extracted
         issues = data.get("issues") if isinstance(data.get("issues"), list) else []

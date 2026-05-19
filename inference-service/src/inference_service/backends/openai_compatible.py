@@ -181,7 +181,8 @@ class OpenAICompatibleBackend(ModelBackend):
         model_override: str | None = None,
     ) -> ClassifyResponse:
         prompt = classify_prompts.build(text)
-        raw = await self._complete_text(prompt, json_mode=True, model_override=model_override)
+        async with self._admit():
+            raw = await self._complete_text(prompt, json_mode=True, model_override=model_override)
         data = _parse_json(raw) or {}
         type_value = data.get("type") if isinstance(data.get("type"), str) else None
         confidence = float(data.get("confidence", 0.0) or 0.0)
@@ -199,12 +200,13 @@ class OpenAICompatibleBackend(ModelBackend):
         prompt = extract_prompts.build(
             text=text, schema=schema, hint=hint, prompt_override=prompt_override
         )
-        started = time.monotonic()
-        # Версия _complete_text с usage: возвращает (text, usage_dict | None).
-        raw, usage = await self._complete_text_with_usage(
-            prompt, json_mode=True, model_override=model_override
-        )
-        duration_ms = int((time.monotonic() - started) * 1000)
+        async with self._admit():
+            started = time.monotonic()
+            # Версия _complete_text с usage: возвращает (text, usage_dict | None).
+            raw, usage = await self._complete_text_with_usage(
+                prompt, json_mode=True, model_override=model_override
+            )
+            duration_ms = int((time.monotonic() - started) * 1000)
         data = _parse_json(raw) or {}
         extracted = data.get("extracted") if isinstance(data.get("extracted"), dict) else {}
         confidence = float(data.get("confidence", 0.0) or 0.0)
@@ -275,7 +277,8 @@ class OpenAICompatibleBackend(ModelBackend):
             "слово EMPTY (без точек, без объяснений).\n\n"
             "Сейчас транскрибируй текст:"
         )
-        text = await self._complete_with_image(data_url, instruction, model_override=model_override)
+        async with self._admit():
+            text = await self._complete_with_image(data_url, instruction, model_override=model_override)
 
         # Refusal detection — если модель всё-таки отказала, понижаем
         # confidence до 0.1 чтобы fallback chain (tesseract) подобрал.
@@ -305,7 +308,8 @@ class OpenAICompatibleBackend(ModelBackend):
         model_override: str | None = None,
     ) -> VerifyResponse:
         prompt = verify_prompts.build(extracted=extracted, raw_text=raw_text)
-        raw = await self._complete_text(prompt, json_mode=True, model_override=model_override)
+        async with self._admit():
+            raw = await self._complete_text(prompt, json_mode=True, model_override=model_override)
         data = _parse_json(raw) or {}
         normalized = data.get("extracted") if isinstance(data.get("extracted"), dict) else extracted
         issues = data.get("issues") if isinstance(data.get("issues"), list) else []

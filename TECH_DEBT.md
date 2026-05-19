@@ -1119,13 +1119,24 @@ prompt'ы под их форматы.
 
 ---
 
-### A1. inference-service синхронный
+### A1. inference-service синхронный — closed 2026-05-19
 
-**Симптом:** Каждый `POST /v1/extract` блокирует FastAPI worker. Под нагрузкой запросы стоят в backlog'е.
+**Симптом (исторический):** Каждый `POST /v1/extract` блокировал FastAPI worker. Под нагрузкой запросы стояли в backlog'е, потому что Claude backend оборачивал sync `Anthropic` SDK через `asyncio.to_thread` — каждый concurrent extract отъедал поток из default executor (~32 шт), и под бурстом всё начинало queue'иться невидимо.
 
-**Лечение:** Очередь поверх Redis (тот же `ai-platform`), как у doc-service. Альтернатива — vLLM с continuous batching.
+**Done:**
+- `ClaudeBackend` мигрирован на `AsyncAnthropic`. `messages.create` теперь awaitable нативно, без `asyncio.to_thread` обёртки. `is_ready()` — структурный (булевый флаг), реальных sync вызовов в hot path не осталось. (`inference-service/src/inference_service/backends/claude.py`)
+- `OpenAICompatibleBackend` уже использовал `AsyncOpenAI` — ничего не меняли.
+- Backend-уровневый `_admit` (asyncio.Semaphore на `ModelBackend`) cap'ит concurrent calls по `MAX_CONCURRENT_CALLS` (default 16). Очередит, не отвергает — для совместимости с долгим upstream'ом.
+- Route-уровневый `AdmissionGate` (новый, `inference-service/src/inference_service/admission.py`) — admission control с **rejection**: при переполнении лимита `MAX_CONCURRENT_INFLIGHT` (default 8) запрос получает `503 Service Unavailable` + `Retry-After: 2`. Это даёт видимость saturation (метрика `inference_gate_rejections_total`) и защищает от невидимого роста очередей.
+- Gate подключён к четырём горячим маршрутам: `/v1/extract`, `/v1/classify`, `/v1/vision-ocr`, `/v1/verify`. Cheap probes (`/health`, `/ready`, `/metrics`, `/v1/providers/status`) обходят gate, чтобы saturation можно было наблюдать.
+- Метрики Prometheus: `inference_gate_inflight` (Gauge — текущие занятые слоты), `inference_gate_rejections_total` (Counter — отказы 503).
+- Test coverage: `inference-service/tests/test_claude_backend.py` (6 тестов, AsyncAnthropic SDK замокан) + `inference-service/tests/test_concurrency.py` (6 тестов, включая sync semaphore semantics, gauge cleanup на exception, и end-to-end 5-параллельных-запросов через ASGITransport с проверкой 503+Retry-After+counter delta).
 
-**Оценка:** 2 дня + миграция Qwen-backend на vLLM.
+**Deferred (отдельная задача, hardware-coupled):**
+- Qwen-VL backend остаётся in-process через `transformers` — GIL-bound, не масштабируется горизонтально на одном GPU. Миграция на vLLM с continuous batching обсуждается отдельно (требует решения по железу: 1×A100 vs 2×L4 vs cloud GPU, плюс модель weights pull во внутренний registry).
+- Redis-очередь поверх inference-service **не реализована намеренно** — `/v1/extract` остаётся request/response, потому что doc-service BullMQ worker уже async-job pattern и менять контракт значит ломать v1.
+
+**Решение записано в карточке** `parsdocs.md` строкой от 2026-05-19.
 
 ---
 

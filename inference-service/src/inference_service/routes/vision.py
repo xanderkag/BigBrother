@@ -3,6 +3,7 @@ import binascii
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from ..admission import AdmissionGate, get_admission_gate
 from ..auth import require_api_key
 from ..backends.base import ModelBackend
 from ..deps import get_backend
@@ -21,6 +22,7 @@ async def vision_ocr(
     body: VisionRequest,
     _: None = Depends(require_api_key),
     backend: ModelBackend = Depends(get_backend),
+    gate: AdmissionGate = Depends(get_admission_gate),
 ) -> VisionResponse:
     try:
         image_bytes = base64.b64decode(body.image_base64, validate=True)
@@ -41,6 +43,7 @@ async def vision_ocr(
             detail=f"image too large: {len(image_bytes)} bytes (max {MAX_IMAGE_BYTES})",
         )
 
-    return await backend.vision_ocr(
-        image_bytes=image_bytes, prompt=body.prompt, model_override=body.model
-    )
+    async with gate.acquire():
+        return await backend.vision_ocr(
+            image_bytes=image_bytes, prompt=body.prompt, model_override=body.model
+        )

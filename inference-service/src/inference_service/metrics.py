@@ -9,7 +9,7 @@ out latency by which model served the request (useful while we A/B
 between Claude and a local Qwen).
 """
 
-from prometheus_client import CollectorRegistry, Counter, Histogram
+from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 
 # Dedicated registry instead of the global default — keeps tests clean
 # (no leakage between TestClient invocations) and lets us mount multiple
@@ -30,5 +30,33 @@ request_duration_seconds = Histogram(
     # Inference latency ranges from ~50ms (stub) to 30-60s (Qwen 7B cold).
     # Buckets chosen to capture both ends and the typical 1-10s band.
     buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120),
+    registry=registry,
+)
+
+# A1 (2026-05-19): admission-control inflight gauge. Incremented when a
+# backend enters its `_admit` contextmanager, decremented on exit. Operators
+# see saturation directly — if this gauge hits MAX_CONCURRENT_CALLS and
+# stays there, requests are queueing on the semaphore.
+inflight_calls = Gauge(
+    "inference_inflight_calls",
+    "Concurrent in-flight model calls (extract/classify/vision/verify), by backend.",
+    labelnames=("backend",),
+    registry=registry,
+)
+
+# A1 (2026-05-19): route-level admission gate metrics. Отдельно от
+# `inflight_calls` (backend-уровневый), потому что эти два уровня могут
+# расходиться: gate ограничивает HTTP-параллелизм, backend семафор
+# моделирует ограничение модели (rate-limit или GPU slot). Operators видят
+# обе линии в дашборде и понимают, где именно затык.
+inference_gate_inflight = Gauge(
+    "inference_gate_inflight",
+    "Currently held route-level admission slots (limit - available).",
+    registry=registry,
+)
+
+inference_gate_rejections_total = Counter(
+    "inference_gate_rejections_total",
+    "Requests rejected by the admission gate with HTTP 503.",
     registry=registry,
 )

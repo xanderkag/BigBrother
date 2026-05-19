@@ -54,6 +54,9 @@ class ClaudeBackend(ModelBackend):
         self.model_id = model_id
         self.max_tokens = max_tokens
         self.timeout_seconds = timeout_seconds
+        # A1 (2026-05-19): мигрировали на AsyncAnthropic — никакой sync клиент
+        # больше не нужен, всё идёт через нативный async путь без
+        # `asyncio.to_thread` и без отъедания слотов из default executor pool.
         self._client: Any = None
         self._ready = False
         if api_key:
@@ -64,13 +67,13 @@ class ClaudeBackend(ModelBackend):
     def _load(self) -> None:
         # Lazy import so the package isn't required for stub-only deployments.
         try:
-            from anthropic import Anthropic  # type: ignore[import-not-found]
+            from anthropic import AsyncAnthropic  # type: ignore[import-not-found]
         except ImportError as e:
             raise RuntimeError(
                 "ClaudeBackend requires the `anthropic` package. "
                 "Add it to requirements-claude.txt or install with `pip install anthropic`."
             ) from e
-        self._client = Anthropic(api_key=self.api_key, timeout=self.timeout_seconds)
+        self._client = AsyncAnthropic(api_key=self.api_key, timeout=self.timeout_seconds)
         self._ready = True
         log.info("ClaudeBackend ready: %s", self.model_id)
 
@@ -88,12 +91,13 @@ class ClaudeBackend(ModelBackend):
         # model_override игнорируем — если хочется другую модель, нужен
         # отдельный backend-инстанс.
         del model_override
-        prompt = classify_prompts.build(text)
-        raw = await self._complete_text(prompt)
-        data = _parse_json(raw) or {}
-        type_value = data.get("type") if isinstance(data.get("type"), str) else None
-        confidence = float(data.get("confidence", 0.0) or 0.0)
-        return ClassifyResponse(type=type_value, confidence=_clamp01(confidence))  # type: ignore[arg-type]
+        async with self._admit():
+            prompt = classify_prompts.build(text)
+            raw = await self._complete_text(prompt)
+            data = _parse_json(raw) or {}
+            type_value = data.get("type") if isinstance(data.get("type"), str) else None
+            confidence = float(data.get("confidence", 0.0) or 0.0)
+            return ClassifyResponse(type=type_value, confidence=_clamp01(confidence))  # type: ignore[arg-type]
 
     async def extract(
         self,
@@ -113,61 +117,62 @@ class ClaudeBackend(ModelBackend):
         system_prompt, user_prompt = extract_prompts.build_cacheable(
             text=text, schema=schema, hint=hint, prompt_override=prompt_override
         )
-        started = time.monotonic()
-        # F14 v2: assistant prefill `{` НЕ работает на Claude Sonnet 4.6+
-        # (API возвращает 400 "This model does not support assistant
-        # message prefill. The conversation must end with a user message").
-        # Альтернатива — жёсткое требование в SYSTEM_PROMPT начинать ответ
-        # сразу с `{` (см. prompts/extract.py _STATIC_BUILTIN_HEADER) +
-        # извлекать JSON через `_parse_json()` который умеет находить
-        # outermost {...} даже если модель добавит вводный текст.
-        raw, usage = await self._complete_with_usage(
-            messages=[{"role": "user", "content": user_prompt}],
-            system_prompt=system_prompt,
-        )
-        duration_ms = int((time.monotonic() - started) * 1000)
-        data = _parse_json(raw) or {}
-        extracted = data.get("extracted") if isinstance(data.get("extracted"), dict) else {}
-        confidence = float(data.get("confidence", 0.0) or 0.0)
-        issues = data.get("issues") if isinstance(data.get("issues"), list) else []
-        # F2: per-field confidence. LLM возвращает map поле→[0,1]. Валидируем
-        # значения и кладём в `extracted._field_confidence` (с подчёркиванием —
-        # convention для meta-полей, чтобы doc-service не пытался валидировать
-        # это поле как часть бизнес-данных).
-        raw_fc = data.get("field_confidence")
-        field_confidence: dict[str, float] = {}
-        if isinstance(raw_fc, dict):
-            for k, v in raw_fc.items():
-                if not isinstance(k, str):
-                    continue
-                try:
-                    f = float(v)
-                except (TypeError, ValueError):
-                    continue
-                if 0.0 <= f <= 1.0:
-                    field_confidence[k] = f
-        if field_confidence and isinstance(extracted, dict):
-            extracted["_field_confidence"] = field_confidence
-        debug = (
-            ExtractDebug(
-                prompt=f"[system]\n{system_prompt}\n\n[user]\n{user_prompt}",
-                raw_response=raw,
-                model=self.model_id,
-                backend=self.name,
-                duration_ms=duration_ms,
-                prompt_tokens=usage.get("input_tokens") if usage else None,
-                output_tokens=usage.get("output_tokens") if usage else None,
+        async with self._admit():
+            started = time.monotonic()
+            # F14 v2: assistant prefill `{` НЕ работает на Claude Sonnet 4.6+
+            # (API возвращает 400 "This model does not support assistant
+            # message prefill. The conversation must end with a user message").
+            # Альтернатива — жёсткое требование в SYSTEM_PROMPT начинать ответ
+            # сразу с `{` (см. prompts/extract.py _STATIC_BUILTIN_HEADER) +
+            # извлекать JSON через `_parse_json()` который умеет находить
+            # outermost {...} даже если модель добавит вводный текст.
+            raw, usage = await self._complete_with_usage(
+                messages=[{"role": "user", "content": user_prompt}],
+                system_prompt=system_prompt,
             )
-            if include_debug
-            else None
-        )
-        return ExtractResponse(
-            extracted=extracted or {},
-            confidence=_clamp01(confidence),
-            field_confidence=field_confidence,
-            issues=[str(i) for i in issues],
-            debug=debug,
-        )
+            duration_ms = int((time.monotonic() - started) * 1000)
+            data = _parse_json(raw) or {}
+            extracted = data.get("extracted") if isinstance(data.get("extracted"), dict) else {}
+            confidence = float(data.get("confidence", 0.0) or 0.0)
+            issues = data.get("issues") if isinstance(data.get("issues"), list) else []
+            # F2: per-field confidence. LLM возвращает map поле→[0,1]. Валидируем
+            # значения и кладём в `extracted._field_confidence` (с подчёркиванием —
+            # convention для meta-полей, чтобы doc-service не пытался валидировать
+            # это поле как часть бизнес-данных).
+            raw_fc = data.get("field_confidence")
+            field_confidence: dict[str, float] = {}
+            if isinstance(raw_fc, dict):
+                for k, v in raw_fc.items():
+                    if not isinstance(k, str):
+                        continue
+                    try:
+                        f = float(v)
+                    except (TypeError, ValueError):
+                        continue
+                    if 0.0 <= f <= 1.0:
+                        field_confidence[k] = f
+            if field_confidence and isinstance(extracted, dict):
+                extracted["_field_confidence"] = field_confidence
+            debug = (
+                ExtractDebug(
+                    prompt=f"[system]\n{system_prompt}\n\n[user]\n{user_prompt}",
+                    raw_response=raw,
+                    model=self.model_id,
+                    backend=self.name,
+                    duration_ms=duration_ms,
+                    prompt_tokens=usage.get("input_tokens") if usage else None,
+                    output_tokens=usage.get("output_tokens") if usage else None,
+                )
+                if include_debug
+                else None
+            )
+            return ExtractResponse(
+                extracted=extracted or {},
+                confidence=_clamp01(confidence),
+                field_confidence=field_confidence,
+                issues=[str(i) for i in issues],
+                debug=debug,
+            )
 
     async def vision_ocr(
         self,
@@ -183,7 +188,8 @@ class ClaudeBackend(ModelBackend):
             "Сохрани переносы строк и структуру таблиц (используй | для столбцов). "
             "Не комментируй, выводи только текст."
         )
-        text = await self._complete_with_image(media_type, image_b64, instruction)
+        async with self._admit():
+            text = await self._complete_with_image(media_type, image_b64, instruction)
         # Claude doesn't expose a confidence score; we report a moderate default
         # and let doc-service combine with parser-side confidence.
         return VisionResponse(text=text, confidence=0.75)
@@ -196,7 +202,8 @@ class ClaudeBackend(ModelBackend):
     ) -> VerifyResponse:
         del model_override
         prompt = verify_prompts.build(extracted=extracted, raw_text=raw_text)
-        raw = await self._complete_text(prompt)
+        async with self._admit():
+            raw = await self._complete_text(prompt)
         data = _parse_json(raw) or {}
         normalized = data.get("extracted") if isinstance(data.get("extracted"), dict) else extracted
         issues = data.get("issues") if isinstance(data.get("issues"), list) else []
@@ -241,10 +248,11 @@ class ClaudeBackend(ModelBackend):
         messages: list[dict[str, Any]],
         system_prompt: str | None = None,
     ) -> tuple[str, dict[str, int] | None]:
-        # The Anthropic SDK is sync; we run it in a thread executor so we don't
-        # block FastAPI's event loop on long generations. For higher throughput
-        # under load, swap to the async client (`AsyncAnthropic`) — keeping
-        # sync here for simpler error handling in the scaffold.
+        # A1 (2026-05-19): async-native end-to-end. Прежняя реализация оборачивала
+        # синхронный Anthropic SDK через `asyncio.to_thread`, что отъедало по
+        # потоку из default executor (~32 шт) на каждый concurrent /extract.
+        # Теперь идём напрямую через AsyncAnthropic — никаких внутренних
+        # closure'ов и thread-pool starvation.
         #
         # F8 (2026-05-16): system_prompt подаётся с cache_control=ephemeral
         # чтобы Anthropic закэшировал статическую часть промпта на 5 минут.
@@ -252,48 +260,43 @@ class ClaudeBackend(ModelBackend):
         # cacheable block — 1024 tokens для Sonnet, 2048 для Opus. Наша
         # схема + контракт + правила = ~800-2000 токенов в зависимости от
         # размера llm_schema, обычно покрывает порог.
-        import asyncio
-
-        def _call() -> tuple[str, dict[str, int] | None]:
-            kwargs: dict[str, Any] = {
-                "model": self.model_id,
-                "max_tokens": self.max_tokens,
-                "messages": messages,
-            }
-            if system_prompt:
-                # Anthropic поддерживает system либо как plain string, либо как
-                # список content-блоков (для cache_control). Используем второй
-                # вариант — тогда есть control над кэшированием.
-                kwargs["system"] = [
-                    {
-                        "type": "text",
-                        "text": system_prompt,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ]
-            response = self._client.messages.create(**kwargs)
-            parts: list[str] = []
-            for block in response.content:
-                if getattr(block, "type", None) == "text":
-                    parts.append(getattr(block, "text", ""))
-            usage = None
-            usage_obj = getattr(response, "usage", None)
-            if usage_obj is not None:
-                usage = {
-                    "input_tokens": int(getattr(usage_obj, "input_tokens", 0)),
-                    "output_tokens": int(getattr(usage_obj, "output_tokens", 0)),
-                    # Cache metrics — пишутся когда beta-фича prompt caching
-                    # доступна. Если SDK старый — поля будут None / отсутствуют.
-                    "cache_creation_input_tokens": int(
-                        getattr(usage_obj, "cache_creation_input_tokens", 0) or 0
-                    ),
-                    "cache_read_input_tokens": int(
-                        getattr(usage_obj, "cache_read_input_tokens", 0) or 0
-                    ),
+        kwargs: dict[str, Any] = {
+            "model": self.model_id,
+            "max_tokens": self.max_tokens,
+            "messages": messages,
+        }
+        if system_prompt:
+            # Anthropic поддерживает system либо как plain string, либо как
+            # список content-блоков (для cache_control). Используем второй
+            # вариант — тогда есть control над кэшированием.
+            kwargs["system"] = [
+                {
+                    "type": "text",
+                    "text": system_prompt,
+                    "cache_control": {"type": "ephemeral"},
                 }
-            return "".join(parts).strip(), usage
-
-        return await asyncio.to_thread(_call)
+            ]
+        response = await self._client.messages.create(**kwargs)
+        parts: list[str] = []
+        for block in response.content:
+            if getattr(block, "type", None) == "text":
+                parts.append(getattr(block, "text", ""))
+        usage = None
+        usage_obj = getattr(response, "usage", None)
+        if usage_obj is not None:
+            usage = {
+                "input_tokens": int(getattr(usage_obj, "input_tokens", 0)),
+                "output_tokens": int(getattr(usage_obj, "output_tokens", 0)),
+                # Cache metrics — пишутся когда beta-фича prompt caching
+                # доступна. Если SDK старый — поля будут None / отсутствуют.
+                "cache_creation_input_tokens": int(
+                    getattr(usage_obj, "cache_creation_input_tokens", 0) or 0
+                ),
+                "cache_read_input_tokens": int(
+                    getattr(usage_obj, "cache_read_input_tokens", 0) or 0
+                ),
+            }
+        return "".join(parts).strip(), usage
 
 
 def _encode_image_for_claude(image: Image.Image) -> tuple[str, str]:

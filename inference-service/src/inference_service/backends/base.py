@@ -1,6 +1,10 @@
+import asyncio
 from abc import ABC, abstractmethod
-from typing import Any
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator
 
+from ..config import settings
+from ..metrics import inflight_calls
 from ..schemas import (
     ClassifyResponse,
     ExtractResponse,
@@ -16,9 +20,66 @@ class ModelBackend(ABC):
 
     Routes never see the underlying model; swapping backends is a one-line
     change in deps.get_backend.
+
+    Admission control (A1, 2026-05-19): each backend instance holds an
+    `asyncio.Semaphore` capping concurrent expensive calls (extract /
+    classify / vision_ocr / verify). Cheap probes (`is_ready`, the
+    `/v1/providers/status` snapshot, `/health`) bypass. Size comes from
+    `settings.max_concurrent_calls`; 0 disables the cap. The doc-service
+    BullMQ worker upstream already has its own concurrency (default 2),
+    so this caps the join — callers wait inside the semaphore rather than
+    receive 503, matching the long-tail (30-90s) latency profile of real
+    extracts.
+
+    Different backends have different natural concurrency limits
+    (Anthropic API rate limit vs local Qwen GPU slot count); subclasses
+    are free to override `_make_semaphore` if they need a tighter cap.
     """
 
     name: str
+
+    def _make_semaphore(self) -> asyncio.Semaphore | None:
+        """Override in subclasses for per-backend tuning. Default reads the
+        shared cap from settings. Return None to disable."""
+        n = settings.max_concurrent_calls
+        if n <= 0:
+            return None
+        return asyncio.Semaphore(n)
+
+    def _get_semaphore(self) -> asyncio.Semaphore | None:
+        """Lazy per-instance semaphore accessor.
+
+        Lazy because (a) we don't force every subclass to call
+        `super().__init__()` (the stub backend has no __init__), and (b)
+        `asyncio.Semaphore` ideally lives on the running event loop —
+        creating it on first use avoids cross-loop weirdness in tests that
+        spin up their own loop.
+        """
+        # `__dict__` check — not `hasattr` — so we don't pick up a
+        # class-level attribute and end up sharing across instances.
+        if "_sem" not in self.__dict__:
+            self._sem = self._make_semaphore()
+        return self._sem
+
+    @asynccontextmanager
+    async def _admit(self) -> AsyncIterator[None]:
+        """Acquire one admission slot for an expensive call; report inflight
+        gauge. No-op fast path when the semaphore is disabled (size=0)."""
+        sem = self._get_semaphore()
+        gauge = inflight_calls.labels(backend=self.name)
+        if sem is None:
+            gauge.inc()
+            try:
+                yield
+            finally:
+                gauge.dec()
+            return
+        async with sem:
+            gauge.inc()
+            try:
+                yield
+            finally:
+                gauge.dec()
 
     @abstractmethod
     def is_ready(self) -> bool:
