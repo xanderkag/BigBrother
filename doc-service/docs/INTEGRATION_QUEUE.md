@@ -343,3 +343,4 @@ F9 — изменено в `inference-service/.env.example`:
 | 2026-05-17 | F2 закрыто — per-field confidence end-to-end: prompt → backend → calibration → webhook. 18 unit-тестов. |
 | 2026-05-17 | F18 (waybill), F19 (bank), F21 (raw-text), F22 (slug aliases) закрыты — quick wins по SLAI ТЗ. |
 | 2026-05-17 | F17 (transport_invoice форма 2013), F16 (transport_request) закрыты. **Все 10 типов Фазы 1 SLAI ТЗ покрыты**. Создан `Desktop\parsdocs-validation-bench\SLAI_SYNC_QUEUE.md` для async-вопросов к SLAI команде. |
+| 2026-05-19 | F5 закрыто полностью. PdfTextEngine теперь эмитит per-page text через кастомный pagerender в pdf-parse; Tesseract уже это умел; orchestrator + runner + webhook payload собраны раньше. Multi-doc путь активируется для xlsx multi-sheet, тексто-слойных PDF и сканов. Stale тесты `multidoc-splitter.spec.ts` (после relax'а 2026-05-18 commit 255d9e8) обновлены под новую `isMultiDocument` логику. |

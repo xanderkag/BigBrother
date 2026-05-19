@@ -83,18 +83,65 @@ export class PdfTextEngine implements OcrEngine {
     if (buf.length === 0) {
       throw new PdfParseError('EMPTY_PDF', 'PDF-файл пустой (0 байт)');
     }
+    // F5: capture per-page text alongside the concatenated blob. pdf-parse
+    // invokes our `pagerender` once per page; we wrap its default text
+    // assembly and tee a copy into `pageTexts` so the multi-doc splitter
+    // can classify each page independently.
+    const pageTexts: string[] = [];
     let parsed;
     try {
-      parsed = await pdfParse(buf);
+      parsed = await pdfParse(buf, { pagerender: renderPageAndCapture(pageTexts) });
     } catch (err) {
       throw classifyPdfError(err);
     }
     const text = (parsed.text ?? '').trim();
+    const pages =
+      pageTexts.length > 0
+        ? pageTexts.map((t) => {
+            const trimmed = t.trim();
+            return { text: trimmed, confidence: scorePdfText(trimmed) };
+          })
+        : undefined;
     return {
       engine: this.name,
       text,
       confidence: scorePdfText(text),
+      pages,
       durationMs: Date.now() - started,
     };
   }
+}
+
+/**
+ * pdf-parse default `pagerender` reconstructs page text from
+ * pdfjs TextContent. We re-implement it verbatim, then push the
+ * result into the closure-captured `out` array before returning —
+ * keeps the concatenated `parsed.text` identical to the library
+ * default while exposing per-page text for F5 multi-doc detection.
+ */
+function renderPageAndCapture(out: string[]) {
+  return async function pagerender(pageData: {
+    getTextContent: (opts: {
+      normalizeWhitespace: boolean;
+      disableCombineTextItems: boolean;
+    }) => Promise<{ items: Array<{ str: string; transform: number[] }> }>;
+  }): Promise<string> {
+    const textContent = await pageData.getTextContent({
+      normalizeWhitespace: false,
+      disableCombineTextItems: false,
+    });
+    let lastY: number | undefined;
+    let text = '';
+    for (const item of textContent.items) {
+      const y = item.transform[5];
+      if (lastY === y || lastY === undefined) {
+        text += item.str;
+      } else {
+        text += '\n' + item.str;
+      }
+      lastY = y;
+    }
+    out.push(text);
+    return text;
+  };
 }

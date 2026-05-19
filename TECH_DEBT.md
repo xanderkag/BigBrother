@@ -996,7 +996,7 @@ SGLang, TGI) выставляют OpenAI Chat Completions API; теперь pars
 
 ---
 
-### F5. Multi-document PDF (`documents: Array<>`) — 🟡 skeleton готов 2026-05-17
+### F5. Multi-document PDF (`documents: Array<>`) — ✅ закрыто 2026-05-19 (xlsx + PDF text-layer + tesseract scan)
 
 **Сделано (skeleton):**
 
@@ -1033,43 +1033,50 @@ SGLang, TGI) выставляют OpenAI Chat Completions API; теперь pars
    - null document_type на странице — присоединяется
    - `isMultiDocument` heuristic: < 2 сегментов / одного типа / low conf → false
 
-**Что ещё нужно для полного F5 (НЕ skeleton, остаётся работа):**
+**Закрыто (2026-05-19):**
 
-5. **PDF rasterizer → per-page OCR**: уже есть pdftoppm для PDF → PNG,
-   надо обернуть в loop по страницам и вызвать Tesseract per-page.
-   Сейчас pdf-text engine выдаёт весь текст одним блоком — нужно
-   модифицировать чтобы возвращал array of page-texts. 2-3 дня работы.
+5. ✅ **PDF rasterizer → per-page OCR.** Tesseract уже эмитит
+   `OcrResult.pages[]` для PDF (через pdftoppm + per-page recognize).
+   PdfTextEngine теперь тоже отдаёт `pages[]` — через кастомный
+   `pagerender` callback в `pdf-parse`, который дублирует текст в
+   closure-captured массив, не ломая default-конкатенацию. Так что
+   и тексто-слойные PDF, и сканы попадают в multidoc splitter с
+   page-by-page данными. `src/pipeline/ocr/pdf-text.ts`,
+   `tests/pdf-text-pages.spec.ts`.
 
-6. **Per-segment extract**: orchestrator вызывает `extract` на
-   `segment.combined_text` для каждого сегмента, собирает результаты
-   в `documents: Array<ExtractedDocumentEntry>`. 2 дня.
+6. ✅ **Per-segment extract.** Сделано в `multidoc/runner.ts`
+   (xlsx-MVP коммитом 14fae43); orchestrator подключает
+   `tryMultiDoc()` когда `ocr.pages.length > 1`. Каждый segment
+   гоняется через `runDocumentPipeline` c `hint=type` чтобы
+   classifier не переключался. Результат → `documents[]`.
 
-7. **Webhook payload**: при multi-doc — заполнить `documents`, в
-   `extracted` оставить доминирующий (наибольший сегмент). 1 день.
+7. ✅ **Webhook payload `documents[]`.** `webhook-delivery.ts`
+   вытаскивает `_multidoc_documents` из extracted в top-level
+   `payload.documents` (+slug-нормализация). При single-doc поле
+   отсутствует — backwards-compatible.
 
-8. **Tests на orchestrator integration**: PDF с двумя документами →
-   разделили → каждый отдельно обработали → webhook содержит оба. 2 дня.
-
-**Срок остатка:** 7-9 дней работы по плану.
+8. ✅ **Tests.** `multidoc-splitter.spec.ts` (16 unit-тестов на
+   splitter + relaxed-heuristic) + `pdf-text-pages.spec.ts`
+   (per-page emission через pdf-parse pagerender). Orchestrator
+   integration smoke остаётся в e2e фикстурах (отдельная
+   итерация — нужны fixture'ы с реальным мультидок-PDF).
 
 См. PARSDOCS_REPLY_TO_SLAI_TZ.md секция «Q1 Multi-document PDF» и
 SLAI_OUR_REPLY.md секция 9.4.
 
-**Где:** orchestrator + API response shape (v2 breaking).
+**Где:** `pipeline/multidoc/{types,splitter,runner}.ts`,
+`pipeline/ocr/pdf-text.ts`, `pipeline/ocr/tesseract.ts`,
+`pipeline/webhook-delivery.ts`, `pipeline/orchestrator.ts`.
 
-**Симптом:** если в PDF два разных документа (1 стр — счёт, 2-3 стр —
-ТТН), модель угадывает доминирующий тип и теряет второй. SLAI хочет
-два отдельных Document'а в БД.
+**Симптом (был):** если в PDF два разных документа (1 стр — счёт,
+2-3 стр — ТТН), модель угадывала доминирующий тип и теряла второй.
+SLAI хотел два отдельных Document'а в payload.
 
-**Лечение:**
-1. Доработка preprocess: page-level classification перед extract
-2. Обновление API contract — поле `documents: Array<ExtractedDocument>`
-   вместо одного `extracted`
-3. Version bump до v2 (старый формат v1 параллельно ≥ 6 мес)
-4. Tests на split
-
-**Срок:** 14 дней после MVP интеграции. Workaround до этого: SLAI
-backend делит PDF по страницам и шлёт 2 отдельных job'а.
+**Что осталось вне F5:**
+- Orchestrator integration test на реальный multi-doc PDF (нужен
+  fixture; не блокирует пилот).
+- Версия v2 контракта где `documents[]` обязательное (сейчас
+  опциональное v1 поле; v2 — после полугода параллельной поддержки).
 
 ---
 

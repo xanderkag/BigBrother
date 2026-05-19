@@ -157,20 +157,42 @@ describe('isMultiDocument', () => {
     ).toBe(true);
   });
 
-  it('2 сегмента одного типа (мусор от классификатора) → false', () => {
+  // Heuristic relaxed 2026-05-18 (commit 255d9e8): достаточно ≥2 сегмента +
+  // ≥1 typed segment (document_type ≠ null, confidence ≥ 0.5). Раньше
+  // требовали ≥2 distinct types + high conf, что бракoвало CI+PL case'ы
+  // где classifier неуверен на одном из листов.
+
+  it('2 сегмента одного типа (классификатор уверен в обоих) → true', () => {
+    // С relaxed-логикой это валидный multi-doc: два UPD-документа подряд.
+    // Runner попробует extract'ить оба и вернёт 2 entries в documents[].
     expect(
       isMultiDocument([
         { document_type: 'UPD', page_from: 1, page_to: 2, confidence: 0.9, combined_text: '' },
         { document_type: 'UPD', page_from: 4, page_to: 5, confidence: 0.9, combined_text: '' },
       ]),
-    ).toBe(false);
+    ).toBe(true);
   });
 
-  it('low confidence на втором сегменте → false (не достаточно уверены)', () => {
+  it('low confidence на втором сегменте + один confident → true', () => {
+    // Достаточно одного confident segment; неуверенный sheet попадает в
+    // runner, где extract либо упадёт (segment skipped), либо отработает
+    // через LLM как unknown — но в любом случае multi-doc активирован.
     expect(
       isMultiDocument([
         { document_type: 'invoice', page_from: 1, page_to: 1, confidence: 0.9, combined_text: '' },
         { document_type: 'TTN', page_from: 2, page_to: 3, confidence: 0.4, combined_text: '' },
+      ]),
+    ).toBe(true);
+  });
+
+  it('все сегменты неуверены (typedCount = 0) → false', () => {
+    // Без хотя бы одного confident segment trigger'ить multi-doc нельзя —
+    // иначе одна страница со случайным noise-text дёрнет per-segment LLM
+    // вызов на каждом sheet.
+    expect(
+      isMultiDocument([
+        { document_type: 'invoice', page_from: 1, page_to: 1, confidence: 0.3, combined_text: '' },
+        { document_type: null, page_from: 2, page_to: 2, confidence: 0.2, combined_text: '' },
       ]),
     ).toBe(false);
   });
