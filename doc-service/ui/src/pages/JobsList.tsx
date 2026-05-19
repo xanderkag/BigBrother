@@ -388,7 +388,7 @@ export default function JobsListPage() {
                   <th className="px-3 py-2 text-right font-medium">Total</th>
                   <th className="px-3 py-2 text-right font-medium">VAT</th>
                   <th className="px-3 py-2 text-center font-medium">Issues</th>
-                  <th className="px-3 py-2 font-medium">Engine</th>
+                  <th className="px-3 py-2 font-medium">Model / OCR</th>
                   <th className="px-3 py-2 font-medium">Age</th>
                 </tr>
               </thead>
@@ -564,9 +564,25 @@ function JobRow({
         )}
       </td>
 
-      {/* ENGINE */}
-      <td className="px-3 py-2 font-mono text-xs text-slate-500 dark:text-slate-400">
-        {job.ocr_engine ?? <span className="text-slate-300 dark:text-slate-700">—</span>}
+      {/* MODEL / OCR ENGINE — стэк: LLM-модель сверху (важнее для
+          оператора, который хочет понять «чем прогнали»), OCR-движок ниже
+          мелким и тусклым. Если LLM не использовался — модель «—». */}
+      <td className="px-3 py-2 leading-tight">
+        <div
+          className="font-mono text-xs text-slate-700 dark:text-slate-300"
+          title={
+            job.last_llm_call?.backend
+              ? `${job.last_llm_call.model} via ${job.last_llm_call.backend}`
+              : 'LLM не использовался'
+          }
+        >
+          {job.last_llm_call?.model ?? (
+            <span className="text-slate-300 dark:text-slate-700">no llm</span>
+          )}
+        </div>
+        <div className="font-mono text-[10px] text-slate-400 dark:text-slate-500">
+          {job.ocr_engine ?? '—'}
+        </div>
       </td>
 
       {/* AGE — relative */}
