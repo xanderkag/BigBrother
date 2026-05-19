@@ -26,11 +26,14 @@
 BEGIN;
 
 -- ── invoice: + Счёт-Оферта + explicit weights ──────────────────────
+-- ВАЖНО: `\b` после Cyrillic char в JS-regex не срабатывает
+-- (JS `\w` = ASCII-only). Используем `(?:\W|$)` boundary вместо `\b`,
+-- как сделано migration 0026 для других keywords.
 UPDATE document_types
 SET classification_keywords = ARRAY[
     '(?:^|\W)сч[её]т\s+на\s+оплату(?:\W|$)',
     '(?:^|\W)сч[её]т\s+№',
-    '(?:^|\W)сч[её]т-оферт[ау]?\b',                          -- NEW: Ozon Счёт-Оферта
+    '(?:^|\W)сч[её]т-оферт[ау]?(?:\W|$)',                    -- NEW: Ozon Счёт-Оферта
     '(?:^|\W)инвойс\s+№',
     '(?:^|\W)инвойс\s+на\s+оплату(?:\W|$)'
 ]::text[],
