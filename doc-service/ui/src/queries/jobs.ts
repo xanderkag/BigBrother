@@ -30,12 +30,45 @@ export interface ListJobsFilters {
   offset?: number;
 }
 
+/**
+ * API job — оригинальная форма ответа /jobs.
+ * Поле idентификатора у бэка называется `job_id` (UUID); UI везде
+ * использует `id` — мапим в normalize().
+ */
+interface ApiJob extends Omit<Job, 'id'> {
+  job_id: string;
+}
+
+interface ApiListJobsResponse {
+  items: ApiJob[];
+  limit: number;
+  offset: number;
+  total?: number;
+}
+
 interface ListJobsResponse {
   items: Job[];
   limit: number;
   offset: number;
   /** Полное число подходящих записей. Optional для backward-compat. */
   total?: number;
+}
+
+/**
+ * Backend отдаёт `job_id` (см. types/api-schemas.ts), но в JSX мы давно
+ * ходим к нему как `job.id`. Раньше это было latent-bug'ом: ссылки
+ * `/jobs/${job.id}` уходили в `/jobs/undefined`, JobDetailPage делал
+ * запрос на `/api/v1/jobs/undefined` и backend возвращал 400 «invalid uuid».
+ * Никто не замечал пока юзер не кликнул по строке.
+ *
+ * Решение — единая трансформация на границе query-hook'а: { job_id, ... }
+ * → { id, ... }. Это не ломает TS-типы (UI Job уже имеет id) и не трогает
+ * UI-логику. Альтернатива — переименовать field'ы по всему UI; дороже
+ * и менее обратимо.
+ */
+function normalizeJob(api: ApiJob): Job {
+  const { job_id, ...rest } = api;
+  return { ...rest, id: job_id };
 }
 
 /**
@@ -53,8 +86,12 @@ export function useJobsList(filters: ListJobsFilters = {}) {
   const qs = params.toString();
   return useQuery({
     queryKey: jobsKeys.list(filters),
-    queryFn: () =>
-      api.get<ListJobsResponse>(`/api/v1/jobs${qs ? '?' + qs : ''}`),
+    queryFn: async (): Promise<ListJobsResponse> => {
+      const raw = await api.get<ApiListJobsResponse>(
+        `/api/v1/jobs${qs ? '?' + qs : ''}`,
+      );
+      return { ...raw, items: raw.items.map(normalizeJob) };
+    },
     // Авто-refresh каждые 10s — даёт live-updates для pending/processing
     // job'ов без ручного refresh кнопки. Stale 5s — мгновенный показ
     // кэша при возврате на страницу, фоновый refetch.
@@ -104,7 +141,14 @@ export function useUploadJob() {
 export function useJob(jobId: string) {
   return useQuery({
     queryKey: jobsKeys.detail(jobId),
-    queryFn: () => api.get<Job>(`/api/v1/jobs/${jobId}`),
+    queryFn: async (): Promise<Job> => {
+      const raw = await api.get<ApiJob>(`/api/v1/jobs/${jobId}`);
+      return normalizeJob(raw);
+    },
+    // Не делаем запрос на буквальную строку «undefined» / «null» — если
+    // юзер открыл /jobs/undefined по стейл-ссылке, не дёргаем API ради
+    // 400'й. JobDetailPage отрисует свой own error state.
+    enabled: !!jobId && jobId !== 'undefined' && jobId !== 'null',
     refetchInterval: (query) => {
       const data = query.state.data as Job | undefined;
       if (!data) return false;
@@ -136,7 +180,10 @@ export function useJobFile(jobId: string) {
 export function useApproveJob() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (jobId: string) => api.post<Job>(`/api/v1/jobs/${jobId}/approve`),
+    mutationFn: async (jobId: string): Promise<Job> => {
+      const raw = await api.post<ApiJob>(`/api/v1/jobs/${jobId}/approve`);
+      return normalizeJob(raw);
+    },
     onSuccess: (data, jobId) => {
       qc.setQueryData(jobsKeys.detail(jobId), data);
     },
@@ -146,7 +193,10 @@ export function useApproveJob() {
 export function useReprocessJob() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (jobId: string) => api.post<Job>(`/api/v1/jobs/${jobId}/reprocess`),
+    mutationFn: async (jobId: string): Promise<Job> => {
+      const raw = await api.post<ApiJob>(`/api/v1/jobs/${jobId}/reprocess`);
+      return normalizeJob(raw);
+    },
     onSuccess: (_, jobId) => {
       // Forced refetch — статус сейчас pending/processing
       qc.invalidateQueries({ queryKey: jobsKeys.detail(jobId) });
@@ -166,13 +216,19 @@ export function useReprocessJob() {
 export function useUpdateExtracted() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({
+    mutationFn: async ({
       jobId,
       extracted,
     }: {
       jobId: string;
       extracted: Record<string, unknown>;
-    }) => api.patch<Job>(`/api/v1/jobs/${jobId}/extracted`, extracted),
+    }): Promise<Job> => {
+      const raw = await api.patch<ApiJob>(
+        `/api/v1/jobs/${jobId}/extracted`,
+        extracted,
+      );
+      return normalizeJob(raw);
+    },
     onSuccess: (data, { jobId }) => {
       qc.setQueryData(jobsKeys.detail(jobId), data);
       // Invalidate список — там status мог поменяться

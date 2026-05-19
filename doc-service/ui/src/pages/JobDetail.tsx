@@ -28,7 +28,23 @@ import {
  */
 export default function JobDetailPage() {
   const { jobId } = useParams<{ jobId: string }>();
-  if (!jobId) return <div className="p-6">Job ID не указан</div>;
+  // Защита от stale-ссылок типа /jobs/undefined: они появлялись когда UI
+  // читал job.id (которого нет — backend отдаёт job_id), компонент
+  // строил `to=/jobs/${undefined}` и Router'у прилетала literal-строка
+  // "undefined". Не дергаем API за 400'й.
+  const isValidUuid = !!jobId && /^[0-9a-f-]{8,}$/i.test(jobId);
+  if (!jobId || !isValidUuid) {
+    return (
+      <div className="p-6">
+        <div className="error-banner">
+          Невалидный Job ID в URL: <code className="font-mono">{jobId ?? '(пусто)'}</code>.
+          <br />
+          Вернитесь в <a href="/ui/jobs" className="underline">список документов</a> и
+          откройте через клик по строке.
+        </div>
+      </div>
+    );
+  }
 
   const { data: job, isLoading, error } = useJob(jobId);
   const { data: fileUrl } = useJobFile(jobId);
