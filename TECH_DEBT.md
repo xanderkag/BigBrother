@@ -980,19 +980,31 @@ SGLang, TGI) выставляют OpenAI Chat Completions API; теперь pars
 `SLAI_ANSWERS.md` (SLAI → нам), `SLAI_OUR_REPLY.md` (мы → SLAI обратно
 с решениями по [ПРОДУКТ] меткам и ответами на 6 встречных вопросов).
 
-### F3. SLAI webhook receiver + service-token
+### F3. SLAI webhook receiver + service-token — 🟡 item 4 закрыто 2026-05-19, остаток заблокирован Q4/Q5
 
 **Где:** новый `routes/slai-callbacks.ts` + `auth/named-keys.ts` уже есть.
 
-**Что нужно:**
-1. `POST /api/v1/parsdocs/webhook` receiver (на стороне SLAI — мы его
-   не пишем, но согласовываем формат)
-2. HMAC-подпись на наших исходящих webhook (есть в коде —
-   `WEBHOOK_HMAC_SECRET`)
-3. Service-token для SLAI side в нашей `API_KEYS_JSON` с именем `slai`
-4. OpenAPI v1 spec для webhook-payload — `doc-service/docs/openapi/v1.yaml`
+**Чек-лист:**
+1. ⏸️ `POST /api/v1/parsdocs/webhook` receiver (на стороне SLAI —
+   мы его не пишем, но согласовываем формат). Заблокирован Q4 (нужен
+   service-token) + Q5 (продакт SLAI должен подтвердить ETA).
+2. ✅ HMAC-подпись на наших исходящих webhook — есть в коде
+   (`WEBHOOK_HMAC_SECRET`, `x-parsdocs-signature`), zero-trust verify
+   на стороне SLAI задокументирован в `docs/openapi/v1.yaml`.
+3. ⏸️ Service-token для SLAI side в нашей `API_KEYS_JSON` с именем
+   `slai` — генерируется по факту, когда продакт SLAI скажет «деплоим»
+   (см. INTEGRATION_QUEUE Q4).
+4. ✅ **OpenAPI v1 spec для webhook-payload** —
+   `doc-service/docs/openapi/v1.yaml` (закрыто 2026-05-19). OpenAPI
+   3.1, 13 схем (WebhookPayload + 4 типизированных Extracted + Party +
+   GenericExtracted + ExtractedDocumentEntry + JobStatus/DocumentType/
+   OcrEngine enums), 4 примера (single-doc done / needs_review /
+   multi-doc bundle / failed), 6 параметров (HMAC headers + legacy
+   x-docservice-*). Описаны delivery semantics, idempotency, retry,
+   versioning (v1 → v2), outbound slug aliasing, redact_pii, reserved
+   `_issues`/`_field_confidence`/`documents` ключи.
 
-**Срок:** 1-2 дня.
+**Срок остатка:** 0.5 дня после разблокировки Q4/Q5.
 
 ---
 
