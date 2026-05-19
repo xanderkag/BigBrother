@@ -9,6 +9,7 @@ import { useProviders } from '@/queries/providers';
 import { useReferenceListTypes } from '@/queries/referenceLists';
 import { useWorkspaceOrgId } from '@/lib/workspace';
 import { cycleTheme, getTheme, type ThemeChoice } from '@/lib/theme';
+import { useSidebarCollapsed } from '@/lib/sidebar';
 import SearchBox from './SearchBox';
 
 /**
@@ -27,23 +28,32 @@ import SearchBox from './SearchBox';
  */
 export default function Layout({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [collapsed, setCollapsed] = useSidebarCollapsed();
   const location = useLocation();
 
   // Закрываем drawer при переходе на новый route
   useEffect(() => setMobileOpen(false), [location.pathname]);
 
+  // На mobile (drawer) всегда показываем full-width, иначе collapsed-режим
+  // выглядит сломанным в overlay'е. Mobile-drawer и так sliding panel.
+  const effectiveCollapsed = mobileOpen ? false : collapsed;
+
   return (
     <div className="flex h-full bg-slate-50 dark:bg-slate-950">
       {/* Sidebar */}
       <aside
-        className={`fixed inset-y-0 left-0 z-30 flex w-60 shrink-0 flex-col border-r border-slate-200 bg-white transition-transform dark:border-slate-800 dark:bg-slate-900 lg:static lg:translate-x-0 ${
-          mobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
-        }`}
+        className={`fixed inset-y-0 left-0 z-30 flex shrink-0 flex-col border-r border-slate-200 bg-white transition-[transform,width] duration-200 dark:border-slate-800 dark:bg-slate-900 lg:static lg:translate-x-0 ${
+          effectiveCollapsed ? 'w-14' : 'w-60'
+        } ${mobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}
       >
-        <SidebarHeader />
-        <WorkspaceBlock />
-        <SidebarNav />
-        <SidebarFooter />
+        <SidebarHeader collapsed={effectiveCollapsed} />
+        <WorkspaceBlock collapsed={effectiveCollapsed} />
+        <SidebarNav collapsed={effectiveCollapsed} />
+        <CollapseToggle
+          collapsed={collapsed}
+          onToggle={() => setCollapsed(!collapsed)}
+        />
+        <SidebarFooter collapsed={effectiveCollapsed} />
       </aside>
 
       {/* Mobile overlay */}
@@ -66,9 +76,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
 /* ─── Sidebar pieces ─────────────────────────────────────────────── */
 
-function SidebarHeader() {
+function SidebarHeader({ collapsed }: { collapsed: boolean }) {
   return (
-    <div className="flex items-center gap-2.5 border-b border-slate-200 px-4 py-3.5 dark:border-slate-800">
+    <div
+      className={`flex items-center border-b border-slate-200 py-3.5 dark:border-slate-800 ${
+        collapsed ? 'justify-center px-2' : 'gap-2.5 px-4'
+      }`}
+      title={collapsed ? 'parsedocs · doc intelligence' : undefined}
+    >
       <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm bg-indigo-600 text-white dark:bg-indigo-500">
         <svg
           xmlns="http://www.w3.org/2000/svg"
@@ -79,19 +94,21 @@ function SidebarHeader() {
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
         </svg>
       </div>
-      <div className="min-w-0">
-        <div className="text-sm font-semibold leading-tight text-slate-900 dark:text-slate-100">
-          parsedocs
+      {!collapsed && (
+        <div className="min-w-0">
+          <div className="text-sm font-semibold leading-tight text-slate-900 dark:text-slate-100">
+            parsedocs
+          </div>
+          <div className="font-mono text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">
+            doc intelligence
+          </div>
         </div>
-        <div className="font-mono text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">
-          doc intelligence
-        </div>
-      </div>
+      )}
     </div>
   );
 }
 
-function WorkspaceBlock() {
+function WorkspaceBlock({ collapsed }: { collapsed: boolean }) {
   const me = useCurrentUser();
   const orgs = useOrganizations();
   const [orgId, setOrgId] = useWorkspaceOrgId();
@@ -110,6 +127,23 @@ function WorkspaceBlock() {
   }, [me.data, orgList.length]);
 
   const currentOrg = orgList.find((o) => o.id === orgId);
+
+  if (collapsed) {
+    // В свёрнутом виде — просто индикатор в центре с tooltip'ом
+    return (
+      <div
+        className="flex justify-center border-b border-slate-200 px-2 py-3 dark:border-slate-800"
+        title={currentOrg ? `Workspace: ${currentOrg.name}` : 'Workspace'}
+      >
+        <span
+          className={`inline-block h-2 w-2 rounded-full ${
+            currentOrg ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-700'
+          }`}
+          aria-hidden="true"
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="border-b border-slate-200 px-4 py-3 dark:border-slate-800">
@@ -152,7 +186,7 @@ interface NavEntry {
   end?: boolean;
 }
 
-function SidebarNav() {
+function SidebarNav({ collapsed }: { collapsed: boolean }) {
   // Counts. Все эти запросы — обычные ReactQuery hits, кэшируются.
   // Limit=1 для jobs/review чтобы не качать полный список (нужен только total).
   const jobsCnt = useJobsList({ limit: 1 });
@@ -194,28 +228,31 @@ function SidebarNav() {
   );
 
   return (
-    <nav className="flex-1 overflow-y-auto px-2 py-3">
+    <nav className={`flex-1 overflow-y-auto py-3 ${collapsed ? 'px-1.5' : 'px-2'}`}>
       <div className="space-y-0.5">
         {main.map((e) => (
-          <NavItem key={e.to} entry={e} />
+          <NavItem key={e.to} entry={e} collapsed={collapsed} />
         ))}
       </div>
       <div className="mt-4 space-y-0.5 border-t border-slate-200 pt-3 dark:border-slate-800">
         {admin.map((e) => (
-          <NavItem key={e.to} entry={e} />
+          <NavItem key={e.to} entry={e} collapsed={collapsed} />
         ))}
       </div>
     </nav>
   );
 }
 
-function NavItem({ entry }: { entry: NavEntry }) {
+function NavItem({ entry, collapsed }: { entry: NavEntry; collapsed: boolean }) {
   return (
     <NavLink
       to={entry.to}
       end={entry.end}
+      title={collapsed ? `${entry.label}${entry.count !== undefined ? ` (${entry.count})` : ''}` : undefined}
       className={({ isActive }) =>
-        `group relative flex items-center gap-2.5 rounded-sm px-2.5 py-1.5 font-mono text-[11px] uppercase tracking-wider transition-colors ${
+        `group relative flex items-center rounded-sm font-mono text-[11px] uppercase tracking-wider transition-colors ${
+          collapsed ? 'justify-center px-2 py-2' : 'gap-2.5 px-2.5 py-1.5'
+        } ${
           isActive
             ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300'
             : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100'
@@ -231,11 +268,18 @@ function NavItem({ entry }: { entry: NavEntry }) {
               aria-hidden="true"
             />
           )}
-          <span className="shrink-0 text-slate-400 group-hover:text-current dark:text-slate-500">
+          <span className="relative shrink-0 text-slate-400 group-hover:text-current dark:text-slate-500">
             {entry.icon}
+            {/* В свёрнутом виде — count'er как точка-индикатор поверх иконки */}
+            {collapsed && entry.count !== undefined && entry.count > 0 && (
+              <span
+                className="absolute -right-1.5 -top-1.5 inline-block h-1.5 w-1.5 rounded-full bg-indigo-500 dark:bg-indigo-400"
+                aria-hidden="true"
+              />
+            )}
           </span>
-          <span className="flex-1 truncate">{entry.label}</span>
-          {entry.count !== undefined && (
+          {!collapsed && <span className="flex-1 truncate">{entry.label}</span>}
+          {!collapsed && entry.count !== undefined && (
             <span
               className={`shrink-0 rounded-sm px-1 text-[10px] tabular-nums ${
                 isActive
@@ -252,7 +296,40 @@ function NavItem({ entry }: { entry: NavEntry }) {
   );
 }
 
-function SidebarFooter() {
+function CollapseToggle({
+  collapsed,
+  onToggle,
+}: {
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className="hidden items-center justify-center gap-2 border-t border-slate-200 py-2 font-mono text-[10px] uppercase tracking-wider text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:border-slate-800 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100 lg:flex"
+      title={collapsed ? 'Развернуть панель' : 'Свернуть панель'}
+      aria-label={collapsed ? 'Развернуть панель' : 'Свернуть панель'}
+    >
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 20 20"
+        fill="currentColor"
+        className={`h-3.5 w-3.5 transition-transform ${collapsed ? '' : 'rotate-180'}`}
+        aria-hidden="true"
+      >
+        <path
+          fillRule="evenodd"
+          d="M7.21 14.77a.75.75 0 0 1 .02-1.06L11.168 10 7.23 6.29a.75.75 0 1 1 1.04-1.08l4.5 4.25a.75.75 0 0 1 0 1.08l-4.5 4.25a.75.75 0 0 1-1.06-.02Z"
+          clipRule="evenodd"
+        />
+      </svg>
+      {!collapsed && <span>Свернуть</span>}
+    </button>
+  );
+}
+
+function SidebarFooter({ collapsed }: { collapsed: boolean }) {
   const me = useCurrentUser();
   const user = me.data;
   // id у нас UUID — берём первые 2 hex'а как инициалы. Не идеально, но
@@ -264,6 +341,20 @@ function SidebarFooter() {
   }, [user]);
   if (!user) {
     return <div className="h-14 border-t border-slate-200 dark:border-slate-800" />;
+  }
+  if (collapsed) {
+    // Свёрнут: только аватар-инициалы по центру, logout перемещается в tooltip
+    // (через right-click меню это не сделать — а если очень надо logout, развернёт).
+    return (
+      <div
+        className="flex justify-center border-t border-slate-200 px-2 py-2.5 dark:border-slate-800"
+        title={`${user.is_super_admin ? 'super admin' : user.role ?? 'user'} · ${user.id}`}
+      >
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm bg-slate-200 font-mono text-[11px] font-semibold text-slate-700 dark:bg-slate-700 dark:text-slate-200">
+          {initials}
+        </div>
+      </div>
+    );
   }
   return (
     <div className="flex items-center gap-2.5 border-t border-slate-200 px-3 py-2.5 dark:border-slate-800">
