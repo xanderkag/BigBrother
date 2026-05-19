@@ -22,3 +22,7 @@ Thumbs.db
 scratch/
 tmp/
 *.tmp
+
+# Claude Code — per-machine local settings (project-shared agents live
+# under .claude/agents/ and ARE checked in).
+.claude/settings.local.json
