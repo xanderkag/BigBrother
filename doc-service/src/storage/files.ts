@@ -1,11 +1,19 @@
-import { createWriteStream } from 'node:fs';
-import { mkdir, readdir, rmdir, stat, unlink } from 'node:fs/promises';
+import { createReadStream, createWriteStream } from 'node:fs';
+import { mkdir, mkdtemp, readdir, rmdir, stat, unlink } from 'node:fs/promises';
 import { join, basename, dirname, extname } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import type { Readable } from 'node:stream';
 import { fileTypeFromFile } from 'file-type';
-import { config } from '../config.js';
+import {
+  S3Client,
+  GetObjectCommand,
+  DeleteObjectCommand,
+  type S3ClientConfig,
+} from '@aws-sdk/client-s3';
+import { Upload } from '@aws-sdk/lib-storage';
+import { config, type Config } from '../config.js';
 
 export type SaveStreamInput = {
   filename?: string;
@@ -21,15 +29,28 @@ export type SavedFile = {
   size: number;
 };
 
+/**
+ * Materialized file = что-то на локальном диске, доступное для чтения
+ * sync-движкам OCR (tesseract, pdftoppm, pdf-parse). Local backend
+ * возвращает оригинальный путь (cleanup — no-op). S3 backend стримит
+ * объект в tmp и возвращает путь к нему (cleanup — unlink).
+ */
+export type MaterializedFile = {
+  absolutePath: string;
+  cleanup: () => Promise<void>;
+};
+
 export interface FileStorage {
   saveStream(input: SaveStreamInput): Promise<SavedFile>;
+  materialize(absolutePath: string): Promise<MaterializedFile>;
+  remove(absolutePath: string): Promise<boolean>;
 }
 
 /**
  * Local filesystem storage. Files land in `<STORAGE_DIR>/uploads/<storageId>/<fileName>`.
  * Per-job directory keeps the multi-page artefacts (debug/per-page) co-located later.
  *
- * The S3/MinIO implementation will share the SaveStreamInput/SavedFile types
+ * The S3/MinIO implementation shares the SaveStreamInput/SavedFile types
  * so swapping is a single-line change in the route handler.
  */
 export class LocalFileStorage implements FileStorage {
@@ -52,6 +73,16 @@ export class LocalFileStorage implements FileStorage {
       mimeType: input.mimeType,
       size: s.size,
     };
+  }
+
+  async materialize(absolutePath: string): Promise<MaterializedFile> {
+    // Local backend: stat-check и возврат оригинала. cleanup = no-op.
+    await stat(absolutePath);
+    return { absolutePath, cleanup: async () => {} };
+  }
+
+  async remove(absolutePath: string): Promise<boolean> {
+    return removeStoredFile(absolutePath);
   }
 }
 
@@ -116,6 +147,194 @@ export async function removeStoredFile(absolutePath: string): Promise<boolean> {
 }
 
 /**
+ * Parse `<...>/uploads/<storageId>/<fileName>` → `uploads/<storageId>/<fileName>`.
+ * Возвращает null если путь не соответствует формату (нет сегмента `uploads`).
+ *
+ * Используется S3 backend'ом для конвертации locallyCached path → S3 key.
+ * Path separator нормализуем — на Windows backslash превращаем в slash для S3.
+ */
+export function deriveS3KeyFromPath(absolutePath: string): string | null {
+  const normalized = absolutePath.replace(/\\/g, '/');
+  const idx = normalized.lastIndexOf('/uploads/');
+  if (idx < 0) {
+    // Возможно путь начинается с uploads/ без префикса
+    if (normalized.startsWith('uploads/')) return normalized;
+    return null;
+  }
+  return normalized.slice(idx + 1); // отрезаем ведущий слэш
+}
+
+export type S3FileStorageOpts = {
+  bucket: string;
+  endpoint?: string;
+  region: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  forcePathStyle: boolean;
+  localCacheDir: string;
+  /**
+   * Опциональный inject готового S3Client (используется в тестах через
+   * `aws-sdk-client-mock`, который mock'ает singleton клиент по
+   * constructor reference). В проде undefined — клиент создаётся внутри.
+   */
+  client?: S3Client;
+};
+
+/**
+ * S3 / MinIO backend. Поведение durability-first с write-through локальным
+ * кэшем: каждый загруженный файл пишется в S3 И в локальный кэш-путь
+ * `<localCacheDir>/uploads/<storageId>/<fileName>`. Это позволяет
+ * последующему пайплайн-шагу (OCR в том же worker'е) читать с диска без
+ * round-trip в S3. Для горизонтального масштабирования (worker в другом
+ * pod'е) включается ленивая materialize-загрузка из S3.
+ *
+ * NOTE: полное storage-decoupling (один worker пишет, другой читает без
+ * локального кэша вообще) требует чтобы все OCR-движки умели stream-mode
+ * или хотя бы переустанавливать локальные temporaries. Сейчас движки
+ * привязаны к локальным путям — это deferred в TECH_DEBT (см. A2 закрытие).
+ */
+export class S3FileStorage implements FileStorage {
+  private readonly client: S3Client;
+  private readonly bucket: string;
+  private readonly localCacheDir: string;
+
+  constructor(private readonly opts: S3FileStorageOpts) {
+    this.bucket = opts.bucket;
+    this.localCacheDir = opts.localCacheDir;
+    if (opts.client) {
+      this.client = opts.client;
+    } else {
+      const cfg: S3ClientConfig = {
+        region: opts.region,
+        credentials: {
+          accessKeyId: opts.accessKeyId,
+          secretAccessKey: opts.secretAccessKey,
+        },
+        forcePathStyle: opts.forcePathStyle,
+      };
+      if (opts.endpoint) cfg.endpoint = opts.endpoint;
+      this.client = new S3Client(cfg);
+    }
+  }
+
+  async saveStream(input: SaveStreamInput): Promise<SavedFile> {
+    const storageId = randomUUID();
+    const safeName = sanitize(input.filename ?? `upload${guessExt(input.mimeType)}`);
+    const key = `uploads/${storageId}/${safeName}`;
+    const cacheDir = join(this.localCacheDir, 'uploads', storageId);
+    await mkdir(cacheDir, { recursive: true });
+    const localPath = join(cacheDir, safeName);
+
+    // Стримим в S3 и одновременно зеркалим в локальный кэш через tee.
+    // Создаём два независимых стрима: оригинал → файл, оригинал → S3.
+    // Простейший подход — pipe в файл, потом read обратно для S3. Это
+    // проще чем PassThrough-тройник и не требует backpressure-фьюза.
+    // Для крупных файлов (50MB cap) extra disk I/O незначителен.
+    await pipeline(input.stream, createWriteStream(localPath));
+
+    try {
+      const upload = new Upload({
+        client: this.client,
+        params: {
+          Bucket: this.bucket,
+          Key: key,
+          Body: createReadStream(localPath),
+          ContentType: input.mimeType,
+        },
+      });
+      await upload.done();
+    } catch (err) {
+      // Если S3 upload упал — чистим локальный кэш чтобы не оставался
+      // orphan. Иначе sweeper'у не за что зацепиться (нет job row).
+      await unlink(localPath).catch(() => undefined);
+      await rmdir(cacheDir).catch(() => undefined);
+      throw new Error(
+        `S3 upload failed for key ${key}: ${(err as Error).message ?? String(err)}`,
+      );
+    }
+
+    const s = await stat(localPath);
+    return {
+      storageId,
+      fileName: safeName,
+      absolutePath: localPath,
+      mimeType: input.mimeType,
+      size: s.size,
+    };
+  }
+
+  async materialize(absolutePath: string): Promise<MaterializedFile> {
+    // 1. Быстрый путь: кэш на диске жив, отдаём как есть.
+    try {
+      await stat(absolutePath);
+      return { absolutePath, cleanup: async () => {} };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+
+    // 2. Кэша нет — тянем из S3 в tmp.
+    const key = deriveS3KeyFromPath(absolutePath);
+    if (!key) {
+      throw new Error(
+        `S3 materialize: cannot derive S3 key from path "${absolutePath}" (expected uploads/<id>/<name>)`,
+      );
+    }
+    const tmpRoot = await mkdtemp(join(tmpdir(), 'docsvc-s3-'));
+    const tmpPath = join(tmpRoot, basename(absolutePath));
+    try {
+      const resp = await this.client.send(
+        new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+      );
+      const body = resp.Body;
+      if (!body) {
+        throw new Error(`S3 GetObject returned empty body for key ${key}`);
+      }
+      // SDK returns a Node Readable; стримим в файл.
+      await pipeline(body as Readable, createWriteStream(tmpPath));
+    } catch (err) {
+      await rmdir(tmpRoot, { recursive: true }).catch(() => undefined);
+      throw new Error(
+        `S3 download failed for key ${key}: ${(err as Error).message ?? String(err)}`,
+      );
+    }
+    return {
+      absolutePath: tmpPath,
+      cleanup: async () => {
+        await unlink(tmpPath).catch(() => undefined);
+        await rmdir(tmpRoot).catch(() => undefined);
+      },
+    };
+  }
+
+  async remove(absolutePath: string): Promise<boolean> {
+    let changed = false;
+    const key = deriveS3KeyFromPath(absolutePath);
+    if (key) {
+      try {
+        await this.client.send(
+          new DeleteObjectCommand({ Bucket: this.bucket, Key: key }),
+        );
+        changed = true;
+      } catch (err) {
+        // 404 / NoSuchKey — фактически как ENOENT в local: считаем
+        // успешным no-op (sweeper может прогоняться повторно).
+        const name = (err as { name?: string }).name ?? '';
+        if (name !== 'NoSuchKey' && name !== 'NotFound') {
+          throw new Error(
+            `S3 delete failed for key ${key}: ${(err as Error).message ?? String(err)}`,
+          );
+        }
+      }
+    }
+    // Локальный кэш чистим всегда — даже если S3 уже пуст, локальный
+    // путь мог пережить рестарт worker'а с пустым S3 (race during initial
+    // upload). removeStoredFile сам глушит ENOENT.
+    const localChanged = await removeStoredFile(absolutePath);
+    return changed || localChanged;
+  }
+}
+
+/**
  * Set of MIME types we know how to OCR. The route handler rejects uploads
  * whose magic bytes resolve to anything outside this set — defence against
  * a client that mis-labels Content-Type (innocent extension mix-up) or
@@ -167,8 +386,44 @@ export async function detectFileType(absolutePath: string): Promise<DetectedFile
   return result ? { ext: result.ext, mime: result.mime } : undefined;
 }
 
-// Default singleton bound to env-configured storage dir.
-export const localFileStorage: FileStorage = new LocalFileStorage(config.storageDir);
+/**
+ * Factory: выбирает реализацию по cfg.storageBackend. Для 's3' валидирует
+ * обязательные опции до создания клиента, чтобы pod не падал на первой
+ * загрузке а отказывался стартовать с понятной ошибкой.
+ */
+export function makeFileStorage(cfg: Config): FileStorage {
+  if (cfg.storageBackend === 's3') {
+    const missing: string[] = [];
+    if (!cfg.s3.bucket) missing.push('S3_BUCKET');
+    if (!cfg.s3.accessKeyId) missing.push('S3_ACCESS_KEY_ID');
+    if (!cfg.s3.secretAccessKey) missing.push('S3_SECRET_ACCESS_KEY');
+    if (missing.length > 0) {
+      throw new Error(
+        `S3 backend selected but ${missing.join(' / ')} ${
+          missing.length === 1 ? 'is' : 'are'
+        } not set`,
+      );
+    }
+    return new S3FileStorage({
+      bucket: cfg.s3.bucket!,
+      endpoint: cfg.s3.endpoint,
+      region: cfg.s3.region,
+      accessKeyId: cfg.s3.accessKeyId!,
+      secretAccessKey: cfg.s3.secretAccessKey!,
+      forcePathStyle: cfg.s3.forcePathStyle,
+      localCacheDir: cfg.storageDir,
+    });
+  }
+  return new LocalFileStorage(cfg.storageDir);
+}
+
+// Default singleton bound to env-configured storage dir / S3 settings.
+export const fileStorage: FileStorage = makeFileStorage(config);
+
+// Backwards-compat alias: код / тесты, существующие до A2-закрытия,
+// импортируют `localFileStorage`. Сохраняем имя как тонкий alias на
+// активный backend — поведение saveStream остаётся то же.
+export const localFileStorage: FileStorage = fileStorage;
 
 // Re-exports kept for tests and future S3 adapter.
 export { extname };

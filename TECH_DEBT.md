@@ -1129,12 +1129,21 @@ prompt'ы под их форматы.
 
 ---
 
-### A2. Storage abstraction half-done
+### A2. Storage abstraction half-done — closed 2026-05-19
 
-**Симптом:** `FileStorage` интерфейс есть, реализация одна (LocalFs). Горизонтальное масштабирование worker'ов невозможно (они должны делиться диском).
+**Done:**
+- `FileStorage` интерфейс расширен `materialize()` + `remove()` сверх `saveStream()`.
+- `S3FileStorage` через `@aws-sdk/client-s3` + `@aws-sdk/lib-storage` (multipart upload, streaming). Совместим с MinIO (`S3_ENDPOINT` + `S3_FORCE_PATH_STYLE=true`).
+- Конфиг-селектор `STORAGE_BACKEND=local|s3`. При `s3` обязательны `S3_BUCKET` / `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY`; иначе fail-fast с понятной ошибкой.
+- Write-through локальный кэш: `saveStream` пишет в S3 И в `<STORAGE_DIR>/uploads/<id>/<file>`, что позволяет post-upload pipeline (OCR в том же worker'е) читать с диска без round-trip в S3.
+- `materialize()` — fast-path по кэшу, иначе stream GetObject → tmp; cleanup unlink'ает tmp на ошибке/после OCR.
+- `remove()` — DeleteObject + чистка локального кэша. Идемпотентен на NoSuchKey/ENOENT.
+- Orchestrator оборачивает OCR в `try/finally` с `materialized.cleanup()`. Download endpoint (`GET /jobs/:id/file`) — то же.
+- Backwards-compat: `localFileStorage` остался экспортом-алиасом на активный backend; `removeStoredFile` всё ещё экспортирован (используется webhook-delivery.ts для immediate delete).
+- Test coverage: `tests/file-storage-s3.spec.ts`, 15 assertions поверх `aws-sdk-client-mock` (PUT/GET/DELETE + кэш-fast-path + cleanup + factory edge-cases).
 
-**Лечение:** `S3FileStorage` через `@aws-sdk/client-s3` (совместим с MinIO). Конфиг-селектор `STORAGE_BACKEND=local|s3`.
-
-**Оценка:** день.
+**Deferred (true shared-nothing horizontal scaling):**
+- Сейчас orchestrator/OCR-движки принимают `filePath: string` и читают с локального диска. Worker в другом pod'е через `materialize()` стянет файл из S3, но это extra round-trip и плата за хранение в tmp. Полный stream-mode (OCR читает напрямую из S3 Body) требует переписать каждый движок — `pdftoppm`, `tesseract`, `pdf-parse`, `sheetjs`, `mammoth` — все ожидают локальный путь.
+- Локальный кэш не очищается отдельно — он живёт по тем же retention-правилам что и LocalFs (file-cleanup sweeper). Это нормально пока кэш bounded; для долгоживущих pod'ов с большим объёмом нужен отдельный LRU.
 
 ---

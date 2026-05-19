@@ -1,7 +1,11 @@
 import type { Logger } from 'pino';
 import { config } from '../config.js';
 import { jobsRepo as defaultJobsRepo, type JobRow } from '../storage/jobs.js';
-import { removeStoredFile as defaultRemove } from '../storage/files.js';
+import { fileStorage } from '../storage/files.js';
+
+// Default через активный backend (local или s3). Сохраняем функциональную
+// сигнатуру (path) → boolean для DI-совместимости со существующими тестами.
+const defaultRemove = (path: string): Promise<boolean> => fileStorage.remove(path);
 
 /**
  * Background sweeper that removes uploaded blobs after the job reaches a

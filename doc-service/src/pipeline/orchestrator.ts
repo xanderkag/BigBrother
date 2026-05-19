@@ -31,6 +31,7 @@ import { jobsDurationSeconds, jobsTotal, ocrEngineDurationSeconds } from '../met
 import { runResolutionPipeline } from '../resolution/pipeline.js';
 import { tryMultiDoc } from './multidoc/runner.js';
 import { processFieldConfidence } from './normalize/field-confidence.js';
+import { fileStorage } from '../storage/files.js';
 
 // --- Wire dependencies once at module load. The pipeline is stateless beyond this.
 //
@@ -196,14 +197,23 @@ async function processJobInner(
 
     await stepEvent('ocr', 'started', { details: { mime: job.mime_type } });
     const ocrStart = Date.now();
-    ocr = await runOcrChain(
-      { filePath: job.file_path, mimeType: job.mime_type, tesseractLangsOverride },
-      log,
-      {
-        documentType: job.document_hint ?? undefined,
-        disableExternalOcr,
-      },
-    );
+    // A2: для S3-backend'а materialize стримит в tmp если локальный кэш
+    // протух (worker в другом pod'е). Для local — возвращает оригинал,
+    // cleanup — no-op. try/finally гарантирует что tmp не утечёт даже
+    // на ошибке OCR / classifier.
+    const materialized = await fileStorage.materialize(job.file_path);
+    try {
+      ocr = await runOcrChain(
+        { filePath: materialized.absolutePath, mimeType: job.mime_type, tesseractLangsOverride },
+        log,
+        {
+          documentType: job.document_hint ?? undefined,
+          disableExternalOcr,
+        },
+      );
+    } finally {
+      await materialized.cleanup().catch(() => undefined);
+    }
     timings.ocr_ms = Date.now() - ocrStart;
     await stepEvent(`ocr.${ocr.engine}`, 'done', {
       duration_ms: timings.ocr_ms,

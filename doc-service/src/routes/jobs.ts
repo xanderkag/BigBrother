@@ -9,7 +9,7 @@ import { config } from '../config.js';
 import {
   ACCEPTED_DOCUMENT_MIMES,
   detectFileType,
-  localFileStorage,
+  fileStorage,
 } from '../storage/files.js';
 import { jobsRepo } from '../storage/jobs.js';
 import { docQueue } from '../queue.js';
@@ -171,7 +171,7 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         }
       }
 
-      let savedFile: Awaited<ReturnType<typeof localFileStorage.saveStream>> | null = null;
+      let savedFile: Awaited<ReturnType<typeof fileStorage.saveStream>> | null = null;
       let webhookUrl: string | undefined;
       let documentHint: string | undefined;
       let metadata: unknown;
@@ -190,7 +190,7 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
 
       for await (const part of req.parts()) {
         if (part.type === 'file' && part.fieldname === 'file') {
-          savedFile = await localFileStorage.saveStream({
+          savedFile = await fileStorage.saveStream({
             filename: part.filename,
             mimeType: part.mimetype,
             stream: part.file,
@@ -538,11 +538,22 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         reply.code(410);
         return { error: 'file no longer available (retention period elapsed)' };
       }
+      // A2: материализуем через storage abstraction. Для local backend — это
+      // stat-check на оригинале (cleanup=no-op). Для S3 — fast-path по локальному
+      // кэшу, иначе stream-download в tmp с cleanup на close.
+      let materialized: Awaited<ReturnType<typeof fileStorage.materialize>>;
+      try {
+        materialized = await fileStorage.materialize(job.file_path);
+      } catch {
+        reply.code(410);
+        return { error: 'file missing on disk' };
+      }
       let size: number;
       try {
-        const stats = await stat(job.file_path);
+        const stats = await stat(materialized.absolutePath);
         size = stats.size;
       } catch {
+        await materialized.cleanup().catch(() => undefined);
         reply.code(410);
         return { error: 'file missing on disk' };
       }
@@ -554,8 +565,13 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         'Content-Disposition',
         `inline; filename="${fnAscii}"; filename*=UTF-8''${encodeURIComponent(job.file_name)}`,
       );
+      // Привязываем cleanup к жизненному циклу response — снимаем tmp-файл
+      // когда клиент закрыл соединение / поток отдан.
+      reply.raw.on('close', () => {
+        void materialized.cleanup().catch(() => undefined);
+      });
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (reply as any).send(createReadStream(job.file_path));
+      return (reply as any).send(createReadStream(materialized.absolutePath));
     },
   );
 

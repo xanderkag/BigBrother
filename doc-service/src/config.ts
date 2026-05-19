@@ -15,6 +15,23 @@ const ConfigSchema = z.object({
   redisUrl: z.string().min(1),
   storageDir: z.string().min(1),
 
+  // A2: storage backend. `local` — пишем в storageDir (default), `s3` —
+  // S3/MinIO + write-through локальный кэш в том же storageDir. Подробно
+  // про deferred trade-offs (нет shared-nothing) см. TECH_DEBT A2.
+  storageBackend: z.enum(['local', 's3']).default('local'),
+  s3: z.object({
+    bucket: z.string().optional(),
+    // Endpoint для MinIO / другого S3-compatible (например http://minio:9000).
+    // Undefined = AWS S3 endpoints по region.
+    endpoint: z.string().optional(),
+    region: z.string().default('us-east-1'),
+    accessKeyId: z.string().optional(),
+    secretAccessKey: z.string().optional(),
+    // MinIO требует path-style (bucket в пути, не в hostname).
+    // AWS S3 принимает оба; default=true безопаснее (работает везде).
+    forcePathStyle: z.coerce.boolean().default(true),
+  }),
+
   // Empty string disables auth — used for local dev. In production set a strong key.
   // Applies to all /api/v1/* routes; /health and /ready are always public.
   apiKey: z.string().default(''),
@@ -186,6 +203,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     databaseUrl: env.DATABASE_URL,
     redisUrl: env.REDIS_URL,
     storageDir: env.STORAGE_DIR,
+    storageBackend: env.STORAGE_BACKEND,
+    s3: {
+      bucket: env.S3_BUCKET || undefined,
+      endpoint: env.S3_ENDPOINT || undefined,
+      region: env.S3_REGION,
+      accessKeyId: env.S3_ACCESS_KEY_ID || undefined,
+      secretAccessKey: env.S3_SECRET_ACCESS_KEY || undefined,
+      forcePathStyle: env.S3_FORCE_PATH_STYLE,
+    },
     apiKey: env.API_KEY ?? '',
     apiKeysJson: env.API_KEYS_JSON,
     secretsEncryptionKey: env.SECRETS_ENCRYPTION_KEY ?? '',
