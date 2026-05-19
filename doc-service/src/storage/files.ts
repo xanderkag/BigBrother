@@ -78,6 +78,8 @@ function guessExt(mime: string): string {
       return '.xlsx';
     case 'application/vnd.ms-excel.sheet.macroEnabled.12':
       return '.xlsm';
+    case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+      return '.docx';
     default: return '';
   }
 }
@@ -143,6 +145,11 @@ export const ACCEPTED_DOCUMENT_MIMES: ReadonlySet<string> = new Set([
   // если внутри окажется .doc/.ppt — sheetjs упадёт с понятной ошибкой
   // на runtime в XlsxEngine.
   'application/x-cfb',
+  // 2026-05-18: DOCX от ЭДО — Акты, Спецификации, Договоры.
+  // Парсятся mammoth через DocxEngine в src/pipeline/ocr/docx.ts.
+  // .doc (legacy binary, не OOXML) НЕ поддерживается — для него
+  // клиент конвертирует в .docx или PDF.
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 ]);
 
 export type DetectedFileType = { ext: string; mime: string };

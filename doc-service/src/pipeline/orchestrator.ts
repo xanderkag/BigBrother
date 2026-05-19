@@ -15,6 +15,7 @@ import { TesseractEngine } from './ocr/tesseract.js';
 import { VisionLlmEngine } from './ocr/vision-llm.js';
 import { YandexVisionEngine } from './ocr/yandex.js';
 import { XlsxEngine } from './ocr/xlsx.js';
+import { DocxEngine } from './ocr/docx.js';
 import { selectOcrChain } from './router.js';
 import { KeywordClassifier } from './classifier/keywords.js';
 import { combineConfidence } from './quality.js';
@@ -39,10 +40,11 @@ import { processFieldConfidence } from './normalize/field-confidence.js';
 const llm: LlmClient = dynamicLlm;
 
 const engines: readonly OcrEngine[] = [
-  // XlsxEngine специфичен по MIME (поддерживает только xls/xlsx) — router
-  // выберет ТОЛЬКО его для этих файлов, остальные engines пропустят
-  // через supports() == false. Ставим первым для cache-locality.
+  // XlsxEngine / DocxEngine — специфичны по MIME (xls/xlsx и docx).
+  // Router выберет ТОЛЬКО их для этих MIME-types, остальные engines
+  // вернут supports()==false. Ставим первыми для cache-locality.
   new XlsxEngine(),
+  new DocxEngine(),
   new PdfTextEngine(config.thresholds.pdfText),
   new TesseractEngine(config.thresholds.tesseract, config.tesseractLangs),
   new VisionLlmEngine(config.thresholds.visionLlm, llm),
