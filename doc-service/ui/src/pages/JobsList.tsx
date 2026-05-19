@@ -9,7 +9,7 @@ import { extractAmounts } from '@/lib/extracted-summary';
 import {
   formatAge,
   formatDateTime,
-  formatMoneyCompact,
+  formatDuration,
   shortIdSplit,
 } from '@/lib/format';
 import { isSynthetic, matchesOrigin, type DocOrigin } from '@/lib/synthetic';
@@ -385,11 +385,20 @@ export default function JobsListPage() {
                   <th className="px-3 py-2 font-medium">Type</th>
                   <th className="px-3 py-2 font-medium">Status</th>
                   <th className="px-3 py-2 font-medium">Confidence</th>
-                  <th className="px-3 py-2 text-right font-medium">Total</th>
-                  <th className="px-3 py-2 text-right font-medium">VAT</th>
                   <th className="px-3 py-2 text-center font-medium">Issues</th>
+                  <th
+                    className="px-3 py-2 text-right font-medium"
+                    title="Длительность обработки: finished_at − created_at для завершённых job'ов, либо now − created_at с «…» для in-flight."
+                  >
+                    Время разбора
+                  </th>
                   <th className="px-3 py-2 font-medium">Model / OCR</th>
-                  <th className="px-3 py-2 font-medium">Age</th>
+                  <th
+                    className="px-3 py-2 font-medium"
+                    title="Сколько прошло с момента создания job'а (relative). Полная дата — в tooltip ячейки."
+                  >
+                    Создан
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
@@ -454,6 +463,7 @@ function JobRow({
   const amounts = extractAmounts(job.extracted);
   const fullDate = formatDateTime(job.created_at);
   const age = formatAge(job.created_at, now);
+  const duration = computeDuration(job, now);
 
   return (
     <tr
@@ -532,24 +542,6 @@ function JobRow({
         <ConfidenceBar value={job.confidence !== null ? Number(job.confidence) : null} />
       </td>
 
-      {/* TOTAL — сумма с НДС */}
-      <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-700 dark:text-slate-300">
-        {amounts.total !== null ? (
-          formatMoneyCompact(amounts.total, amounts.currency)
-        ) : (
-          <span className="text-slate-400 dark:text-slate-600">—</span>
-        )}
-      </td>
-
-      {/* VAT */}
-      <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-500 dark:text-slate-400">
-        {amounts.vat !== null ? (
-          formatMoneyCompact(amounts.vat, amounts.currency)
-        ) : (
-          <span className="text-slate-400 dark:text-slate-600">—</span>
-        )}
-      </td>
-
       {/* ISSUES */}
       <td className="px-3 py-2 text-center">
         {amounts.issuesCount > 0 ? (
@@ -562,6 +554,14 @@ function JobRow({
         ) : (
           <span className="text-slate-300 dark:text-slate-700">—</span>
         )}
+      </td>
+
+      {/* ВРЕМЯ РАЗБОРА — длительность процессинга */}
+      <td
+        className="px-3 py-2 text-right font-mono text-xs tabular-nums text-slate-600 dark:text-slate-400"
+        title={duration.tooltip}
+      >
+        {duration.label}
       </td>
 
       {/* MODEL / OCR ENGINE — стэк: LLM-модель сверху (важнее для
@@ -591,6 +591,52 @@ function JobRow({
       </td>
     </tr>
   );
+}
+
+/**
+ * Длительность процессинга для колонки «Время разбора».
+ *
+ * Terminal статусы (done / failed / needs_review / approved) — берём
+ * `finished_at`. Если бэкенд не записал finished_at (старые записи или
+ * fail до финализации), фоллбэчимся на `updated_at` — это последний
+ * момент когда job менялся, что для завершённой работы достаточно
+ * близко к настоящему «когда закончилось». In-flight (pending / processing)
+ * — `now - created_at` плюс «…» суффикс, чтобы было видно что таймер
+ * ещё крутится.
+ */
+function computeDuration(
+  job: Job,
+  now: Date,
+): { label: string; tooltip: string } {
+  const created = Date.parse(job.created_at);
+  if (!Number.isFinite(created)) return { label: '—', tooltip: '' };
+
+  const terminal =
+    job.status === 'done' ||
+    job.status === 'failed' ||
+    job.status === 'needs_review' ||
+    job.status === 'approved';
+
+  if (terminal) {
+    const finishedSource = job.finished_at ?? job.updated_at;
+    const finished = finishedSource ? Date.parse(finishedSource) : NaN;
+    if (!Number.isFinite(finished) || finished < created) {
+      return { label: '—', tooltip: '' };
+    }
+    const ms = finished - created;
+    const fallbackNote = job.finished_at ? '' : ' (по updated_at)';
+    return {
+      label: formatDuration(ms),
+      tooltip: `${ms} мс${fallbackNote}`,
+    };
+  }
+
+  // In-flight: pending / processing → таймер ещё крутится
+  const ms = Math.max(0, now.getTime() - created);
+  return {
+    label: `${formatDuration(ms)} …`,
+    tooltip: `${ms} мс · ещё в работе`,
+  };
 }
 
 function StatusBadge({ status }: { status: string }) {

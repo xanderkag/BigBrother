@@ -34,6 +34,31 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   // Закрываем drawer при переходе на новый route
   useEffect(() => setMobileOpen(false), [location.pathname]);
 
+  // Keyboard shortcut: Ctrl/Cmd + B — toggle desktop sidebar (как в VS Code).
+  // Не трогаем mobile-drawer: на маленьких экранах клавиатуры обычно нет,
+  // а если есть, поведение «toggle sidebar» там не применимо (drawer).
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'b') {
+        // Не перехватываем, если фокус в input/textarea/contenteditable — там Ctrl+B = bold
+        const t = e.target as HTMLElement | null;
+        const tag = t?.tagName;
+        if (
+          tag === 'INPUT' ||
+          tag === 'TEXTAREA' ||
+          tag === 'SELECT' ||
+          t?.isContentEditable
+        ) {
+          return;
+        }
+        e.preventDefault();
+        setCollapsed(!collapsed);
+      }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [collapsed, setCollapsed]);
+
   // На mobile (drawer) всегда показываем full-width, иначе collapsed-режим
   // выглядит сломанным в overlay'е. Mobile-drawer и так sliding panel.
   const effectiveCollapsed = mobileOpen ? false : collapsed;
@@ -42,18 +67,31 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     <div className="flex h-full bg-slate-50 dark:bg-slate-950">
       {/* Sidebar */}
       <aside
-        className={`fixed inset-y-0 left-0 z-30 flex shrink-0 flex-col border-r border-slate-200 bg-white transition-[transform,width] duration-200 dark:border-slate-800 dark:bg-slate-900 lg:static lg:translate-x-0 ${
+        className={`group/sidebar fixed inset-y-0 left-0 z-30 flex shrink-0 flex-col border-r border-slate-200 bg-white transition-[transform,width] duration-200 dark:border-slate-800 dark:bg-slate-900 lg:static lg:translate-x-0 ${
           effectiveCollapsed ? 'w-14' : 'w-60'
         } ${mobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}
       >
-        <SidebarHeader collapsed={effectiveCollapsed} />
-        <WorkspaceBlock collapsed={effectiveCollapsed} />
-        <SidebarNav collapsed={effectiveCollapsed} />
-        <CollapseToggle
-          collapsed={collapsed}
+        <SidebarHeader
+          collapsed={effectiveCollapsed}
           onToggle={() => setCollapsed(!collapsed)}
         />
+        <WorkspaceBlock collapsed={effectiveCollapsed} />
+        <SidebarNav collapsed={effectiveCollapsed} />
         <SidebarFooter collapsed={effectiveCollapsed} />
+
+        {/* Thin clickable edge strip — десктоп-only, дублирует toggle.
+            Висит на правом краю sidebar'а, расширяется при hover. Даёт
+            пользователю «двери» — самый ожидаемый паттерн (VS Code,
+            JetBrains). aria-hidden — основной toggle уже доступен с
+            клавиатуры/screen reader из SidebarHeader. */}
+        <button
+          type="button"
+          onClick={() => setCollapsed(!collapsed)}
+          aria-hidden="true"
+          tabIndex={-1}
+          title={`${collapsed ? 'Развернуть' : 'Свернуть'} панель (Ctrl+B)`}
+          className="absolute inset-y-0 right-0 hidden w-1 cursor-pointer bg-transparent transition-colors hover:bg-indigo-500/30 dark:hover:bg-indigo-400/30 lg:block"
+        />
       </aside>
 
       {/* Mobile overlay */}
@@ -76,11 +114,17 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
 /* ─── Sidebar pieces ─────────────────────────────────────────────── */
 
-function SidebarHeader({ collapsed }: { collapsed: boolean }) {
+function SidebarHeader({
+  collapsed,
+  onToggle,
+}: {
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
   return (
     <div
       className={`flex items-center border-b border-slate-200 py-3.5 dark:border-slate-800 ${
-        collapsed ? 'justify-center px-2' : 'gap-2.5 px-4'
+        collapsed ? 'flex-col gap-2 px-2' : 'gap-2.5 px-4'
       }`}
       title={collapsed ? 'parsedocs · doc intelligence' : undefined}
     >
@@ -95,7 +139,7 @@ function SidebarHeader({ collapsed }: { collapsed: boolean }) {
         </svg>
       </div>
       {!collapsed && (
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="text-sm font-semibold leading-tight text-slate-900 dark:text-slate-100">
             parsedocs
           </div>
@@ -104,6 +148,31 @@ function SidebarHeader({ collapsed }: { collapsed: boolean }) {
           </div>
         </div>
       )}
+      {/* Prominent toggle — десктоп-only. Раньше был узкой полоской внизу
+          (commit 9a65635) и пользователь его не находил. Теперь сидит
+          справа от лого, всегда видимый, с Ctrl+B-подсказкой. */}
+      <button
+        type="button"
+        onClick={onToggle}
+        className="hidden shrink-0 items-center justify-center rounded-sm p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100 lg:inline-flex"
+        title={`${collapsed ? 'Развернуть' : 'Свернуть'} панель (Ctrl+B)`}
+        aria-label={`${collapsed ? 'Развернуть' : 'Свернуть'} панель (Ctrl+B)`}
+        aria-keyshortcuts="Control+B"
+      >
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 20 20"
+          fill="currentColor"
+          className={`h-4 w-4 transition-transform ${collapsed ? '' : 'rotate-180'}`}
+          aria-hidden="true"
+        >
+          <path
+            fillRule="evenodd"
+            d="M7.21 14.77a.75.75 0 0 1 .02-1.06L11.168 10 7.23 6.29a.75.75 0 1 1 1.04-1.08l4.5 4.25a.75.75 0 0 1 0 1.08l-4.5 4.25a.75.75 0 0 1-1.06-.02Z"
+            clipRule="evenodd"
+          />
+        </svg>
+      </button>
     </div>
   );
 }
@@ -201,8 +270,8 @@ function SidebarNav({ collapsed }: { collapsed: boolean }) {
   const main: NavEntry[] = useMemo(
     () => [
       { to: '/', end: true, label: 'Dashboard', icon: <IconDashboard /> },
-      { to: '/jobs', label: 'Jobs', icon: <IconFile />, count: jobsCnt.data?.total },
-      { to: '/review', label: 'Review', icon: <IconCircle />, count: reviewCnt.data?.total },
+      { to: '/jobs', label: 'Журнал работ', icon: <IconFile />, count: jobsCnt.data?.total },
+      { to: '/review', label: 'Очередь ревью', icon: <IconCircle />, count: reviewCnt.data?.total },
       { to: '/upload', label: 'Upload', icon: <IconUpload /> },
       { to: '/test-lab', label: 'Тест. лаборатория', icon: <IconBeaker /> },
     ],
@@ -293,39 +362,6 @@ function NavItem({ entry, collapsed }: { entry: NavEntry; collapsed: boolean }) 
         </>
       )}
     </NavLink>
-  );
-}
-
-function CollapseToggle({
-  collapsed,
-  onToggle,
-}: {
-  collapsed: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onToggle}
-      className="hidden items-center justify-center gap-2 border-t border-slate-200 py-2 font-mono text-[10px] uppercase tracking-wider text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:border-slate-800 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100 lg:flex"
-      title={collapsed ? 'Развернуть панель' : 'Свернуть панель'}
-      aria-label={collapsed ? 'Развернуть панель' : 'Свернуть панель'}
-    >
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        viewBox="0 0 20 20"
-        fill="currentColor"
-        className={`h-3.5 w-3.5 transition-transform ${collapsed ? '' : 'rotate-180'}`}
-        aria-hidden="true"
-      >
-        <path
-          fillRule="evenodd"
-          d="M7.21 14.77a.75.75 0 0 1 .02-1.06L11.168 10 7.23 6.29a.75.75 0 1 1 1.04-1.08l4.5 4.25a.75.75 0 0 1 0 1.08l-4.5 4.25a.75.75 0 0 1-1.06-.02Z"
-          clipRule="evenodd"
-        />
-      </svg>
-      {!collapsed && <span>Свернуть</span>}
-    </button>
   );
 }
 
@@ -467,8 +503,8 @@ function buildCrumbs(pathname: string): Crumb[] {
   const parts = pathname.split('/').filter(Boolean);
   if (parts.length === 0) return [{ label: 'Dashboard', to: null }];
   const labels: Record<string, string> = {
-    jobs: 'Jobs',
-    review: 'Review',
+    jobs: 'Журнал работ',
+    review: 'Очередь ревью',
     upload: 'Upload',
     'test-lab': 'Test Lab',
     'document-types': 'Document Types',

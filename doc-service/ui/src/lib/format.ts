@@ -125,6 +125,33 @@ export function shortIdSplit(id: string | null | undefined): string {
  *   ≥30d    → «3 мес»
  *   ≥365d   → «2 г»
  */
+/**
+ * Длительность процессинга — для колонки «Время разбора». Берём ms
+ * (finished_at - created_at либо now - created_at для in-flight) и
+ * сворачиваем в максимально короткое читаемое RU-представление.
+ *
+ *   <1s        → «<1 с»
+ *   <60s       → «12 с»
+ *   <60min     → «5 мин 12 с» (либо «5 мин», если секунд 0)
+ *   ≥60min     → «1 ч 5 мин» (секунды НЕ показываем, чтобы не пухло)
+ *
+ * NaN / Infinity / отрицательные ms → '—'.
+ */
+export function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  if (ms < 1000) return '<1 с';
+  const totalSec = Math.floor(ms / 1000);
+  if (totalSec < 60) return `${totalSec} с`;
+  const totalMin = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  if (totalMin < 60) {
+    return sec === 0 ? `${totalMin} мин` : `${totalMin} мин ${sec} с`;
+  }
+  const h = Math.floor(totalMin / 60);
+  const min = totalMin % 60;
+  return min === 0 ? `${h} ч` : `${h} ч ${min} мин`;
+}
+
 export function formatAge(v: string | null | undefined, now: Date = new Date()): string {
   if (!v) return '—';
   let then: Date;
