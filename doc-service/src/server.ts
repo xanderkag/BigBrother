@@ -303,6 +303,14 @@ async function main() {
     reply.redirect('/ui/', 302);
   });
 
+  // Bare GET /ui (без trailing-slash) → /ui/.
+  // Fastify static prefix='/ui/' матчит только с / на конце, без redirect'а
+  // юзер получает 404 от not-found-handler'а. Раньше люди жаловались на
+  // «{error:not found}» при копи-пасте `/ui` без слеша.
+  app.get('/ui', async (_req, reply) => {
+    reply.redirect('/ui/', 301);
+  });
+
   // --- Legacy redirect: /v2/* → /ui/* ---
   // На время фазы миграции, когда команда ещё могла поделиться ссылками
   // вида /v2/jobs/<id>. Просто разворачиваем prefix и сохраняем суффикс.
