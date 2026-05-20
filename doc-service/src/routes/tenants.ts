@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { organizationsRepo } from '../storage/organizations.js';
+import { organizationSettingsRepo } from '../storage/organization-settings.js';
 import { projectsRepo } from '../storage/projects.js';
 import { usersRepo, type UserRow } from '../storage/users.js';
 import { tokensRepo } from '../storage/tokens.js';
@@ -68,6 +69,48 @@ const OrganizationCreate = z.object({
 });
 const OrganizationPatch = OrganizationCreate.partial();
 const OrgIdParam = z.object({ id: z.string().uuid() });
+
+// --- Organization settings (per-org consumer profile, CP7 фаза 2) ---
+
+const ProcessingMode = z.enum(['extract', 'classify_only']);
+const OutputMode = z.enum(['webhook', 'pull']);
+
+/** http/https-only — повторяет isValidWebhookUrl из routes/jobs.ts. */
+const webhookUrlSchema = z
+  .string()
+  .url()
+  .refine(
+    (v) => {
+      try {
+        const u = new URL(v);
+        return u.protocol === 'http:' || u.protocol === 'https:';
+      } catch {
+        return false;
+      }
+    },
+    { message: 'webhook_url must be http(s) URL' },
+  );
+
+/** Response — БЕЗ raw-секрета, только `has_webhook_secret`. */
+const OrganizationSettingsApi = z.object({
+  organization_id: z.string().uuid().nullable(),
+  mode: ProcessingMode,
+  output: OutputMode,
+  webhook_url: z.string().nullable(),
+  has_webhook_secret: z.boolean(),
+  auto_approve_threshold: z.number().nullable(),
+  created_at: z.string().nullable(),
+  updated_at: z.string().nullable(),
+});
+
+const OrganizationSettingsPatchBody = z.object({
+  mode: ProcessingMode.optional(),
+  output: OutputMode.optional(),
+  webhook_url: webhookUrlSchema.nullable().optional(),
+  // write-only: принимаем, но никогда не отдаём назад.
+  webhook_hmac_secret: z.string().min(1).max(512).nullable().optional(),
+  auto_approve_threshold: z.number().min(0).max(1).nullable().optional(),
+});
 
 const ProjectApi = z.object({
   id: z.string().uuid(),
@@ -228,6 +271,83 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
         return { error: 'organization not found' };
       }
       return organizationsRepo.toApi(row);
+    },
+  );
+
+  // --- Organization settings (per-org consumer profile) ---
+
+  r.get(
+    '/organizations/:id/settings',
+    {
+      schema: {
+        tags: ['tenants'],
+        summary: 'Профиль организации (consumer settings)',
+        description:
+          'Возвращает per-org профиль (mode/output/webhook_url/auto_approve_threshold). ' +
+          'Если строки нет — дефолты (extract/pull). Секрет не отдаётся — только has_webhook_secret. ' +
+          'Доступ: super_admin или участник/админ этой орг.',
+        security: [{ bearerAuth: [] }],
+        params: OrgIdParam,
+        response: {
+          200: OrganizationSettingsApi,
+          401: ErrorResponse,
+          403: ErrorResponse,
+          404: ErrorResponse,
+        },
+      },
+    },
+    async (req, reply) => {
+      if (!(await requireOrgAccess(req, reply, req.params.id))) return reply;
+      const org = await organizationsRepo.findById(req.params.id);
+      if (!org) {
+        reply.code(404);
+        return { error: 'organization not found' };
+      }
+      return organizationSettingsRepo.get(req.params.id);
+    },
+  );
+
+  r.put(
+    '/organizations/:id/settings',
+    {
+      schema: {
+        tags: ['tenants'],
+        summary: 'Изменить профиль организации (super_admin или org_admin своей)',
+        description:
+          'Upsert профиля. webhook_hmac_secret — write-only (шифруется, никогда не эхо-ится). ' +
+          'undefined оставляет секрет, null — очищает, строка — заменяет. ' +
+          'Если output=webhook без webhook_url (ни в патче, ни уже сохранённого) → 400.',
+        security: [{ bearerAuth: [] }],
+        params: OrgIdParam,
+        body: OrganizationSettingsPatchBody,
+        response: {
+          200: OrganizationSettingsApi,
+          400: ErrorResponse,
+          401: ErrorResponse,
+          403: ErrorResponse,
+          404: ErrorResponse,
+        },
+      },
+    },
+    async (req, reply) => {
+      if (!requireOrgAdmin(req, reply, req.params.id)) return reply;
+      const org = await organizationsRepo.findById(req.params.id);
+      if (!org) {
+        reply.code(404);
+        return { error: 'organization not found' };
+      }
+      // Guard: output=webhook требует webhook_url — в патче ИЛИ уже сохранённого.
+      const current = await organizationSettingsRepo.get(req.params.id);
+      const effectiveOutput = req.body.output ?? current.output;
+      if (effectiveOutput === 'webhook') {
+        const effectiveUrl =
+          req.body.webhook_url !== undefined ? req.body.webhook_url : current.webhook_url;
+        if (!effectiveUrl) {
+          reply.code(400);
+          return { error: "output='webhook' requires a webhook_url (in patch or already stored)" };
+        }
+      }
+      return organizationSettingsRepo.upsert(req.params.id, req.body);
     },
   );
 
