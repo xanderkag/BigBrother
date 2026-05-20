@@ -240,7 +240,11 @@ export default function JobDetailPage() {
             />
           ) : (
             <>
-              <ExtractedDataPanel extracted={job.extracted} issues={issues} />
+              <ExtractedDataPanel
+                extracted={job.extracted}
+                issues={issues}
+                fieldConfidence={fieldConfidence}
+              />
 
               {fieldConfidence && Object.keys(fieldConfidence).length > 0 && (
                 <FieldConfidenceCard fc={fieldConfidence} />
@@ -431,7 +435,11 @@ function MultiDocView({
 
       {isPrimary ? (
         <>
-          <ExtractedDataPanel extracted={primary.extracted} issues={primary.issues} />
+          <ExtractedDataPanel
+            extracted={primary.extracted}
+            issues={primary.issues}
+            fieldConfidence={primary.fieldConfidence}
+          />
           {primary.fieldConfidence &&
             Object.keys(primary.fieldConfidence).length > 0 && (
               <FieldConfidenceCard fc={primary.fieldConfidence} />
@@ -440,7 +448,10 @@ function MultiDocView({
       ) : (
         seg && (
           <>
-            <ExtractedDataPanel extracted={seg.extracted} />
+            <ExtractedDataPanel
+              extracted={seg.extracted}
+              fieldConfidence={seg.field_confidence}
+            />
             {seg.field_confidence &&
               Object.keys(seg.field_confidence).length > 0 && (
                 <FieldConfidenceCard fc={seg.field_confidence} />

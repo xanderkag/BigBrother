@@ -5,6 +5,7 @@ import {
   formatDate,
   formatPercent,
 } from '@/lib/format';
+import ConfidenceBar from './ConfidenceBar';
 
 /**
  * Панель Extracted data с двумя вьюхами: Форма и JSON.
@@ -24,12 +25,14 @@ interface Props {
   extracted: Record<string, unknown> | null;
   /** Validation issues для подсветки конкретных полей. */
   issues?: string[];
+  /** UI-6: _field_confidence (key → 0..1) для inline-подсветки полей. */
+  fieldConfidence?: Record<string, number>;
 }
 
 type ViewMode = 'form' | 'json';
 const VIEW_MODE_KEY = 'parsdocs.v2.extractedView';
 
-export default function ExtractedDataPanel({ extracted, issues }: Props) {
+export default function ExtractedDataPanel({ extracted, issues, fieldConfidence }: Props) {
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     return (localStorage.getItem(VIEW_MODE_KEY) as ViewMode) || 'form';
   });
@@ -87,7 +90,7 @@ export default function ExtractedDataPanel({ extracted, issues }: Props) {
         </button>
       </div>
       {viewMode === 'form' ? (
-        <FormView extracted={extracted} issues={issues} />
+        <FormView extracted={extracted} issues={issues} fieldConfidence={fieldConfidence} />
       ) : (
         <JsonView extracted={extracted} />
       )}
@@ -114,10 +117,22 @@ function JsonView({ extracted }: { extracted: Record<string, unknown> }) {
 function FormView({
   extracted,
   issues,
+  fieldConfidence,
 }: {
   extracted: Record<string, unknown>;
   issues?: string[];
+  fieldConfidence?: Record<string, number>;
 }) {
+  // UI-6: confidence по ключу поля. Берём первый ключ, по которому есть
+  // запись в _field_confidence — поддерживает алиасы (number/doc_number).
+  const conf = (...keys: string[]): number | undefined => {
+    if (!fieldConfidence) return undefined;
+    for (const k of keys) {
+      const v = fieldConfidence[k];
+      if (typeof v === 'number') return v;
+    }
+    return undefined;
+  };
   // Извлекаем party (продавец/покупатель) — могут быть разные структуры
   const seller = (extracted.seller ?? extracted.shipper ?? extracted.supplier) as
     | Record<string, unknown>
@@ -164,29 +179,35 @@ function FormView({
           label="Номер"
           value={extracted.number ?? extracted.doc_number}
           highlight={issueKeys.has('number')}
+          conf={conf('number', 'doc_number')}
         />
         <Field
           label="Дата"
           value={formatDate((extracted.date as string) ?? null)}
           highlight={issueKeys.has('date')}
+          conf={conf('date')}
         />
         <Field
           label="Итого"
           value={formatMoney(extracted.total_with_vat as number, '')}
           highlight={issueKeys.has('total_with_vat')}
+          conf={conf('total_with_vat')}
         />
         <Field
           label="Total без НДС"
           value={formatMoney(extracted.total_without_vat as number, '')}
+          conf={conf('total_without_vat')}
         />
         <Field
           label="НДС"
           value={formatMoney(extracted.vat as number, '')}
           highlight={issueKeys.has('vat')}
+          conf={conf('vat')}
         />
         <Field
           label="Ставка НДС"
           value={extracted.vat_rate !== undefined ? `${extracted.vat_rate}%` : '—'}
+          conf={conf('vat_rate')}
         />
         <Field
           label="Валюта"
@@ -197,16 +218,22 @@ function FormView({
               '—'
             )
           }
+          conf={conf('currency')}
         />
       </Section>
 
       {/* Парт продавец */}
       {seller && (
         <Section title="Продавец">
-          <Field label="ИНН" value={seller.inn} highlight={issueKeys.has('seller.inn')} />
-          <Field label="КПП" value={seller.kpp} />
-          <Field label="Наименование" value={seller.name} wide />
-          <Field label="Адрес" value={seller.address} wide />
+          <Field
+            label="ИНН"
+            value={seller.inn}
+            highlight={issueKeys.has('seller.inn')}
+            conf={conf('seller.inn')}
+          />
+          <Field label="КПП" value={seller.kpp} conf={conf('seller.kpp')} />
+          <Field label="Наименование" value={seller.name} wide conf={conf('seller.name')} />
+          <Field label="Адрес" value={seller.address} wide conf={conf('seller.address')} />
           {Boolean(seller.bank) && <Field label="Банк" value={seller.bank} wide />}
           {Boolean(seller.bik) && <Field label="БИК" value={seller.bik} />}
           {Boolean(seller.account) && <Field label="Счёт" value={seller.account} wide />}
@@ -216,10 +243,15 @@ function FormView({
       {/* Парт покупатель */}
       {buyer && (
         <Section title="Покупатель">
-          <Field label="ИНН" value={buyer.inn} highlight={issueKeys.has('buyer.inn')} />
-          <Field label="КПП" value={buyer.kpp} />
-          <Field label="Наименование" value={buyer.name} wide />
-          <Field label="Адрес" value={buyer.address} wide />
+          <Field
+            label="ИНН"
+            value={buyer.inn}
+            highlight={issueKeys.has('buyer.inn')}
+            conf={conf('buyer.inn')}
+          />
+          <Field label="КПП" value={buyer.kpp} conf={conf('buyer.kpp')} />
+          <Field label="Наименование" value={buyer.name} wide conf={conf('buyer.name')} />
+          <Field label="Адрес" value={buyer.address} wide conf={conf('buyer.address')} />
         </Section>
       )}
 
@@ -240,6 +272,7 @@ function FormView({
       {/* Misc — все остальные top-level поля, которые мы ещё не показали */}
       <MiscFields
         extracted={extracted}
+        fieldConfidence={fieldConfidence}
         excludeKeys={[
           'number',
           'doc_number',
@@ -289,25 +322,44 @@ function Field({
   value,
   highlight,
   wide,
+  conf,
 }: {
   label: string;
   value: unknown;
   highlight?: boolean;
   wide?: boolean;
+  /** UI-6: confidence поля 0..1. Пороги — как в ConfidenceBar. */
+  conf?: number;
 }) {
   const display = renderValue(value);
+  const hasConf = typeof conf === 'number' && !Number.isNaN(conf);
+  // Пороги/палитра идентичны ConfidenceBar: ≥0.85 emerald, ≥0.6 amber, <0.6 rose.
+  // issues-highlight имеет приоритет — это явный сигнал валидатора.
+  const confValueCls =
+    !hasConf || highlight
+      ? ''
+      : conf >= 0.85
+      ? 'text-slate-900 dark:text-slate-100'
+      : conf >= 0.6
+      ? 'rounded bg-amber-50 px-1.5 py-0.5 font-medium text-amber-900 dark:bg-amber-500/10 dark:text-amber-200'
+      : 'rounded bg-rose-50 px-1.5 py-0.5 font-medium text-rose-900 dark:bg-rose-500/10 dark:text-rose-200';
   return (
     <div className={wide ? 'sm:col-span-2' : undefined}>
       <dt className="text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">{label}</dt>
       <dd
         className={`mt-0.5 text-sm ${
           highlight
-            ? 'rounded bg-amber-50 px-1.5 py-0.5 font-medium text-amber-900'
-            : 'text-slate-900 dark:text-slate-100'
+            ? 'rounded bg-amber-50 px-1.5 py-0.5 font-medium text-amber-900 dark:bg-amber-500/10 dark:text-amber-200'
+            : confValueCls || 'text-slate-900 dark:text-slate-100'
         }`}
       >
         {display}
       </dd>
+      {hasConf && (
+        <div className="mt-1">
+          <ConfidenceBar value={conf} width={64} />
+        </div>
+      )}
     </div>
   );
 }
@@ -385,9 +437,11 @@ function ItemsTable({ items }: { items: Array<Record<string, unknown>> }) {
 function MiscFields({
   extracted,
   excludeKeys,
+  fieldConfidence,
 }: {
   extracted: Record<string, unknown>;
   excludeKeys: string[];
+  fieldConfidence?: Record<string, number>;
 }) {
   const excluded = new Set(excludeKeys);
   const entries = Object.entries(extracted).filter(
@@ -398,7 +452,7 @@ function MiscFields({
   return (
     <Section title="Прочее">
       {entries.map(([k, v]) => (
-        <Field key={k} label={k} value={v} />
+        <Field key={k} label={k} value={v} conf={fieldConfidence?.[k]} />
       ))}
     </Section>
   );

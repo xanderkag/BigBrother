@@ -955,12 +955,18 @@ ConfidenceBar / extracted + field_confidence). `_multidoc_documents`
 → ничего не рисуем. Фильтр «недоставленные» для админа — отложен (выносим в UI-7
 как срез либо отдельным мелким пунктом, если попросят).
 
-### UI-6. Inline per-field confidence подсветка — backlog (F2 follow-up)
+### UI-6. Inline per-field confidence подсветка — ✅ закрыто 2026-05-20
 
-**Симптом:** `_field_confidence` показан отдельной карточкой, но сами поля в
-extracted не подсвечены. Оператор сверяет глазами. **Лечение:** цветовая
-подсветка полей по порогам прямо в ExtractedDataPanel/Editor (good/warn/bad),
-как ConfidenceBar.
+`ExtractedDataPanel` получил опц. `fieldConfidence` → каждое top-level поле
+красится по порогам ConfidenceBar (≥0.85 emerald/без фона · 0.6–0.85 amber ·
+<0.6 rose) + тонкий ConfidenceBar с % под значением. Поля без записи в карте —
+без регрессии. Вложенные party-поля по dotted-ключам (`seller.inn`). Провязано
+во все три вызова JobDetail (single + multidoc primary + segment). Issue-amber
+сохраняет приоритет над confidence-цветом.
+
+**Хвост (минор, опц.):** standalone `FieldConfidenceCard` оставлена (даёт полный
+сорт-список всех ключей, в т.ч. нес-displayed) — но у неё legacy-пороги 0.9/0.7
+и нет dark-mode. Если захотим одну шкалу на странице — выровнять под ConfidenceBar.
 
 ### UI-7. Dashboard-срезы по tier / consumer / engine — backlog
 
