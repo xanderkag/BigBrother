@@ -76,29 +76,60 @@ export type ResolvedTypeConfig = {
 
 export class DocumentTypeResolver {
   private cache = new Map<string, { row: DocumentTypeRow | null; at: number }>();
-  /** Кэш для listActive() — отдельный, потому что инвалидируется широко (любой write). */
-  private listCache: { rows: DocumentTypeRow[]; at: number } | null = null;
+  /**
+   * Кэш для listActiveForOrg() — keyed по org-bucket'у, чтобы набор типов
+   * tenant A не утёк в tenant B (CP7). Ключ '∅' = globals-only (orgId=null);
+   * прочие ключи = orgId. Инвалидируется широко (любой write на document_types
+   * сбрасывает ВСЕ bucket'ы — типы меняются редко, точечная инвалидация по
+   * org не стоит сложности).
+   */
+  private listCache = new Map<string, { rows: DocumentTypeRow[]; at: number }>();
 
   constructor(private readonly ttlMs: number = DEFAULT_TTL_MS) {}
 
   /**
-   * Список всех активных типов (для classifier'а и UI dropdown'ов). Один
-   * DB round-trip на ttl; при любом CRUD-write на document_types вызовите
-   * `invalidate()` без аргумента — это сбросит и список, и per-slug кэш.
+   * CP7: scope-aware активный набор для пайплайна организации `orgId`.
+   *   orgId = <uuid> ⇒ глобальные ∪ свои типы этой орг;
+   *   orgId = null   ⇒ только глобальные.
+   * Один DB round-trip на (org, ttl); кэш per-org. При любом CRUD-write на
+   * document_types вызовите `invalidate()` — это сбросит весь list-кэш.
    */
-  async listActive(): Promise<DocumentTypeRow[]> {
-    if (this.listCache && Date.now() - this.listCache.at < this.ttlMs) {
-      return this.listCache.rows;
+  async listActiveForOrg(orgId: string | null): Promise<DocumentTypeRow[]> {
+    const key = orgId ?? '∅';
+    const cached = this.listCache.get(key);
+    if (cached && Date.now() - cached.at < this.ttlMs) {
+      return cached.rows;
     }
     let rows: DocumentTypeRow[];
     try {
-      rows = await documentTypesRepo.listActive();
+      rows = await documentTypesRepo.listActiveForOrg(orgId);
     } catch {
       // DB hiccup — не отравляем кэш. Возвращаем пустой список, классификатор
       // деградирует к hardcoded fallback'у.
       return [];
     }
-    this.listCache = { rows, at: Date.now() };
+    this.listCache.set(key, { rows, at: Date.now() });
+    return rows;
+  }
+
+  /**
+   * Org-unaware активный набор (globals + ВСЕ tenant-типы). Оставлен для
+   * не-tenant контекстов / совместимости. Hot-path должен использовать
+   * `listActiveForOrg(orgId)`. Кэшируется в том же bucket-map под ключом '*'.
+   */
+  async listActive(): Promise<DocumentTypeRow[]> {
+    const key = '*';
+    const cached = this.listCache.get(key);
+    if (cached && Date.now() - cached.at < this.ttlMs) {
+      return cached.rows;
+    }
+    let rows: DocumentTypeRow[];
+    try {
+      rows = await documentTypesRepo.listActive();
+    } catch {
+      return [];
+    }
+    this.listCache.set(key, { rows, at: Date.now() });
     return rows;
   }
 
@@ -175,7 +206,10 @@ export class DocumentTypeResolver {
   invalidate(slug?: string): void {
     if (slug === undefined) this.cache.clear();
     else this.cache.delete(slug);
-    this.listCache = null;
+    // CP7: list-кэш keyed по org-bucket'у. Любой write мог поменять состав
+    // активных типов в любом bucket'е (global-тип виден всем; tenant-тип —
+    // одной орг). Чистим весь map целиком — типы меняются редко.
+    this.listCache.clear();
   }
 
   /**

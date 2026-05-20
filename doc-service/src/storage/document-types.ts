@@ -72,6 +72,15 @@ export type DocumentTypeRow = {
   classification_keyword_weights: string[] | null;  // numeric[] → string[]
   metadata: Record<string, unknown> | null;
   resolution_config: Record<string, unknown> | null;  // ResolutionConfig JSON
+  /**
+   * CP7 multi-tenancy: владелец типа.
+   *   NULL       ⇒ глобальный / shared / builtin (виден всем);
+   *   <org uuid> ⇒ tenant-owned (виден только этой орг + super_admin).
+   * Slug остаётся глобально уникальным — organization_id рулит только
+   * видимостью/владением, не смыслом slug'а. Builtin всегда NULL
+   * (CHECK chk_builtin_is_global в БД — backstop).
+   */
+  organization_id: string | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -94,13 +103,23 @@ export type DocumentTypeCreateInput = {
   metadata?: Record<string, unknown> | null;
   /** Конфиг резолюционного пайплайна (entity_links + item_matching). */
   resolution_config?: Record<string, unknown> | null;
+  /**
+   * CP7: владелец типа. Опущено / null ⇒ глобальный тип. Не-null ⇒
+   * tenant-owned. Builtin-create с не-null org отбивается на route/zod
+   * слое; DB CHECK — backstop.
+   */
+  organization_id?: string | null;
 };
 
 /** Partial update. Любое поле = `undefined` оставляет колонку как есть. `null` — обнуляет. */
 export type DocumentTypePatch = Partial<Omit<DocumentTypeCreateInput, 'slug'>>;
 
 class DocumentTypesRepo {
-  /** All types, ordered by display_name. Used to populate admin lists. */
+  /**
+   * All types, ordered by display_name. Используется super_admin'ом —
+   * видит абсолютно всё (все орг). Для org-scoped admin-листа смотри
+   * `listForOrg(orgId)`.
+   */
   async list(): Promise<DocumentTypeRow[]> {
     const { rows } = await db.query<DocumentTypeRow>(
       `SELECT * FROM document_types ORDER BY display_name`,
@@ -109,13 +128,61 @@ class DocumentTypesRepo {
   }
 
   /**
+   * CP7: scope-aware admin-лист — глобальные типы ∪ типы орг `orgId`
+   * (включая inactive, это admin-surface). Исключает чужие tenant-типы.
+   * Для super_admin route использует `list()`.
+   */
+  async listForOrg(orgId: string): Promise<DocumentTypeRow[]> {
+    const { rows } = await db.query<DocumentTypeRow>(
+      `SELECT * FROM document_types
+        WHERE organization_id IS NULL OR organization_id = $1
+        ORDER BY display_name`,
+      [orgId],
+    );
+    return rows;
+  }
+
+  /**
    * Active types only — для classifier'а и dropdown'ов выбора типа.
    * is_active=false скрыты из user-facing surface, но остаются в БД для
    * аудита и быстрого включения обратно.
+   *
+   * ⚠ Org-unaware: возвращает активные типы ВСЕХ организаций. Hot-path
+   * (pipeline) должен звать `listActiveForOrg(orgId)`. Этот метод оставлен
+   * для совместимости и для system/super контекста где scope не задан.
    */
   async listActive(): Promise<DocumentTypeRow[]> {
     const { rows } = await db.query<DocumentTypeRow>(
       `SELECT * FROM document_types WHERE is_active = true ORDER BY display_name`,
+    );
+    return rows;
+  }
+
+  /**
+   * CP7: scope-aware активный набор для пайплайна job'а организации `orgId`.
+   *   orgId = <uuid> ⇒ глобальные (organization_id IS NULL) ∪ свои типы орг;
+   *   orgId = null   ⇒ ТОЛЬКО глобальные.
+   *
+   * Решение по null: pipeline-путь выбирает globals-only (а не «все»), потому
+   * что null здесь означает job без организации (теоретически невозможно после
+   * миграции 0008 — jobs.organization_id NOT NULL) либо system-контекст без
+   * tenant'а. Возврат globals-only исключает утечку tenant A → tenant B и
+   * совпадает с тем что увидит дефолтная System-орг (у неё нет своих типов).
+   */
+  async listActiveForOrg(orgId: string | null): Promise<DocumentTypeRow[]> {
+    if (orgId === null) {
+      const { rows } = await db.query<DocumentTypeRow>(
+        `SELECT * FROM document_types
+          WHERE is_active = true AND organization_id IS NULL
+          ORDER BY display_name`,
+      );
+      return rows;
+    }
+    const { rows } = await db.query<DocumentTypeRow>(
+      `SELECT * FROM document_types
+        WHERE is_active = true AND (organization_id IS NULL OR organization_id = $1)
+        ORDER BY display_name`,
+      [orgId],
     );
     return rows;
   }
@@ -139,12 +206,12 @@ class DocumentTypesRepo {
          slug, display_name, description, is_active, is_builtin, tier, parser_kind,
          llm_prompt, llm_schema, expected_fields, validators,
          confidence_threshold, regex_fallback_threshold, classification_keywords, metadata,
-         resolution_config
+         resolution_config, organization_id
        ) VALUES (
          $1, $2, $3, COALESCE($4, true), false, COALESCE($5, 'experimental'), COALESCE($6, 'llm_extract'),
          $7, $8, COALESCE($9, ARRAY[]::TEXT[]), COALESCE($10, ARRAY[]::TEXT[]),
          $11, $12, COALESCE($13, ARRAY[]::TEXT[]), $14,
-         $15
+         $15, $16
        ) RETURNING *`,
       [
         input.slug,
@@ -162,6 +229,7 @@ class DocumentTypesRepo {
         input.classification_keywords ?? null,
         input.metadata ?? null,
         input.resolution_config ?? null,
+        input.organization_id ?? null,
       ],
     );
     return rows[0]!;
@@ -245,6 +313,7 @@ class DocumentTypesRepo {
       classification_keywords: row.classification_keywords,
       metadata: row.metadata,
       resolution_config: row.resolution_config,
+      organization_id: row.organization_id,
       created_at: row.created_at.toISOString(),
       updated_at: row.updated_at.toISOString(),
     };

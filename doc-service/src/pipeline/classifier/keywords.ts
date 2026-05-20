@@ -93,11 +93,11 @@ type CompiledRule = {
 };
 
 export class KeywordClassifier implements Classifier {
-  async classify(text: string): Promise<ClassificationResult> {
+  async classify(text: string, organizationId?: string | null): Promise<ClassificationResult> {
     const haystack = text.slice(0, HEADER_WINDOW);
 
-    // --- Stage 1: DB-driven rules ---
-    const dbBest = await this.classifyByDbRules(haystack);
+    // --- Stage 1: DB-driven rules (scoped к организации job'а, CP7) ---
+    const dbBest = await this.classifyByDbRules(haystack, organizationId ?? null);
     if (dbBest) {
       return {
         type: dbBest.type,
@@ -137,11 +137,12 @@ export class KeywordClassifier implements Classifier {
 
   private async classifyByDbRules(
     haystack: string,
+    organizationId: string | null,
   ): Promise<
     | { type: DocumentTypeSlug; confidence: number; matched: string; candidatesCount: number }
     | null
   > {
-    const rows = await documentTypeResolver.listActive();
+    const rows = await documentTypeResolver.listActiveForOrg(organizationId);
     if (rows.length === 0) return null;
 
     const compiled: CompiledRule[] = [];

@@ -30,6 +30,12 @@ import { splitPagesIntoSegments, isMultiDocument } from './splitter.js';
 export interface MultiDocRunnerDeps {
   classifier: Classifier;
   /**
+   * CP7: organization job'а — прокидывается в per-page classify чтобы
+   * scope активного набора типов совпадал с single-doc путём. null/undefined
+   * ⇒ globals-only.
+   */
+  organizationId?: string | null;
+  /**
    * Запускает per-segment LLM extract. Возвращает extracted + per-field
    * confidence для сегмента. Принимает text сегмента + предсказанный тип.
    * Используется тот же `runDocumentPipeline` что и для single-doc, но
@@ -58,7 +64,7 @@ export async function tryMultiDoc(
   ocr: OcrResult,
   deps: MultiDocRunnerDeps,
 ): Promise<ExtractedDocumentEntry[] | null> {
-  const { classifier, extractSegment, log } = deps;
+  const { classifier, extractSegment, log, organizationId } = deps;
 
   // Pre-flight: нужны ≥ 2 pages
   if (!ocr.pages || ocr.pages.length < 2) return null;
@@ -67,7 +73,7 @@ export async function tryMultiDoc(
   const pageClassifications: PageClassification[] = [];
   for (let i = 0; i < ocr.pages.length; i += 1) {
     const page = ocr.pages[i]!;
-    const cls = await classifier.classify(page.text);
+    const cls = await classifier.classify(page.text, organizationId ?? null);
     pageClassifications.push({
       page: i + 1, // 1-indexed
       document_type: cls.type,

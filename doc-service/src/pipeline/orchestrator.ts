@@ -255,10 +255,11 @@ async function processJobInner(
     if (ocr.pages && ocr.pages.length > 1) {
       multiDocResult = await tryMultiDoc(ocr, {
         classifier,
+        organizationId: job.organization_id,
         extractSegment: async (text, type, segLog) => {
           const segPipeline = await runDocumentPipeline(
             text,
-            { hint: type, promptOverride },
+            { hint: type, promptOverride, organizationId: job.organization_id },
             segLog,
             { jobId, segment: type },
           );
@@ -292,7 +293,7 @@ async function processJobInner(
     // потом в webhook payload.documents.
     const post = await runDocumentPipeline(
       ocr.text,
-      { hint: documentType ?? undefined, promptOverride },
+      { hint: documentType ?? undefined, promptOverride, organizationId: job.organization_id },
       log,
       { jobId },
       timings,
@@ -623,7 +624,7 @@ export async function runOcrChain(
  */
 export async function runDocumentPipeline(
   rawText: string,
-  options: { hint?: DocumentTypeSlug; promptOverride?: string },
+  options: { hint?: DocumentTypeSlug; promptOverride?: string; organizationId?: string | null },
   log: Logger,
   context: Record<string, unknown> = {},
   /** Опц. mutable timings — заполняются по ходу выполнения шагов. */
@@ -652,7 +653,7 @@ export async function runDocumentPipeline(
 
   if (!documentType) {
     const tClassify = Date.now();
-    const cls = await classifier.classify(rawText);
+    const cls = await classifier.classify(rawText, options.organizationId ?? null);
     const classifyMs = Date.now() - tClassify;
     if (timings) timings.classify_ms = classifyMs;
     documentType = cls.type;

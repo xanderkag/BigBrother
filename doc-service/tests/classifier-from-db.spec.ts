@@ -49,7 +49,7 @@ describe('KeywordClassifier — DB keywords path', () => {
   });
 
   it('classifies custom type by DB keyword (no builtin fallback hit)', async () => {
-    vi.spyOn(documentTypesRepo, 'listActive').mockResolvedValue([
+    vi.spyOn(documentTypesRepo, 'listActiveForOrg').mockResolvedValue([
       row({
         slug: 'commercial_invoice',
         classification_keywords: ['\\bcommercial\\s+invoice\\b'],
@@ -65,7 +65,7 @@ describe('KeywordClassifier — DB keywords path', () => {
   });
 
   it('hardcoded fallback фурычит если БД пустая (свежий dev-стенд)', async () => {
-    vi.spyOn(documentTypesRepo, 'listActive').mockResolvedValue([]);
+    vi.spyOn(documentTypesRepo, 'listActiveForOrg').mockResolvedValue([]);
 
     const r = await new KeywordClassifier().classify(
       'УНИВЕРСАЛЬНЫЙ ПЕРЕДАТОЧНЫЙ ДОКУМЕНТ № У-1 от 01.05.2026',
@@ -74,7 +74,7 @@ describe('KeywordClassifier — DB keywords path', () => {
   });
 
   it('falls through to hardcoded если DB-правила не подошли', async () => {
-    vi.spyOn(documentTypesRepo, 'listActive').mockResolvedValue([
+    vi.spyOn(documentTypesRepo, 'listActiveForOrg').mockResolvedValue([
       row({
         slug: 'commercial_invoice',
         classification_keywords: ['\\bcommercial\\s+invoice\\b'],
@@ -87,14 +87,14 @@ describe('KeywordClassifier — DB keywords path', () => {
   });
 
   it('null when nothing matches in DB or hardcoded', async () => {
-    vi.spyOn(documentTypesRepo, 'listActive').mockResolvedValue([]);
+    vi.spyOn(documentTypesRepo, 'listActiveForOrg').mockResolvedValue([]);
     const r = await new KeywordClassifier().classify('Some random text');
     expect(r.type).toBeNull();
     expect(r.confidence).toBe(0);
   });
 
   it('admin может перебить builtin: DB-rule с тем же slug заменяет hardcoded', async () => {
-    vi.spyOn(documentTypesRepo, 'listActive').mockResolvedValue([
+    vi.spyOn(documentTypesRepo, 'listActiveForOrg').mockResolvedValue([
       row({
         slug: 'invoice',
         is_builtin: true,
@@ -114,7 +114,7 @@ describe('KeywordClassifier — DB keywords path', () => {
   });
 
   it('bad regex в БД не валит классификатор', async () => {
-    vi.spyOn(documentTypesRepo, 'listActive').mockResolvedValue([
+    vi.spyOn(documentTypesRepo, 'listActiveForOrg').mockResolvedValue([
       row({
         slug: 'bad_type',
         classification_keywords: ['[unclosed bracket', 'valid_keyword'],
@@ -126,7 +126,7 @@ describe('KeywordClassifier — DB keywords path', () => {
   });
 
   it('per-type weight из metadata.classification_weight применяется', async () => {
-    vi.spyOn(documentTypesRepo, 'listActive').mockResolvedValue([
+    vi.spyOn(documentTypesRepo, 'listActiveForOrg').mockResolvedValue([
       row({
         slug: 'low_priority',
         classification_keywords: ['shared'],

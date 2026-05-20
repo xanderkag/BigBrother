@@ -7,7 +7,7 @@ import { jobsRepo } from '../storage/jobs.js';
 import { documentTypeResolver } from '../pipeline/document-type-resolver.js';
 import { ErrorResponse, Job } from '../types/api-schemas.js';
 import { bearerAuthHook } from '../auth.js';
-import { requireSuperAdmin } from '../authz.js';
+import { requireSuperAdmin, requireOrgAdmin, getEffectiveScope } from '../authz.js';
 
 /**
  * Document Type Registry — admin CRUD.
@@ -90,6 +90,8 @@ const DocumentType = z.object({
   classification_keywords: z.array(z.string()),
   metadata: z.record(z.unknown()).nullable(),
   resolution_config: ResolutionConfigSchema.nullable(),
+  // CP7: владелец типа. null = глобальный/builtin/shared. uuid = tenant-owned.
+  organization_id: z.string().uuid().nullable(),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -123,23 +125,52 @@ const CreateBody = z.object({
   classification_keywords: z.array(z.string().min(1).max(200)).max(64).optional(),
   metadata: z.record(z.unknown()).nullable().optional(),
   resolution_config: ResolutionConfigSchema.nullable().optional(),
+  /**
+   * CP7: владелец создаваемого типа.
+   *   omitted / null ⇒ глобальный тип — только super_admin;
+   *   <uuid>         ⇒ tenant-owned. org_admin может указать только свою орг
+   *                    (route forces / rejects чужую). Builtin через create
+   *                    не заводится (is_builtin всегда false в repo.create),
+   *                    поэтому пара builtin+org здесь невозможна; DB CHECK
+   *                    chk_builtin_is_global — backstop для прямых INSERT'ов.
+   */
+  organization_id: z.string().uuid().nullable().optional(),
 });
 
 // PATCH — все поля опциональные, slug нельзя менять (берётся из URL).
-const PatchBody = CreateBody.omit({ slug: true }).partial();
+// organization_id переназначить через PATCH нельзя — владение фиксируется
+// на create (omit ниже).
+const PatchBody = CreateBody.omit({ slug: true, organization_id: true }).partial();
 
 export async function documentTypesRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
   r.addHook('onRequest', bearerAuthHook);
+
+  /**
+   * CP7 mutate-guard для PATCH/DELETE по владельцу типа.
+   *   ownerOrgId = null  ⇒ глобальный/builtin тип — super_admin only.
+   *   ownerOrgId = uuid  ⇒ tenant-owned — super_admin или org_admin этой орг.
+   * Возвращает true если доступ есть; иначе уже отправлен 401/403.
+   */
+  function canMutate(
+    req: import('fastify').FastifyRequest,
+    reply: import('fastify').FastifyReply,
+    ownerOrgId: string | null,
+  ): boolean {
+    if (ownerOrgId === null) return requireSuperAdmin(req, reply);
+    return requireOrgAdmin(req, reply, ownerOrgId);
+  }
 
   r.get(
     '/document-types',
     {
       schema: {
         tags: ['document-types'],
-        summary: 'Список всех зарегистрированных типов документов',
+        summary: 'Список зарегистрированных типов документов (scope-aware)',
         description:
-          'Возвращает все document_types из БД (включая inactive). Для админ-UI.',
+          'Возвращает document_types видимые вызывающему (включая inactive). ' +
+          'super_admin видит все типы всех орг; org_admin/manager — глобальные ' +
+          '(organization_id IS NULL) ∪ типы своей организации. Для админ-UI.',
         security: [{ bearerAuth: [] }],
         response: {
           200: ListResponse,
@@ -147,8 +178,26 @@ export async function documentTypesRoutes(app: FastifyInstance): Promise<void> {
         },
       },
     },
-    async () => {
-      const rows = await documentTypesRepo.list();
+    async (req) => {
+      // CP7: scope. super_admin (kind='all') видит всё. org_admin (kind='org')
+      // и обычные юзеры с организацией — globals ∪ своя орг. Юзер без орг и
+      // без super → только globals.
+      const scope = await getEffectiveScope(req);
+      let rows;
+      if (scope.kind === 'all') {
+        rows = await documentTypesRepo.list();
+      } else if (scope.kind === 'org') {
+        rows = await documentTypesRepo.listForOrg(scope.orgId);
+      } else {
+        // kind='projects' (manager/viewer): тип-владение на уровне орг, не
+        // проекта — берём organization_id юзера. Нет орг → globals-only.
+        const orgId = req.user?.organization_id ?? null;
+        // orgId=null → globals-only (listActiveForOrg(null)), не listActive()
+        // которая org-unaware и слила бы чужие tenant-типы.
+        rows = orgId
+          ? await documentTypesRepo.listForOrg(orgId)
+          : await documentTypesRepo.listActiveForOrg(null);
+      }
       return { items: rows.map((r) => documentTypesRepo.toApi(r)) };
     },
   );
@@ -193,18 +242,43 @@ export async function documentTypesRoutes(app: FastifyInstance): Promise<void> {
           201: DocumentType,
           400: ErrorResponse,
           401: ErrorResponse,
+          403: ErrorResponse,
           409: ErrorResponse,
         },
       },
     },
     async (req, reply) => {
-      if (!requireSuperAdmin(req, reply)) return reply;
+      // CP7 authz:
+      //   - super_admin: глобальный тип (organization_id null/omitted) ИЛИ
+      //     тип для любой орг.
+      //   - org_admin: только тип своей орг — глобальный создавать нельзя.
+      //   - manager/viewer/no-org: запрещено.
+      const user = req.user;
+      if (!user) {
+        reply.code(401);
+        return { error: 'authentication required' };
+      }
+      const bodyOrg = req.body.organization_id ?? null;
+      if (user.isSuperAdmin) {
+        // любой scope ок
+      } else if (user.role === 'org_admin' && user.organization_id) {
+        if (bodyOrg === null) {
+          reply.code(403);
+          return { error: 'org_admin cannot create a global type (organization_id required)' };
+        }
+        // requireOrgAdmin отбивает чужую орг (даёт true только для своей).
+        if (!requireOrgAdmin(req, reply, bodyOrg)) return reply;
+      } else {
+        reply.code(403);
+        return { error: 'super_admin or org_admin role required' };
+      }
+
       const existing = await documentTypesRepo.findBySlug(req.body.slug);
       if (existing) {
         reply.code(409);
         return { error: `document type "${req.body.slug}" already exists` };
       }
-      const row = await documentTypesRepo.create(req.body);
+      const row = await documentTypesRepo.create({ ...req.body, organization_id: bodyOrg });
       const after = documentTypesRepo.toApi(row);
       await auditLogRepo.append({
         actor: 'admin',
@@ -235,17 +309,21 @@ export async function documentTypesRoutes(app: FastifyInstance): Promise<void> {
           200: DocumentType,
           400: ErrorResponse,
           401: ErrorResponse,
+          403: ErrorResponse,
           404: ErrorResponse,
         },
       },
     },
     async (req, reply) => {
-      if (!requireSuperAdmin(req, reply)) return reply;
       const before = await documentTypesRepo.findBySlug(req.params.slug);
       if (!before) {
+        // 404 до authz: slug — публичный идентификатор, утечки нет.
         reply.code(404);
         return { error: 'document type not found' };
       }
+      // CP7: tenant-owned тип может править super_admin или org_admin его орг.
+      // Глобальный/builtin тип — super_admin only (как раньше).
+      if (!canMutate(req, reply, before.organization_id)) return reply;
       const updated = await documentTypesRepo.patch(req.params.slug, req.body);
       if (!updated) {
         // race: row vanished between findBySlug and patch
@@ -287,12 +365,14 @@ export async function documentTypesRoutes(app: FastifyInstance): Promise<void> {
       },
     },
     async (req, reply) => {
-      if (!requireSuperAdmin(req, reply)) return reply;
       const row = await documentTypesRepo.findBySlug(req.params.slug);
       if (!row) {
         reply.code(404);
         return { error: 'document type not found' };
       }
+      // CP7: tenant-owned → super_admin или org_admin владеющей орг; глобальный
+      // → super_admin only. (builtin всегда глобальный, отдельно отбивается ниже.)
+      if (!canMutate(req, reply, row.organization_id)) return reply;
       if (row.is_builtin) {
         reply.code(403);
         return {

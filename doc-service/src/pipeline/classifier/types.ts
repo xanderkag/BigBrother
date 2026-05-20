@@ -21,5 +21,11 @@ export type ClassificationResult = {
 };
 
 export interface Classifier {
-  classify(text: string): Promise<ClassificationResult>;
+  /**
+   * @param organizationId  CP7: scope активного набора типов. <uuid> ⇒
+   *   глобальные ∪ типы этой орг; null/undefined ⇒ только глобальные
+   *   (см. DocumentTypeResolver.listActiveForOrg). Tenant никогда не видит
+   *   кастомные типы другого tenant'а.
+   */
+  classify(text: string, organizationId?: string | null): Promise<ClassificationResult>;
 }
