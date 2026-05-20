@@ -946,12 +946,14 @@ ConfidenceBar / extracted + field_confidence). `_multidoc_documents`
 карточка type/confidence вместо пустой панели; Edit отключён; чип
 «classify-only» в Review.
 
-### UI-5. Webhook delivery статус — backlog (CP7 follow-up)
+### UI-5. Webhook delivery статус — ✅ закрыто 2026-05-20
 
-**Симптом:** push-доставка результата потребителю (ВЭД→их система) пишется в job,
-но в UI нет «доставлено / повторы / упало + последняя ошибка». Админ не знает,
-получил ли SLAI документ. **Лечение:** панель статуса доставки в JobDetail +
-бейдж в списке; для админа — фильтр «недоставленные».
+Панель «Доставка вебхука» в JobDetail (доставлено / ожидает / ошибка + последняя
+ошибка + кол-во попыток + target URL) и компактный чип (✓/✗/•) в списке работ
+(desktop-строка и mobile-карточка). Render-only — данные уже на `Job`
+(`webhook_attempts/_delivered_at/_last_error/_url`). Pull-mode (нет webhook_url)
+→ ничего не рисуем. Фильтр «недоставленные» для админа — отложен (выносим в UI-7
+как срез либо отдельным мелким пунктом, если попросят).
 
 ### UI-6. Inline per-field confidence подсветка — backlog (F2 follow-up)
 

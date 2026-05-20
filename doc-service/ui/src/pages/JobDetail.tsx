@@ -14,6 +14,7 @@ import {
   shortId,
   formatDateTime,
 } from '@/lib/format';
+import type { Job } from '@/lib/types';
 
 /**
  * F5 multi-doc сегмент — один документ внутри multi-doc PDF/xlsx.
@@ -247,6 +248,8 @@ export default function JobDetailPage() {
             </>
           )}
 
+          <WebhookDeliveryCard job={job} />
+
           {job.pipeline_steps && job.pipeline_steps.length > 0 && (
             <PipelineStepsCard steps={job.pipeline_steps} />
           )}
@@ -477,6 +480,84 @@ function FieldConfidenceCard({ fc }: { fc: Record<string, number> }) {
             </span>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * UI-5: панель доставки вебхука. webhook_url == null → потребитель в
+ * pull-режиме, ничего не рисуем. Иначе показываем состояние доставки:
+ * доставлен / ошибка(retry) / ожидает.
+ */
+function WebhookDeliveryCard({ job }: { job: Job }) {
+  if (!job.webhook_url) return null;
+
+  const delivered = job.webhook_delivered_at != null;
+  const failed = !delivered && job.webhook_last_error != null;
+  const pending = !delivered && !failed;
+
+  return (
+    <div className="card">
+      <div className="card-header flex items-center justify-between">
+        <h3 className="card-title">Доставка вебхука</h3>
+        {delivered ? (
+          <span className="badge-emerald">Доставлен</span>
+        ) : failed ? (
+          <span className="badge-rose">Ошибка</span>
+        ) : (
+          <span className="badge-slate">Ожидает отправки</span>
+        )}
+      </div>
+      <div className="card-body space-y-3 text-sm">
+        <div className="flex items-start gap-2">
+          <span className="w-24 shrink-0 text-xs text-slate-500 dark:text-slate-400">
+            Адрес
+          </span>
+          <code
+            className="min-w-0 break-all font-mono text-xs text-slate-700 dark:text-slate-300"
+            title={job.webhook_url}
+          >
+            {job.webhook_url}
+          </code>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <span className="w-24 shrink-0 text-xs text-slate-500 dark:text-slate-400">
+            Попыток
+          </span>
+          <span className="font-mono text-xs text-slate-700 dark:text-slate-300">
+            {job.webhook_attempts}
+          </span>
+        </div>
+
+        {delivered && (
+          <div className="flex items-center gap-2">
+            <span className="w-24 shrink-0 text-xs text-slate-500 dark:text-slate-400">
+              Доставлен
+            </span>
+            <span className="text-xs text-emerald-700 dark:text-emerald-300">
+              {formatDateTime(job.webhook_delivered_at)}
+            </span>
+          </div>
+        )}
+
+        {failed && job.webhook_last_error && (
+          <div className="space-y-1">
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              Последняя ошибка
+            </span>
+            <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5 font-mono text-[11px] text-rose-800 dark:border-rose-900/50 dark:bg-rose-900/20 dark:text-rose-300">
+              {job.webhook_last_error}
+            </pre>
+          </div>
+        )}
+
+        {pending && (
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Документ ещё не отправлен потребителю.
+          </p>
+        )}
       </div>
     </div>
   );

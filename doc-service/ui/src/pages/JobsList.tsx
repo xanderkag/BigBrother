@@ -566,9 +566,12 @@ function JobRow({
         )}
       </td>
 
-      {/* STATUS — бейдж */}
+      {/* STATUS — бейдж + чип доставки вебхука */}
       <td className="px-3 py-2">
-        <StatusBadge status={job.status} />
+        <span className="inline-flex items-center gap-1.5">
+          <StatusBadge status={job.status} />
+          <WebhookChip job={job} />
+        </span>
       </td>
 
       {/* CONFIDENCE — горизонтальная полоска */}
@@ -698,6 +701,7 @@ function JobCard({
           {/* Бейджи: статус + тип + tier */}
           <div className="flex flex-wrap items-center gap-1.5 text-xs">
             <StatusBadge status={job.status} />
+            <WebhookChip job={job} />
             {job.document_type ? (
               <span className="inline-flex items-center gap-1">
                 <span className="badge-indigo uppercase">{job.document_type}</span>
@@ -800,6 +804,49 @@ function StatusBadge({ status }: { status: string }) {
       ? 'badge-sky'
       : 'badge-slate';
   return <span className={`${cls} uppercase`}>{status}</span>;
+}
+
+/**
+ * UI-5: компактный чип статуса доставки вебхука. Нет webhook_url →
+ * ничего не рисуем (pull-режим). Иначе ✓ доставлен / ✗ ошибка /
+ * • ожидает. Складываем рядом со status-бейджем, без отдельной колонки.
+ */
+function WebhookChip({ job }: { job: Job }) {
+  if (!job.webhook_url) return null;
+
+  const delivered = job.webhook_delivered_at != null;
+  const failed = !delivered && job.webhook_last_error != null;
+
+  const base =
+    'inline-flex h-5 w-5 items-center justify-center rounded-sm font-mono text-xs';
+  if (delivered) {
+    return (
+      <span
+        className={`${base} bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300`}
+        title={`Вебхук доставлен · ${formatDateTime(job.webhook_delivered_at)} · попыток: ${job.webhook_attempts}`}
+      >
+        ✓
+      </span>
+    );
+  }
+  if (failed) {
+    return (
+      <span
+        className={`${base} bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-300`}
+        title={`Вебхук не доставлен · попыток: ${job.webhook_attempts} · ${job.webhook_last_error ?? ''}`}
+      >
+        ✗
+      </span>
+    );
+  }
+  return (
+    <span
+      className={`${base} bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400`}
+      title={`Вебхук ожидает отправки · попыток: ${job.webhook_attempts}`}
+    >
+      •
+    </span>
+  );
 }
 
 /**
