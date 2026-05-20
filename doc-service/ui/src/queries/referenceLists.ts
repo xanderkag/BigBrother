@@ -6,8 +6,9 @@
  *   GET    /api/v1/reference-list-types?organization_id=:org
  *   GET    /api/v1/reference-list-types/:slug/entries?organization_id=:org&limit=&offset=&q=&active_only=
  *
- * org_id берётся из выбранного workspace (TODO: добавить workspace state).
- * Пока просто принимаем organization_id как параметр.
+ * org_id берётся из выбранного workspace через useWorkspaceOrgId
+ * (см. lib/workspace.ts; страница ReferenceLists вызывает его и передаёт
+ * сюда). Сами хуки просто принимают organization_id как параметр.
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';

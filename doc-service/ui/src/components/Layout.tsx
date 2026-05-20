@@ -7,6 +7,7 @@ import { useOrganizations } from '@/queries/tenants';
 import { useDocumentTypes } from '@/queries/documentTypes';
 import { useProviders } from '@/queries/providers';
 import { useReferenceListTypes } from '@/queries/referenceLists';
+import { useReady } from '@/queries/health';
 import { useWorkspaceOrgId } from '@/lib/workspace';
 import { cycleTheme, getTheme, type ThemeChoice } from '@/lib/theme';
 import { useSidebarCollapsed } from '@/lib/sidebar';
@@ -530,11 +531,27 @@ function ChevronRight() {
 }
 
 function SystemStatusBadge() {
-  // TODO: подвязать на /healthz когда будем сводить с реальным health.
+  const { data } = useReady();
+  const state = data?.state ?? 'loading';
+  const dot =
+    state === 'healthy'
+      ? 'bg-emerald-500'
+      : state === 'degraded'
+      ? 'bg-amber-500'
+      : 'bg-slate-400 dark:bg-slate-600';
+  const label =
+    state === 'healthy' ? 'система в норме' : state === 'degraded' ? 'деградация' : 'проверка…';
+  const title =
+    state === 'degraded' && data?.failures
+      ? `Недоступны зависимости: ${data.failures}`
+      : undefined;
   return (
-    <span className="hidden items-center gap-1.5 px-2 py-1 text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 sm:inline-flex">
-      <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500" />
-      all systems normal
+    <span
+      className="hidden items-center gap-1.5 px-2 py-1 text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400 sm:inline-flex"
+      title={title}
+    >
+      <span className={`inline-block h-1.5 w-1.5 rounded-full ${dot}`} />
+      {label}
     </span>
   );
 }
