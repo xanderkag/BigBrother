@@ -926,6 +926,49 @@ touch-targets ≥40px. Desktop (≥md) не изменился. Чисто
 
 ---
 
+## 🎨 Frontend backlog — «данные есть, экрана нет» (2026-05-20)
+
+Бэкенд-изменения последних дней положили в данные то, что UI пока не
+показывает. Берём потихоньку, в порядке ценности.
+
+### UI-3. Multi-doc PDF результаты в JobDetail/Review — 🟡 в работе (F5 follow-up)
+
+**Симптом:** F5 извлекает несколько документов из одного PDF (счёт+ТТН+АКТ)
+в `_multidoc_documents` / webhook `documents[]`, но `JobDetail`/`ExtractedDataPanel`
+рендерят только доминирующий `extracted`. Оператор не видит и не может проверить
+вторичные документы.
+**Лечение:** табы/секции по найденным документам с page_range, типом, confidence,
+их extracted (+ per-segment field_confidence). Single-doc — без изменений.
+
+### UI-4. classify_only-aware рендеринг — 🟡 в работе (CP7 follow-up)
+
+**Симптом:** джобы потребителя с `mode=classify_only` приходят с пустым `extracted`;
+UI выглядит «не извлеклось». **Лечение:** плашка «только классификация (профиль
+потребителя)» вместо пустой панели; скрыть extracted-редактор для таких джоб.
+
+### UI-5. Webhook delivery статус — backlog (CP7 follow-up)
+
+**Симптом:** push-доставка результата потребителю (ВЭД→их система) пишется в job,
+но в UI нет «доставлено / повторы / упало + последняя ошибка». Админ не знает,
+получил ли SLAI документ. **Лечение:** панель статуса доставки в JobDetail +
+бейдж в списке; для админа — фильтр «недоставленные».
+
+### UI-6. Inline per-field confidence подсветка — backlog (F2 follow-up)
+
+**Симптом:** `_field_confidence` показан отдельной карточкой, но сами поля в
+extracted не подсвечены. Оператор сверяет глазами. **Лечение:** цветовая
+подсветка полей по порогам прямо в ExtractedDataPanel/Editor (good/warn/bad),
+как ConfidenceBar.
+
+### UI-7. Dashboard-срезы по tier / consumer / engine — backlog
+
+**Симптом:** появились оси tier (stable/beta/experimental), org-потребитель,
+OCR-движок — но Dashboard их не режет. **Лечение:** needs_review rate по tier
+(тянут ли experimental вниз?), объём по потребителям, mix OCR-движков. Нужен
+доступный бэкенд-агрегат (часть есть в `/metrics/operational`).
+
+---
+
 ## 🟢 Test harness / quality gate
 
 ### Vitest env harness + surfaced bugs — ✅ закрыто 2026-05-20
