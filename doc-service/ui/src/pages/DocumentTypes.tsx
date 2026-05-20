@@ -8,6 +8,12 @@ import {
   type DocumentTypeTier,
   type ParserKind,
 } from '@/queries/documentTypes';
+import { useOrganizations } from '@/queries/tenants';
+import { useCurrentUser } from '@/queries/me';
+import {
+  DOCUMENT_TYPE_TEMPLATES,
+  type DocumentTypeTemplate,
+} from '@/lib/document-type-templates';
 import JsonField from '@/components/JsonField';
 import StringListField from '@/components/StringListField';
 import TierBadge from '@/components/TierBadge';
@@ -29,10 +35,26 @@ const PARSER_KINDS: ParserKind[] = [
 
 export default function DocumentTypesPage() {
   const { data, isLoading, error } = useDocumentTypes();
+  const { data: orgsData } = useOrganizations();
+  const { data: me } = useCurrentUser();
   const [editing, setEditing] = useState<DocumentTypeEntry | null>(null);
   const [showInactive, setShowInactive] = useState(false);
+  const [scope, setScope] = useState<string>('all'); // all | global | <org_id>
 
-  const items = (data?.items ?? []).filter((t) => showInactive || t.is_active);
+  const orgs = orgsData?.items ?? [];
+  const orgName = (id: string | null | undefined) => {
+    if (!id) return null;
+    const found = orgs.find((o) => o.id === id);
+    return found?.name ?? `${id.slice(0, 8)}…`;
+  };
+
+  const items = (data?.items ?? [])
+    .filter((t) => showInactive || t.is_active)
+    .filter((t) => {
+      if (scope === 'all') return true;
+      if (scope === 'global') return !t.organization_id;
+      return t.organization_id === scope;
+    });
 
   return (
     <div className="mx-auto max-w-6xl space-y-4 p-6">
@@ -45,6 +67,26 @@ export default function DocumentTypesPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <select
+            className="form-select text-sm"
+            value={scope}
+            onChange={(e) => setScope(e.target.value)}
+            title="Фильтр по владельцу"
+          >
+            <option value="all">Все</option>
+            <option value="global">Глобальные</option>
+            {me?.is_super_admin
+              ? orgs.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.name}
+                  </option>
+                ))
+              : me?.organization_id && (
+                  <option value={me.organization_id}>
+                    {orgName(me.organization_id) ?? 'Моя организация'}
+                  </option>
+                )}
+          </select>
           <label className="flex items-center gap-2 text-sm">
             <input
               type="checkbox"
@@ -62,6 +104,7 @@ export default function DocumentTypesPage() {
                 display_name: '',
                 is_active: true,
                 tier: 'experimental',
+                organization_id: me?.is_super_admin ? null : me?.organization_id ?? null,
               } as DocumentTypeEntry)
             }
           >
@@ -82,6 +125,7 @@ export default function DocumentTypesPage() {
             <tr>
               <th className="px-4 py-2">Slug</th>
               <th className="px-4 py-2">Название</th>
+              <th className="px-4 py-2">Владелец</th>
               <th className="px-4 py-2">Зрелость</th>
               <th className="px-4 py-2">Parser</th>
               <th className="px-4 py-2">Поля</th>
@@ -94,7 +138,7 @@ export default function DocumentTypesPage() {
             {isLoading &&
               [1, 2, 3, 4, 5].map((i) => (
                 <tr key={`skel-${i}`}>
-                  {Array.from({ length: 8 }).map((_, j) => (
+                  {Array.from({ length: 9 }).map((_, j) => (
                     <td key={j} className="px-4 py-3">
                       <div className="h-3 w-20 animate-pulse rounded bg-slate-100 dark:bg-slate-800/60" />
                     </td>
@@ -103,7 +147,7 @@ export default function DocumentTypesPage() {
               ))}
             {!isLoading && items.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-4 py-10 text-center">
+                <td colSpan={9} className="px-4 py-10 text-center">
                   <p className="font-medium text-slate-700 dark:text-slate-300">
                     Типы документов не настроены
                   </p>
@@ -122,6 +166,20 @@ export default function DocumentTypesPage() {
                   {t.is_builtin && (
                     <span className="badge-slate ml-2" title="Встроенный тип">
                       builtin
+                    </span>
+                  )}
+                </td>
+                <td className="px-4 py-2">
+                  {t.organization_id ? (
+                    <span
+                      className="badge-indigo"
+                      title={`Принадлежит организации ${t.organization_id}`}
+                    >
+                      {orgName(t.organization_id)}
+                    </span>
+                  ) : (
+                    <span className="badge-slate" title="Доступен всем организациям">
+                      Глобальный
                     </span>
                   )}
                 </td>
@@ -163,6 +221,10 @@ export default function DocumentTypesPage() {
         <DocumentTypeEditor
           initial={editing}
           isNew={!editing.slug}
+          orgs={orgs}
+          isSuperAdmin={!!me?.is_super_admin}
+          myOrgId={me?.organization_id ?? null}
+          orgName={orgName}
           onClose={() => setEditing(null)}
         />
       )}
@@ -177,10 +239,18 @@ export default function DocumentTypesPage() {
 function DocumentTypeEditor({
   initial,
   isNew,
+  orgs,
+  isSuperAdmin,
+  myOrgId,
+  orgName,
   onClose,
 }: {
   initial: DocumentTypeEntry;
   isNew: boolean;
+  orgs: { id: string; name: string }[];
+  isSuperAdmin: boolean;
+  myOrgId: string | null;
+  orgName: (id: string | null | undefined) => string | null;
   onClose: () => void;
 }) {
   const create = useCreateDocumentType();
@@ -189,12 +259,23 @@ function DocumentTypeEditor({
 
   const [draft, setDraft] = useState<DocumentTypeEntry>({ ...initial });
   const [error, setError] = useState<string | null>(null);
+  const [templateId, setTemplateId] = useState<string | null>(null);
 
   const setField = <K extends keyof DocumentTypeEntry>(
     key: K,
     value: DocumentTypeEntry[K],
   ) => {
     setDraft((d) => ({ ...d, [key]: value }));
+  };
+
+  const applyTemplate = (tpl: DocumentTypeTemplate) => {
+    setTemplateId(tpl.id);
+    setDraft((d) => ({
+      ...d,
+      parser_kind: tpl.parser_kind,
+      expected_fields: [...tpl.expected_fields],
+      validators: [...tpl.validators],
+    }));
   };
 
   const save = async () => {
@@ -215,6 +296,9 @@ function DocumentTypeEditor({
           display_name: draft.display_name,
           description: draft.description ?? null,
           is_active: draft.is_active,
+          organization_id: isSuperAdmin
+            ? draft.organization_id ?? null
+            : myOrgId,
           tier: draft.tier ?? 'experimental',
           parser_kind: draft.parser_kind ?? null,
           llm_prompt: draft.llm_prompt ?? null,
@@ -289,6 +373,32 @@ function DocumentTypeEditor({
         </div>
 
         <div className="flex-1 overflow-auto">
+          {isNew && (
+            <div className="border-b border-slate-200 px-5 py-4 dark:border-slate-800">
+              <label className="form-label">Шаблон</label>
+              <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
+                Выберите категорию — поля, валидаторы и parser подставятся.
+                Дальше отредактируйте slug, название и ключевые слова.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {DOCUMENT_TYPE_TEMPLATES.map((tpl) => (
+                  <button
+                    key={tpl.id}
+                    type="button"
+                    onClick={() => applyTemplate(tpl)}
+                    className={`rounded-lg border px-3 py-2 text-sm transition ${
+                      templateId === tpl.id
+                        ? 'border-indigo-500 bg-indigo-50 text-indigo-700 dark:border-indigo-400 dark:bg-indigo-950 dark:text-indigo-200'
+                        : 'border-slate-200 text-slate-700 hover:border-slate-300 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    <span className="mr-1">{tpl.emoji}</span>
+                    {tpl.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="card-body grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <label className="form-label">Slug</label>
@@ -321,6 +431,35 @@ function DocumentTypeEditor({
                 onChange={(e) => setField('description', e.target.value || null)}
               />
             </div>
+
+            {!initial.is_builtin && (
+              <div className="sm:col-span-2">
+                <label className="form-label">Владелец</label>
+                {isSuperAdmin ? (
+                  <select
+                    className="form-select"
+                    value={draft.organization_id ?? ''}
+                    onChange={(e) =>
+                      setField('organization_id', e.target.value || null)
+                    }
+                  >
+                    <option value="">Глобальный (все)</option>
+                    {orgs.map((o) => (
+                      <option key={o.id} value={o.id}>
+                        {o.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <p className="text-sm text-slate-600 dark:text-slate-400">
+                    {orgName(myOrgId) ?? 'Моя организация'}
+                    <span className="ml-2 text-xs text-slate-400 dark:text-slate-500">
+                      (тип будет доступен только вашей организации)
+                    </span>
+                  </p>
+                )}
+              </div>
+            )}
 
             <div>
               <label className="form-label">Parser kind</label>

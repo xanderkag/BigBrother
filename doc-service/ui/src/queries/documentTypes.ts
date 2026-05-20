@@ -26,6 +26,7 @@ export interface DocumentTypeEntry {
   description?: string | null;
   is_active: boolean;
   is_builtin?: boolean;
+  organization_id?: string | null;
   tier: DocumentTypeTier;
   parser_kind?: ParserKind | null;
   llm_prompt?: string | null;
