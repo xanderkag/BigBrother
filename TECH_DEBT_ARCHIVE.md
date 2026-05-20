@@ -625,12 +625,21 @@ qty×price / идемпотентность).
 
 Follow-up'ы: HTTP-level route-тесты authz для document-types — ✅ сделано 2026-05-20 (`9711109`, 16 fastify.inject тестов, багов не найдено). `provider_settings` всё ещё глобальные (per-tenant Claude-ключ) — сознательно отложено, нет потребителя.
 
-### I6. Yandex Vision контракт не выверен — deferred
+### I6. Yandex Vision OCR — ✅ контракт сверен и переписан 2026-05-20, ждёт только ключ
 
-**Где:** `doc-service/src/pipeline/ocr/yandex.ts:50-66`
-**Trigger:** появится бизнес-запрос обрабатывать через Yandex (например, скан-документы без PII).
-**Почему сейчас не делаем:** В проде Yandex выключен (`YANDEX_VISION_API_KEY=`); PII-документы (TTN/CMR) защищены от внешнего OCR через `YANDEX_DISABLE_FOR_PII` + per-job `_disable_external_ocr`. 152-ФЗ — основной блокер.
-**Оценка:** 2 ч сверка + 2 ч VCR-моки + получение реального API-ключа Yandex Cloud.
+**Сделано** (`7ccadd7`): движок переписан под актуальный синхронный OCR API
+(`ocr.api.cloud.yandex.net/ocr/v1/recognizeText`, `x-folder-id` header, flat body
+`{content,mimeType,languageCodes,model}`, `x-data-logging-enabled: false` чтобы Яндекс
+не хранил наши доки, per-page через `rasterizedPages`, разбор `result.textAnnotation.fullText`).
+6 unit-тестов. Движок **выключен** пока нет ключа/folder.
+
+**Цена** (актуальная, с НДС): печатный текст `page` — **0.1321 ₽/стр**; таблицы 1.22 ₽; рукопись 1.52 ₽.
+Биллинг постранично. Заменяет Tesseract на плохих сканах (не Claude); расход аддитивный и только когда Яндекс реально вызывается как последний OCR-fallback.
+
+**Что осталось для включения** (ops, не код): `YANDEX_VISION_API_KEY` + `YANDEX_FOLDER_ID`
+в env + один живой smoke-вызов (`src/scripts/smoke.ts`) для подтверждения live-формата `fullText`
+и что `x-data-logging-enabled: false` уважается. 152-ФЗ: Яндекс — РФ-облако (data residency ок);
+PII-доки (TTN/CMR) всё равно не уходят в Яндекс через I8-гард.
 
 ### Phase F — дополнительные типы документов — deferred
 
