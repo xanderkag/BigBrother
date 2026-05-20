@@ -1,0 +1,98 @@
+# ─────────────────────────────────────────────────────────────────────
+# Manual deploy parsdocs на demo-сервер (95.216.43.235).
+#
+# ⚠ Только workflow_dispatch (ручной запуск) — НЕ on:push.
+# Это осознанный выбор: для parsdocs действует правило "confirm before
+# deploy" (в отличие от SLAI, который авто-деплоится на push). Деплой
+# запускается человеком/deploy-master через кнопку "Run workflow" и
+# требует ввести "deploy" в поле confirm.
+#
+# Что делает:
+#   1. SSH на 95.216.43.235:9022
+#   2. cd /root/parsdocs → проверка чистого дерева → git pull main
+#   3. docker compose build doc-service (migrate/api/worker) + up -d
+#      (inference/postgres/redis НЕ пересобираются — меньше blast radius)
+#   4. verify: migrate exit 0 + /version показывает свежий commit
+#
+# Prerequisite: secret SSH_PRIVATE_KEY в Settings → Secrets репозитория
+# BigBrother (тот же ключ, что у SLAI-репозиториев — один сервер).
+# Public-часть уже в /root/.ssh/authorized_keys на сервере.
+# ─────────────────────────────────────────────────────────────────────
+
+name: Deploy parsdocs (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Введи "deploy" для подтверждения деплоя на прод'
+        required: true
+        default: ''
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Guard — require explicit confirm
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "deploy" ]; then
+            echo "✗ confirm != 'deploy' — деплой отменён (введи 'deploy')"
+            exit 1
+          fi
+          echo "✓ confirm OK"
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: 95.216.43.235
+          port: 9022
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 20m
+          script: |
+            set -e
+            cd /root/parsdocs
+
+            echo "→ Проверка чистого рабочего дерева..."
+            if [ -n "$(git status --porcelain)" ]; then
+              echo "✗ На сервере есть локальные правки — СТОП (разобраться вручную)"
+              git status --short
+              exit 1
+            fi
+
+            git fetch origin
+            echo "→ Что прилетит:"
+            git log --oneline HEAD..origin/main || true
+            git pull origin main
+
+            export GIT_COMMIT=$(git rev-parse HEAD)
+            export GIT_COMMIT_SHORT=$(git rev-parse --short HEAD)
+            export GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+            export BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+            echo "→ Build doc-service (commit ${GIT_COMMIT_SHORT})..."
+            docker compose -f docker-compose.doc-platform.yml build migrate api worker
+            docker compose -f docker-compose.doc-platform.yml up -d
+
+            echo "→ Verify: migrate exit code (ждём 0)..."
+            EC=$(docker inspect parsdocs-migrate-1 --format '{{.State.ExitCode}}')
+            if [ "$EC" != "0" ]; then
+              echo "✗ migrate exit $EC — старая версия api продолжает работать (depends_on safety)"
+              docker logs parsdocs-migrate-1 --tail 30
+              exit 1
+            fi
+
+            echo "→ Verify: /version показывает ${GIT_COMMIT_SHORT}..."
+            PORT=$(docker port parsdocs-api-1 3000/tcp | head -1 | sed 's/.*://')
+            for i in 1 2 3 4 5 6 7 8 9 10; do
+              sleep 3
+              V=$(curl -s "http://localhost:${PORT:-3000}/version" || echo "")
+              if echo "$V" | grep -q "$GIT_COMMIT_SHORT"; then
+                echo "✓ Deploy OK: $V"
+                exit 0
+              fi
+              echo "  attempt #$i: api ещё поднимается..."
+            done
+            echo "✗ /version не показал ${GIT_COMMIT_SHORT} за 30с"
+            docker logs parsdocs-api-1 --tail 30
+            exit 1
