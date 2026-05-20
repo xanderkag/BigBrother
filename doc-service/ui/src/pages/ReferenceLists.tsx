@@ -171,14 +171,16 @@ function TypesTable({ types }: { types: ReferenceListType[] }) {
       <div className="card-header">
         <h2 className="card-title">Типы справочников ({types.length})</h2>
       </div>
-      <div className="overflow-x-auto">
+      {/* Desktop / tablet (≥md): таблица. Подсказку и дату прячем на
+          средней ширине. */}
+      <div className="hidden overflow-x-auto md:block">
         <table className="min-w-full text-sm">
           <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-900/40 dark:text-slate-400">
             <tr>
               <Th>Slug</Th>
               <Th>Название</Th>
-              <Th>Подсказка поиска</Th>
-              <Th>Создан</Th>
+              <Th className="hidden lg:table-cell">Подсказка поиска</Th>
+              <Th className="hidden lg:table-cell">Создан</Th>
               <Th />
             </tr>
           </thead>
@@ -199,10 +201,10 @@ function TypesTable({ types }: { types: ReferenceListType[] }) {
                 <td className="px-4 py-2 text-slate-700 dark:text-slate-300">
                   {t.label}
                 </td>
-                <td className="px-4 py-2 text-xs text-slate-500 dark:text-slate-400">
+                <td className="hidden px-4 py-2 text-xs text-slate-500 lg:table-cell dark:text-slate-400">
                   {t.search_hint ?? '—'}
                 </td>
-                <td className="px-4 py-2 text-xs text-slate-500 dark:text-slate-400">
+                <td className="hidden px-4 py-2 text-xs text-slate-500 lg:table-cell dark:text-slate-400">
                   {fmtDate(t.created_at)}
                 </td>
                 <td className="px-4 py-2">
@@ -218,6 +220,28 @@ function TypesTable({ types }: { types: ReferenceListType[] }) {
           </tbody>
         </table>
       </div>
+
+      {/* Mobile (<md): карточки. */}
+      <ul className="divide-y divide-slate-200 md:hidden dark:divide-slate-800">
+        {types.map((t) => (
+          <li key={t.slug} className="px-4 py-3">
+            <Link
+              to={`/reference-lists/${encodeURIComponent(t.slug)}`}
+              className="flex items-center justify-between gap-2"
+            >
+              <div className="min-w-0">
+                <div className="truncate text-slate-700 dark:text-slate-300">{t.label}</div>
+                <div className="font-mono text-xs text-slate-500 dark:text-slate-400">{t.slug}</div>
+              </div>
+              <span className="btn-secondary min-h-[40px] shrink-0 text-xs">Записи →</span>
+            </Link>
+            <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-500 dark:text-slate-400">
+              {t.search_hint && <span>{t.search_hint}</span>}
+              <span>{fmtDate(t.created_at)}</span>
+            </div>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -308,15 +332,16 @@ export function ReferenceListEntriesPage() {
 
           {items.length > 0 && (
             <div className="card overflow-hidden">
-              <div className="overflow-x-auto">
+              {/* Desktop / tablet (≥md): таблица. */}
+              <div className="hidden overflow-x-auto md:block">
                 <table className="min-w-full text-sm">
                   <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-900/40 dark:text-slate-400">
                     <tr>
-                      <Th>External ID</Th>
+                      <Th className="hidden lg:table-cell">External ID</Th>
                       <Th>Название</Th>
-                      <Th>Ключи поиска</Th>
+                      <Th className="hidden lg:table-cell">Ключи поиска</Th>
                       <Th>Статус</Th>
-                      <Th>Синхр.</Th>
+                      <Th className="hidden lg:table-cell">Синхр.</Th>
                       <Th />
                     </tr>
                   </thead>
@@ -327,6 +352,13 @@ export function ReferenceListEntriesPage() {
                   </tbody>
                 </table>
               </div>
+
+              {/* Mobile (<md): карточки. */}
+              <ul className="divide-y divide-slate-200 md:hidden dark:divide-slate-800">
+                {items.map((e) => (
+                  <EntryCard key={e.id} e={e} slug={slug ?? ''} orgId={orgId ?? ''} />
+                ))}
+              </ul>
               <div className="flex items-center justify-between border-t border-slate-200 bg-slate-50/50 px-4 py-2 text-sm dark:border-slate-800 dark:bg-slate-950/30">
                 <span className="text-slate-600 dark:text-slate-400">
                   Показано {offset + 1}–{offset + items.length}
@@ -390,13 +422,13 @@ function EntryRow({
 
   return (
     <tr className="hover:bg-slate-50 dark:hover:bg-slate-900/40">
-      <td className="px-4 py-2 font-mono text-xs text-slate-500 dark:text-slate-400">
+      <td className="hidden px-4 py-2 font-mono text-xs text-slate-500 lg:table-cell dark:text-slate-400">
         {e.external_id ?? '—'}
       </td>
       <td className="px-4 py-2 text-slate-700 dark:text-slate-300">
         {e.display_name}
       </td>
-      <td className="max-w-[16rem] truncate px-4 py-2 font-mono text-xs text-slate-500 dark:text-slate-400">
+      <td className="hidden max-w-[16rem] truncate px-4 py-2 font-mono text-xs text-slate-500 lg:table-cell dark:text-slate-400">
         {e.search_keys.join(', ')}
       </td>
       <td className="px-4 py-2">
@@ -406,7 +438,7 @@ function EntryRow({
           <span className="badge-slate">Inactive</span>
         )}
       </td>
-      <td className="px-4 py-2 text-xs text-slate-500 dark:text-slate-400">
+      <td className="hidden px-4 py-2 text-xs text-slate-500 lg:table-cell dark:text-slate-400">
         {fmtDate(e.synced_at ?? e.updated_at)}
       </td>
       <td className="px-4 py-2 text-right">
@@ -436,12 +468,93 @@ function EntryRow({
   );
 }
 
+/** EntryCard — мобильная (<md) форма записи справочника. */
+function EntryCard({
+  e,
+  slug,
+  orgId,
+}: {
+  e: ReferenceListEntry;
+  slug: string;
+  orgId: string;
+}) {
+  const deactivate = useDeactivateEntry();
+  const reactivate = useReactivateEntry();
+
+  const handleDeactivate = async () => {
+    if (!confirm(`Деактивировать "${e.display_name}"? Запись скроется из resolution, но останется в БД.`))
+      return;
+    try {
+      await deactivate.mutateAsync({ entryId: e.id, organization_id: orgId, slug });
+    } catch (err) {
+      alert(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleReactivate = async () => {
+    try {
+      await reactivate.mutateAsync({ entryId: e.id, organization_id: orgId, slug });
+    } catch (err) {
+      alert(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  return (
+    <li className="space-y-2 px-4 py-3">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="truncate text-slate-700 dark:text-slate-300">{e.display_name}</div>
+          {e.external_id && (
+            <div className="font-mono text-xs text-slate-500 dark:text-slate-400">
+              id: {e.external_id}
+            </div>
+          )}
+        </div>
+        {e.is_active ? (
+          <span className="badge-emerald shrink-0">Active</span>
+        ) : (
+          <span className="badge-slate shrink-0">Inactive</span>
+        )}
+      </div>
+      {e.search_keys.length > 0 && (
+        <div className="truncate font-mono text-[11px] text-slate-500 dark:text-slate-400">
+          {e.search_keys.join(', ')}
+        </div>
+      )}
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] text-slate-500 dark:text-slate-400">
+          синхр. {fmtDate(e.synced_at ?? e.updated_at)}
+        </span>
+        {e.is_active ? (
+          <button
+            type="button"
+            className="btn-ghost min-h-[40px] text-xs text-rose-600 dark:text-rose-400"
+            disabled={deactivate.isPending}
+            onClick={handleDeactivate}
+          >
+            ✕ Деактивировать
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="btn-ghost min-h-[40px] text-xs"
+            disabled={reactivate.isPending}
+            onClick={handleReactivate}
+          >
+            ↻ Восстановить
+          </button>
+        )}
+      </div>
+    </li>
+  );
+}
+
 // ============================================================================
 // Helpers
 // ============================================================================
 
-function Th({ children }: { children?: React.ReactNode }) {
-  return <th className="px-4 py-2 text-left">{children}</th>;
+function Th({ children, className }: { children?: React.ReactNode; className?: string }) {
+  return <th className={`px-4 py-2 text-left ${className ?? ''}`}>{children}</th>;
 }
 
 function SkeletonList() {

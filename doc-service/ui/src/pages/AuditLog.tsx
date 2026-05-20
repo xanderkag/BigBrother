@@ -186,11 +186,11 @@ function AuditCard({ entry }: { entry: AuditEntry }) {
   return (
     <div className="card">
       <div className="card-body">
-        <div className="flex items-center gap-3 text-sm">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
           <span className={actionBadge}>{entry.action}</span>
           <span className="font-medium text-slate-900 dark:text-slate-100">{entry.entity}</span>
-          <span className="font-mono text-xs text-slate-600 dark:text-slate-400 dark:text-slate-500">{entry.entity_id}</span>
-          <span className="ml-auto text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">
+          <span className="min-w-0 break-all font-mono text-xs text-slate-600 dark:text-slate-400 dark:text-slate-500">{entry.entity_id}</span>
+          <span className="text-xs text-slate-500 sm:ml-auto dark:text-slate-400 dark:text-slate-500">
             {formatDateTime(entry.at)} · {entry.actor}
           </span>
         </div>
@@ -199,15 +199,15 @@ function AuditCard({ entry }: { entry: AuditEntry }) {
         {entry.action === 'update' && diffEntries.length > 0 && (
           <div className="mt-3 space-y-1">
             {diffEntries.slice(0, expanded ? 999 : 5).map(([field, change]) => (
-              <div key={field} className="flex items-start gap-3 text-xs">
-                <span className="w-40 shrink-0 truncate font-mono text-slate-600 dark:text-slate-400 dark:text-slate-500">
+              <div key={field} className="flex flex-wrap items-start gap-x-3 gap-y-1 text-xs">
+                <span className="w-full shrink-0 truncate font-mono text-slate-600 sm:w-40 dark:text-slate-400 dark:text-slate-500">
                   {field}
                 </span>
-                <span className="rounded bg-rose-50 px-1.5 py-0.5 font-mono text-rose-700 dark:text-rose-300 line-through">
+                <span className="break-all rounded bg-rose-50 px-1.5 py-0.5 font-mono text-rose-700 line-through dark:bg-rose-950/40 dark:text-rose-300">
                   {renderShort(change.from)}
                 </span>
                 <span className="text-slate-400 dark:text-slate-500">→</span>
-                <span className="rounded bg-emerald-50 px-1.5 py-0.5 font-mono text-emerald-700 dark:text-emerald-300">
+                <span className="break-all rounded bg-emerald-50 px-1.5 py-0.5 font-mono text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300">
                   {renderShort(change.to)}
                 </span>
               </div>

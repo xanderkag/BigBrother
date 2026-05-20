@@ -89,7 +89,7 @@ export default function SearchBox() {
         }}
         placeholder="filename, id, ИНН…"
         aria-label="Quick search"
-        className="w-56 rounded-sm border border-slate-200 bg-white py-1 pl-7 pr-12 font-mono text-xs text-slate-800 placeholder:text-slate-400 hover:border-slate-300 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:placeholder:text-slate-500 dark:hover:border-slate-600 dark:focus:border-indigo-400 dark:focus:ring-indigo-400"
+        className="w-32 rounded-sm border border-slate-200 bg-white py-1 pl-7 pr-2 font-mono text-xs text-slate-800 placeholder:text-slate-400 hover:border-slate-300 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 sm:w-44 sm:pr-12 md:w-56 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:placeholder:text-slate-500 dark:hover:border-slate-600 dark:focus:border-indigo-400 dark:focus:ring-indigo-400"
       />
       <kbd className="pointer-events-none absolute right-1.5 hidden rounded-sm border border-slate-200 bg-slate-50 px-1 font-mono text-[10px] text-slate-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-400 sm:inline">
         ⌘K

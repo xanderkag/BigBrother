@@ -445,7 +445,7 @@ function TopBar({ onBurgerClick }: { onBurgerClick: () => void }) {
         {/* Burger — только на mobile */}
         <button
           type="button"
-          className="rounded-sm p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100 lg:hidden"
+          className="-ml-1.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-sm text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100 lg:hidden"
           onClick={onBurgerClick}
           aria-label="Меню"
         >
@@ -477,7 +477,7 @@ function TopBar({ onBurgerClick }: { onBurgerClick: () => void }) {
           ))}
         </nav>
       </div>
-      <div className="flex items-center gap-2 text-xs">
+      <div className="flex shrink-0 items-center gap-2 text-xs">
         <SearchBox />
         <SystemStatusBadge />
         <ThemeToggle />
@@ -550,7 +550,7 @@ function ThemeToggle() {
   return (
     <button
       type="button"
-      className="rounded-sm p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-sm text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100 md:h-8 md:w-8"
       onClick={() => setChoice(cycleTheme())}
       title={title}
       aria-label={title}

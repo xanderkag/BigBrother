@@ -164,43 +164,70 @@ function OrgsCard({
         <EmptyRow text="Организаций ещё нет — создайте первую." />
       )}
       {orgs.length > 0 && (
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-900/40 dark:text-slate-400">
-              <tr>
-                <Th>ID</Th>
-                <Th>Название</Th>
-                <Th>Тип</Th>
-                <Th>Создан</Th>
-                <Th>Профиль</Th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-              {orgs.map((o) => (
-                <tr key={o.id} className="hover:bg-slate-50 dark:hover:bg-slate-900/40">
-                  <Td mono>{o.id.slice(0, 8)}</Td>
-                  <Td>{o.name}</Td>
-                  <Td>
-                    <TypeBadge type={o.type} />
-                  </Td>
-                  <Td className="text-xs text-slate-500 dark:text-slate-400">
-                    {fmtDate(o.created_at)}
-                  </Td>
-                  <Td>
-                    <button
-                      type="button"
-                      className="btn-ghost text-xs"
-                      onClick={() => setProfileOrg(o)}
-                      title="Профиль потребителя (режим, webhook, порог)"
-                    >
-                      ⚙ Профиль
-                    </button>
-                  </Td>
+        <>
+          {/* Desktop / tablet (≥md): таблица. ID/Создан прячем на средней ширине. */}
+          <div className="hidden overflow-x-auto md:block">
+            <table className="min-w-full text-sm">
+              <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-900/40 dark:text-slate-400">
+                <tr>
+                  <Th className="hidden lg:table-cell">ID</Th>
+                  <Th>Название</Th>
+                  <Th>Тип</Th>
+                  <Th className="hidden lg:table-cell">Создан</Th>
+                  <Th>Профиль</Th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                {orgs.map((o) => (
+                  <tr key={o.id} className="hover:bg-slate-50 dark:hover:bg-slate-900/40">
+                    <Td mono className="hidden lg:table-cell">{o.id.slice(0, 8)}</Td>
+                    <Td>{o.name}</Td>
+                    <Td>
+                      <TypeBadge type={o.type} />
+                    </Td>
+                    <Td className="hidden text-xs text-slate-500 lg:table-cell dark:text-slate-400">
+                      {fmtDate(o.created_at)}
+                    </Td>
+                    <Td>
+                      <button
+                        type="button"
+                        className="btn-ghost text-xs"
+                        onClick={() => setProfileOrg(o)}
+                        title="Профиль потребителя (режим, webhook, порог)"
+                      >
+                        ⚙ Профиль
+                      </button>
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Mobile (<md): карточки. */}
+          <ul className="divide-y divide-slate-200 md:hidden dark:divide-slate-800">
+            {orgs.map((o) => (
+              <li key={o.id} className="flex items-center justify-between gap-2 px-5 py-3">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium text-slate-900 dark:text-slate-100">{o.name}</span>
+                    <TypeBadge type={o.type} />
+                  </div>
+                  <div className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                    {o.id.slice(0, 8)} · {fmtDate(o.created_at)}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn-ghost min-h-[40px] shrink-0 text-xs"
+                  onClick={() => setProfileOrg(o)}
+                >
+                  ⚙ Профиль
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
       )}
 
       {/* Модалка вместо отдельного роута: страница Tenants уже работает на
@@ -627,36 +654,57 @@ function ProjectsCard({
         <EmptyRow text="Проектов ещё нет." />
       )}
       {projects.length > 0 && (
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-900/40 dark:text-slate-400">
-              <tr>
-                <Th>ID</Th>
-                <Th>Название</Th>
-                <Th>Организация</Th>
-                <Th>Описание</Th>
-                <Th>Создан</Th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-              {projects.map((p) => (
-                <tr key={p.id} className="hover:bg-slate-50 dark:hover:bg-slate-900/40">
-                  <Td mono>{p.id.slice(0, 8)}</Td>
-                  <Td>{p.name}</Td>
-                  <Td className="text-xs text-slate-600 dark:text-slate-400">
-                    {orgMap.get(p.organization_id) ?? p.organization_id.slice(0, 8)}
-                  </Td>
-                  <Td className="text-xs text-slate-500 dark:text-slate-400">
-                    {p.description ?? '—'}
-                  </Td>
-                  <Td className="text-xs text-slate-500 dark:text-slate-400">
-                    {fmtDate(p.created_at)}
-                  </Td>
+        <>
+          {/* Desktop / tablet (≥md): таблица. */}
+          <div className="hidden overflow-x-auto md:block">
+            <table className="min-w-full text-sm">
+              <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-900/40 dark:text-slate-400">
+                <tr>
+                  <Th className="hidden xl:table-cell">ID</Th>
+                  <Th>Название</Th>
+                  <Th>Организация</Th>
+                  <Th className="hidden lg:table-cell">Описание</Th>
+                  <Th className="hidden lg:table-cell">Создан</Th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                {projects.map((p) => (
+                  <tr key={p.id} className="hover:bg-slate-50 dark:hover:bg-slate-900/40">
+                    <Td mono className="hidden xl:table-cell">{p.id.slice(0, 8)}</Td>
+                    <Td>{p.name}</Td>
+                    <Td className="text-xs text-slate-600 dark:text-slate-400">
+                      {orgMap.get(p.organization_id) ?? p.organization_id.slice(0, 8)}
+                    </Td>
+                    <Td className="hidden text-xs text-slate-500 lg:table-cell dark:text-slate-400">
+                      {p.description ?? '—'}
+                    </Td>
+                    <Td className="hidden text-xs text-slate-500 lg:table-cell dark:text-slate-400">
+                      {fmtDate(p.created_at)}
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Mobile (<md): карточки. */}
+          <ul className="divide-y divide-slate-200 md:hidden dark:divide-slate-800">
+            {projects.map((p) => (
+              <li key={p.id} className="space-y-1 px-5 py-3">
+                <div className="font-medium text-slate-900 dark:text-slate-100">{p.name}</div>
+                <div className="text-xs text-slate-600 dark:text-slate-400">
+                  {orgMap.get(p.organization_id) ?? p.organization_id.slice(0, 8)}
+                </div>
+                {p.description && (
+                  <div className="text-xs text-slate-500 dark:text-slate-400">{p.description}</div>
+                )}
+                <div className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                  {p.id.slice(0, 8)} · {fmtDate(p.created_at)}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </>
       )}
     </div>
   );
@@ -816,70 +864,121 @@ function UsersCard({
         <EmptyRow text="Пользователей ещё нет." />
       )}
       {users.length > 0 && (
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-900/40 dark:text-slate-400">
-              <tr>
-                <Th>Имя</Th>
-                <Th>Email</Th>
-                <Th>Роль</Th>
-                <Th>Организация</Th>
-                <Th>Токен</Th>
-                <Th>Действия</Th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-              {users.map((u) => (
-                <tr key={u.id} className="hover:bg-slate-50 dark:hover:bg-slate-900/40">
-                  <Td>{u.display_name}</Td>
-                  <Td className="text-xs">{u.email ?? '—'}</Td>
-                  <Td>
-                    <RoleBadge role={u.role} />
-                  </Td>
-                  <Td className="text-xs text-slate-600 dark:text-slate-400">
-                    {u.organization_id ? orgMap.get(u.organization_id) ?? u.organization_id.slice(0, 8) : '—'}
-                  </Td>
-                  <Td>
-                    {u.has_token ? (
-                      <span className="badge-emerald">есть</span>
-                    ) : (
-                      <span className="badge-slate">нет</span>
-                    )}
-                    {u.token_last_used_at && (
-                      <div className="mt-0.5 text-[11px] text-slate-400 dark:text-slate-500">
-                        исп. {fmtDate(u.token_last_used_at)}
-                      </div>
-                    )}
-                  </Td>
-                  <Td>
-                    <div className="flex gap-1">
-                      <button
-                        type="button"
-                        className="btn-ghost text-xs"
-                        onClick={() => handleGenerateToken(u.id)}
-                        disabled={genToken.isPending}
-                        title={u.has_token ? 'Перевыпустить токен' : 'Сгенерировать токен'}
-                      >
-                        {u.has_token ? '↻ rotate' : '+ token'}
-                      </button>
-                      {u.has_token && (
+        <>
+          {/* Desktop / tablet (≥md): таблица. Email/Организация/Токен прячем
+              на средней ширине; Имя/Роль/Действия остаются. */}
+          <div className="hidden overflow-x-auto md:block">
+            <table className="min-w-full text-sm">
+              <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-900/40 dark:text-slate-400">
+                <tr>
+                  <Th>Имя</Th>
+                  <Th className="hidden lg:table-cell">Email</Th>
+                  <Th>Роль</Th>
+                  <Th className="hidden xl:table-cell">Организация</Th>
+                  <Th className="hidden lg:table-cell">Токен</Th>
+                  <Th>Действия</Th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                {users.map((u) => (
+                  <tr key={u.id} className="hover:bg-slate-50 dark:hover:bg-slate-900/40">
+                    <Td>{u.display_name}</Td>
+                    <Td className="hidden text-xs lg:table-cell">{u.email ?? '—'}</Td>
+                    <Td>
+                      <RoleBadge role={u.role} />
+                    </Td>
+                    <Td className="hidden text-xs text-slate-600 xl:table-cell dark:text-slate-400">
+                      {u.organization_id ? orgMap.get(u.organization_id) ?? u.organization_id.slice(0, 8) : '—'}
+                    </Td>
+                    <Td className="hidden lg:table-cell">
+                      {u.has_token ? (
+                        <span className="badge-emerald">есть</span>
+                      ) : (
+                        <span className="badge-slate">нет</span>
+                      )}
+                      {u.token_last_used_at && (
+                        <div className="mt-0.5 text-[11px] text-slate-400 dark:text-slate-500">
+                          исп. {fmtDate(u.token_last_used_at)}
+                        </div>
+                      )}
+                    </Td>
+                    <Td>
+                      <div className="flex gap-1">
                         <button
                           type="button"
-                          className="btn-ghost text-xs text-rose-600 dark:text-rose-400"
-                          onClick={() => handleRevoke(u.id)}
-                          disabled={revoke.isPending}
-                          title="Отозвать токен"
+                          className="btn-ghost text-xs"
+                          onClick={() => handleGenerateToken(u.id)}
+                          disabled={genToken.isPending}
+                          title={u.has_token ? 'Перевыпустить токен' : 'Сгенерировать токен'}
                         >
-                          ✕ revoke
+                          {u.has_token ? '↻ rotate' : '+ token'}
                         </button>
-                      )}
-                    </div>
-                  </Td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                        {u.has_token && (
+                          <button
+                            type="button"
+                            className="btn-ghost text-xs text-rose-600 dark:text-rose-400"
+                            onClick={() => handleRevoke(u.id)}
+                            disabled={revoke.isPending}
+                            title="Отозвать токен"
+                          >
+                            ✕ revoke
+                          </button>
+                        )}
+                      </div>
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Mobile (<md): карточки. */}
+          <ul className="divide-y divide-slate-200 md:hidden dark:divide-slate-800">
+            {users.map((u) => (
+              <li key={u.id} className="space-y-2 px-5 py-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="font-medium text-slate-900 dark:text-slate-100">{u.display_name}</div>
+                    {u.email && (
+                      <div className="text-xs text-slate-500 dark:text-slate-400">{u.email}</div>
+                    )}
+                  </div>
+                  <RoleBadge role={u.role} />
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                  {u.has_token ? (
+                    <span className="badge-emerald">токен есть</span>
+                  ) : (
+                    <span className="badge-slate">нет токена</span>
+                  )}
+                  <span className="text-slate-500 dark:text-slate-400">
+                    {u.organization_id ? orgMap.get(u.organization_id) ?? u.organization_id.slice(0, 8) : 'без орг.'}
+                  </span>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    className="btn-ghost min-h-[40px] text-xs"
+                    onClick={() => handleGenerateToken(u.id)}
+                    disabled={genToken.isPending}
+                  >
+                    {u.has_token ? '↻ rotate' : '+ token'}
+                  </button>
+                  {u.has_token && (
+                    <button
+                      type="button"
+                      className="btn-ghost min-h-[40px] text-xs text-rose-600 dark:text-rose-400"
+                      onClick={() => handleRevoke(u.id)}
+                      disabled={revoke.isPending}
+                    >
+                      ✕ revoke
+                    </button>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </>
       )}
     </div>
   );
@@ -901,8 +1000,8 @@ function RoleBadge({ role }: { role: UserRole }) {
 // Helpers
 // ============================================================================
 
-function Th({ children }: { children: React.ReactNode }) {
-  return <th className="px-4 py-2 text-left">{children}</th>;
+function Th({ children, className }: { children: React.ReactNode; className?: string }) {
+  return <th className={`px-4 py-2 text-left ${className ?? ''}`}>{children}</th>;
 }
 
 function Td({

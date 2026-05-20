@@ -373,14 +373,17 @@ export default function JobsListPage() {
         />
       ) : (
         <div className="card overflow-hidden">
-          <div className="overflow-x-auto">
+          {/* Desktop / tablet: классическая таблица (≥md). Часть колонок
+              прячем на промежуточной ширине через hidden lg/xl:table-cell —
+              первичные File/Type/Status/Confidence/Created остаются всегда. */}
+          <div className="hidden overflow-x-auto md:block">
             <table className="min-w-full text-sm">
               <thead className="bg-slate-50 dark:bg-slate-900/40 text-left text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">
                 <tr>
                   <th className="w-8 px-3 py-2">
                     <input
                       type="checkbox"
-                      className="h-3.5 w-3.5 cursor-pointer rounded-sm border-slate-300 text-indigo-600 focus:ring-1 focus:ring-indigo-500 dark:border-slate-600 dark:bg-slate-700"
+                      className="h-4 w-4 cursor-pointer rounded-sm border-slate-300 text-indigo-600 focus:ring-1 focus:ring-indigo-500 dark:border-slate-600 dark:bg-slate-700"
                       checked={pageAllSelected}
                       ref={(el) => {
                         if (el) el.indeterminate = !pageAllSelected && pageSomeSelected;
@@ -390,18 +393,18 @@ export default function JobsListPage() {
                     />
                   </th>
                   <th className="px-3 py-2 font-medium">File</th>
-                  <th className="px-3 py-2 font-medium">ID</th>
+                  <th className="hidden px-3 py-2 font-medium xl:table-cell">ID</th>
                   <th className="px-3 py-2 font-medium">Type</th>
                   <th className="px-3 py-2 font-medium">Status</th>
                   <th className="px-3 py-2 font-medium">Confidence</th>
                   <th className="px-3 py-2 text-center font-medium">Issues</th>
                   <th
-                    className="px-3 py-2 text-right font-medium"
+                    className="hidden px-3 py-2 text-right font-medium lg:table-cell"
                     title="Длительность обработки: finished_at − created_at для завершённых job'ов, либо now − created_at с «…» для in-flight."
                   >
                     Время разбора
                   </th>
-                  <th className="px-3 py-2 font-medium">Model / OCR</th>
+                  <th className="hidden px-3 py-2 font-medium xl:table-cell">Model / OCR</th>
                   <th
                     className="px-3 py-2 font-medium"
                     title="Сколько прошло с момента создания job'а (relative). Полная дата — в tooltip ячейки."
@@ -424,6 +427,22 @@ export default function JobsListPage() {
               </tbody>
             </table>
           </div>
+
+          {/* Mobile (<md): каждая строка — карточка с парами label/value.
+              Несёт все ключевые ячейки desktop-таблицы: статус, тип, tier,
+              confidence, issues, время разбора, движок, возраст. */}
+          <ul className="divide-y divide-slate-200 md:hidden dark:divide-slate-800">
+            {items.map((j) => (
+              <JobCard
+                key={j.id}
+                job={j}
+                now={now}
+                selected={selected.has(j.id)}
+                onToggle={() => toggleOne(j.id)}
+                tier={j.document_type ? tierBySlug.get(j.document_type) ?? null : null}
+              />
+            ))}
+          </ul>
 
           {/* Pagination */}
           {(hasPrev || hasNext) && (
@@ -489,7 +508,7 @@ function JobRow({
       <td className="px-3 py-2">
         <input
           type="checkbox"
-          className="h-3.5 w-3.5 cursor-pointer rounded-sm border-slate-300 text-indigo-600 focus:ring-1 focus:ring-indigo-500 dark:border-slate-600 dark:bg-slate-700"
+          className="h-4 w-4 cursor-pointer rounded-sm border-slate-300 text-indigo-600 focus:ring-1 focus:ring-indigo-500 dark:border-slate-600 dark:bg-slate-700"
           checked={selected}
           onChange={onToggle}
           onClick={(e) => e.stopPropagation()}
@@ -527,7 +546,7 @@ function JobRow({
       </td>
 
       {/* ID — split */}
-      <td className="px-3 py-2 font-mono text-xs text-slate-500 dark:text-slate-400" title={job.id}>
+      <td className="hidden px-3 py-2 font-mono text-xs text-slate-500 xl:table-cell dark:text-slate-400" title={job.id}>
         {shortIdSplit(job.id)}
       </td>
 
@@ -573,7 +592,7 @@ function JobRow({
 
       {/* ВРЕМЯ РАЗБОРА — длительность процессинга */}
       <td
-        className="px-3 py-2 text-right font-mono text-xs tabular-nums text-slate-600 dark:text-slate-400"
+        className="hidden px-3 py-2 text-right font-mono text-xs tabular-nums text-slate-600 lg:table-cell dark:text-slate-400"
         title={duration.tooltip}
       >
         {duration.label}
@@ -582,7 +601,7 @@ function JobRow({
       {/* MODEL / OCR ENGINE — стэк: LLM-модель сверху (важнее для
           оператора, который хочет понять «чем прогнали»), OCR-движок ниже
           мелким и тусклым. Если LLM не использовался — модель «—». */}
-      <td className="px-3 py-2 leading-tight">
+      <td className="hidden px-3 py-2 leading-tight xl:table-cell">
         <div
           className="font-mono text-xs text-slate-700 dark:text-slate-300"
           title={
@@ -605,6 +624,121 @@ function JobRow({
         {age}
       </td>
     </tr>
+  );
+}
+
+/**
+ * JobCard — мобильная (<md) форма строки журнала. Тот же набор данных,
+ * что и JobRow, но в виде стека label/value. Чекбокс и имя файла —
+ * крупная зона (≥44px touch target), остальные поля — компактная сетка.
+ */
+function JobCard({
+  job,
+  now,
+  selected,
+  onToggle,
+  tier,
+}: {
+  job: Job;
+  now: Date;
+  selected: boolean;
+  onToggle: () => void;
+  tier: DocumentTypeTier | null;
+}) {
+  const amounts = extractAmounts(job.extracted);
+  const fullDate = formatDateTime(job.created_at);
+  const age = formatAge(job.created_at, now);
+  const duration = computeDuration(job, now);
+
+  return (
+    <li
+      className={
+        selected
+          ? 'bg-indigo-50/60 dark:bg-indigo-900/20'
+          : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'
+      }
+    >
+      <div className="flex items-start gap-3 px-3 py-3">
+        {/* Чекбокс — увеличенная зона нажатия */}
+        <label className="flex h-11 w-11 shrink-0 cursor-pointer items-center justify-center">
+          <input
+            type="checkbox"
+            className="h-5 w-5 cursor-pointer rounded-sm border-slate-300 text-indigo-600 focus:ring-1 focus:ring-indigo-500 dark:border-slate-600 dark:bg-slate-700"
+            checked={selected}
+            onChange={onToggle}
+            aria-label={`Выделить ${job.file_name}`}
+          />
+        </label>
+
+        <div className="min-w-0 flex-1 space-y-2">
+          {/* Имя файла → деталка */}
+          <Link
+            to={`/jobs/${job.id}`}
+            className="flex items-center gap-2 text-slate-900 hover:text-indigo-600 dark:text-slate-100 dark:hover:text-indigo-400"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              className="h-4 w-4 shrink-0 text-slate-400 dark:text-slate-500"
+              aria-hidden="true"
+            >
+              <path d="M4 4a2 2 0 0 1 2-2h6l4 4v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4Z" />
+            </svg>
+            <span className="truncate font-medium" title={job.file_name}>
+              {job.file_name}
+            </span>
+            {isSynthetic(job.file_name) && (
+              <span className="shrink-0 rounded-sm bg-violet-100 px-1 font-mono text-[10px] uppercase tracking-wider text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
+                synth
+              </span>
+            )}
+          </Link>
+
+          {/* Бейджи: статус + тип + tier */}
+          <div className="flex flex-wrap items-center gap-1.5 text-xs">
+            <StatusBadge status={job.status} />
+            {job.document_type ? (
+              <span className="inline-flex items-center gap-1">
+                <span className="badge-indigo uppercase">{job.document_type}</span>
+                <TierBadge tier={tier} size="xs" />
+              </span>
+            ) : job.document_hint ? (
+              <span className="badge-slate uppercase" title="hint от клиента">
+                {job.document_hint}
+              </span>
+            ) : null}
+            {amounts.issuesCount > 0 && (
+              <span
+                className="inline-flex h-5 items-center justify-center rounded-sm bg-amber-100 px-1.5 font-mono font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300"
+                title={`${amounts.issuesCount} валидационных проблем`}
+              >
+                {amounts.issuesCount} issues
+              </span>
+            )}
+          </div>
+
+          {/* Confidence */}
+          <ConfidenceBar value={job.confidence !== null ? Number(job.confidence) : null} />
+
+          {/* Метаданные: время разбора · движок · возраст */}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-slate-500 dark:text-slate-400">
+            <span title={duration.tooltip}>⏱ {duration.label}</span>
+            <span
+              title={
+                job.last_llm_call?.backend
+                  ? `${job.last_llm_call.model} via ${job.last_llm_call.backend}`
+                  : 'LLM не использовался'
+              }
+            >
+              {job.last_llm_call?.model ?? 'no llm'}
+              {job.ocr_engine ? ` · ${job.ocr_engine}` : ''}
+            </span>
+            <span title={fullDate}>{age}</span>
+          </div>
+        </div>
+      </div>
+    </li>
   );
 }
 

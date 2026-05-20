@@ -120,61 +120,156 @@ export default function DocumentTypesPage() {
       )}
 
       <div className="card overflow-hidden">
-        <table className="min-w-full text-sm">
-          <thead className="bg-slate-50 dark:bg-slate-900/40 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400 dark:text-slate-500">
-            <tr>
-              <th className="px-4 py-2">Slug</th>
-              <th className="px-4 py-2">Название</th>
-              <th className="px-4 py-2">Владелец</th>
-              <th className="px-4 py-2">Зрелость</th>
-              <th className="px-4 py-2">Parser</th>
-              <th className="px-4 py-2">Поля</th>
-              <th className="px-4 py-2">Ключевые слова</th>
-              <th className="px-4 py-2">Статус</th>
-              <th className="px-4 py-2"></th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-            {isLoading &&
-              [1, 2, 3, 4, 5].map((i) => (
-                <tr key={`skel-${i}`}>
-                  {Array.from({ length: 9 }).map((_, j) => (
-                    <td key={j} className="px-4 py-3">
-                      <div className="h-3 w-20 animate-pulse rounded bg-slate-100 dark:bg-slate-800/60" />
-                    </td>
-                  ))}
+        {/* Desktop / tablet (≥md): таблица. Slug/Название/Статус всегда
+            видны; Владелец/Parser/Поля/Ключевые слова прячем на средней
+            ширине через hidden lg/xl:table-cell. */}
+        <div className="hidden overflow-x-auto md:block">
+          <table className="min-w-full text-sm">
+            <thead className="bg-slate-50 dark:bg-slate-900/40 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400 dark:text-slate-500">
+              <tr>
+                <th className="px-4 py-2">Slug</th>
+                <th className="px-4 py-2">Название</th>
+                <th className="hidden px-4 py-2 lg:table-cell">Владелец</th>
+                <th className="px-4 py-2">Зрелость</th>
+                <th className="hidden px-4 py-2 xl:table-cell">Parser</th>
+                <th className="hidden px-4 py-2 xl:table-cell">Поля</th>
+                <th className="hidden px-4 py-2 xl:table-cell">Ключевые слова</th>
+                <th className="px-4 py-2">Статус</th>
+                <th className="px-4 py-2"></th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+              {isLoading &&
+                [1, 2, 3, 4, 5].map((i) => (
+                  <tr key={`skel-${i}`}>
+                    {Array.from({ length: 9 }).map((_, j) => (
+                      <td key={j} className="px-4 py-3">
+                        <div className="h-3 w-20 animate-pulse rounded bg-slate-100 dark:bg-slate-800/60" />
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              {!isLoading && items.length === 0 && (
+                <tr>
+                  <td colSpan={9} className="px-4 py-10 text-center">
+                    <p className="font-medium text-slate-700 dark:text-slate-300">
+                      Типы документов не настроены
+                    </p>
+                    <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                      Добавьте первый тип через «+ Создать» — задайте слаг,
+                      поля и инструкцию для LLM.
+                    </p>
+                  </td>
+                </tr>
+              )}
+              {items.map((t) => (
+                <tr key={t.slug} className="hover:bg-slate-50 dark:bg-slate-900/40">
+                  <td className="px-4 py-2 font-mono text-xs text-slate-700 dark:text-slate-300">{t.slug}</td>
+                  <td className="px-4 py-2 font-medium text-slate-900 dark:text-slate-100">
+                    {t.display_name}
+                    {t.is_builtin && (
+                      <span className="badge-slate ml-2" title="Встроенный тип">
+                        builtin
+                      </span>
+                    )}
+                  </td>
+                  <td className="hidden px-4 py-2 lg:table-cell">
+                    {t.organization_id ? (
+                      <span
+                        className="badge-indigo"
+                        title={`Принадлежит организации ${t.organization_id}`}
+                      >
+                        {orgName(t.organization_id)}
+                      </span>
+                    ) : (
+                      <span className="badge-slate" title="Доступен всем организациям">
+                        Глобальный
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2">
+                    <TierBadge tier={t.tier} />
+                  </td>
+                  <td className="hidden px-4 py-2 text-slate-600 xl:table-cell dark:text-slate-400 dark:text-slate-500">
+                    {t.parser_kind ?? <span className="text-slate-400 dark:text-slate-500">—</span>}
+                  </td>
+                  <td className="hidden px-4 py-2 text-slate-600 xl:table-cell dark:text-slate-400 dark:text-slate-500">
+                    <span className="text-xs">{(t.expected_fields ?? []).length}</span>
+                  </td>
+                  <td className="hidden px-4 py-2 text-slate-600 xl:table-cell dark:text-slate-400 dark:text-slate-500">
+                    <span className="text-xs">{(t.classification_keywords ?? []).length}</span>
+                  </td>
+                  <td className="px-4 py-2">
+                    {t.is_active ? (
+                      <span className="badge-emerald">active</span>
+                    ) : (
+                      <span className="badge-slate">inactive</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2 text-right">
+                    <button
+                      type="button"
+                      className="btn-ghost"
+                      onClick={() => setEditing(t)}
+                    >
+                      Изменить
+                    </button>
+                  </td>
                 </tr>
               ))}
-            {!isLoading && items.length === 0 && (
-              <tr>
-                <td colSpan={9} className="px-4 py-10 text-center">
-                  <p className="font-medium text-slate-700 dark:text-slate-300">
-                    Типы документов не настроены
-                  </p>
-                  <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-                    Добавьте первый тип через «+ Создать» — задайте слаг,
-                    поля и инструкцию для LLM.
-                  </p>
-                </td>
-              </tr>
-            )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Mobile (<md): карточки. */}
+        <div className="md:hidden">
+          {isLoading && (
+            <div className="space-y-2 p-4">
+              {[1, 2, 3, 4].map((i) => (
+                <div key={i} className="h-16 animate-pulse rounded bg-slate-100 dark:bg-slate-800/60" />
+              ))}
+            </div>
+          )}
+          {!isLoading && items.length === 0 && (
+            <div className="px-4 py-10 text-center">
+              <p className="font-medium text-slate-700 dark:text-slate-300">
+                Типы документов не настроены
+              </p>
+              <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                Добавьте первый тип через «+ Создать» — задайте слаг,
+                поля и инструкцию для LLM.
+              </p>
+            </div>
+          )}
+          <ul className="divide-y divide-slate-200 dark:divide-slate-800">
             {items.map((t) => (
-              <tr key={t.slug} className="hover:bg-slate-50 dark:bg-slate-900/40">
-                <td className="px-4 py-2 font-mono text-xs text-slate-700 dark:text-slate-300">{t.slug}</td>
-                <td className="px-4 py-2 font-medium text-slate-900 dark:text-slate-100">
-                  {t.display_name}
-                  {t.is_builtin && (
-                    <span className="badge-slate ml-2" title="Встроенный тип">
-                      builtin
-                    </span>
+              <li key={t.slug} className="space-y-2 px-4 py-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="truncate font-medium text-slate-900 dark:text-slate-100">
+                      {t.display_name}
+                    </div>
+                    <div className="font-mono text-xs text-slate-500 dark:text-slate-400">
+                      {t.slug}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-ghost min-h-[40px] shrink-0 text-sm"
+                    onClick={() => setEditing(t)}
+                  >
+                    Изменить
+                  </button>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                  {t.is_active ? (
+                    <span className="badge-emerald">active</span>
+                  ) : (
+                    <span className="badge-slate">inactive</span>
                   )}
-                </td>
-                <td className="px-4 py-2">
+                  <TierBadge tier={t.tier} />
                   {t.organization_id ? (
-                    <span
-                      className="badge-indigo"
-                      title={`Принадлежит организации ${t.organization_id}`}
-                    >
+                    <span className="badge-indigo" title={`Принадлежит организации ${t.organization_id}`}>
                       {orgName(t.organization_id)}
                     </span>
                   ) : (
@@ -182,39 +277,21 @@ export default function DocumentTypesPage() {
                       Глобальный
                     </span>
                   )}
-                </td>
-                <td className="px-4 py-2">
-                  <TierBadge tier={t.tier} />
-                </td>
-                <td className="px-4 py-2 text-slate-600 dark:text-slate-400 dark:text-slate-500">
-                  {t.parser_kind ?? <span className="text-slate-400 dark:text-slate-500">—</span>}
-                </td>
-                <td className="px-4 py-2 text-slate-600 dark:text-slate-400 dark:text-slate-500">
-                  <span className="text-xs">{(t.expected_fields ?? []).length}</span>
-                </td>
-                <td className="px-4 py-2 text-slate-600 dark:text-slate-400 dark:text-slate-500">
-                  <span className="text-xs">{(t.classification_keywords ?? []).length}</span>
-                </td>
-                <td className="px-4 py-2">
-                  {t.is_active ? (
-                    <span className="badge-emerald">active</span>
-                  ) : (
-                    <span className="badge-slate">inactive</span>
+                  {t.is_builtin && (
+                    <span className="badge-slate" title="Встроенный тип">
+                      builtin
+                    </span>
                   )}
-                </td>
-                <td className="px-4 py-2 text-right">
-                  <button
-                    type="button"
-                    className="btn-ghost"
-                    onClick={() => setEditing(t)}
-                  >
-                    Изменить
-                  </button>
-                </td>
-              </tr>
+                </div>
+                <div className="flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                  <span>{t.parser_kind ?? 'parser —'}</span>
+                  <span>{(t.expected_fields ?? []).length} полей</span>
+                  <span>{(t.classification_keywords ?? []).length} ключ.слов</span>
+                </div>
+              </li>
             ))}
-          </tbody>
-        </table>
+          </ul>
+        </div>
       </div>
 
       {editing && (
