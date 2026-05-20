@@ -222,6 +222,31 @@ class UsersRepo {
     return rows[0] ?? null;
   }
 
+  /**
+   * Default project пользователя: детерминированно-первый активный проект
+   * из user_project_access. `null`, если у пользователя нет ни одного гранта
+   * (тогда auth-хук падает на системный DEFAULT_PROJECT_ID).
+   *
+   * Делается отдельным запросом, а не JOIN'ом в user-load: пользователь
+   * грузится в auth-хуке тремя разными путями (multi-token, legacy hash,
+   * findById), и сворачивать subquery в каждый из них дороже по
+   * поддержке, чем один scoped lookup. Запрос лёгкий — bounded LIMIT 1
+   * по индексу (user_id).
+   *
+   * ORDER BY created_at, project_id — стабильный детерминированный выбор:
+   * created_at — порядок выдачи доступов, project_id — tie-break.
+   */
+  async getDefaultProjectId(userId: string): Promise<string | null> {
+    const { rows } = await db.query<{ project_id: string }>(
+      `SELECT project_id FROM user_project_access
+        WHERE user_id = $1
+        ORDER BY created_at, project_id
+        LIMIT 1`,
+      [userId],
+    );
+    return rows[0]?.project_id ?? null;
+  }
+
   /** Bump last_seen_at — называется из auth-хука после успешной аутентификации. */
   async touchLastSeen(userId: string): Promise<void> {
     await db.query(`UPDATE users SET last_seen_at = now() WHERE id = $1`, [userId]);

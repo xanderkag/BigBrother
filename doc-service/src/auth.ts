@@ -60,12 +60,19 @@ function systemSuperAdmin(row: UserRow | null = null): AuthUser {
   };
 }
 
-function userToAuth(row: UserRow): AuthUser {
+async function userToAuth(row: UserRow): Promise<AuthUser> {
+  // super_admin живёт без проектных грантов (видит всё) — системный default.
+  // Для остальных берём детерминированно-первый проект из user_project_access,
+  // с fallback на системный DEFAULT_PROJECT_ID, если грантов нет.
+  const defaultProjectId =
+    row.role === 'super_admin'
+      ? DEFAULT_PROJECT_ID
+      : (await usersRepo.getDefaultProjectId(row.id)) ?? DEFAULT_PROJECT_ID;
   return {
     id: row.id,
     role: row.role,
     organization_id: row.organization_id,
-    default_project_id: DEFAULT_PROJECT_ID, // TODO: вывести из user_project_access или сохранить как preference
+    default_project_id: defaultProjectId,
     isSuperAdmin: row.role === 'super_admin',
     row,
   };
@@ -127,7 +134,7 @@ export const bearerAuthHook: onRequestHookHandler = async (
         }
         const user = await usersRepo.findById(tokenRow.user_id);
         if (user && user.status === 'active') {
-          req.user = userToAuth(user);
+          req.user = await userToAuth(user);
           void tokensRepo.touchLastUsed(tokenRow.id).catch(() => undefined);
           void usersRepo.touchLastSeen(user.id).catch(() => undefined);
           return;
@@ -139,7 +146,7 @@ export const bearerAuthHook: onRequestHookHandler = async (
       // через старый endpoint POST /users/:id/token.
       const legacyUser = await usersRepo.findByToken(provided);
       if (legacyUser) {
-        req.user = userToAuth(legacyUser);
+        req.user = await userToAuth(legacyUser);
         void usersRepo.touchLastSeen(legacyUser.id).catch(() => undefined);
         return;
       }

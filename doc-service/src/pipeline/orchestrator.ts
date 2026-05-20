@@ -56,6 +56,7 @@ const engines: readonly OcrEngine[] = [
 const classifier = new KeywordClassifier();
 const parsersFactory = new ParsersFactory(llm, {
   regexFallbackThreshold: config.thresholds.regexFallback,
+  multipass: config.multipass,
 });
 
 /** Combined output of the full file → structured data run. */

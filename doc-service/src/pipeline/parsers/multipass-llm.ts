@@ -38,22 +38,37 @@ import type { DocumentTypeSlug } from '../../types/documents.js';
 import type { LlmClient, LlmExtractDebug } from '../llm/types.js';
 import type { DocumentParser, ParseResult, ParserOverride } from './types.js';
 
-/** Дефолтные пороги — переопределяются env переменными в config.ts (TODO). */
-const HEADER_HEAD_BYTES = 4_000;
-const HEADER_TAIL_BYTES = 2_000;
-const CHUNK_SIZE_BYTES = 12_000;
-const MAX_PASSES = 10;
-const MAX_ITEMS_TOTAL = 1_000;
-const ITEMS_PARALLELISM = 3;
+/** Пороги multipass — приходят из config.multipass (env), см. config.ts. */
+export type MultipassConfig = {
+  headerHeadBytes: number;
+  headerTailBytes: number;
+  chunkSizeBytes: number;
+  maxPasses: number;
+  maxItemsTotal: number;
+  itemsParallelism: number;
+};
+
+/** Дефолты на случай прямого инстанцирования (тесты) без явного config'а. */
+const DEFAULT_MULTIPASS_CONFIG: MultipassConfig = {
+  headerHeadBytes: 4_000,
+  headerTailBytes: 2_000,
+  chunkSizeBytes: 12_000,
+  maxPasses: 10,
+  maxItemsTotal: 1_000,
+  itemsParallelism: 3,
+};
 
 export class MultiPassLlmParser implements DocumentParser {
   readonly type: DocumentTypeSlug;
+  private readonly cfg: MultipassConfig;
 
   constructor(
     private readonly llm: LlmClient,
     slug: DocumentTypeSlug,
+    cfg: MultipassConfig = DEFAULT_MULTIPASS_CONFIG,
   ) {
     this.type = slug;
+    this.cfg = cfg;
   }
 
   async parse(rawText: string, override?: ParserOverride): Promise<ParseResult> {
@@ -78,9 +93,9 @@ export class MultiPassLlmParser implements DocumentParser {
       : null;
 
     // ── Pass 1: header ────────────────────────────────────────────────────
-    const headerText = sliceHead(rawText, HEADER_HEAD_BYTES) +
-      (rawText.length > HEADER_HEAD_BYTES + HEADER_TAIL_BYTES
-        ? '\n\n[…пропущена середина документа…]\n\n' + sliceTail(rawText, HEADER_TAIL_BYTES)
+    const headerText = sliceHead(rawText, this.cfg.headerHeadBytes) +
+      (rawText.length > this.cfg.headerHeadBytes + this.cfg.headerTailBytes
+        ? '\n\n[…пропущена середина документа…]\n\n' + sliceTail(rawText, this.cfg.headerTailBytes)
         : '');
 
     let headerResult: ReturnType<LlmClient['extract']> extends Promise<infer R> ? R : never;
@@ -113,7 +128,7 @@ export class MultiPassLlmParser implements DocumentParser {
     const issues: string[] = [];
 
     if (itemsSchema) {
-      const chunks = splitForItems(rawText, CHUNK_SIZE_BYTES).slice(0, MAX_PASSES);
+      const chunks = splitForItems(rawText, this.cfg.chunkSizeBytes).slice(0, this.cfg.maxPasses);
 
       // Параллельный пул с ограничением — больше 3 одновременных запросов к
       // inference-service увеличивает риск получить 429/timeout от модели.
@@ -141,7 +156,7 @@ export class MultiPassLlmParser implements DocumentParser {
           }
         }
       };
-      await Promise.all(Array.from({ length: ITEMS_PARALLELISM }, worker));
+      await Promise.all(Array.from({ length: this.cfg.itemsParallelism }, worker));
 
       // Сортируем результаты по индексу куска — порядок строк документа важен
       results.sort((a, b) => a.chunkIdx - b.chunkIdx);
@@ -157,10 +172,10 @@ export class MultiPassLlmParser implements DocumentParser {
 
       // Cap общий объём + нормализуем line_no
       let truncated = false;
-      if (allItems.length > MAX_ITEMS_TOTAL) {
+      if (allItems.length > this.cfg.maxItemsTotal) {
         truncated = true;
-        issues.push(`items_truncated: получено ${allItems.length} строк, оставлено ${MAX_ITEMS_TOTAL}`);
-        allItems = allItems.slice(0, MAX_ITEMS_TOTAL);
+        issues.push(`items_truncated: получено ${allItems.length} строк, оставлено ${this.cfg.maxItemsTotal}`);
+        allItems = allItems.slice(0, this.cfg.maxItemsTotal);
       }
       allItems = allItems.map((item, i) => {
         if (!item || typeof item !== 'object') return item;

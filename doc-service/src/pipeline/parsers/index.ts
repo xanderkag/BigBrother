@@ -8,7 +8,7 @@ import { TtnParser } from './ttn.js';
 import { CmrParser } from './cmr.js';
 import { AktParser } from './akt.js';
 import { GenericLlmParser } from './generic-llm.js';
-import { MultiPassLlmParser } from './multipass-llm.js';
+import { MultiPassLlmParser, type MultipassConfig } from './multipass-llm.js';
 
 export type ParsersOptions = {
   /**
@@ -17,6 +17,11 @@ export type ParsersOptions = {
    * so this option doesn't affect them.
    */
   regexFallbackThreshold?: number;
+  /**
+   * MultiPassLlmParser thresholds (config.multipass). Опционально —
+   * при отсутствии парсер использует встроенные дефолты.
+   */
+  multipass?: MultipassConfig;
 };
 
 /**
@@ -36,12 +41,14 @@ export type ParsersOptions = {
 export class ParsersFactory {
   private readonly builtins: Record<BuiltinDocumentType, DocumentParser>;
   private readonly genericCache = new Map<string, DocumentParser>();
+  private readonly multipassConfig?: MultipassConfig;
 
   constructor(
     private readonly llm: LlmClient,
     options: ParsersOptions = {},
   ) {
     const fallback = options.regexFallbackThreshold ?? 0.7;
+    this.multipassConfig = options.multipass;
     this.builtins = {
       invoice: new InvoiceParser(llm, fallback),
       factInvoice: new UpdParser(llm, 'factInvoice', fallback),
@@ -82,7 +89,7 @@ export class ParsersFactory {
     const cacheKey = `__multipass__:${slug}`;
     const cached = this.genericCache.get(cacheKey);
     if (cached) return cached;
-    const parser = new MultiPassLlmParser(this.llm, slug);
+    const parser = new MultiPassLlmParser(this.llm, slug, this.multipassConfig);
     this.genericCache.set(cacheKey, parser);
     return parser;
   }

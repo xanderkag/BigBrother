@@ -151,6 +151,26 @@ const ConfigSchema = z.object({
     multipassAutoBytes: numberFromEnv(15_000),
   }),
 
+  /**
+   * MultiPassLlmParser tuning. Раньше эти пороги были хардкодом в
+   * parsers/multipass-llm.ts; вынесены в env для подгонки под клиентское
+   * железо и модель (контекст-окно, лимит позиций, parallelism к inference).
+   *   - headerHeadBytes / headerTailBytes — сколько байт начала/конца текста
+   *     уходит в Pass 1 (шапка).
+   *   - chunkSizeBytes — размер куска items для Pass 2.
+   *   - maxPasses — потолок числа кусков (защита от timeout-цепочки).
+   *   - maxItemsTotal — потолок финального items[].
+   *   - itemsParallelism — макс одновременных extract-вызовов к inference.
+   */
+  multipass: z.object({
+    headerHeadBytes: numberFromEnv(4_000),
+    headerTailBytes: numberFromEnv(2_000),
+    chunkSizeBytes: numberFromEnv(12_000),
+    maxPasses: numberFromEnv(10),
+    maxItemsTotal: numberFromEnv(1_000),
+    itemsParallelism: numberFromEnv(3),
+  }),
+
   tesseractLangs: z.string().default('rus+eng'),
 
   llm: z.object({
@@ -238,6 +258,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       needsReview: env.NEEDS_REVIEW_THRESHOLD,
       regexFallback: env.LLM_FALLBACK_THRESHOLD,
       multipassAutoBytes: env.MULTIPASS_AUTO_BYTES,
+    },
+    multipass: {
+      headerHeadBytes: env.MULTIPASS_HEADER_HEAD_BYTES,
+      headerTailBytes: env.MULTIPASS_HEADER_TAIL_BYTES,
+      chunkSizeBytes: env.MULTIPASS_CHUNK_SIZE_BYTES,
+      maxPasses: env.MULTIPASS_MAX_PASSES,
+      maxItemsTotal: env.MULTIPASS_MAX_ITEMS_TOTAL,
+      itemsParallelism: env.MULTIPASS_ITEMS_PARALLELISM,
     },
     tesseractLangs: env.TESSERACT_LANGS,
     llm: {
