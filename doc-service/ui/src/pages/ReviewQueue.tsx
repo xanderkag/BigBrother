@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { useJobsList, useApproveJob, useReprocessJob } from '@/queries/jobs';
 import { useDocumentTypes } from '@/queries/documentTypes';
 import ConfidenceBar from '@/components/ConfidenceBar';
+import TierBadge from '@/components/TierBadge';
 import { extractAmounts } from '@/lib/extracted-summary';
 import {
   formatAge,
@@ -12,6 +13,7 @@ import {
   shortIdSplit,
 } from '@/lib/format';
 import { isSynthetic, matchesOrigin, type DocOrigin } from '@/lib/synthetic';
+import type { DocumentTypeTier } from '@/queries/documentTypes';
 import type { Job } from '@/lib/types';
 
 /**
@@ -66,6 +68,13 @@ export default function ReviewQueuePage() {
     limit: PAGE_SIZE,
   });
   const { data: docTypes } = useDocumentTypes();
+  const tierBySlug = useMemo(() => {
+    const m = new Map<string, DocumentTypeTier>();
+    for (const t of docTypes?.items ?? []) {
+      if (t.tier) m.set(t.slug, t.tier);
+    }
+    return m;
+  }, [docTypes]);
   const approve = useApproveJob();
   const reprocess = useReprocessJob();
 
@@ -344,6 +353,7 @@ export default function ReviewQueuePage() {
               <ReviewRow
                 key={job.id}
                 job={job}
+                tier={job.document_type ? tierBySlug.get(job.document_type) ?? null : null}
                 checked={selected.has(job.id)}
                 onToggle={() => toggleSelected(job.id)}
                 onApprove={() => approve.mutate(job.id)}
@@ -573,6 +583,7 @@ const PREVIEW_FIELDS: { key: string; label: string }[] = [
 
 function ReviewRow({
   job,
+  tier,
   checked,
   onToggle,
   onApprove,
@@ -581,6 +592,7 @@ function ReviewRow({
   isReprocessing,
 }: {
   job: Job;
+  tier: DocumentTypeTier | null;
   checked: boolean;
   onToggle: () => void;
   onApprove: () => void;
@@ -654,6 +666,7 @@ function ReviewRow({
             {job.document_type && (
               <span className="badge-indigo shrink-0 uppercase">{job.document_type}</span>
             )}
+            {job.document_type && <TierBadge tier={tier} size="xs" />}
             <span
               className="ml-auto font-mono text-[10px] text-slate-400 dark:text-slate-500"
               title={job.id}

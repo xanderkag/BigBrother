@@ -5,6 +5,7 @@ import { useJobsList, useApproveJob, useReprocessJob, jobsKeys } from '@/queries
 import { useDocumentTypes } from '@/queries/documentTypes';
 import { api } from '@/lib/api';
 import ConfidenceBar from '@/components/ConfidenceBar';
+import TierBadge from '@/components/TierBadge';
 import { extractAmounts } from '@/lib/extracted-summary';
 import {
   formatAge,
@@ -13,6 +14,7 @@ import {
   shortIdSplit,
 } from '@/lib/format';
 import { isSynthetic, matchesOrigin, type DocOrigin } from '@/lib/synthetic';
+import type { DocumentTypeTier } from '@/queries/documentTypes';
 import type { Job, JobStatus } from '@/lib/types';
 import { EmptyState, SkeletonTable } from '@/components/Skeleton';
 
@@ -70,6 +72,13 @@ export default function JobsListPage() {
 
   const { data, isLoading, error, refetch, isFetching } = useJobsList(filters);
   const { data: docTypes } = useDocumentTypes();
+  const tierBySlug = useMemo(() => {
+    const m = new Map<string, DocumentTypeTier>();
+    for (const t of docTypes?.items ?? []) {
+      if (t.tier) m.set(t.slug, t.tier);
+    }
+    return m;
+  }, [docTypes]);
 
   // Счётчики по статусам — отдельные параллельные запросы limit=1
   // (нам нужен только response.total). На каждый refetchInterval 15s,
@@ -409,6 +418,7 @@ export default function JobsListPage() {
                     now={now}
                     selected={selected.has(j.id)}
                     onToggle={() => toggleOne(j.id)}
+                    tier={j.document_type ? tierBySlug.get(j.document_type) ?? null : null}
                   />
                 ))}
               </tbody>
@@ -454,11 +464,13 @@ function JobRow({
   now,
   selected,
   onToggle,
+  tier,
 }: {
   job: Job;
   now: Date;
   selected: boolean;
   onToggle: () => void;
+  tier: DocumentTypeTier | null;
 }) {
   const amounts = extractAmounts(job.extracted);
   const fullDate = formatDateTime(job.created_at);
@@ -522,7 +534,10 @@ function JobRow({
       {/* TYPE — бейдж */}
       <td className="px-3 py-2 text-xs">
         {job.document_type ? (
-          <span className="badge-indigo uppercase">{job.document_type}</span>
+          <span className="inline-flex items-center gap-1">
+            <span className="badge-indigo uppercase">{job.document_type}</span>
+            <TierBadge tier={tier} size="xs" />
+          </span>
         ) : job.document_hint ? (
           <span className="badge-slate uppercase" title="hint от клиента">
             {job.document_hint}

@@ -26,12 +26,27 @@ export type ParserKind =
    */
   | 'llm_extract_multipass';
 
+/**
+ * Уровень зрелости (см. миграция 20260525000001):
+ *   stable       — типизированная Zod-схема + regex parser + golden-set ≥90%.
+ *                  6 builtin'ов: invoice/factInvoice/UPD/TTN/CMR/AKT.
+ *   beta         — llm_extract only, keywords + validators настроены,
+ *                  обкатан на ≥50 реальных доках, но без golden-set измерения.
+ *   experimental — недавно создан, нет статистики, может ошибаться.
+ *                  Default для нового типа.
+ *
+ * Поле информационное: runtime НЕ принимает решений на его основе,
+ * только UI и логи показывают бейдж.
+ */
+export type DocumentTypeTier = 'stable' | 'beta' | 'experimental';
+
 export type DocumentTypeRow = {
   slug: string;
   display_name: string;
   description: string | null;
   is_active: boolean;
   is_builtin: boolean;
+  tier: DocumentTypeTier;
   parser_kind: ParserKind;
   llm_prompt: string | null;
   llm_schema: Record<string, unknown> | null;
@@ -67,6 +82,7 @@ export type DocumentTypeCreateInput = {
   display_name: string;
   description?: string | null;
   is_active?: boolean;
+  tier?: DocumentTypeTier;
   parser_kind?: ParserKind;
   llm_prompt?: string | null;
   llm_schema?: Record<string, unknown> | null;
@@ -120,21 +136,22 @@ class DocumentTypesRepo {
   async create(input: DocumentTypeCreateInput): Promise<DocumentTypeRow> {
     const { rows } = await db.query<DocumentTypeRow>(
       `INSERT INTO document_types (
-         slug, display_name, description, is_active, is_builtin, parser_kind,
+         slug, display_name, description, is_active, is_builtin, tier, parser_kind,
          llm_prompt, llm_schema, expected_fields, validators,
          confidence_threshold, regex_fallback_threshold, classification_keywords, metadata,
          resolution_config
        ) VALUES (
-         $1, $2, $3, COALESCE($4, true), false, COALESCE($5, 'llm_extract'),
-         $6, $7, COALESCE($8, ARRAY[]::TEXT[]), COALESCE($9, ARRAY[]::TEXT[]),
-         $10, $11, COALESCE($12, ARRAY[]::TEXT[]), $13,
-         $14
+         $1, $2, $3, COALESCE($4, true), false, COALESCE($5, 'experimental'), COALESCE($6, 'llm_extract'),
+         $7, $8, COALESCE($9, ARRAY[]::TEXT[]), COALESCE($10, ARRAY[]::TEXT[]),
+         $11, $12, COALESCE($13, ARRAY[]::TEXT[]), $14,
+         $15
        ) RETURNING *`,
       [
         input.slug,
         input.display_name,
         input.description ?? null,
         input.is_active ?? null,
+        input.tier ?? null,
         input.parser_kind ?? null,
         input.llm_prompt ?? null,
         input.llm_schema ?? null,
@@ -166,6 +183,7 @@ class DocumentTypesRepo {
     if (patch.display_name !== undefined) push('display_name', patch.display_name);
     if (patch.description !== undefined) push('description', patch.description);
     if (patch.is_active !== undefined) push('is_active', patch.is_active);
+    if (patch.tier !== undefined) push('tier', patch.tier);
     if (patch.parser_kind !== undefined) push('parser_kind', patch.parser_kind);
     if (patch.llm_prompt !== undefined) push('llm_prompt', patch.llm_prompt);
     if (patch.llm_schema !== undefined) push('llm_schema', patch.llm_schema);
@@ -214,6 +232,7 @@ class DocumentTypesRepo {
       description: row.description,
       is_active: row.is_active,
       is_builtin: row.is_builtin,
+      tier: row.tier,
       parser_kind: row.parser_kind,
       llm_prompt: row.llm_prompt,
       llm_schema: row.llm_schema,

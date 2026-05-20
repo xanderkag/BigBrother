@@ -15,7 +15,11 @@
  */
 
 import { config } from '../config.js';
-import { documentTypesRepo, type DocumentTypeRow } from '../storage/document-types.js';
+import {
+  documentTypesRepo,
+  type DocumentTypeRow,
+  type DocumentTypeTier,
+} from '../storage/document-types.js';
 import { DOCUMENT_JSON_SCHEMAS, EXPECTED_FIELDS } from '../types/document-json-schemas.js';
 import type { DocumentTypeSlug } from '../types/documents.js';
 import type { ResolutionConfig } from '../resolution/types.js';
@@ -60,6 +64,12 @@ export type ResolvedTypeConfig = {
    * null — резолюция не настроена для этого типа документа.
    */
   resolutionConfig: ResolutionConfig | null;
+  /**
+   * Зрелость типа (см. DocumentTypeTier). Информационное поле для UI
+   * и логов — runtime не принимает решений на его основе. Для fallback'а
+   * (row=null) дефолтим в 'experimental' — это самый осторожный bucket.
+   */
+  tier: DocumentTypeTier;
   /** Whether this config was DB-sourced or fully built from fallbacks. */
   source: 'db' | 'fallback';
 };
@@ -213,6 +223,7 @@ export function resolveConfigFromRow(
       llmPrompt: null,
       parserKind: null,
       resolutionConfig: null,
+      tier: 'experimental',
       source: 'fallback',
     };
   }
@@ -235,6 +246,10 @@ export function resolveConfigFromRow(
     llmPrompt: row.llm_prompt && row.llm_prompt.trim().length > 0 ? row.llm_prompt : null,
     parserKind: row.parser_kind ?? null,
     resolutionConfig: (row.resolution_config as ResolutionConfig | null) ?? null,
+    // tier на row есть всегда после миграции 20260525000001 (NOT NULL default
+    // 'experimental'). Если по какой-то причине row из старого snapshot'а без
+    // колонки — деградируем в 'experimental'.
+    tier: (row.tier ?? 'experimental') as DocumentTypeTier,
     source: 'db',
   };
 }

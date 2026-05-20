@@ -38,6 +38,12 @@ const ParserKind = z.enum([
 ]);
 
 /**
+ * Зрелость типа документа (см. DocumentTypeTier в storage/document-types.ts).
+ * Информационное поле — UI рисует бейдж, runtime не реагирует.
+ */
+const Tier = z.enum(['stable', 'beta', 'experimental']);
+
+/**
  * Resolution config: формализованная Zod-схема для document_types.resolution_config.
  * См. полное описание + примеры — src/resolution/types.ts.
  *
@@ -73,6 +79,7 @@ const DocumentType = z.object({
   description: z.string().nullable(),
   is_active: z.boolean(),
   is_builtin: z.boolean(),
+  tier: Tier,
   parser_kind: ParserKind,
   llm_prompt: z.string().nullable(),
   llm_schema: z.record(z.unknown()).nullable(),
@@ -105,6 +112,7 @@ const CreateBody = z.object({
   display_name: z.string().min(1).max(120),
   description: z.string().max(2000).nullable().optional(),
   is_active: z.boolean().optional(),
+  tier: Tier.optional(),
   parser_kind: ParserKind.optional(),
   llm_prompt: z.string().max(8000).nullable().optional(),
   llm_schema: z.record(z.unknown()).nullable().optional(),

@@ -5,10 +5,12 @@ import {
   useUpdateDocumentType,
   useDeleteDocumentType,
   type DocumentTypeEntry,
+  type DocumentTypeTier,
   type ParserKind,
 } from '@/queries/documentTypes';
 import JsonField from '@/components/JsonField';
 import StringListField from '@/components/StringListField';
+import TierBadge from '@/components/TierBadge';
 
 /**
  * Document types CRUD-страница. Список + modal-форма для create/edit.
@@ -59,6 +61,7 @@ export default function DocumentTypesPage() {
                 slug: '',
                 display_name: '',
                 is_active: true,
+                tier: 'experimental',
               } as DocumentTypeEntry)
             }
           >
@@ -79,6 +82,7 @@ export default function DocumentTypesPage() {
             <tr>
               <th className="px-4 py-2">Slug</th>
               <th className="px-4 py-2">Название</th>
+              <th className="px-4 py-2">Зрелость</th>
               <th className="px-4 py-2">Parser</th>
               <th className="px-4 py-2">Поля</th>
               <th className="px-4 py-2">Ключевые слова</th>
@@ -90,7 +94,7 @@ export default function DocumentTypesPage() {
             {isLoading &&
               [1, 2, 3, 4, 5].map((i) => (
                 <tr key={`skel-${i}`}>
-                  {Array.from({ length: 7 }).map((_, j) => (
+                  {Array.from({ length: 8 }).map((_, j) => (
                     <td key={j} className="px-4 py-3">
                       <div className="h-3 w-20 animate-pulse rounded bg-slate-100 dark:bg-slate-800/60" />
                     </td>
@@ -99,7 +103,7 @@ export default function DocumentTypesPage() {
               ))}
             {!isLoading && items.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-4 py-10 text-center">
+                <td colSpan={8} className="px-4 py-10 text-center">
                   <p className="font-medium text-slate-700 dark:text-slate-300">
                     Типы документов не настроены
                   </p>
@@ -120,6 +124,9 @@ export default function DocumentTypesPage() {
                       builtin
                     </span>
                   )}
+                </td>
+                <td className="px-4 py-2">
+                  <TierBadge tier={t.tier} />
                 </td>
                 <td className="px-4 py-2 text-slate-600 dark:text-slate-400 dark:text-slate-500">
                   {t.parser_kind ?? <span className="text-slate-400 dark:text-slate-500">—</span>}
@@ -208,6 +215,7 @@ function DocumentTypeEditor({
           display_name: draft.display_name,
           description: draft.description ?? null,
           is_active: draft.is_active,
+          tier: draft.tier ?? 'experimental',
           parser_kind: draft.parser_kind ?? null,
           llm_prompt: draft.llm_prompt ?? null,
           llm_schema: draft.llm_schema ?? null,
@@ -226,6 +234,7 @@ function DocumentTypeEditor({
             display_name: draft.display_name,
             description: draft.description ?? null,
             is_active: draft.is_active,
+            tier: draft.tier ?? 'experimental',
             parser_kind: draft.parser_kind ?? null,
             llm_prompt: draft.llm_prompt ?? null,
             llm_schema: draft.llm_schema ?? null,
@@ -329,6 +338,22 @@ function DocumentTypeEditor({
                   </option>
                 ))}
               </select>
+            </div>
+
+            <div>
+              <label className="form-label">Зрелость (tier)</label>
+              <select
+                className="form-select"
+                value={draft.tier ?? 'experimental'}
+                onChange={(e) => setField('tier', e.target.value as DocumentTypeTier)}
+              >
+                <option value="stable">stable</option>
+                <option value="beta">beta</option>
+                <option value="experimental">experimental</option>
+              </select>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                Default experimental; ставьте stable только когда есть Zod schema + golden-set покрытие
+              </p>
             </div>
 
             <div className="flex items-end">

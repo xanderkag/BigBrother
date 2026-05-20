@@ -18,12 +18,15 @@ export type ParserKind =
   | 'llm_extract'
   | 'llm_extract_multipass';
 
+export type DocumentTypeTier = 'stable' | 'beta' | 'experimental';
+
 export interface DocumentTypeEntry {
   slug: string;
   display_name: string;
   description?: string | null;
   is_active: boolean;
   is_builtin?: boolean;
+  tier: DocumentTypeTier;
   parser_kind?: ParserKind | null;
   llm_prompt?: string | null;
   llm_schema?: Record<string, unknown> | null;
