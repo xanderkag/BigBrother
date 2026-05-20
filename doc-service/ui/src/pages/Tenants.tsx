@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   useCreateOrg,
   useCreateProject,
@@ -14,6 +14,14 @@ import {
   type UserRole,
   type OrgType,
 } from '@/queries/tenants';
+import { useCurrentUser } from '@/queries/me';
+import {
+  useOrganizationSettings,
+  useUpdateOrganizationSettings,
+  type OrganizationProfileUpdate,
+  type ProcessingMode,
+  type OutputMode,
+} from '@/queries/organizationSettings';
 
 /**
  * Tenants — фундамент multi-tenant: организации, проекты, пользователи.
@@ -83,6 +91,16 @@ function OrgsCard({
   const create = useCreateOrg();
   const [name, setName] = useState('');
   const [type, setType] = useState<OrgType>('external_company');
+  const [profileOrg, setProfileOrg] = useState<Organization | null>(null);
+
+  const me = useCurrentUser();
+  // org_admin своей организации редактирует профиль; super_admin — любой.
+  const canEditProfile = (orgId: string): boolean => {
+    const u = me.data;
+    if (!u) return false;
+    if (u.is_super_admin) return true;
+    return (u.role === 'admin' || u.role === 'org_admin') && u.organization_id === orgId;
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -154,6 +172,7 @@ function OrgsCard({
                 <Th>Название</Th>
                 <Th>Тип</Th>
                 <Th>Создан</Th>
+                <Th>Профиль</Th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
@@ -167,12 +186,328 @@ function OrgsCard({
                   <Td className="text-xs text-slate-500 dark:text-slate-400">
                     {fmtDate(o.created_at)}
                   </Td>
+                  <Td>
+                    <button
+                      type="button"
+                      className="btn-ghost text-xs"
+                      onClick={() => setProfileOrg(o)}
+                      title="Профиль потребителя (режим, webhook, порог)"
+                    >
+                      ⚙ Профиль
+                    </button>
+                  </Td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       )}
+
+      {/* Модалка вместо отдельного роута: страница Tenants уже работает на
+          inline-формах/модалках (см. DocumentTypes/Providers), отдельный
+          /organizations/:id/profile добавил бы лишнюю навигацию и роутинг
+          ради одной формы. */}
+      {profileOrg && (
+        <ProfileModal
+          org={profileOrg}
+          canEdit={canEditProfile(profileOrg.id)}
+          onClose={() => setProfileOrg(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// Consumer profile (per-organization settings)
+// ============================================================================
+
+function ProfileModal({
+  org,
+  canEdit,
+  onClose,
+}: {
+  org: Organization;
+  canEdit: boolean;
+  onClose: () => void;
+}) {
+  const settings = useOrganizationSettings(org.id);
+  const update = useUpdateOrganizationSettings(org.id);
+
+  const [mode, setMode] = useState<ProcessingMode>('extract');
+  const [output, setOutput] = useState<OutputMode>('pull');
+  const [webhookUrl, setWebhookUrl] = useState('');
+  const [threshold, setThreshold] = useState<string>('');
+  // Секрет write-only: показываем только статус. По умолчанию — не трогаем
+  // (omit). 'set' раскрывает поле ввода нового; 'clear' отправит null.
+  const [secretAction, setSecretAction] = useState<'keep' | 'set' | 'clear'>('keep');
+  const [secret, setSecret] = useState('');
+
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  // Гидратируем форму из ответа GET один раз на загрузку.
+  useEffect(() => {
+    const d = settings.data;
+    if (!d) return;
+    setMode(d.mode);
+    setOutput(d.output);
+    setWebhookUrl(d.webhook_url ?? '');
+    setThreshold(d.auto_approve_threshold == null ? '' : String(d.auto_approve_threshold));
+    setSecretAction('keep');
+    setSecret('');
+  }, [settings.data]);
+
+  const hasStoredSecret = settings.data?.has_webhook_secret ?? false;
+  const urlValid = (v: string) => /^https?:\/\/\S+$/i.test(v.trim());
+
+  const save = async () => {
+    setError(null);
+    setSaved(false);
+
+    if (output === 'webhook' && !webhookUrl.trim()) {
+      setError('Для режима webhook укажите Webhook URL.');
+      return;
+    }
+    if (output === 'webhook' && !urlValid(webhookUrl)) {
+      setError('Webhook URL должен начинаться с http:// или https://');
+      return;
+    }
+    const thrNum = threshold.trim() === '' ? null : Number(threshold);
+    if (thrNum != null && (Number.isNaN(thrNum) || thrNum < 0 || thrNum > 1)) {
+      setError('Порог авто-одобрения должен быть числом от 0 до 1.');
+      return;
+    }
+
+    const payload: OrganizationProfileUpdate = {
+      mode,
+      output,
+      webhook_url: webhookUrl.trim() ? webhookUrl.trim() : null,
+      auto_approve_threshold: thrNum,
+    };
+    if (secretAction === 'set') {
+      if (!secret.trim()) {
+        setError('Введите новый HMAC-секрет или отмените смену.');
+        return;
+      }
+      payload.webhook_hmac_secret = secret;
+    } else if (secretAction === 'clear') {
+      payload.webhook_hmac_secret = null;
+    }
+
+    try {
+      await update.mutateAsync(payload);
+      setSaved(true);
+      // секрет в кэше/стейте не держим — сбрасываем после успеха
+      setSecret('');
+      setSecretAction('keep');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-30 flex items-center justify-center bg-slate-900/40 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="card flex max-h-[92vh] w-full max-w-2xl flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="card-header">
+          <h3 className="card-title">Профиль потребителя — «{org.name}»</h3>
+          <button type="button" className="btn-ghost" onClick={onClose}>
+            ✕
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-auto">
+          {settings.isLoading && <LoadingRow />}
+          {!!settings.error && <ErrorRow err={settings.error} />}
+
+          {settings.data && (
+            <div className="card-body space-y-5">
+              {!canEdit && (
+                <div className="warning-banner text-sm">
+                  <div>
+                    Только для чтения — редактировать профиль может admin этой
+                    организации или super_admin.
+                  </div>
+                </div>
+              )}
+
+              <fieldset disabled={!canEdit} className="space-y-5">
+                {/* Режим обработки */}
+                <div>
+                  <label className="form-label">Режим обработки</label>
+                  <select
+                    className="form-select"
+                    value={mode}
+                    onChange={(e) => setMode(e.target.value as ProcessingMode)}
+                  >
+                    <option value="extract">Полный разбор (extract)</option>
+                    <option value="classify_only">Только классификация (classify_only)</option>
+                  </select>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    classify_only — только определяем тип документа, без извлечения
+                    полей. Дешевле; для потребителей, которым нужен только тип.
+                  </p>
+                </div>
+
+                {/* Куда отдаём результат */}
+                <div>
+                  <label className="form-label">Куда отдаём результат</label>
+                  <select
+                    className="form-select"
+                    value={output}
+                    onChange={(e) => setOutput(e.target.value as OutputMode)}
+                  >
+                    <option value="webhook">Webhook (push)</option>
+                    <option value="pull">Опрос через API (pull)</option>
+                  </select>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    webhook — мы сами шлём результат на ваш URL; pull — вы опрашиваете
+                    GET /jobs/:id.
+                  </p>
+                </div>
+
+                {/* Webhook URL — только для output=webhook */}
+                {output === 'webhook' && (
+                  <div>
+                    <label className="form-label">Webhook URL</label>
+                    <input
+                      type="url"
+                      className="form-input"
+                      value={webhookUrl}
+                      onChange={(e) => setWebhookUrl(e.target.value)}
+                      placeholder="https://example.com/parsdocs/callback"
+                    />
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                      Обязателен при режиме webhook — без URL сохранение вернёт 400.
+                    </p>
+                  </div>
+                )}
+
+                {/* HMAC-секрет вебхука — write-only */}
+                {output === 'webhook' && (
+                  <div>
+                    <label className="form-label">HMAC-секрет вебхука</label>
+                    <div className="mb-2 flex items-center gap-2 text-sm">
+                      {hasStoredSecret ? (
+                        <span className="badge-emerald">секрет задан</span>
+                      ) : (
+                        <span className="badge-slate">не задан</span>
+                      )}
+                      {secretAction === 'keep' && (
+                        <>
+                          <button
+                            type="button"
+                            className="btn-ghost text-xs"
+                            onClick={() => setSecretAction('set')}
+                          >
+                            {hasStoredSecret ? 'сменить' : 'задать'}
+                          </button>
+                          {hasStoredSecret && (
+                            <button
+                              type="button"
+                              className="btn-ghost text-xs text-rose-600 dark:text-rose-400"
+                              onClick={() => setSecretAction('clear')}
+                            >
+                              очистить
+                            </button>
+                          )}
+                        </>
+                      )}
+                      {secretAction === 'set' && (
+                        <button
+                          type="button"
+                          className="btn-ghost text-xs"
+                          onClick={() => {
+                            setSecretAction('keep');
+                            setSecret('');
+                          }}
+                        >
+                          отмена
+                        </button>
+                      )}
+                      {secretAction === 'clear' && (
+                        <>
+                          <span className="text-xs text-rose-600 dark:text-rose-400">
+                            будет очищен при сохранении
+                          </span>
+                          <button
+                            type="button"
+                            className="btn-ghost text-xs"
+                            onClick={() => setSecretAction('keep')}
+                          >
+                            отмена
+                          </button>
+                        </>
+                      )}
+                    </div>
+                    {secretAction === 'set' && (
+                      <input
+                        type="password"
+                        className="form-input"
+                        value={secret}
+                        onChange={(e) => setSecret(e.target.value)}
+                        placeholder="новый секрет"
+                        autoComplete="new-password"
+                      />
+                    )}
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                      Секрет хранится у нас и наружу не возвращается — показываем лишь
+                      статус. Используется для подписи вебхуков (HMAC).
+                    </p>
+                  </div>
+                )}
+
+                {/* Порог авто-одобрения */}
+                <div>
+                  <label className="form-label">Порог авто-одобрения</label>
+                  <input
+                    type="number"
+                    className="form-input"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={threshold}
+                    onChange={(e) => setThreshold(e.target.value)}
+                    placeholder="не задан — использовать глобальный"
+                  />
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    документы с confidence ниже порога уходят в Очередь ревью.
+                  </p>
+                </div>
+
+                {error && <div className="error-banner text-sm">{error}</div>}
+                {saved && (
+                  <div className="rounded-md border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300">
+                    Профиль сохранён.
+                  </div>
+                )}
+              </fieldset>
+            </div>
+          )}
+        </div>
+
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-slate-200 bg-slate-50 px-5 py-3 dark:border-slate-800 dark:bg-slate-900/40">
+          <button type="button" className="btn-secondary" onClick={onClose}>
+            {canEdit ? 'Отмена' : 'Закрыть'}
+          </button>
+          {canEdit && (
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={update.isPending || settings.isLoading}
+              onClick={save}
+            >
+              {update.isPending ? 'Сохраняю…' : 'Сохранить'}
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
