@@ -614,11 +614,16 @@ qty×price / идемпотентность).
 
 Снято из `TECH_DEBT.md` чтобы основной файл показывал только реальную активную работу. Эти долги не закрыты — отложены до конкретного триггера. Когда триггер появится — поднимать обратно в `TECH_DEBT.md`.
 
-### CP7. Multi-tenant foundation (per-tenant document_types / provider_settings) — deferred
+### CP7. Multi-tenant document_types + consumer profiles — ✅ закрыто 2026-05-20
 
-**Trigger:** появится второй внешний клиент которому нужны свои типы / свой Claude-ключ.
-**Лечение:** `tenant_id` в `jobs` и `document_types`; builtin типы остаются глобальными, custom — per-tenant.
-**Оценка:** 1-2 недели после первого реального запроса. Сейчас auth-middleware уже резолвит user-scope, но document_types и provider_settings глобальные.
+Поднято из deferred и реализовано, когда стало ясно что потребителей будет несколько (отдел ВЭД — full extract + push в их систему; финслужба ЭДО — классификация + свой UI). Сделано в 4 фазы:
+
+- **Фаза 1** (`b733aab`) — `organization_id` на `document_types` (NULL = global/builtin/shared, non-null = owned). Slug остаётся глобально уникальным (контракт на slug'ах не ломается). Classifier/resolver org-scoped, cache keyed by org. Authz: super_admin — все, org_admin — globals + свои.
+- **Фаза 2** (`1a27509`) — `organization_settings` (профиль потребителя): `mode` (extract/classify_only), `output` (webhook/pull), `webhook_url` + шифрованный `webhook_hmac_secret`, `auto_approve_threshold`. Отсутствие строки = дефолты.
+- **Фаза 3** (`118fa6e`) — enforcement в orchestrator. classify_only пропускает extract; threshold precedence per-type ?? profile ?? global; output routing per-job-url (global secret) → profile-webhook (per-org secret) → pull. Полный backward-compat.
+- **Фаза 4** (`f290292` + `8a672ba`) — UI: редактор профиля в Tenants + ownership-бэйдж/фильтр/owner-selector + template picker в DocumentTypes.
+
+Не сделано (отдельные follow-up'ы, не блокеры): `provider_settings` всё ещё глобальные (per-tenant Claude-ключ — когда понадобится); HTTP-level route-тесты для document-types authz (сейчас storage/zod-уровень).
 
 ### I6. Yandex Vision контракт не выверен — deferred
 
