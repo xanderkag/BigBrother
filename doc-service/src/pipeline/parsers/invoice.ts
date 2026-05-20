@@ -7,6 +7,7 @@ import {
   findDate,
   findInn,
   findMoney,
+  findVat,
   findVatRate,
   scoreCompleteness,
 } from './common.js';
@@ -45,7 +46,10 @@ export class InvoiceParser implements DocumentParser {
 
     const regex = this.parseWithRegex(rawText, expectedFields);
 
-    if (regex.confidence >= fallbackThreshold || !this.llm.isAvailable()) {
+    // threshold=0 disables LLM-fallback entirely (regex always wins);
+    // otherwise skip the LLM only when regex strictly exceeds the bar, so
+    // threshold=1 forces the LLM even on a "perfect" regex result.
+    if (fallbackThreshold === 0 || regex.confidence > fallbackThreshold || !this.llm.isAvailable()) {
       return regex;
     }
 
@@ -72,13 +76,13 @@ export class InvoiceParser implements DocumentParser {
     const number = findDocNumber(rawText, 'счёт|счет');
     const date = findDate(rawText);
     const total = findMoney(rawText, 'Итого\\s+к\\s+оплате', 'Всего\\s+к\\s+оплате', 'Итого');
-    const vat = findMoney(rawText, 'НДС');
+    const vat = findVat(rawText);
     const vat_rate = findVatRate(rawText);
 
     // Seller/buyer INN — best-effort: take first two INN occurrences.
-    const innMatches = rawText.match(/ИНН[\s:№]*?(\d{10}|\d{12})/gi) ?? [];
-    const sellerInn = innMatches[0]?.match(/(\d{10}|\d{12})/)?.[1];
-    const buyerInn = innMatches[1]?.match(/(\d{10}|\d{12})/)?.[1];
+    const innMatches = rawText.match(/ИНН[\s:№]*?(\d{12}|\d{10})(?!\d)/gi) ?? [];
+    const sellerInn = innMatches[0]?.match(/(\d{12}|\d{10})/)?.[1];
+    const buyerInn = innMatches[1]?.match(/(\d{12}|\d{10})/)?.[1];
 
     const fallbackInn = findInn(rawText);
 

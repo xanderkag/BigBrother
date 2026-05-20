@@ -60,6 +60,9 @@ describe('LLM-backed parsers — happy path with mock', () => {
         consignee: { name: 'ООО Василёк', inn: '7798765432' },
         cargo: { name: 'Кирпичи', quantity: 100, weight_gross: 5000 },
         vehicle: { plate: 'А123БВ77', driver: 'Иванов И.И.' },
+        // Phase A v2: items[] — канонический массив строк (раньше parser
+        // не требовал его, теперь EXPECTED_FIELDS.TTN включает 'items').
+        items: [{ name: 'Кирпичи', quantity: 100 }],
       },
       confidence: 0.88,
     });

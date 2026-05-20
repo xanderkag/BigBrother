@@ -65,7 +65,7 @@ describe('pending-job sweeper', () => {
     const enqueue = vi.fn();
     const sweeper = startPendingJobSweeper({
       log,
-      jobsRepo: { findStalePending: async () => [] },
+      jobsRepo: { findStalePending: async () => [], findStuckProcessing: async () => [] },
       enqueue,
       intervalMs: 1_000_000, // effectively disabled so test controls timing
     });
@@ -85,7 +85,7 @@ describe('pending-job sweeper', () => {
 
     const sweeper = startPendingJobSweeper({
       log,
-      jobsRepo: { findStalePending: async () => rows },
+      jobsRepo: { findStalePending: async () => rows, findStuckProcessing: async () => [] },
       enqueue,
       intervalMs: 1_000_000,
     });
@@ -111,7 +111,7 @@ describe('pending-job sweeper', () => {
 
     const sweeper = startPendingJobSweeper({
       log,
-      jobsRepo: { findStalePending: async () => rows },
+      jobsRepo: { findStalePending: async () => rows, findStuckProcessing: async () => [] },
       enqueue,
       intervalMs: 1_000_000,
     });
@@ -131,6 +131,7 @@ describe('pending-job sweeper', () => {
           new Promise<JobRow[]>((res) => {
             resolveQuery = res;
           }),
+        findStuckProcessing: async () => [],
       },
       enqueue,
       intervalMs: 1_000_000,

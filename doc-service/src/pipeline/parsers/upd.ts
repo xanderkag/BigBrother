@@ -3,7 +3,7 @@ import type { DocumentType } from '../../types/documents.js';
 import type { LlmClient } from '../llm/types.js';
 import { llmExtract } from './llm-extractor.js';
 import type { DocumentParser, ParseResult, ParserOverride } from './types.js';
-import { findDate, findDocNumber, findMoney, findVatRate, scoreCompleteness } from './common.js';
+import { findDate, findDocNumber, findMoney, findVat, findVatRate, scoreCompleteness } from './common.js';
 
 const DEFAULT_REGEX_EXPECTED_FIELDS: readonly string[] = ['number', 'date', 'total'];
 
@@ -34,7 +34,7 @@ export class UpdParser implements DocumentParser {
 
     const regex = this.parseWithRegex(rawText, expectedFields);
 
-    if (regex.confidence >= fallbackThreshold || !this.llm.isAvailable()) {
+    if (fallbackThreshold === 0 || regex.confidence > fallbackThreshold || !this.llm.isAvailable()) {
       return regex;
     }
 
@@ -56,15 +56,18 @@ export class UpdParser implements DocumentParser {
   }
 
   private parseWithRegex(rawText: string, expectedFields: readonly string[]): ParseResult {
-    const number = findDocNumber(rawText, 'УПД|счёт-фактура|счет-фактура');
+    const number = findDocNumber(
+      rawText,
+      'Универсальный\\s+передаточный\\s+документ|УПД|счёт-фактура|счет-фактура',
+    );
     const date = findDate(rawText);
     const total = findMoney(rawText, 'Всего\\s+к\\s+оплате', 'Итого', 'Всего');
-    const vat = findMoney(rawText, 'НДС');
+    const vat = findVat(rawText);
     const vat_rate = findVatRate(rawText);
 
-    const innMatches = rawText.match(/ИНН[\s:№]*?(\d{10}|\d{12})/gi) ?? [];
-    const sellerInn = innMatches[0]?.match(/(\d{10}|\d{12})/)?.[1];
-    const buyerInn = innMatches[1]?.match(/(\d{10}|\d{12})/)?.[1];
+    const innMatches = rawText.match(/ИНН[\s:№]*?(\d{12}|\d{10})(?!\d)/gi) ?? [];
+    const sellerInn = innMatches[0]?.match(/(\d{12}|\d{10})/)?.[1];
+    const buyerInn = innMatches[1]?.match(/(\d{12}|\d{10})/)?.[1];
 
     const extracted = {
       number,

@@ -96,6 +96,16 @@ export function validateDate(iso: string, today: Date = new Date()): string | nu
   if (Number.isNaN(parsed.getTime())) {
     return `Дата ${iso}: невалидная (например, 30.02 не существует)`;
   }
+  // JS Date rolls overflow dates over (2026-02-30 → 2026-03-02) instead of
+  // throwing — catch the rollover by round-tripping the components.
+  const [y, m, d] = iso.split('-').map(Number) as [number, number, number];
+  if (
+    parsed.getUTCFullYear() !== y ||
+    parsed.getUTCMonth() + 1 !== m ||
+    parsed.getUTCDate() !== d
+  ) {
+    return `Дата ${iso}: невалидная (например, 30.02 не существует)`;
+  }
   const lower = new Date(`${DATE_LOWER}T00:00:00Z`);
   const upper = new Date(today.getTime() + DATE_UPPER_OFFSET_DAYS * 86_400_000);
   if (parsed < lower) {

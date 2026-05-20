@@ -7,7 +7,9 @@ const MONTHS_RU: Record<string, number> = {
 
 export function findInn(text: string): string | undefined {
   // INN is 10 (legal entity) or 12 (individual) digits, near the literal "ИНН".
-  const m = text.match(/ИНН[\s:№]*?(\d{10}|\d{12})/i);
+  // 12 (individual / ИП) must be tried before 10 (legal entity), and a
+  // trailing digit-boundary stops \d{10} from clipping a 12-digit INN.
+  const m = text.match(/ИНН[\s:№]*?(\d{12}|\d{10})(?!\d)/i);
   return m?.[1];
 }
 
@@ -44,9 +46,12 @@ export function findDate(text: string): string | undefined {
 
 export function findMoney(text: string, ...labels: string[]): number | undefined {
   for (const label of labels) {
-    const re = new RegExp(`${label}[^\\d-]{0,20}([0-9][0-9\\s.,]*)`, 'i');
-    const m = text.match(re);
-    if (m) {
+    // `g` so we can skip percentage hits (e.g. a "20%" rate) and keep
+    // scanning for the actual ruble amount on a later occurrence.
+    const re = new RegExp(`${label}[^\\d-]{0,20}([0-9][0-9\\s.,]*)(\\s*%)?`, 'gi');
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      if (m[2]) continue; // trailing "%" → this is a rate, not money
       const num = parseAmount(m[1] ?? '');
       if (num !== undefined) return num;
     }
@@ -70,6 +75,24 @@ export function parseAmount(raw: string): number | undefined {
 export function findVatRate(text: string): number | undefined {
   const m = text.match(/НДС[^%\d]{0,10}(\d{1,2})\s*%/i);
   return m ? Number(m[1]) : undefined;
+}
+
+/**
+ * Сумма НДС (₽), а не ставка. Идём построчно: берём первую строку с "НДС",
+ * исключаем подытоги ("без НДС", "кроме НДС", "НДС не облагается") и
+ * вырезаем inline-ставку ("НДС 20%: 4 583,33" → сумма 4 583,33, не 20).
+ */
+export function findVat(text: string): number | undefined {
+  for (const line of text.split(/\r?\n/)) {
+    if (!/НДС/i.test(line)) continue;
+    if (/без\s+НДС|кроме\s+НДС|НДС\s+не\s+облага/i.test(line)) continue;
+    const cleaned = line.replace(/\d{1,2}\s*%/, ' '); // drop the rate token
+    const m = cleaned.match(/([0-9][0-9\s.,]*)/);
+    if (!m) continue;
+    const v = parseAmount(m[1] ?? '');
+    if (v !== undefined && v > 0) return v;
+  }
+  return undefined;
 }
 
 function iso(y: number, m: number, d: number): string {

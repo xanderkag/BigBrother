@@ -141,6 +141,10 @@ describe('KeywordClassifier — DB keywords path', () => {
 
     const r = await new KeywordClassifier().classify('something shared here');
     expect(r.type).toBe('high_priority');
-    expect(r.confidence).toBe(0.9);
+    // Both keyword'а попадают в title-window (chars 0-500) → оба получают
+    // ×1.5 title-boost (feature 2026-05-18). high_priority: 0.9×1.5=1.35,
+    // clamp'ится к 1.0 на выходе. Контракт теста — относительный порядок
+    // (high > low), а не точное значение confidence.
+    expect(r.confidence).toBe(1.0);
   });
 });

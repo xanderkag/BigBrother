@@ -71,13 +71,13 @@ function loadFallbackRules(): Array<{ type: DocumentTypeSlug; pattern: RegExp; w
     // File not found (Docker without shared/ mount, or unit test without repo layout).
     // Return hardcoded list so the classifier still works.
     return [
-      { type: 'UPD',         pattern: /универсальный\s+передаточный\s+документ|\bУПД\b/i, weight: 1.0 },
+      { type: 'UPD',         pattern: /универсальный\s+передаточный\s+документ|(?<![а-яёa-z])упд(?![а-яёa-z])/i, weight: 1.0 },
       { type: 'CMR',         pattern: /\bCMR\b|международная\s+товарно-транспортная/i,    weight: 1.0 },
-      { type: 'TTN',         pattern: /транспортная\s+накладная|товарно-транспортная\s+накладная|\bТТН\b/i, weight: 1.0 },
+      { type: 'TTN',         pattern: /транспортная\s+накладная|товарно-транспортная\s+накладная|(?<![а-яёa-z])ттн(?![а-яёa-z])/i, weight: 1.0 },
       { type: 'factInvoice', pattern: /счет-фактура|счёт-фактура/i,                       weight: 1.0 },
-      { type: 'AKT',         pattern: /\bакт\b\s+(оказанных|выполненных|сдачи)|акт\s+об\s+оказании/i, weight: 0.95 },
-      { type: 'invoice',     pattern: /\bсч[её]т\s+на\s+оплату\b|\bсч[её]т\s+№/i,        weight: 0.9 },
-      { type: 'invoice',     pattern: /\bсч[её]т\b/i,                                     weight: 0.6 },
+      { type: 'AKT',         pattern: /(?<![а-яёa-z])акт(?![а-яёa-z])\s+(оказанных|выполненных|сдачи)|акт\s+об\s+оказании/i, weight: 0.95 },
+      { type: 'invoice',     pattern: /сч[её]т\s+на\s+оплату|сч[её]т\s+№/i,              weight: 0.9 },
+      { type: 'invoice',     pattern: /сч[её]т/i,                                         weight: 0.6 },
     ];
   }
 }
