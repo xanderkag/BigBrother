@@ -17,6 +17,7 @@ import { YandexVisionEngine } from './ocr/yandex.js';
 import { XlsxEngine } from './ocr/xlsx.js';
 import { DocxEngine } from './ocr/docx.js';
 import { selectOcrChain } from './router.js';
+import { sanitizeText } from './text-sanitize.js';
 import { KeywordClassifier } from './classifier/keywords.js';
 import { combineConfidence } from './quality.js';
 import { ParsersFactory } from './parsers/index.js';
@@ -223,6 +224,11 @@ async function processJobInner(
       await materialized.cleanup().catch(() => undefined);
     }
     timings.ocr_ms = Date.now() - ocrStart;
+    // P0 (2026-05-20): убираем NUL/control-байты из OCR-текста до того, как он
+    // уйдёт в classifier, LLM /extract и DB. Иначе finalize падает на
+    // "invalid byte sequence for encoding UTF8: 0x00". Чистим один раз здесь —
+    // дальше по пайплайну текст уже безопасен.
+    ocr.text = sanitizeText(ocr.text);
     await stepEvent(`ocr.${ocr.engine}`, 'done', {
       duration_ms: timings.ocr_ms,
       details: { confidence: roundConf(ocr.confidence), text_length: ocr.text.length },

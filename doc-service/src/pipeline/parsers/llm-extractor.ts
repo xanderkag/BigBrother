@@ -35,7 +35,7 @@ export async function llmExtract(
   // если бэкенд готов. Размер трассы — десятки KB на крупный prompt, что
   // приемлемо для платформы с job'ами по гигабайтам метаданных.
   const result = await llm.extract({ text: rawText, schema, hint, promptOverride, includeDebug: true });
-  const extracted = result.extracted ?? {};
+  const extracted = unwrapSchemaEcho(result.extracted ?? {});
   const present = new Set(Object.keys(extracted));
   const missing = expectedFields.filter((f) => {
     if (!present.has(f)) return true;
@@ -54,4 +54,28 @@ export async function llmExtract(
 function clamp01(x: number | undefined | null): number {
   if (x === undefined || x === null || Number.isNaN(x)) return 0;
   return Math.max(0, Math.min(1, x));
+}
+
+/**
+ * Defensive unwrap для частого LLM-глюка: модель «эхом» возвращает саму
+ * JSON-схему, а не данные — `{ "type": "object", "properties": { ...values } }`.
+ * При этом значения уже подставлены ВНУТРЬ properties (number: "INV-...",
+ * items: [...]). Наблюдалось на Qwen2.5-VL для фрахт-счетов (2026-05-20):
+ * extracted приходил пустым на верхнем уровне, а реальные поля — под
+ * `.properties`. Если видим эту сигнатуру — разворачиваем в плоский объект.
+ *
+ * Срабатывает только при чётком признаке schema-echo (есть `properties`-объект
+ * + либо `type:'object'`, либо на верхнем уровне больше ничего полезного), так
+ * что нормальный extracted с легитимным полем «properties» не пострадает.
+ */
+function unwrapSchemaEcho(extracted: Record<string, unknown>): Record<string, unknown> {
+  const props = extracted['properties'];
+  const looksLikeSchema =
+    props !== null &&
+    typeof props === 'object' &&
+    !Array.isArray(props) &&
+    Object.keys(props as object).length > 0 &&
+    (extracted['type'] === 'object' ||
+      Object.keys(extracted).every((k) => k === 'type' || k === 'properties'));
+  return looksLikeSchema ? (props as Record<string, unknown>) : extracted;
 }
