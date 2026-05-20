@@ -428,6 +428,20 @@ function jobIssues(j: Job): string[] {
   return ((j.extracted as Record<string, unknown> | null)?._issues as string[] | undefined) ?? [];
 }
 
+/** F5: число сегментов в multi-doc PDF/xlsx (0 — single-doc). */
+function multiDocCount(j: Job): number {
+  const segs = (j.extracted as Record<string, unknown> | null)?._multidoc_documents;
+  return Array.isArray(segs) ? segs.length : 0;
+}
+
+/** CP7: classify_only — extract-стадия пропущена профилем потребителя. */
+function isClassifyOnly(j: Job): boolean {
+  return (
+    j.pipeline_steps?.some((s) => s.step === 'parse' && s.status === 'skipped') ??
+    false
+  );
+}
+
 function groupByDocType(items: Job[]): Array<[string, Job[]]> {
   const groups: Record<string, Job[]> = {};
   for (const j of items) {
@@ -607,6 +621,8 @@ function ReviewRow({
       | Record<string, number>
       | undefined;
   const synth = isSynthetic(job.file_name);
+  const multiDoc = multiDocCount(job);
+  const classifyOnly = isClassifyOnly(job);
 
   // Поля, которые упомянуты в issues (для подсветки) — простая эвристика
   const flaggedFields = useMemo(() => {
@@ -667,6 +683,22 @@ function ReviewRow({
               <span className="badge-indigo shrink-0 uppercase">{job.document_type}</span>
             )}
             {job.document_type && <TierBadge tier={tier} size="xs" />}
+            {multiDoc > 0 && (
+              <span
+                className="shrink-0 rounded-sm bg-sky-100 px-1 font-mono text-[10px] uppercase tracking-wider text-sky-700 dark:bg-sky-900/40 dark:text-sky-300"
+                title="Multi-doc PDF — несколько документов в одном файле"
+              >
+                {multiDoc} документов
+              </span>
+            )}
+            {classifyOnly && (
+              <span
+                className="shrink-0 rounded-sm bg-slate-100 px-1 font-mono text-[10px] uppercase tracking-wider text-slate-600 dark:bg-slate-800 dark:text-slate-400"
+                title="Только классификация — извлечение полей отключено профилем"
+              >
+                classify-only
+              </span>
+            )}
             <span
               className="ml-auto font-mono text-[10px] text-slate-400 dark:text-slate-500"
               title={job.id}
@@ -692,8 +724,8 @@ function ReviewRow({
             )}
           </div>
 
-          {/* Extracted preview — top fields */}
-          {job.extracted && (
+          {/* Extracted preview — top fields (не для classify-only: полей нет) */}
+          {job.extracted && !classifyOnly && (
             <div className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">
               {PREVIEW_FIELDS.map(({ key, label }) => {
                 const v = (job.extracted as Record<string, unknown>)[key];

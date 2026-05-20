@@ -259,6 +259,7 @@ function FormView({
           'positions',
           '_issues',
           '_field_confidence',
+          '_multidoc_documents',
           '_normalized_fields',
           '_totals_recomputed',
           ...Object.keys(flags),

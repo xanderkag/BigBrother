@@ -1,8 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useJob, useJobFile, useApproveJob, useReprocessJob } from '@/queries/jobs';
+import { useDocumentTypes, type DocumentTypeTier } from '@/queries/documentTypes';
 import PdfViewer from '@/components/PdfViewer';
 import ExtractedDataPanel from '@/components/ExtractedDataPanel';
+import ConfidenceBar from '@/components/ConfidenceBar';
+import TierBadge from '@/components/TierBadge';
 import ValidationBanner from '@/components/ValidationBanner';
 import ExtractedEditor from '@/components/ExtractedEditor';
 import {
@@ -11,6 +14,18 @@ import {
   shortId,
   formatDateTime,
 } from '@/lib/format';
+
+/**
+ * F5 multi-doc сегмент — один документ внутри multi-doc PDF/xlsx.
+ * Лежит в job.extracted._multidoc_documents (single-doc — ключа нет).
+ */
+interface MultiDocSegment {
+  page_range: string;
+  document_type: string | null;
+  confidence: number;
+  extracted: Record<string, unknown>;
+  field_confidence?: Record<string, number>;
+}
 
 /**
  * Job Detail — главная страница UI v2. Заменяет старый view из app.js
@@ -48,9 +63,19 @@ export default function JobDetailPage() {
 
   const { data: job, isLoading, error } = useJob(jobId);
   const { data: fileUrl } = useJobFile(jobId);
+  const { data: docTypes } = useDocumentTypes();
   const approve = useApproveJob();
   const reprocess = useReprocessJob();
   const [editorOpen, setEditorOpen] = useState(false);
+  const [activeDoc, setActiveDoc] = useState(0);
+
+  const tierBySlug = useMemo(() => {
+    const m = new Map<string, DocumentTypeTier>();
+    for (const t of docTypes?.items ?? []) {
+      if (t.tier) m.set(t.slug, t.tier);
+    }
+    return m;
+  }, [docTypes]);
 
   // Cleanup blob URL — react-pdf держит ссылку, поэтому освобождаем
   // только при unmount страницы (не при ре-фетче).
@@ -82,6 +107,22 @@ export default function JobDetailPage() {
   const fieldConfidence = job.extracted?._field_confidence as
     | Record<string, number>
     | undefined;
+
+  // CP7: classify_only — extract-стадия пропущена профилем потребителя.
+  // Сигнал — pipeline-шаг parse со статусом skipped (см. orchestrator.ts).
+  const classifyOnly =
+    job.pipeline_steps?.some(
+      (s) => s.step === 'parse' && s.status === 'skipped',
+    ) ?? false;
+
+  // F5: multi-doc сегменты. Primary `extracted` = доминирующий документ,
+  // сегменты — дополнительные. Single-doc — ключа нет.
+  const segmentsRaw = job.extracted?._multidoc_documents;
+  const segments: MultiDocSegment[] =
+    Array.isArray(segmentsRaw) && segmentsRaw.length > 0
+      ? (segmentsRaw as MultiDocSegment[])
+      : [];
+  const isMultiDoc = segments.length > 0;
 
   return (
     <div className="flex h-full flex-col">
@@ -137,7 +178,12 @@ export default function JobDetailPage() {
               type="button"
               className="btn-secondary"
               onClick={() => setEditorOpen(true)}
-              title="Редактировать extracted JSON"
+              disabled={classifyOnly}
+              title={
+                classifyOnly
+                  ? 'Извлечение отключено профилем (classify_only)'
+                  : 'Редактировать extracted JSON'
+              }
             >
               ✎ Edit
             </button>
@@ -169,10 +215,36 @@ export default function JobDetailPage() {
         <div className="flex min-h-0 flex-col gap-3 overflow-auto bg-slate-50 dark:bg-slate-900/40 p-4">
           <ValidationBanner issues={issues} />
 
-          <ExtractedDataPanel extracted={job.extracted} issues={issues} />
+          {classifyOnly ? (
+            <ClassifyOnlyResult
+              documentType={job.document_type}
+              confidence={job.confidence}
+              tier={
+                job.document_type ? tierBySlug.get(job.document_type) ?? null : null
+              }
+            />
+          ) : isMultiDoc ? (
+            <MultiDocView
+              activeDoc={activeDoc}
+              onSelect={setActiveDoc}
+              primary={{
+                extracted: job.extracted,
+                issues,
+                document_type: job.document_type,
+                confidence: job.confidence,
+                fieldConfidence,
+              }}
+              segments={segments}
+              tierBySlug={tierBySlug}
+            />
+          ) : (
+            <>
+              <ExtractedDataPanel extracted={job.extracted} issues={issues} />
 
-          {fieldConfidence && Object.keys(fieldConfidence).length > 0 && (
-            <FieldConfidenceCard fc={fieldConfidence} />
+              {fieldConfidence && Object.keys(fieldConfidence).length > 0 && (
+                <FieldConfidenceCard fc={fieldConfidence} />
+              )}
+            </>
           )}
 
           {job.pipeline_steps && job.pipeline_steps.length > 0 && (
@@ -208,6 +280,173 @@ function StatusBadge({ status }: { status: string }) {
       ? 'badge-sky'
       : 'badge-slate';
   return <span className={cls}>{status}</span>;
+}
+
+/**
+ * CP7: classify_only-результат. Извлечение полей отключено профилем
+ * потребителя — показываем только тип + confidence (это весь результат).
+ */
+function ClassifyOnlyResult({
+  documentType,
+  confidence,
+  tier,
+}: {
+  documentType: string | null;
+  confidence: number | null;
+  tier: DocumentTypeTier | null;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="rounded-lg border-l-4 border-sky-500 bg-sky-50 px-4 py-3 text-sm text-sky-900 dark:bg-sky-900/20 dark:text-sky-200">
+        Только классификация — извлечение полей отключено профилем
+        потребителя (classify_only).
+      </div>
+      <div className="card">
+        <div className="card-header">
+          <h3 className="card-title">Результат классификации</h3>
+        </div>
+        <div className="card-body space-y-4">
+          <div className="flex items-center gap-2">
+            {documentType ? (
+              <span className="badge-indigo uppercase">{documentType}</span>
+            ) : (
+              <span className="text-sm text-slate-500 dark:text-slate-400">
+                тип не определён
+              </span>
+            )}
+            <TierBadge tier={tier} />
+          </div>
+          <div>
+            <div className="mb-1 text-xs text-slate-500 dark:text-slate-400">
+              Confidence
+            </div>
+            <ConfidenceBar
+              value={confidence !== null ? Number(confidence) : null}
+              width={160}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * F5: multi-doc view. Tab strip + панель активного документа. Первая
+ * вкладка — primary `extracted` (доминирующий документ, редактируемый
+ * через общий Edit-flow). Остальные сегменты — read-only в этом cut.
+ */
+function MultiDocView({
+  activeDoc,
+  onSelect,
+  primary,
+  segments,
+  tierBySlug,
+}: {
+  activeDoc: number;
+  onSelect: (i: number) => void;
+  primary: {
+    extracted: Record<string, unknown> | null;
+    issues: string[];
+    document_type: string | null;
+    confidence: number | null;
+    fieldConfidence?: Record<string, number>;
+  };
+  segments: MultiDocSegment[];
+  tierBySlug: Map<string, DocumentTypeTier>;
+}) {
+  // Вкладка 0 — primary, далее по одному на сегмент.
+  const tabs = [
+    {
+      label: primary.document_type ?? 'основной',
+      page_range: null as string | null,
+      confidence: primary.confidence,
+      document_type: primary.document_type,
+    },
+    ...segments.map((s) => ({
+      label: s.document_type ?? 'без типа',
+      page_range: s.page_range,
+      confidence: s.confidence,
+      document_type: s.document_type,
+    })),
+  ];
+  const idx = Math.min(activeDoc, tabs.length - 1);
+  const isPrimary = idx === 0;
+  const seg = isPrimary ? null : segments[idx - 1];
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-1 overflow-x-auto rounded-lg bg-slate-100 p-1 dark:bg-slate-800">
+        {tabs.map((t, i) => (
+          <button
+            key={i}
+            type="button"
+            onClick={() => onSelect(i)}
+            className={`flex shrink-0 items-center gap-1.5 rounded px-2.5 py-1 text-xs ${
+              i === idx
+                ? 'bg-brand-600 text-white'
+                : 'text-slate-700 hover:bg-slate-200 dark:text-slate-300 dark:hover:bg-slate-700'
+            }`}
+            title={t.page_range ? `Страницы ${t.page_range}` : 'Основной документ'}
+          >
+            <span className="uppercase">{t.label}</span>
+            {t.page_range && (
+              <span className="font-mono opacity-70">[{t.page_range}]</span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 dark:border-slate-800 dark:bg-slate-900">
+        {(tabs[idx].document_type ?? null) && (
+          <span className="badge-indigo uppercase">{tabs[idx].document_type}</span>
+        )}
+        <TierBadge
+          tier={
+            tabs[idx].document_type
+              ? tierBySlug.get(tabs[idx].document_type as string) ?? null
+              : null
+          }
+        />
+        {tabs[idx].page_range && (
+          <span className="font-mono text-xs text-slate-500 dark:text-slate-400">
+            стр. {tabs[idx].page_range}
+          </span>
+        )}
+        <ConfidenceBar
+          value={
+            tabs[idx].confidence !== null ? Number(tabs[idx].confidence) : null
+          }
+          width={120}
+        />
+        {!isPrimary && (
+          <span className="ml-auto font-mono text-[10px] uppercase tracking-wider text-slate-400 dark:text-slate-500">
+            read-only
+          </span>
+        )}
+      </div>
+
+      {isPrimary ? (
+        <>
+          <ExtractedDataPanel extracted={primary.extracted} issues={primary.issues} />
+          {primary.fieldConfidence &&
+            Object.keys(primary.fieldConfidence).length > 0 && (
+              <FieldConfidenceCard fc={primary.fieldConfidence} />
+            )}
+        </>
+      ) : (
+        seg && (
+          <>
+            <ExtractedDataPanel extracted={seg.extracted} />
+            {seg.field_confidence &&
+              Object.keys(seg.field_confidence).length > 0 && (
+                <FieldConfidenceCard fc={seg.field_confidence} />
+              )}
+          </>
+        )
+      )}
+    </div>
+  );
 }
 
 function FieldConfidenceCard({ fc }: { fc: Record<string, number> }) {
