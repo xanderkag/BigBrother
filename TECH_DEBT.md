@@ -916,26 +916,40 @@ SGLang, TGI) выставляют OpenAI Chat Completions API; теперь pars
 
 > **CP7, I6, Phase F** перенесены в `TECH_DEBT_ARCHIVE.md` → раздел «Deferred backlog (snapshot 2026-05-19)». Триггеры возврата записаны там.
 
-### UI-2. Mobile-responsive React UI — 🗄️ backlog (2026-05-18)
+### UI-2. Mobile-responsive React UI — ✅ закрыто 2026-05-20
 
-**Где:** `doc-service/ui/src/` — все страницы с таблицами (JobsList, Tenants, Providers, DocumentTypes, AuditLog, ReferenceLists).
+Card-mode для таблиц на `<md` (JobsList / Tenants / DocumentTypes /
+ReferenceLists; AuditLog уже был карточным), прогрессивное скрытие
+вторичных колонок на lg/xl, top-bar/search/dropdown без overflow,
+touch-targets ≥40px. Desktop (≥md) не изменился. Чисто
+презентационно, без правок логики. Commit `cf7d008`.
 
-**Симптом:** На экранах ≤768px (телефоны, планшеты в портрете) таблицы либо обрезаются `overflow-x-auto`, либо требуют горизонтального скролла, либо колонки наезжают друг на друга. Sticky header в Layout тоже не оптимизирован под узкие экраны (admin-dropdown может уйти за край).
+---
 
-**Почему отложено:**
-- Бизнес-юзеры (бухгалтерия) работают **с десктопа** в офисе — основной канал не страдает.
-- Mobile нужен только админу «глянуть статус на ходу» — крайне редкий сценарий пока.
-- Полный rework таблиц (карточный режим на `<sm:`, sticky первая колонка, hidden secondary cols, sheet-based formy) — 4-6 часов работы, не блокер для пилота SLAI.
+## 🟢 Test harness / quality gate
 
-**Когда вернуться:** если появится требование «бухгалтер смотрит статус с телефона дома» или метрики покажут заметную долю mobile-сессий.
+### Vitest env harness + surfaced bugs — ✅ закрыто 2026-05-20
 
-**Лечение:**
-1. Card-mode для таблиц на `<md:` через CSS Grid + media query
-2. Hidden secondary columns (`hidden md:table-cell`) для второстепенных полей
-3. Drawer (sheet) для admin-dropdown вместо top-aligned меню
-4. Touch-friendly размеры кнопок (min 44×44px по гайдлайнам Apple/Material)
+`config.ts` вызывает `loadConfig()` на module-eval, и ~19 spec-файлов
+падали на collection из-за отсутствия env (ESM hoist'ит import'ы выше
+inline `process.env.X ??=`). Починено `vitest.config.ts` +
+`vitest.setup.ts` (setupFiles стабит env через `??=`, real CI
+оверрайдит; pool:forks). Collection-фейлы 19→0, открылось ~148 ранее
+несобираемых тестов.
 
-**Оценка:** 4-6 часов на все 6 таблиц + Layout.
+Это вскрыло реальные баги (были замаскированы), все починены (commit
+`c9fb10e`):
+- `findInn` резал 12-значный ИНН (ИП) до 10.
+- VAT-извлечение брало ставку/подытог вместо суммы НДС.
+- `validateDate` пропускал календарно-невалидные даты (2026-02-30).
+- Классификатор не матчил голую кириллицу (`\b` в JS не работает с
+  кириллицей) — «АКТ/счёт/УПД/ТТН» молча не классифицировались.
+
+Suite зелёный: 50 файлов, 619 passed, 1 pre-existing skip.
+
+**Остаточный долг:** часть тестов (`pipeline-integration`) мокают БД;
+полноценный integration-прогон против live Postgres/Redis — отдельный
+`test:integration` (не сделан, не блокер).
 
 ---
 
