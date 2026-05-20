@@ -931,20 +931,20 @@ touch-targets ≥40px. Desktop (≥md) не изменился. Чисто
 Бэкенд-изменения последних дней положили в данные то, что UI пока не
 показывает. Берём потихоньку, в порядке ценности.
 
-### UI-3. Multi-doc PDF результаты в JobDetail/Review — 🟡 в работе (F5 follow-up)
+### UI-3. Multi-doc PDF результаты в JobDetail/Review — ✅ закрыто 2026-05-20 (`f5172cb`)
 
-**Симптом:** F5 извлекает несколько документов из одного PDF (счёт+ТТН+АКТ)
-в `_multidoc_documents` / webhook `documents[]`, но `JobDetail`/`ExtractedDataPanel`
-рендерят только доминирующий `extracted`. Оператор не видит и не может проверить
-вторичные документы.
-**Лечение:** табы/секции по найденным документам с page_range, типом, confidence,
-их extracted (+ per-segment field_confidence). Single-doc — без изменений.
+MultiDocView в JobDetail: таб-strip (primary editable tab 0 + read-only
+таб на сегмент, каждый с document_type+TierBadge / page_range /
+ConfidenceBar / extracted + field_confidence). `_multidoc_documents`
+вычищается из primary-панели. Чип «N документов» в Review. Остаток
+(минор): доминирующий doc может дублироваться как primary-таб и как
+свой сегмент — допустимо в первом cut.
 
-### UI-4. classify_only-aware рендеринг — 🟡 в работе (CP7 follow-up)
+### UI-4. classify_only-aware рендеринг — ✅ закрыто 2026-05-20 (`f5172cb`)
 
-**Симптом:** джобы потребителя с `mode=classify_only` приходят с пустым `extracted`;
-UI выглядит «не извлеклось». **Лечение:** плашка «только классификация (профиль
-потребителя)» вместо пустой панели; скрыть extracted-редактор для таких джоб.
+Сигнал — pipeline-шаг `parse:skipped`. Баннер «только классификация» +
+карточка type/confidence вместо пустой панели; Edit отключён; чип
+«classify-only» в Review.
 
 ### UI-5. Webhook delivery статус — backlog (CP7 follow-up)
 
