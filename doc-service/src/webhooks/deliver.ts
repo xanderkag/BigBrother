@@ -52,9 +52,16 @@ export async function deliverWebhook(
   url: string,
   payload: WebhookPayload,
   log: Logger,
+  /**
+   * Опц. override HMAC-секрета для подписи. По умолчанию — глобальный
+   * config.webhook.hmacSecret (today's behavior). Phase 3 (CP7): для
+   * per-consumer webhook'а передаём расшифрованный per-org секрет, чтобы
+   * каждый потребитель верифицировал своим ключом.
+   */
+  hmacSecret: string = config.webhook.hmacSecret,
 ): Promise<void> {
   const body = JSON.stringify(payload);
-  const signature = sign(body, config.webhook.hmacSecret);
+  const signature = sign(body, hmacSecret);
 
   const maxAttempts = config.webhook.maxAttempts;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {

@@ -37,13 +37,19 @@ import { normalizeSlugForApi } from '../types/slug-normalize.js';
  * Доставить webhook для финализированного job'а, применив F2/F4
  * трансформации и опц. F27 delete-after-processing.
  *
- * Вызывается только когда `updated.webhook_url` задан — проверку
- * делает caller (orchestrator.processJobInner).
+ * Вызывается только когда есть куда доставлять — выбор URL/секрета делает
+ * caller (orchestrator.processJobInner) по precedence-правилам.
+ *
+ * Phase 3 (CP7): `override` позволяет caller'у направить доставку на
+ * per-org profile webhook с per-org секретом. Если override не передан —
+ * используется `updated.webhook_url` + глобальный секрет (today's behavior,
+ * backwards compat для explicit per-job webhook_url).
  */
 export async function deliverFinalizedJobWebhook(
   updated: JobRow,
   jobId: string,
   log: Logger,
+  override?: { url?: string; hmacSecret?: string },
 ): Promise<void> {
   // F2: per-field confidence — извлекаем `_field_confidence` из extracted
   // в top-level webhook payload. Калибруем по checksum ИНН и нормализации
@@ -90,9 +96,10 @@ export async function deliverFinalizedJobWebhook(
   const extractedOut = shouldRedact ? redactPii(extractedNoMultidoc) : extractedNoMultidoc;
   const metadataOut = shouldRedact ? redactPii(meta) : meta;
 
+  const targetUrl = override?.url ?? updated.webhook_url!;
   await deliverWebhook(
     jobId,
-    updated.webhook_url!,
+    targetUrl,
     {
       // 2026-05-18 (SLAI Issue #4): обязательное поле контракта v1.
       version: 'v1',
@@ -111,6 +118,7 @@ export async function deliverFinalizedJobWebhook(
       documents,
     },
     log,
+    override?.hmacSecret,
   );
 
   // F27 (SLAI ТЗ): immediate delete оригинала после webhook delivery

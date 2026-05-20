@@ -32,6 +32,7 @@ import { runResolutionPipeline } from '../resolution/pipeline.js';
 import { tryMultiDoc } from './multidoc/runner.js';
 import { processFieldConfidence } from './normalize/field-confidence.js';
 import { fileStorage } from '../storage/files.js';
+import { organizationSettingsRepo } from '../storage/organization-settings.js';
 
 // --- Wire dependencies once at module load. The pipeline is stateless beyond this.
 //
@@ -164,6 +165,12 @@ async function processJobInner(
   let ocr: OcrResult | null = null;
   let documentType: DocumentTypeSlug | null = job.document_hint ?? null;
 
+  // Phase 3 (CP7): per-org consumer profile. Грузим один раз. Дефолт-профиль
+  // (extract / pull / no secret) возвращается когда орг нет или строки нет —
+  // тогда поведение в точности как до Phase 3 (backwards compat).
+  const profile = await organizationSettingsRepo.get(job.organization_id);
+  const classifyOnly = profile.mode === 'classify_only';
+
   // Per-step timings — для bottleneck-определения и сводного `job completed`.
   const timings: StepTimings = { ocr_ms: 0, classify_ms: 0, extract_ms: 0, validate_ms: 0 };
 
@@ -251,8 +258,11 @@ async function processJobInner(
     // запускаем per-segment extract pipeline. Иначе fall back на обычный
     // single-doc. Полный PDF F5 (per-page raster + classify) — отдельный
     // sprint, нужен page-level OCR.
+    // Phase 3 (CP7): в classify_only мульти-doc extract не запускаем вовсе
+    // (per-segment extract — это как раз LLM-стадия, которую потребитель
+    // явно не хочет). Single-doc classify ниже всё равно даст primary type.
     let multiDocResult: Awaited<ReturnType<typeof tryMultiDoc>> = null;
-    if (ocr.pages && ocr.pages.length > 1) {
+    if (!classifyOnly && ocr.pages && ocr.pages.length > 1) {
       multiDocResult = await tryMultiDoc(ocr, {
         classifier,
         organizationId: job.organization_id,
@@ -293,7 +303,12 @@ async function processJobInner(
     // потом в webhook payload.documents.
     const post = await runDocumentPipeline(
       ocr.text,
-      { hint: documentType ?? undefined, promptOverride, organizationId: job.organization_id },
+      {
+        hint: documentType ?? undefined,
+        promptOverride,
+        organizationId: job.organization_id,
+        classifyOnly,
+      },
       log,
       { jobId },
       timings,
@@ -303,15 +318,22 @@ async function processJobInner(
       duration_ms: timings.classify_ms,
       details: { document_type: documentType, source: post.classificationSource },
     });
-    await stepEvent('parse', 'done', {
-      duration_ms: timings.extract_ms,
-      details: {
-        parser_kind: post.typeConfig?.parserKind ?? 'default',
-        confidence: roundConf(post.parserConfidence),
-        missing: post.parserMissing,
-        llm_called: !!post.llmCall,
-      },
-    });
+    if (classifyOnly) {
+      // Phase 3 (CP7): extract-стадия пропущена по профилю потребителя.
+      await stepEvent('parse', 'skipped', {
+        details: { reason: 'profile.mode=classify_only' },
+      });
+    } else {
+      await stepEvent('parse', 'done', {
+        duration_ms: timings.extract_ms,
+        details: {
+          parser_kind: post.typeConfig?.parserKind ?? 'default',
+          confidence: roundConf(post.parserConfidence),
+          missing: post.parserMissing,
+          llm_called: !!post.llmCall,
+        },
+      });
+    }
     await stepEvent('validate', post.validationIssues.length > 0 ? 'done' : 'done', {
       duration_ms: timings.validate_ms,
       details: { issues_count: post.validationIssues.length },
@@ -319,12 +341,19 @@ async function processJobInner(
 
     const overall = combineConfidence(ocr.confidence, post.parserConfidence);
 
-    // Per-type confidence threshold: when the type's row in document_types
-    // has `confidence_threshold` set, that value overrides the global env
-    // default. Lets admins tighten (or loosen) review for specific types
-    // — e.g. contracts always reviewed, low-stakes invoices auto-pass.
+    // needs_review threshold precedence (most specific wins):
+    //   1. per-type document_types.confidence_threshold — админ выставил
+    //      его сознательно для конкретного типа (контракты всегда review,
+    //      low-stakes invoices auto-pass).
+    //   2. profile.auto_approve_threshold — уровень доверия потребителя
+    //      (per-org override глобального дефолта).
+    //   3. config.thresholds.needsReview — глобальный env-default.
+    // В classify_only extract/validation нет — overall = OCR/classification
+    // confidence, и статус решается им же против этого порога.
     const confidenceThreshold =
-      post.typeConfig?.confidenceThreshold ?? config.thresholds.needsReview;
+      post.typeConfig?.confidenceThreshold ??
+      profile.auto_approve_threshold ??
+      config.thresholds.needsReview;
 
     // A document with hard validation failures (e.g., INN checksum mismatch)
     // should always be reviewed by a human, regardless of OCR confidence.
@@ -455,11 +484,36 @@ async function processJobInner(
       await stepEvent('resolve', 'skipped', { details: { reason: 'no resolution_config' } });
     }
 
+    // ── Output routing (Phase 3 / CP7) ────────────────────────────────────
+    // Precedence:
+    //   1. job.webhook_url задан (explicit per-job) → доставка туда, подпись
+    //      ГЛОБАЛЬНЫМ секретом (today's exact behavior — backwards compat,
+    //      не трогаем).
+    //   2. иначе profile.output==='webhook' И profile.webhook_url задан →
+    //      доставка на profile webhook, подпись per-org секретом. Если у
+    //      профиля секрета нет — fallback на глобальный + warn (мягкий
+    //      misconfig, не фатально).
+    //   3. иначе (output==='pull' или URL нигде нет) → push не делаем.
+    // F2/F4/F27 трансформации — внутри deliverFinalizedJobWebhook.
     if (updated && updated.webhook_url) {
-      // F2 (field_confidence) + F4 (PII redaction) + F27 (immediate delete)
-      // вынесены в webhook-delivery.ts чтобы processJobInner оставался
-      // сфокусированным на основном pipeline'е.
       await deliverFinalizedJobWebhook(updated, jobId, log);
+    } else if (updated && profile.output === 'webhook' && profile.webhook_url) {
+      let hmacSecret: string | undefined;
+      if (profile.has_webhook_secret) {
+        hmacSecret =
+          (await organizationSettingsRepo.getDecryptedWebhookSecret(job.organization_id)) ??
+          undefined;
+      }
+      if (!hmacSecret) {
+        log.warn(
+          { jobId, organization_id: job.organization_id },
+          'profile webhook has no per-consumer secret; falling back to global HMAC secret',
+        );
+      }
+      await deliverFinalizedJobWebhook(updated, jobId, log, {
+        url: profile.webhook_url,
+        hmacSecret,
+      });
     }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -624,7 +678,19 @@ export async function runOcrChain(
  */
 export async function runDocumentPipeline(
   rawText: string,
-  options: { hint?: DocumentTypeSlug; promptOverride?: string; organizationId?: string | null },
+  options: {
+    hint?: DocumentTypeSlug;
+    promptOverride?: string;
+    organizationId?: string | null;
+    /**
+     * Phase 3 (CP7): classify_only-режим потребителя. Когда true — гоняем
+     * только классификацию (нужен documentType), но НЕ запускаем parser/
+     * LLM-extract. Возвращаем extracted={}, llmCall=null, validationIssues=[].
+     * parserConfidence остаётся undefined — caller считает overall только по
+     * OCR/classification confidence.
+     */
+    classifyOnly?: boolean;
+  },
   log: Logger,
   context: Record<string, unknown> = {},
   /** Опц. mutable timings — заполняются по ходу выполнения шагов. */
@@ -679,7 +745,13 @@ export async function runDocumentPipeline(
   let typeConfig: ResolvedTypeConfig | null = null;
   let llmCall: LlmExtractDebug | undefined;
 
-  if (documentType) {
+  if (documentType && options.classifyOnly) {
+    // Phase 3 (CP7): classify_only — потребителю нужен только тип документа.
+    // Резолвим typeConfig (caller использует confidenceThreshold для
+    // needs_review-решения), но parser/LLM-extract НЕ запускаем. extracted
+    // остаётся {}, validationIssues=[], llmCall=undefined.
+    typeConfig = await documentTypeResolver.resolveConfig(documentType);
+  } else if (documentType) {
     // Resolve the DB-backed config snapshot ONCE per job. Passed to:
     //   - the parser as `ParserOverride` (regex_fallback_threshold,
     //     expected_fields, llm_schema)
