@@ -17,8 +17,10 @@ type YandexConfig = {
  *
  * NOTE on PII: this engine uploads document images to a third-party cloud.
  * For documents that may contain personal data (TTN with driver passport,
- * CMR with sender contacts), the orchestrator can disable yandex via env or
- * a per-job flag (TODO: add `disable_external_ocr` to job metadata).
+ * CMR with sender contacts), the orchestrator skips yandex via the
+ * `YANDEX_DISABLE_FOR_PII` env flag (I8) or the per-job
+ * `metadata._disable_external_ocr=true` opt-out — both wired through
+ * orchestrator → router → engine chain.
  */
 export class YandexVisionEngine implements OcrEngine {
   readonly name = 'yandex' as const;
