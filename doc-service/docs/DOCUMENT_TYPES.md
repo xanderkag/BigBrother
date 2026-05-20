@@ -5,11 +5,11 @@
 
 ## Обзор
 
-- Всего в Registry: **26** (6 builtin typed + 20 custom).
+- Всего в Registry: **30** (6 builtin typed + 24 custom).
 - Покрытие SLAI ТЗ: Фаза 1 — 10/10 ✅, ВЭД Фаза 2 — 8/8 ✅ (golden-set валидация ждёт).
 - У каждого типа: **tier** (зрелость) + **scope** (global или org-owned).
-- Tier-распределение: **stable** 6, **beta** 16, **experimental** 4 (`transport_request`, `transport_invoice`, `waybill`, `UKD`).
-- Scope: на момент написания все 26 типов **global** (`organization_id IS NULL`). org-owned типы заводятся тенантами после деплоя CP7.
+- Tier-распределение: **stable** 6, **beta** 16, **experimental** 8 (`transport_request`, `transport_invoice`, `waybill`, `UKD`, `power_of_attorney`, `warehouse_receipt`, `warehouse_return`, `material_requisition`).
+- Scope: на момент написания все 30 типов **global** (`organization_id IS NULL`). org-owned типы заводятся тенантами после деплоя CP7.
 
 ## Как читать
 
@@ -71,12 +71,16 @@
 | `contract` | `contract` | Договор | llm_extract | beta | Подвиды через `subject_kind` |
 | `contract_specification` | `contract_specification` | Спецификация / Приложение | llm_extract | beta | Таблица позиций + ссылка на родителя |
 | `contract_addendum` | `contract_addendum` | Дополнительное соглашение | llm_extract | beta | `changes[]`, ссылка на родителя |
+| `power_of_attorney` | `power_of_attorney` | Доверенность (М-2/М-2а) | llm_extract | experimental | Полномочия на получение ТМЦ |
 
 ### 📦 Складские
 
 | Internal | Outbound | Название | Парсер | Tier | Заметка |
 |---|---|---|---|---|---|
 | `transfer_note` | `transfer_note` | Перемещение товаров (ТОРГ-13) | llm_extract | beta | Внутреннее, между складами |
+| `warehouse_receipt` | `warehouse_receipt` | Приём ТМЦ на хранение (МХ-1) | llm_extract | experimental | Поклажедатель → хранитель |
+| `warehouse_return` | `warehouse_return` | Возврат ТМЦ с хранения (МХ-3) | llm_extract | experimental | Хранитель → поклажедатель |
+| `material_requisition` | `material_requisition` | Требование-накладная (М-11) | llm_extract | experimental | Отпуск материалов со склада |
 
 ---
 
@@ -265,6 +269,13 @@
 - Keywords: `Дополнительное соглашение`, `Доп. соглашение`, `Соглашение об изменении`, `Соглашение о расторжении`, `О внесении изменений в Договор`.
 - Сложности: стороны те же что в родителе. `changes[]` — список модификаций пунктов. При расторжении `addendum_kind=termination`, `changes` можно пустым.
 
+#### `power_of_attorney` — Доверенность (М-2 / М-2а)
+- Категория: договорные. Парсер: `llm_extract`. Tier: experimental. Scope: global.
+- Поля: `number`, `date`, `valid_until`, `principal{name,inn,kpp,address}`, `representative{fio,position,passport}`, `supplier{name}`, `basis`, `authority`, `positions[]{name,qty,unit}`.
+- Валидаторы: `date_range`.
+- Keywords (plain-литералы, substring): `доверенность`, `м-2`, `доверяю`, `уполномочивает`, `представлять интересы`.
+- Сложности: формы М-2 / М-2а на получение ТМЦ. `valid_until` — ограниченный срок действия; представитель — физлицо (паспорт), доверитель — организация.
+
 ### 📦 Складские
 
 #### `transfer_note` — Перемещение товаров (ТОРГ-13)
@@ -273,6 +284,27 @@
 - Валидаторы: нет.
 - Keywords (с весами, migration 0030): `перемещение товаров`, `накладная на перемещение`, `ТОРГ-?13`, `отправитель…получатель…склад`, `(склад|места хранения)…(откуда|куда|источник|назначение)`.
 - Сложности: внутреннее перемещение между складами (1С/SAP), не внешний оборот. 1С-формат «Накладная на перемещение № … от …» добавлен в migration 0030 (раньше требовалось слово «товаров» → падало в null).
+
+#### `warehouse_receipt` — Акт о приёме-передаче ТМЦ на хранение (МХ-1)
+- Категория: складские. Парсер: `llm_extract`. Tier: experimental. Scope: global.
+- Поля: `number`, `date`, `depositor{name,inn,kpp}`, `custodian{name,inn,kpp}`, `storage_place`, `storage_term`, `positions[]{name,code,qty,unit,price,total}`, `total`.
+- Валидаторы: `date_range`.
+- Keywords (plain-литералы, substring): `мх-1`, `акт о приёме-передаче`, `на хранение`, `поклажедатель`, `хранитель`.
+- Сложности: форма МХ-1 — передача ТМЦ на ответственное хранение. Пара к МХ-3 (`warehouse_return`).
+
+#### `warehouse_return` — Акт о возврате ТМЦ с хранения (МХ-3)
+- Категория: складские. Парсер: `llm_extract`. Tier: experimental. Scope: global.
+- Поля: `number`, `date`, `depositor{name,inn,kpp}`, `custodian{name,inn,kpp}`, `base_doc_number`, `base_doc_date`, `positions[]{name,code,qty,unit,price,total}`, `total`.
+- Валидаторы: `date_range`.
+- Keywords (plain-литералы, substring): `мх-3`, `акт о возврате`, `с хранения`, `возврат тмц`.
+- Сложности: форма МХ-3 — возврат ранее принятых на хранение ТМЦ. Ссылается на исходный МХ-1 через `base_doc_number`.
+
+#### `material_requisition` — Требование-накладная (М-11)
+- Категория: складские. Парсер: `llm_extract`. Tier: experimental. Scope: global.
+- Поля: `number`, `date`, `organization_name`, `warehouse`, `sender{name,responsible_fio}`, `receiver{name,responsible_fio}`, `basis`, `positions[]{name,code,qty,unit,price,total}`.
+- Валидаторы: `date_range`.
+- Keywords (plain-литералы, substring): `м-11`, `требование-накладная`, `требование`, `отпуск материалов`.
+- Сложности: форма М-11 — внутренний отпуск материалов со склада подразделению. Не для внешнего оборота.
 
 ---
 
@@ -357,7 +389,7 @@ Inbound (slai_alias → наш slug) делает `documentTypeResolver.expandSl
 ### Tier (уровень зрелости — `document_types.tier`)
 - **stable** — типизированная Zod-схема + regex-парсер (или вылизанный LLM) + ≥90% accuracy на golden-set. Только 6 builtin'ов.
 - **beta** — обкатан на проде, есть keywords + (обычно) validators, но без замера на golden-set. 16 custom-типов.
-- **experimental** (default для нового custom) — мало накопленных данных, поведение может быть нестабильным. Сейчас: `transport_request`, `transport_invoice`, `waybill`, `UKD`.
+- **experimental** (default для нового custom) — мало накопленных данных, поведение может быть нестабильным. Сейчас: `transport_request`, `transport_invoice`, `waybill`, `UKD`, `power_of_attorney`, `warehouse_receipt`, `warehouse_return`, `material_requisition`.
 
 Runtime НЕ ветвится на tier — resolver пробрасывает его в `ResolvedTypeConfig`, UI/логи показывают бейдж, SLAI-интегратор видит предупреждение.
 
@@ -368,4 +400,4 @@ Runtime НЕ ветвится на tier — resolver пробрасывает е
 - `<org uuid>` ⇒ **org-owned**: виден только своему тенанту + super_admin.
 - Slug остаётся глобально уникальным — `organization_id` рулит ТОЛЬКО видимостью/владением, не смыслом slug'а (`invoice` значит одно и то же везде).
 - Тенант видит: globals ∪ свои org-owned.
-- На 2026-05-20 все 26 типов — global; org-owned заводятся тенантами после деплоя CP7.
+- На 2026-05-20 все 30 типов — global; org-owned заводятся тенантами после деплоя CP7.
