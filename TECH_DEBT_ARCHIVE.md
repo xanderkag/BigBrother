@@ -623,7 +623,7 @@ qty×price / идемпотентность).
 - **Фаза 3** (`118fa6e`) — enforcement в orchestrator. classify_only пропускает extract; threshold precedence per-type ?? profile ?? global; output routing per-job-url (global secret) → profile-webhook (per-org secret) → pull. Полный backward-compat.
 - **Фаза 4** (`f290292` + `8a672ba`) — UI: редактор профиля в Tenants + ownership-бэйдж/фильтр/owner-selector + template picker в DocumentTypes.
 
-Не сделано (отдельные follow-up'ы, не блокеры): `provider_settings` всё ещё глобальные (per-tenant Claude-ключ — когда понадобится); HTTP-level route-тесты для document-types authz (сейчас storage/zod-уровень).
+Follow-up'ы: HTTP-level route-тесты authz для document-types — ✅ сделано 2026-05-20 (`9711109`, 16 fastify.inject тестов, багов не найдено). `provider_settings` всё ещё глобальные (per-tenant Claude-ключ) — сознательно отложено, нет потребителя.
 
 ### I6. Yandex Vision контракт не выверен — deferred
 
@@ -636,4 +636,4 @@ qty×price / идемпотентность).
 
 Доверенность М-2/М-2а, путевой лист 4-С/4-П, МХ-1/МХ-3, заявка на перевозку, складской ордер М-11, инвойс-проформа.
 **Trigger:** конкретный бизнес-запрос или контракт-обязательство.
-**Лечение:** через UI Document Types Registry (CRUD уже есть), без новых парсеров. Текущие 15 типов (включая F16-F18) покрывают Фазу 1 SLAI ТЗ.
+**Лечение:** через UI Document Types Registry (CRUD + template picker уже есть), без новых парсеров. Текущие 26 типов покрывают обе фазы SLAI ТЗ; добавление нового — дело админа на 5 минут.
