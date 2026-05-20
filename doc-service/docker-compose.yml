@@ -1,3 +1,17 @@
+# Общая build-конфигурация для migrate/api/worker: один Dockerfile, один image.
+# Git-метаданные (EPIC-7 /version) прокидываются из окружения, в котором
+# выполняется `docker compose up --build` — GHA deploy-parsdocs.yml экспортит
+# GIT_COMMIT/GIT_BRANCH/BUILD_TIME перед вызовом. Локально без них — фолбэк
+# "unknown" (значения по умолчанию ниже).
+x-doc-build: &doc-build
+  context: .
+  args:
+    APP_VERSION: ${APP_VERSION:-0.1.0}
+    GIT_COMMIT: ${GIT_COMMIT:-unknown}
+    GIT_COMMIT_SHORT: ${GIT_COMMIT_SHORT:-unknown}
+    GIT_BRANCH: ${GIT_BRANCH:-unknown}
+    BUILD_TIME: ${BUILD_TIME:-unknown}
+
 services:
   # One-shot migration service. Waits for Postgres to be healthy, runs
   # all pending node-pg-migrate migrations, exits 0 on success. api and
@@ -5,7 +19,7 @@ services:
   # to be current before any traffic-serving process starts.
   migrate:
     image: doc-service:latest
-    build: .
+    build: *doc-build
     command: node dist/scripts/migrate.js up
     env_file: .env
     depends_on:
@@ -14,7 +28,7 @@ services:
     restart: "no"
 
   api:
-    build: .
+    build: *doc-build
     image: doc-service:latest
     command: node dist/server.js
     env_file: .env
@@ -39,7 +53,7 @@ services:
 
   worker:
     image: doc-service:latest
-    build: .
+    build: *doc-build
     command: node dist/worker.js
     env_file: .env
     volumes:
