@@ -163,6 +163,9 @@ const ConfigSchema = z.object({
     apiKey: z.string().optional(),
     folderId: z.string().optional(),
     timeoutMs: numberFromEnv(30000),
+    // Yandex OCR-модель для recognizeText. `page` — обычный текст (default).
+    // Альтернативы: `table`, `page-column-sort`, `handwritten`.
+    model: z.string().default('page'),
     /**
      * I8: глобальный флаг выключения Yandex для PII-документов (TTN, CMR).
      * Per-job opt-out также доступен через `metadata._disable_external_ocr=true`.
@@ -246,6 +249,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       apiKey: env.YANDEX_VISION_API_KEY || undefined,
       folderId: env.YANDEX_FOLDER_ID || undefined,
       timeoutMs: env.YANDEX_TIMEOUT_MS,
+      model: env.YANDEX_OCR_MODEL || undefined,
       disableForPii: env.YANDEX_DISABLE_FOR_PII,
     },
     webhook: {

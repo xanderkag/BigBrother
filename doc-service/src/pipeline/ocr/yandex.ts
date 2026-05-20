@@ -1,24 +1,45 @@
-import { readFile } from 'node:fs/promises';
+import { exec } from 'node:child_process';
+import { promisify } from 'node:util';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { request } from 'undici';
 import type { OcrEngine, OcrInput, OcrResult } from './types.js';
+
+const execP = promisify(exec);
 
 type YandexConfig = {
   apiKey?: string;
   folderId?: string;
   timeoutMs: number;
+  /**
+   * OCR-модель Yandex recognizeText. `page` — обычный текст страницы (default).
+   * Альтернативы: `table` (распознавание таблиц), `page-column-sort`,
+   * `handwritten`. Конфигурируется через YANDEX_OCR_MODEL.
+   */
+  model: string;
 };
 
+const OCR_ENDPOINT = 'https://ocr.api.cloud.yandex.net/ocr/v1/recognizeText';
+
 /**
- * Yandex Cloud Vision (OCR) — last-resort engine. Only used when other
- * engines fall through their thresholds, and only if API key is configured.
+ * Yandex Cloud OCR — last-resort engine. Only used when other engines fall
+ * through their thresholds, and only if API key + folder are configured.
  *
- * NOTE: Yandex Vision requires either an API key (Api-Key) or IAM token. We
- * use Api-Key for simplicity. Pricing applies — invoke sparingly.
+ * Targets the current synchronous OCR API (`ocr/v1/recognizeText`), not the
+ * deprecated `vision/v1/batchAnalyze` (TECH_DEBT I6). Folder is passed as the
+ * `x-folder-id` header; the body is flat (`content`/`mimeType`/`languageCodes`/
+ * `model`). Auth stays Api-Key.
  *
- * NOTE on PII: this engine uploads document images to a third-party cloud.
- * For documents that may contain personal data (TTN with driver passport,
- * CMR with sender contacts), the orchestrator skips yandex via the
- * `YANDEX_DISABLE_FOR_PII` env flag (I8) or the per-job
+ * NOTE: the synchronous endpoint recognizes at most ONE PDF page per call. For
+ * multi-page input we send page-by-page using the orchestrator's pre-rasterized
+ * PNGs (`input.rasterizedPages`); the same `processPages` pattern as tesseract.
+ *
+ * NOTE on PII: this engine uploads document images to a third-party cloud. We
+ * always set `x-data-logging-enabled: false` so Yandex does not retain our
+ * document data. For documents that may contain personal data (TTN with driver
+ * passport, CMR with sender contacts), the orchestrator additionally skips
+ * yandex via the `YANDEX_DISABLE_FOR_PII` env flag (I8) or the per-job
  * `metadata._disable_external_ocr=true` opt-out — both wired through
  * orchestrator → router → engine chain.
  */
@@ -44,28 +65,86 @@ export class YandexVisionEngine implements OcrEngine {
 
   async run(input: OcrInput): Promise<OcrResult> {
     const started = Date.now();
-    const buf = await readFile(input.filePath);
 
+    // Multi-page path: orchestrator pre-rasterized the PDF into page PNGs.
+    // recognizeText accepts only one page per call, so loop. (A5/F5 parity
+    // with tesseract — populates `pages[]` so multi-doc splitting works.)
+    if (input.rasterizedPages && input.rasterizedPages.length > 0) {
+      return this.processPages(input.rasterizedPages, started);
+    }
+
+    // Standalone PDF (no orchestrator pre-rasterization, e.g. tests/smoke):
+    // the sync API only reads page 1, so rasterize ourselves like tesseract.
+    if (input.mimeType === 'application/pdf') {
+      return this.runOnPdf(input, started);
+    }
+
+    // Single image — one call.
+    const buf = await readFile(input.filePath);
+    const page = await this.recognize(buf, input.mimeType);
+    return {
+      engine: this.name,
+      text: page.text,
+      confidence: page.confidence,
+      durationMs: Date.now() - started,
+    };
+  }
+
+  private async runOnPdf(input: OcrInput, started: number): Promise<OcrResult> {
+    const workDir = await mkdtemp(join(tmpdir(), 'docsvc-yandex-'));
+    try {
+      const prefix = join(workDir, 'page');
+      await execP(`pdftoppm -png -r 200 "${input.filePath}" "${prefix}"`, { timeout: 120_000 });
+      const pageFiles = (await readdir(workDir))
+        .filter((f) => f.startsWith('page') && f.endsWith('.png'))
+        .sort()
+        .map((f) => join(workDir, f));
+      return this.processPages(pageFiles, started);
+    } finally {
+      await rm(workDir, { recursive: true, force: true });
+    }
+  }
+
+  /** Recognize an already-rasterized list of page PNG paths, one call each. */
+  private async processPages(pageFiles: string[], started: number): Promise<OcrResult> {
+    const pages: Array<{ text: string; confidence: number }> = [];
+    for (const pf of pageFiles) {
+      const buf = await readFile(pf);
+      pages.push(await this.recognize(buf, 'image/png'));
+    }
+
+    const fullText = pages.map((p) => p.text).join('\n\n');
+    const avgConfidence =
+      pages.length === 0 ? 0 : pages.reduce((a, p) => a + p.confidence, 0) / pages.length;
+
+    return {
+      engine: this.name,
+      text: fullText,
+      confidence: avgConfidence,
+      pages,
+      durationMs: Date.now() - started,
+    };
+  }
+
+  /** Single recognizeText call for one image/page. */
+  private async recognize(
+    buf: Buffer,
+    mimeType: string,
+  ): Promise<{ text: string; confidence: number }> {
     const body = {
-      folderId: this.cfg.folderId,
-      analyze_specs: [
-        {
-          content: buf.toString('base64'),
-          features: [
-            {
-              type: 'TEXT_DETECTION',
-              text_detection_config: { language_codes: ['ru', 'en'] },
-            },
-          ],
-          mime_type: input.mimeType,
-        },
-      ],
+      content: buf.toString('base64'),
+      mimeType,
+      languageCodes: ['ru', 'en'],
+      model: this.cfg.model,
     };
 
-    const res = await request('https://vision.api.cloud.yandex.net/vision/v1/batchAnalyze', {
+    const res = await request(OCR_ENDPOINT, {
       method: 'POST',
       headers: {
         authorization: `Api-Key ${this.cfg.apiKey}`,
+        'x-folder-id': this.cfg.folderId ?? '',
+        // PII-safety: opt out of Yandex retaining our document data.
+        'x-data-logging-enabled': 'false',
         'content-type': 'application/json',
       },
       body: JSON.stringify(body),
@@ -75,74 +154,55 @@ export class YandexVisionEngine implements OcrEngine {
 
     if (res.statusCode >= 400) {
       const errText = await res.body.text();
-      throw new Error(`Yandex Vision ${res.statusCode}: ${errText.slice(0, 500)}`);
+      throw new Error(`Yandex OCR ${res.statusCode}: ${errText.slice(0, 500)}`);
     }
 
-    const data = (await res.body.json()) as YandexResponse;
-    const text = extractText(data);
-    const confidence = estimateConfidence(data);
-
-    return {
-      engine: this.name,
-      text,
-      confidence,
-      durationMs: Date.now() - started,
-    };
+    const data = (await res.body.json()) as YandexOcrResponse;
+    return { text: extractText(data), confidence: estimateConfidence(data) };
   }
 }
 
-// --- Yandex response shape (minimal — only fields we read) ---
-type YandexResponse = {
-  results?: Array<{
-    results?: Array<{
-      textDetection?: {
-        pages?: Array<{
-          blocks?: Array<{
-            lines?: Array<{
-              words?: Array<{ text?: string; confidence?: number }>;
-              text?: string;
-            }>;
-          }>;
-        }>;
-      };
-    }>;
-  }>;
+// --- Yandex recognizeText response shape (minimal — only fields we read) ---
+type YandexWord = { text?: string; confidence?: number };
+type YandexLine = { text?: string; words?: YandexWord[] };
+type YandexBlock = { lines?: YandexLine[] };
+type YandexOcrResponse = {
+  result?: {
+    textAnnotation?: {
+      fullText?: string;
+      blocks?: YandexBlock[];
+    };
+  };
 };
 
-function extractText(data: YandexResponse): string {
+function extractText(data: YandexOcrResponse): string {
+  const ann = data.result?.textAnnotation;
+  if (!ann) return '';
+  // Prefer the whole-text field; fall back to walking blocks → lines.
+  if (typeof ann.fullText === 'string' && ann.fullText.length > 0) {
+    return ann.fullText.trim();
+  }
   const lines: string[] = [];
-  for (const r0 of data.results ?? []) {
-    for (const r1 of r0.results ?? []) {
-      for (const page of r1.textDetection?.pages ?? []) {
-        for (const block of page.blocks ?? []) {
-          for (const line of block.lines ?? []) {
-            const lineText =
-              line.text ??
-              (line.words ?? [])
-                .map((w) => w.text ?? '')
-                .filter(Boolean)
-                .join(' ');
-            if (lineText) lines.push(lineText);
-          }
-        }
-      }
+  for (const block of ann.blocks ?? []) {
+    for (const line of block.lines ?? []) {
+      const lineText =
+        line.text ??
+        (line.words ?? [])
+          .map((w) => w.text ?? '')
+          .filter(Boolean)
+          .join(' ');
+      if (lineText) lines.push(lineText);
     }
   }
   return lines.join('\n');
 }
 
-function estimateConfidence(data: YandexResponse): number {
+function estimateConfidence(data: YandexOcrResponse): number {
   const confs: number[] = [];
-  for (const r0 of data.results ?? []) {
-    for (const r1 of r0.results ?? []) {
-      for (const page of r1.textDetection?.pages ?? []) {
-        for (const block of page.blocks ?? []) {
-          for (const line of block.lines ?? []) {
-            for (const word of line.words ?? []) {
-              if (typeof word.confidence === 'number') confs.push(word.confidence);
-            }
-          }
-        }
+  for (const block of data.result?.textAnnotation?.blocks ?? []) {
+    for (const line of block.lines ?? []) {
+      for (const word of line.words ?? []) {
+        if (typeof word.confidence === 'number') confs.push(word.confidence);
       }
     }
   }
