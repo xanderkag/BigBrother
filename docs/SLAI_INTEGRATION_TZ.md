@@ -1,5 +1,10 @@
 # ТЗ. Интеграция parsdocs с инстансом slai (OpenAI-compatible LLM backend)
 
+> ⚠ **Не путать с ERP-интеграцией.** Этот документ — про parsdocs как
+> **OpenAI-совместимый LLM-backend** (inference). Контракт интеграции parsdocs ↔
+> SLAI **ERP** (webhook документов, авто-создание счетов, category-sync) описан
+> отдельно: `SLAI/docs/specs/parsdocs-integration.md` (канон, перепроверен по коду).
+
 > **Статус:** v0.1, draft.
 > **Автор задачи:** Ляпустин А.Ю. (`klgaigpt3@gmail.com`).
 > **Исполнитель:** AI-команда ТАЙПИТ.

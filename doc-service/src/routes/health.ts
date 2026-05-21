@@ -22,6 +22,26 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
     async () => ({ status: 'ok' as const }),
   );
 
+  // EPIC-7 Phase 1: версия билда — публичная (без auth, как /health),
+  // чтобы внешний health-check SLAI видел version-drift. Git-метаданные
+  // приходят из env, проставленных при docker build (--build-arg) в GHA
+  // deploy-parsdocs.yml. Без них — фолбэк "unknown".
+  app.get('/version', async () => {
+    const semver = process.env.APP_VERSION || '0.1.0';
+    const commit = process.env.GIT_COMMIT || 'unknown';
+    const commitShort = process.env.GIT_COMMIT_SHORT
+      || (commit !== 'unknown' ? commit.slice(0, 7) : 'unknown');
+    return {
+      service: 'parsdocs',
+      version: `${semver}+${commitShort}`,
+      semver,
+      commit,
+      commitShort,
+      branch: process.env.GIT_BRANCH || 'unknown',
+      buildTime: process.env.BUILD_TIME || 'unknown',
+    };
+  });
+
   r.get(
     '/ready',
     {

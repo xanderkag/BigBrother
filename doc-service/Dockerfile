@@ -65,6 +65,20 @@ RUN npm ci --omit=dev --omit=optional || npm install --omit=dev --omit=optional
 FROM base AS runtime
 ENV NODE_ENV=production
 
+# Build-time git metadata for GET /version (EPIC-7). Docker не видит .git
+# внутри образа, поэтому коммит/ветку/время прокидываем через --build-arg из
+# GHA deploy-parsdocs.yml. Без них /version отдаёт фолбэк "unknown".
+ARG APP_VERSION=0.1.0
+ARG GIT_COMMIT=unknown
+ARG GIT_COMMIT_SHORT=unknown
+ARG GIT_BRANCH=unknown
+ARG BUILD_TIME=unknown
+ENV APP_VERSION=$APP_VERSION \
+    GIT_COMMIT=$GIT_COMMIT \
+    GIT_COMMIT_SHORT=$GIT_COMMIT_SHORT \
+    GIT_BRANCH=$GIT_BRANCH \
+    BUILD_TIME=$BUILD_TIME
+
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
