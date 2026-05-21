@@ -188,13 +188,6 @@ export default function JobDetailPage() {
             >
               ✎ Edit
             </button>
-            <a
-              href={`/ui-legacy/#jobs/${job.id}`}
-              className="btn-ghost"
-              title="Открыть в legacy UI (страховка)"
-            >
-              Legacy →
-            </a>
           </div>
         </div>
       </div>

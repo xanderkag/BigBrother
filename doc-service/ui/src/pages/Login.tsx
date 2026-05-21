@@ -81,12 +81,6 @@ export default function LoginPage() {
               {submitting ? 'Проверка...' : 'Войти'}
             </button>
           </form>
-
-          <div className="text-center text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">
-            <a href="/ui-legacy/" className="hover:underline">
-              Старая версия (legacy) →
-            </a>
-          </div>
         </div>
       </div>
     </div>

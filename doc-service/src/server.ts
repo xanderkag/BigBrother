@@ -244,26 +244,18 @@ async function main() {
 
   // --- Operator UI mount strategy ---
   //
-  // Главный UI — React-приложение из `ui/dist/`, маунтится на `/ui/*`.
-  // Старый vanilla-JS UI остаётся для совместимости на `/ui-legacy/*` —
-  // на случай если новый UI чего-то ещё не покрывает или нужна страховка
-  // при rollback. Через 1-2 месяца после уверенной эксплуатации
-  // удалим `web/` и `/ui-legacy/` mount.
+  // Единственный UI — React-приложение из `ui/dist/`, маунтится на `/ui/*`.
+  // Старый vanilla-JS UI (`web/`) снят с раздачи 2026-05-21 — пользователи
+  // путались, попадая на него по старым ссылкам. Старые пути /ui-legacy/*
+  // теперь редиректят на /ui/ (см. ниже). Папка web/ оставлена как
+  // dead-code до явного удаления.
   //
-  // Резолвим папки относительно расположения server.ts (работает и в
+  // Резолвим папку относительно расположения server.ts (работает и в
   // dist/ после tsc, и в src/ через tsx dev mode).
   const here = dirname(fileURLToPath(import.meta.url));
-  const webDir = join(here, '..', 'web');
   const uiDir = join(here, '..', 'ui', 'dist');
 
-  // --- Legacy UI at /ui-legacy/* ---
-  await app.register(staticFiles, {
-    root: webDir,
-    prefix: '/ui-legacy/',
-    decorateReply: false,
-  });
-
-  // --- React UI at /ui/* (главный) ---
+  // --- React UI at /ui/* (единственный) ---
   // Если ui/dist/ нет (dev mode без сборки) — silent skip; разработчик
   // использует `npm run dev` в ui/ на :5173 с proxy на API.
   try {
@@ -294,7 +286,7 @@ async function main() {
     app.log.info({ uiDir }, 'UI (React) mounted at /ui/');
   } catch {
     app.log.warn(
-      'UI build not found (ui/dist/) — only /ui-legacy/ available. Run `cd ui && npm run build`.',
+      'UI build not found (ui/dist/) — UI недоступен. Run `cd ui && npm run build`.',
     );
   }
 
@@ -310,6 +302,12 @@ async function main() {
   app.get('/ui', async (_req, reply) => {
     reply.redirect('/ui/', 301);
   });
+
+  // --- Legacy UI отключён (2026-05-21): /ui-legacy/* → /ui/ ---
+  // Старый vanilla-JS UI снят с раздачи. Редиректим, чтобы старые букмарки
+  // и кнопки «Legacy →» не падали в 404, а вели на новый фронт.
+  app.get('/ui-legacy', async (_req, reply) => reply.redirect('/ui/', 301));
+  app.get('/ui-legacy/*', async (_req, reply) => reply.redirect('/ui/', 301));
 
   // --- Legacy redirect: /v2/* → /ui/* ---
   // На время фазы миграции, когда команда ещё могла поделиться ссылками
