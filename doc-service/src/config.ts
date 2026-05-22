@@ -48,6 +48,12 @@ const ConfigSchema = z.object({
     }, z.record(z.string()))
     .default({}),
 
+  // P0 security: явный opt-in в no-auth dev-режим. Если apiKey И apiKeysJson
+  // пустые, сервис отказывается стартовать — кроме случая когда allowNoAuth=true
+  // (loud warn). Default false → fail-closed. См. assertAuthConfigured() ниже
+  // и bearerAuthHook (defense in depth).
+  allowNoAuth: z.coerce.boolean().default(false),
+
   // Master key для envelope-шифрования секретов в БД (api_key провайдеров).
   // Формат: 64-символьная hex-строка (= 32 байта). Сгенерировать:
   //   openssl rand -hex 32
@@ -194,6 +200,18 @@ const ConfigSchema = z.object({
     disableForPii: z.coerce.boolean().default(false),
   }),
 
+  /**
+   * DaData party-by-INN enrichment (enrich-стадия пайплайна). Российский
+   * сервис: шлём только ИНН юрлиц (публичные данные ЕГРЮЛ, не ПДн — 152-ФЗ ок).
+   * Доступность гейтится наличием apiKey (см. DadataClient.isAvailable()).
+   */
+  dadata: z.object({
+    apiKey: z.string().optional(),
+    timeoutMs: numberFromEnv(10000),
+    // TTL in-memory кэша по ИНН. Default 24h — данные ЕГРЮЛ меняются редко.
+    cacheTtlMs: numberFromEnv(24 * 60 * 60 * 1000),
+  }),
+
   webhook: z.object({
     hmacSecret: z.string().min(1),
     timeoutMs: numberFromEnv(10000),
@@ -237,6 +255,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     },
     apiKey: env.API_KEY ?? '',
     apiKeysJson: env.API_KEYS_JSON,
+    allowNoAuth: env.ALLOW_NO_AUTH,
     secretsEncryptionKey: env.SECRETS_ENCRYPTION_KEY ?? '',
     workerConcurrency: env.WORKER_CONCURRENCY,
     jobMaxAgeSeconds: env.JOB_MAX_AGE_SECONDS,
@@ -280,6 +299,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       model: env.YANDEX_OCR_MODEL || undefined,
       disableForPii: env.YANDEX_DISABLE_FOR_PII,
     },
+    dadata: {
+      apiKey: env.DADATA_API_KEY || undefined,
+      timeoutMs: env.DADATA_TIMEOUT_MS,
+      cacheTtlMs: env.DADATA_CACHE_TTL_MS,
+    },
     webhook: {
       hmacSecret: env.WEBHOOK_HMAC_SECRET ?? '',
       timeoutMs: env.WEBHOOK_TIMEOUT_MS,
@@ -289,6 +313,41 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       toParsdocsHmacSecret: env.SLAI_TO_PARSDOCS_HMAC_SECRET || undefined,
     },
   });
+}
+
+/**
+ * P0 security guard — fail-closed на старте.
+ *
+ * «Running open» = НЕТ ни root API_KEY, ни named keys (apiKeysJson пустой).
+ * В этом случае bearerAuthHook отдаёт system super_admin на каждый запрос →
+ * API полностью открыт. На prod это случилось из-за пустого API_KEY.
+ *
+ *   - allowNoAuth=true → разрешаем, но громкий warn (dev-режим).
+ *   - иначе → fatal: бросаем, процесс должен упасть с non-zero до listen().
+ *
+ * Срабатывает независимо от NODE_ENV — prod-деплой мог его не выставить,
+ * полагаться на него нельзя. Единственный opt-out — ALLOW_NO_AUTH=true.
+ */
+export function assertAuthConfigured(
+  cfg: Pick<Config, 'apiKey' | 'apiKeysJson' | 'allowNoAuth'>,
+  log: { warn: (msg: string) => void } = { warn: (m) => console.warn(m) }, // eslint-disable-line no-console
+): void {
+  const hasRootKey = cfg.apiKey.length > 0;
+  const hasNamedKeys = Object.keys(cfg.apiKeysJson).length > 0;
+  if (hasRootKey || hasNamedKeys) return;
+
+  if (cfg.allowNoAuth) {
+    log.warn(
+      'AUTH DISABLED — all requests run as super_admin. Never use in production.',
+    );
+    return;
+  }
+
+  throw new Error(
+    'Refusing to start: no API_KEY / API_KEYS_JSON configured and ALLOW_NO_AUTH ' +
+      'is not set. Set API_KEY or explicitly opt into no-auth dev mode ' +
+      '(ALLOW_NO_AUTH=true).',
+  );
 }
 
 export const config = loadConfig();

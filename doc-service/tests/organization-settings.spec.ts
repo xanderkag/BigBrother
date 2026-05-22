@@ -25,6 +25,7 @@ type Row = {
   webhook_url: string | null;
   webhook_hmac_secret: string | null;
   auto_approve_threshold: string | null;
+  enrich_enabled: boolean;
   created_at: Date;
   updated_at: Date;
 };
@@ -42,17 +43,19 @@ const queryMock = vi.fn(async (sql: string, params: unknown[] = []) => {
   if (/INSERT INTO organization_settings/i.test(sql)) {
     // Параметры: $1 orgId, $2 mode, $3 output, $4 webhook_url, $5 secret(enc),
     // $6 threshold, $7 url-present, $8 secret-present, $9 threshold-present.
-    const [orgId, mode, output, url, secret, threshold, urlSet, secretSet, thrSet] = params as [
-      string,
-      string | null,
-      string | null,
-      string | null,
-      string | null,
-      string | null,
-      boolean,
-      boolean,
-      boolean,
-    ];
+    const [orgId, mode, output, url, secret, threshold, urlSet, secretSet, thrSet, enrich] =
+      params as [
+        string,
+        string | null,
+        string | null,
+        string | null,
+        string | null,
+        string | null,
+        boolean,
+        boolean,
+        boolean,
+        boolean | null,
+      ];
     const existing = table.get(orgId);
     const now = new Date();
     let next: Row;
@@ -64,6 +67,7 @@ const queryMock = vi.fn(async (sql: string, params: unknown[] = []) => {
         webhook_url: url,
         webhook_hmac_secret: secret,
         auto_approve_threshold: threshold,
+        enrich_enabled: enrich ?? false,
         created_at: now,
         updated_at: now,
       };
@@ -75,6 +79,7 @@ const queryMock = vi.fn(async (sql: string, params: unknown[] = []) => {
         webhook_url: urlSet ? url : existing.webhook_url,
         webhook_hmac_secret: secretSet ? secret : existing.webhook_hmac_secret,
         auto_approve_threshold: thrSet ? threshold : existing.auto_approve_threshold,
+        enrich_enabled: enrich ?? existing.enrich_enabled,
         updated_at: now,
       };
     }

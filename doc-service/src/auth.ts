@@ -88,9 +88,19 @@ export const bearerAuthHook: onRequestHookHandler = async (
 ): Promise<void> => {
   const provided = extractBearerToken(req.headers.authorization);
   const expected = config.apiKey;
+  const namedKeys = config.apiKeysJson;
 
-  // dev-mode без auth — req.user = system super_admin
-  if (!expected) {
+  // dev-mode без auth — req.user = system super_admin. Достижимо ТОЛЬКО при
+  // явном ALLOW_NO_AUTH=true; startup-guard (assertAuthConfigured) уже не даёт
+  // стартовать иначе. Дублируем проверку здесь как defense in depth: если
+  // root key и named keys пусты, но allowNoAuth не выставлен — fail-closed (500),
+  // а не молча открываемся.
+  if (!expected && Object.keys(namedKeys).length === 0) {
+    if (!config.allowNoAuth) {
+      req.log.error('auth bypass reached without ALLOW_NO_AUTH — refusing request');
+      reply.code(500).send({ error: 'server auth misconfigured' });
+      return;
+    }
     req.user = systemSuperAdmin();
     return;
   }
@@ -109,7 +119,6 @@ export const bearerAuthHook: onRequestHookHandler = async (
   // Path 1.5: A3 named client keys from API_KEYS_JSON.
   // Each key maps to a caller name for audit/logging. Same privileges as
   // root API_KEY but tagged so logs show who made each request.
-  const namedKeys = config.apiKeysJson;
   for (const [key, callerName] of Object.entries(namedKeys)) {
     if (constantTimeEqual(provided, key)) {
       req.user = { ...systemSuperAdmin(), caller: callerName };

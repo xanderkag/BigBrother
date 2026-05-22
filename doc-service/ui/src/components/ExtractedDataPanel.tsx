@@ -295,6 +295,7 @@ function FormView({
           '_multidoc_documents',
           '_normalized_fields',
           '_totals_recomputed',
+          '_enrichment',
           ...Object.keys(flags),
         ]}
       />

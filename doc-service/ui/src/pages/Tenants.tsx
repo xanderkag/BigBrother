@@ -265,6 +265,7 @@ function ProfileModal({
   const [output, setOutput] = useState<OutputMode>('pull');
   const [webhookUrl, setWebhookUrl] = useState('');
   const [threshold, setThreshold] = useState<string>('');
+  const [enrichEnabled, setEnrichEnabled] = useState(false);
   // Секрет write-only: показываем только статус. По умолчанию — не трогаем
   // (omit). 'set' раскрывает поле ввода нового; 'clear' отправит null.
   const [secretAction, setSecretAction] = useState<'keep' | 'set' | 'clear'>('keep');
@@ -281,6 +282,7 @@ function ProfileModal({
     setOutput(d.output);
     setWebhookUrl(d.webhook_url ?? '');
     setThreshold(d.auto_approve_threshold == null ? '' : String(d.auto_approve_threshold));
+    setEnrichEnabled(d.enrich_enabled ?? false);
     setSecretAction('keep');
     setSecret('');
   }, [settings.data]);
@@ -311,6 +313,7 @@ function ProfileModal({
       output,
       webhook_url: webhookUrl.trim() ? webhookUrl.trim() : null,
       auto_approve_threshold: thrNum,
+      enrich_enabled: enrichEnabled,
     };
     if (secretAction === 'set') {
       if (!secret.trim()) {
@@ -505,6 +508,24 @@ function ProfileModal({
                   />
                   <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
                     документы с confidence ниже порога уходят в Очередь ревью.
+                  </p>
+                </div>
+
+                {/* Обогащение по ИНН (DaData) */}
+                <div>
+                  <label className="flex items-start gap-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500 dark:border-slate-600 dark:bg-slate-800"
+                      checked={enrichEnabled}
+                      onChange={(e) => setEnrichEnabled(e.target.checked)}
+                    />
+                    <span className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                      Обогащение по ИНН (DaData)
+                    </span>
+                  </label>
+                  <p className="ml-6 mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    Подтягивать офиц. данные ЕГРЮЛ по ИНН и слать потребителю.
                   </p>
                 </div>
 

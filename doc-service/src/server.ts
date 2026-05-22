@@ -13,7 +13,7 @@ import {
   validatorCompiler,
   type ZodTypeProvider,
 } from 'fastify-type-provider-zod';
-import { config } from './config.js';
+import { config, assertAuthConfigured } from './config.js';
 import { documentTypesRoutes } from './routes/document-types.js';
 import { jobsRoutes } from './routes/jobs.js';
 import { slaiSyncRoutes } from './routes/integrations/slai-sync.js';
@@ -30,6 +30,10 @@ import { closeDb } from './db.js';
 import { closeQueue } from './queue.js';
 
 async function main() {
+  // P0 security: fail-closed до того как мы начнём слушать порт. Бросает,
+  // если auth выключился бы по умолчанию (нет ключей, нет ALLOW_NO_AUTH).
+  assertAuthConfigured(config);
+
   const app = Fastify({
     logger: { level: config.logLevel },
     bodyLimit: config.maxUploadMb * 1024 * 1024,

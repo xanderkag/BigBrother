@@ -34,6 +34,8 @@ import { tryMultiDoc } from './multidoc/runner.js';
 import { processFieldConfidence } from './normalize/field-confidence.js';
 import { fileStorage } from '../storage/files.js';
 import { organizationSettingsRepo } from '../storage/organization-settings.js';
+import { DadataClient } from './enrich/dadata.js';
+import { enrichWithDadata } from './enrich/index.js';
 
 // --- Wire dependencies once at module load. The pipeline is stateless beyond this.
 //
@@ -55,6 +57,7 @@ const engines: readonly OcrEngine[] = [
 ];
 
 const classifier = new KeywordClassifier();
+const dadataClient = new DadataClient(config.dadata);
 const parsersFactory = new ParsersFactory(llm, {
   regexFallbackThreshold: config.thresholds.regexFallback,
   multipass: config.multipass,
@@ -345,6 +348,42 @@ async function processJobInner(
       duration_ms: timings.validate_ms,
       details: { issues_count: post.validationIssues.length },
     });
+
+    // ── Enrich (DaData party-by-INN) ───────────────────────────────────────
+    // Additive обогащение extracted официальной карточкой ЕГРЮЛ по ИНН.
+    // Гейтится per-consumer профилем (profile.enrich_enabled) И доступностью
+    // DaData (DADATA_API_KEY). Fail-soft: НИКОГДА не роняет job. Кладёт
+    // результат в extracted._enrichment, который relay'ится через webhook.
+    // Не запускаем в classify_only (extracted пустой — нечего обогащать).
+    if (!classifyOnly && profile.enrich_enabled && dadataClient.isAvailable()) {
+      const enrichStart = Date.now();
+      try {
+        const result = await enrichWithDadata(
+          post.extracted,
+          dadataClient,
+          config.dadata.cacheTtlMs,
+          log,
+        );
+        post.extracted = result.extracted;
+        await stepEvent('enrich', result.ok ? 'done' : 'failed', {
+          duration_ms: Date.now() - enrichStart,
+          details: { provider: 'dadata', lookups: result.lookups },
+        });
+      } catch (err) {
+        // enrichWithDadata уже не бросает, но страхуемся — стадия не блокирует job.
+        log.warn({ jobId, err }, 'enrich stage error (non-fatal)');
+        await stepEvent('enrich', 'failed', {
+          duration_ms: Date.now() - enrichStart,
+          details: { error: String((err as Error)?.message ?? err) },
+        });
+      }
+    } else if (!classifyOnly) {
+      await stepEvent('enrich', 'skipped', {
+        details: {
+          reason: !profile.enrich_enabled ? 'profile.enrich_enabled=false' : 'dadata_unavailable',
+        },
+      });
+    }
 
     const overall = combineConfidence(ocr.confidence, post.parserConfidence);
 

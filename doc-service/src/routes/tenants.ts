@@ -99,6 +99,7 @@ const OrganizationSettingsApi = z.object({
   webhook_url: z.string().nullable(),
   has_webhook_secret: z.boolean(),
   auto_approve_threshold: z.number().nullable(),
+  enrich_enabled: z.boolean(),
   created_at: z.string().nullable(),
   updated_at: z.string().nullable(),
 });
@@ -110,6 +111,8 @@ const OrganizationSettingsPatchBody = z.object({
   // write-only: принимаем, но никогда не отдаём назад.
   webhook_hmac_secret: z.string().min(1).max(512).nullable().optional(),
   auto_approve_threshold: z.number().min(0).max(1).nullable().optional(),
+  // Per-consumer toggle для enrich-стадии (DaData party-by-INN).
+  enrich_enabled: z.boolean().optional(),
 });
 
 const ProjectApi = z.object({

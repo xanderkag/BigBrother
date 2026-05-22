@@ -65,6 +65,48 @@ describe('constantTimeEqual', () => {
   });
 });
 
+describe('assertAuthConfigured — startup fail-closed guard', () => {
+  const silent = { warn: () => undefined };
+
+  it('throws when no API_KEY, no named keys, ALLOW_NO_AUTH unset', () => {
+    expect(() =>
+      configMod.assertAuthConfigured(
+        { apiKey: '', apiKeysJson: {}, allowNoAuth: false },
+        silent,
+      ),
+    ).toThrow(/Refusing to start/);
+  });
+
+  it('allows boot with loud warn when ALLOW_NO_AUTH=true', () => {
+    let warned = '';
+    expect(() =>
+      configMod.assertAuthConfigured(
+        { apiKey: '', apiKeysJson: {}, allowNoAuth: true },
+        { warn: (m) => (warned = m) },
+      ),
+    ).not.toThrow();
+    expect(warned).toMatch(/AUTH DISABLED/);
+  });
+
+  it('passes when a root API_KEY is set (ALLOW_NO_AUTH irrelevant)', () => {
+    expect(() =>
+      configMod.assertAuthConfigured(
+        { apiKey: 'k', apiKeysJson: {}, allowNoAuth: false },
+        silent,
+      ),
+    ).not.toThrow();
+  });
+
+  it('passes when only named keys are set', () => {
+    expect(() =>
+      configMod.assertAuthConfigured(
+        { apiKey: '', apiKeysJson: { abc: 'erp' }, allowNoAuth: false },
+        silent,
+      ),
+    ).not.toThrow();
+  });
+});
+
 describe('bearerAuthHook — Fastify integration', () => {
   let app: FastifyInstance;
 
@@ -108,12 +150,28 @@ describe('bearerAuthHook — Fastify integration', () => {
     expect(r.json()).toEqual({ ok: true });
   });
 
-  it('is a no-op when API_KEY is empty (dev mode)', async () => {
+  it('is a no-op when API_KEY is empty AND ALLOW_NO_AUTH=true (dev mode)', async () => {
     (configMod.config as { apiKey: string }).apiKey = '';
+    (configMod.config as { apiKeysJson: Record<string, string> }).apiKeysJson = {};
+    (configMod.config as { allowNoAuth: boolean }).allowNoAuth = true;
 
     const r = await app.inject({ method: 'GET', url: '/protected' });
     expect(r.statusCode).toBe(200);
     expect(r.json()).toEqual({ ok: true });
+
+    (configMod.config as { allowNoAuth: boolean }).allowNoAuth = false;
+  });
+
+  it('fails closed (500) when API_KEY empty and ALLOW_NO_AUTH unset', async () => {
+    (configMod.config as { apiKey: string }).apiKey = '';
+    (configMod.config as { apiKeysJson: Record<string, string> }).apiKeysJson = {};
+    (configMod.config as { allowNoAuth: boolean }).allowNoAuth = false;
+
+    const r = await app.inject({ method: 'GET', url: '/protected' });
+    expect(r.statusCode).toBe(500);
+    expect(r.json()).toEqual({ error: 'server auth misconfigured' });
+
+    (configMod.config as { apiKey: string }).apiKey = TEST_KEY;
   });
 
   it('rejects malformed header (Basic instead of Bearer)', async () => {

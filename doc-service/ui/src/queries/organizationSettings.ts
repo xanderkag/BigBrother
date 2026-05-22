@@ -22,6 +22,7 @@ export interface OrganizationProfile {
   webhook_url: string | null;
   has_webhook_secret: boolean;
   auto_approve_threshold: number | null;
+  enrich_enabled: boolean;
 }
 
 export interface OrganizationProfileUpdate {
@@ -31,6 +32,7 @@ export interface OrganizationProfileUpdate {
   /** write-only: строка — задать/сменить, null — очистить, omit — не трогать. */
   webhook_hmac_secret?: string | null;
   auto_approve_threshold?: number | null;
+  enrich_enabled?: boolean;
 }
 
 export function useOrganizationSettings(orgId: string | null | undefined) {

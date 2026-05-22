@@ -29,6 +29,31 @@ interface MultiDocSegment {
 }
 
 /**
+ * DaData/ЕГРЮЛ-обогащение. Backend кладёт в job.extracted._enrichment, если
+ * у потребителя включён enrich_enabled. Парти индексируются по ИНН.
+ */
+interface EnrichmentParty {
+  inn?: string | null;
+  kpp?: string | null;
+  ogrn?: string | null;
+  name_full?: string | null;
+  name_short?: string | null;
+  address?: string | null;
+  management_name?: string | null;
+  management_post?: string | null;
+  status?: string | null;
+}
+
+interface Enrichment {
+  parties?: Record<string, EnrichmentParty> | null;
+  _meta?: {
+    provider?: string | null;
+    at?: string | null;
+    mismatches?: string[] | null;
+  } | null;
+}
+
+/**
  * Job Detail — главная страница UI v2. Заменяет старый view из app.js
  * с двух-колонным layout'ом (PDF слева, extracted data справа).
  *
@@ -108,6 +133,7 @@ export default function JobDetailPage() {
   const fieldConfidence = job.extracted?._field_confidence as
     | Record<string, number>
     | undefined;
+  const enrichment = (job.extracted?._enrichment as Enrichment | undefined) ?? null;
 
   // CP7: classify_only — extract-стадия пропущена профилем потребителя.
   // Сигнал — pipeline-шаг parse со статусом skipped (см. orchestrator.ts).
@@ -209,6 +235,8 @@ export default function JobDetailPage() {
         <div className="flex min-h-0 flex-col gap-3 overflow-auto bg-slate-50 dark:bg-slate-900/40 p-4">
           <ValidationBanner issues={issues} />
 
+          <EnrichmentCard enrichment={enrichment} />
+
           {classifyOnly ? (
             <ClassifyOnlyResult
               documentType={job.document_type}
@@ -280,6 +308,84 @@ function StatusBadge({ status }: { status: string }) {
       ? 'badge-sky'
       : 'badge-slate';
   return <span className={cls}>{status}</span>;
+}
+
+/**
+ * DaData/ЕГРЮЛ-обогащение. Карточка показывается, только если backend
+ * приложил _enrichment с непустым parties. Иначе — ничего (return null).
+ */
+function EnrichmentCard({ enrichment }: { enrichment: Enrichment | null }) {
+  if (!enrichment) return null;
+  const parties = Object.entries(enrichment.parties ?? {});
+  const mismatches = (enrichment._meta?.mismatches ?? []).filter(Boolean);
+  if (parties.length === 0 && mismatches.length === 0) return null;
+
+  return (
+    <div className="card">
+      <div className="card-header flex items-center justify-between">
+        <h3 className="card-title">Обогащение (DaData/ЕГРЮЛ)</h3>
+        {enrichment._meta?.provider && (
+          <span className="badge-slate">{enrichment._meta.provider}</span>
+        )}
+      </div>
+      <div className="card-body space-y-3">
+        {mismatches.length > 0 && (
+          <div className="space-y-1">
+            {mismatches.map((m, i) => (
+              <div
+                key={i}
+                className="rounded-md border-l-4 border-amber-500 bg-amber-50 px-3 py-1.5 text-xs text-amber-900 dark:bg-amber-500/10 dark:text-amber-200"
+              >
+                ⚠ {m}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {parties.map(([inn, p]) => (
+          <div
+            key={inn}
+            className="rounded-lg border border-slate-200 px-3 py-2 dark:border-slate-800"
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-mono text-xs text-slate-500 dark:text-slate-400">
+                ИНН {p.inn ?? inn}
+              </span>
+              <span className="text-sm font-medium text-slate-900 dark:text-slate-100">
+                {p.name_short ?? p.name_full ?? '—'}
+              </span>
+              <EnrichmentStatusBadge status={p.status ?? null} />
+            </div>
+            {(p.kpp || p.ogrn) && (
+              <div className="mt-1 flex flex-wrap gap-x-4 font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                {p.kpp && <span>КПП {p.kpp}</span>}
+                {p.ogrn && <span>ОГРН {p.ogrn}</span>}
+              </div>
+            )}
+            {p.address && (
+              <div className="mt-1 text-xs text-slate-600 dark:text-slate-400">
+                {p.address}
+              </div>
+            )}
+            {(p.management_name || p.management_post) && (
+              <div className="mt-1 text-xs text-slate-600 dark:text-slate-400">
+                {[p.management_post, p.management_name].filter(Boolean).join(': ')}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function EnrichmentStatusBadge({ status }: { status: string | null }) {
+  if (!status) return null;
+  const up = status.toUpperCase();
+  if (up === 'ACTIVE') return <span className="badge-emerald">действует</span>;
+  if (up === 'LIQUIDATED' || up === 'LIQUIDATING')
+    return <span className="badge-rose">ликвидирован</span>;
+  return <span className="badge-slate">{status}</span>;
 }
 
 /**

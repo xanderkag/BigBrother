@@ -40,6 +40,7 @@ export type OrganizationSettingsRow = {
   webhook_url: string | null;
   webhook_hmac_secret: string | null; // encrypted envelope (or NULL)
   auto_approve_threshold: string | null; // NUMERIC → string
+  enrich_enabled: boolean;
   created_at: Date;
   updated_at: Date;
 };
@@ -55,6 +56,8 @@ export type OrganizationProfile = {
   webhook_url: string | null;
   has_webhook_secret: boolean;
   auto_approve_threshold: number | null;
+  /** Per-consumer toggle для enrich-стадии (DaData party-by-INN). */
+  enrich_enabled: boolean;
   created_at: string | null; // null у дефолт-профиля (строки в БД нет)
   updated_at: string | null;
 };
@@ -70,6 +73,7 @@ export type OrganizationSettingsPatch = {
   webhook_url?: string | null;
   webhook_hmac_secret?: string | null;
   auto_approve_threshold?: number | null;
+  enrich_enabled?: boolean;
 };
 
 /** Дефолт-профиль для орг без строки в БД: extract / pull / без секрета. */
@@ -81,6 +85,7 @@ function defaultProfile(orgId: string): OrganizationProfile {
     webhook_url: null,
     has_webhook_secret: false,
     auto_approve_threshold: null,
+    enrich_enabled: false,
     created_at: null,
     updated_at: null,
   };
@@ -142,12 +147,12 @@ class OrganizationSettingsRepo {
     // "оставить как есть".
     const { rows } = await db.query<OrganizationSettingsRow>(
       `INSERT INTO organization_settings (
-         organization_id, mode, output, webhook_url, webhook_hmac_secret, auto_approve_threshold, updated_at
+         organization_id, mode, output, webhook_url, webhook_hmac_secret, auto_approve_threshold, enrich_enabled, updated_at
        ) VALUES (
          $1,
          COALESCE($2, 'extract'),
          COALESCE($3, 'pull'),
-         $4, $5, $6, now()
+         $4, $5, $6, COALESCE($10, false), now()
        )
        ON CONFLICT (organization_id) DO UPDATE SET
          mode = COALESCE($2, organization_settings.mode),
@@ -155,6 +160,7 @@ class OrganizationSettingsRepo {
          webhook_url = CASE WHEN $7 THEN $4 ELSE organization_settings.webhook_url END,
          webhook_hmac_secret = CASE WHEN $8 THEN $5 ELSE organization_settings.webhook_hmac_secret END,
          auto_approve_threshold = CASE WHEN $9 THEN $6 ELSE organization_settings.auto_approve_threshold END,
+         enrich_enabled = COALESCE($10, organization_settings.enrich_enabled),
          updated_at = now()
        RETURNING *`,
       [
@@ -168,6 +174,7 @@ class OrganizationSettingsRepo {
         patch.webhook_url !== undefined,
         patch.webhook_hmac_secret !== undefined,
         patch.auto_approve_threshold !== undefined,
+        patch.enrich_enabled ?? null,
       ],
     );
     return this.toApi(rows[0]!);
@@ -186,6 +193,7 @@ class OrganizationSettingsRepo {
       has_webhook_secret: row.webhook_hmac_secret !== null && row.webhook_hmac_secret !== '',
       auto_approve_threshold:
         row.auto_approve_threshold === null ? null : Number(row.auto_approve_threshold),
+      enrich_enabled: row.enrich_enabled,
       created_at: row.created_at.toISOString(),
       updated_at: row.updated_at.toISOString(),
     };
