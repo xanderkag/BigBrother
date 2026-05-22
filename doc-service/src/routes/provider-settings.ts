@@ -28,7 +28,7 @@ import { config } from '../config.js';
  * (а ещё там есть `before/after` без секрета).
  */
 
-const Kind = z.enum(['llm', 'ocr']);
+const Kind = z.enum(['llm', 'ocr', 'dadata']);
 
 const IdParam = z.object({
   id: z.string().min(1).max(64).regex(/^[a-z0-9][a-z0-9_-]*$/, {
@@ -44,6 +44,7 @@ const ProviderApi = z.object({
   base_url: z.string().nullable(),
   api_key_masked: z.string().nullable(),
   has_api_key: z.boolean(),
+  has_secret_key: z.boolean(),
   model: z.string().nullable(),
   is_active: z.boolean(),
   is_default: z.boolean(),

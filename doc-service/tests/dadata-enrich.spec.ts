@@ -15,6 +15,18 @@ import type { Logger } from 'pino';
 import { enrichWithDadata, __resetEnrichCache } from '../src/pipeline/enrich/index.js';
 import type { DadataClient, DadataParty } from '../src/pipeline/enrich/dadata.js';
 
+// provider_settings repo замокан — БД не трогаем. Тесты резолюции ключа
+// подменяют findDefault('dadata').
+const findDefaultMock = vi.fn();
+vi.mock('../src/storage/provider-settings.js', () => ({
+  providerSettingsRepo: { findDefault: (...a: unknown[]) => findDefaultMock(...a) },
+}));
+
+// undici.request замокан — findByInn сети не касается; проверяем какой
+// authorization-заголовок (Token <key>) ушёл в запрос.
+const requestMock = vi.fn();
+vi.mock('undici', () => ({ request: (...a: unknown[]) => requestMock(...a) }));
+
 const log = {
   warn: vi.fn(),
   info: vi.fn(),
@@ -184,5 +196,89 @@ describe('enrichWithDadata', () => {
     };
     expect(block.parties['7707083893']).toBeUndefined();
     expect(block._meta.mismatches.some((m) => m.includes('не найден'))).toBe(true);
+  });
+});
+
+describe('DadataClient key resolution (DB default → env fallback)', () => {
+  beforeEach(() => {
+    __resetEnrichCache();
+    findDefaultMock.mockReset();
+    requestMock.mockReset();
+  });
+
+  async function importClient() {
+    const mod = await import('../src/pipeline/enrich/dadata.js');
+    return mod.DadataClient;
+  }
+
+  it('resolves api_key from provider_settings default and uses it in Authorization', async () => {
+    findDefaultMock.mockResolvedValue({ id: 'dadata', kind: 'dadata', api_key: 'db-token-xyz' });
+    requestMock.mockResolvedValue({
+      statusCode: 200,
+      body: { json: async () => ({ suggestions: [{ data: { inn: '7707083893' } }] }) },
+    });
+
+    const DadataClient = await importClient();
+    const client = new DadataClient({ apiKey: 'env-token', timeoutMs: 1000, cacheTtlMs: 0 });
+
+    expect(await client.isAvailable()).toBe(true);
+    const party = await client.findByInn('7707083893');
+    expect(party?.inn).toBe('7707083893');
+
+    const [, opts] = requestMock.mock.calls[0]!;
+    expect((opts as { headers: { authorization: string } }).headers.authorization).toBe(
+      'Token db-token-xyz',
+    );
+  });
+
+  it('falls back to env api_key when no provider_settings row', async () => {
+    findDefaultMock.mockResolvedValue(null);
+    requestMock.mockResolvedValue({
+      statusCode: 200,
+      body: { json: async () => ({ suggestions: [] }) },
+    });
+
+    const DadataClient = await importClient();
+    const client = new DadataClient({ apiKey: 'env-token', timeoutMs: 1000, cacheTtlMs: 0 });
+
+    expect(await client.isAvailable()).toBe(true);
+    await client.findByInn('7707083893');
+    const [, opts] = requestMock.mock.calls[0]!;
+    expect((opts as { headers: { authorization: string } }).headers.authorization).toBe(
+      'Token env-token',
+    );
+  });
+
+  it('falls back to env when DB lookup throws (DB down)', async () => {
+    findDefaultMock.mockRejectedValue(new Error('db down'));
+
+    const DadataClient = await importClient();
+    const client = new DadataClient({ apiKey: 'env-token', timeoutMs: 1000, cacheTtlMs: 0 });
+
+    expect(await client.isAvailable()).toBe(true);
+  });
+
+  it('isAvailable=false when neither DB row nor env key', async () => {
+    findDefaultMock.mockResolvedValue(null);
+
+    const DadataClient = await importClient();
+    const client = new DadataClient({ apiKey: undefined, timeoutMs: 1000, cacheTtlMs: 0 });
+
+    expect(await client.isAvailable()).toBe(false);
+  });
+
+  it('enrich stays fail-soft when client throws (no key resolvable downstream)', async () => {
+    findDefaultMock.mockResolvedValue(null);
+    requestMock.mockRejectedValue(new Error('network'));
+
+    const DadataClient = await importClient();
+    const client = new DadataClient({ apiKey: 'env-token', timeoutMs: 1000, cacheTtlMs: 0 });
+
+    const extracted = { seller: { inn: '7707083893', name: 'ООО Ромашка' } };
+    const res = await enrichWithDadata(extracted, client, TTL, log);
+
+    expect(res.ok).toBe(false);
+    expect(res.extracted).toBe(extracted);
+    expect(res.extracted._enrichment).toBeUndefined();
   });
 });

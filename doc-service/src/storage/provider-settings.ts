@@ -31,7 +31,14 @@ import { encryptSecret, decryptSecret } from './secrets.js';
  * в HTTP-Authorization уже в открытом виде.
  */
 
-export type ProviderKind = 'llm' | 'ocr';
+export type ProviderKind = 'llm' | 'ocr' | 'dadata';
+
+/**
+ * Дополнительный секрет в `extra`. Для kind='dadata' это `secret_key`
+ * (DaData cleaning API). Маскируется/опускается в `toApi()` — никогда не
+ * уходит клиенту в plaintext.
+ */
+const SECRET_EXTRA_KEYS = ['secret_key'] as const;
 
 export type ProviderSettingRow = {
   id: string;
@@ -69,6 +76,33 @@ function maskKey(key: string | null): string | null {
   return `••••${key.slice(-4)}`;
 }
 
+/** Шифрует известные secret-поля внутри `extra` (для записи). Возвращает НОВЫЙ объект. */
+function encryptExtraSecrets(
+  extra: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+  if (extra === null || extra === undefined) return extra ?? null;
+  const out: Record<string, unknown> = { ...extra };
+  for (const k of SECRET_EXTRA_KEYS) {
+    const v = out[k];
+    if (typeof v === 'string') out[k] = encryptSecret(v);
+    else if (v === null) delete out[k];
+  }
+  return out;
+}
+
+/** Расшифровывает secret-поля внутри `extra` (для чтения). Возвращает НОВЫЙ объект. */
+function decryptExtraSecrets(
+  extra: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (extra === null) return null;
+  const out: Record<string, unknown> = { ...extra };
+  for (const k of SECRET_EXTRA_KEYS) {
+    const v = out[k];
+    if (typeof v === 'string') out[k] = decryptSecret(v);
+  }
+  return out;
+}
+
 class ProviderSettingsRepo {
   /**
    * Hot-path row → расшифровка api_key. Все методы чтения проходят
@@ -76,8 +110,11 @@ class ProviderSettingsRepo {
    * toApi) видел уже plaintext или legacy-значение.
    */
   private decryptRow(row: ProviderSettingRow): ProviderSettingRow {
-    if (row.api_key === null) return row;
-    return { ...row, api_key: decryptSecret(row.api_key) };
+    return {
+      ...row,
+      api_key: row.api_key === null ? null : decryptSecret(row.api_key),
+      extra: decryptExtraSecrets(row.extra),
+    };
   }
 
   async list(): Promise<ProviderSettingRow[]> {
@@ -130,7 +167,8 @@ class ProviderSettingsRepo {
         encryptSecret(input.api_key ?? null),
         input.model ?? null,
         input.is_active ?? true,
-        input.extra ?? null,
+        // extra.secret_key шифруется ДО записи, как и api_key.
+        encryptExtraSecrets(input.extra),
       ],
     );
     // Возвращаем уже расшифрованную row, чтобы вызывающий код не натолкнулся
@@ -159,7 +197,7 @@ class ProviderSettingsRepo {
     if (patch.api_key !== undefined) push('api_key', encryptSecret(patch.api_key));
     if (patch.model !== undefined) push('model', patch.model);
     if (patch.is_active !== undefined) push('is_active', patch.is_active);
-    if (patch.extra !== undefined) push('extra', patch.extra);
+    if (patch.extra !== undefined) push('extra', encryptExtraSecrets(patch.extra));
     if (sets.length === 0) return this.findById(id);
 
     values.push(id);
@@ -220,6 +258,20 @@ class ProviderSettingsRepo {
    * leaking the secret to any client (including XSS payloads on the page).
    */
   toApi(row: ProviderSettingRow) {
+    // Маскируем secret-поля внутри extra (не возвращаем plaintext клиенту).
+    let extra = row.extra;
+    let hasSecretKey = false;
+    if (extra) {
+      const masked: Record<string, unknown> = { ...extra };
+      for (const k of SECRET_EXTRA_KEYS) {
+        const v = masked[k];
+        if (typeof v === 'string' && v.length > 0) {
+          if (k === 'secret_key') hasSecretKey = true;
+          masked[k] = maskKey(v);
+        }
+      }
+      extra = masked;
+    }
     return {
       id: row.id,
       kind: row.kind,
@@ -228,10 +280,11 @@ class ProviderSettingsRepo {
       base_url: row.base_url,
       api_key_masked: maskKey(row.api_key),
       has_api_key: !!row.api_key,
+      has_secret_key: hasSecretKey,
       model: row.model,
       is_active: row.is_active,
       is_default: row.is_default,
-      extra: row.extra,
+      extra,
       created_at: row.created_at.toISOString(),
       updated_at: row.updated_at.toISOString(),
     };

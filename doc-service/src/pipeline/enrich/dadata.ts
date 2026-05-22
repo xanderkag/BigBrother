@@ -12,6 +12,7 @@
  * shape). Возвращаем null если подсказок нет.
  */
 import { request } from 'undici';
+import { providerSettingsRepo } from '../../storage/provider-settings.js';
 
 const FIND_BY_ID_PARTY =
   'https://suggestions.dadata.ru/suggestions/api/4_1/rs/findById/party';
@@ -61,9 +62,29 @@ function str(v: unknown): string | null {
 export class DadataClient {
   constructor(private readonly cfg: DadataConfig) {}
 
-  /** Доступен только если задан DADATA_API_KEY. Mirror yandex.isAvailable(). */
-  isAvailable(): boolean {
-    return !!this.cfg.apiKey;
+  /**
+   * Резолвит API-key (Token) на call-time: сначала default-провайдер
+   * kind='dadata' из provider_settings (расшифрованный api_key), потом
+   * env-fallback (config.dadata.apiKey). Зеркалит DynamicLlmClient.resolve().
+   *
+   * Никогда не бросает — БД недоступна → спокойно идём в env.
+   */
+  private async resolveApiKey(): Promise<string | undefined> {
+    try {
+      const row = await providerSettingsRepo.findDefault('dadata');
+      if (row?.api_key) return row.api_key;
+    } catch {
+      // БД может быть недоступна — fallback на env.
+    }
+    return this.cfg.apiKey;
+  }
+
+  /**
+   * Доступен если ключ резолвится из БД (default kind='dadata') ИЛИ env.
+   * Async — внутри DB-lookup. Mirror yandex.isAvailable() по смыслу.
+   */
+  async isAvailable(): Promise<boolean> {
+    return !!(await this.resolveApiKey());
   }
 
   /**
@@ -73,13 +94,14 @@ export class DadataClient {
    * Бросает Error на HTTP >= 400 — caller (enrich-стадия) ловит и fail-soft'ит.
    */
   async findByInn(inn: string, kpp?: string): Promise<DadataParty | null> {
+    const apiKey = await this.resolveApiKey();
     const body: { query: string; kpp?: string } = { query: inn };
     if (kpp) body.kpp = kpp;
 
     const res = await request(FIND_BY_ID_PARTY, {
       method: 'POST',
       headers: {
-        authorization: `Token ${this.cfg.apiKey}`,
+        authorization: `Token ${apiKey}`,
         'content-type': 'application/json',
         accept: 'application/json',
       },

@@ -54,6 +54,7 @@ export default function ProvidersPage() {
             <option value="">Все типы</option>
             <option value="llm">LLM</option>
             <option value="ocr">OCR</option>
+            <option value="dadata">DaData</option>
           </select>
           <button
             type="button"
@@ -249,6 +250,16 @@ function ProviderRow({
 /* Editor modal                                                       */
 /* ------------------------------------------------------------------ */
 
+/** Убирает secret_key из extra (его plaintext бэк не отдаёт — нельзя гонять обратно). */
+function stripSecretKey(
+  src: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (!src) return src;
+  const rest = { ...src };
+  delete rest.secret_key;
+  return Object.keys(rest).length > 0 ? rest : null;
+}
+
 interface DraftForm {
   id: string;
   kind: ProviderKind;
@@ -256,6 +267,7 @@ interface DraftForm {
   description: string;
   base_url: string;
   api_key: string;
+  secret_key: string; // только для kind='dadata' → extra.secret_key (write-only)
   model: string;
   is_active: boolean;
   extra: Record<string, unknown> | null;
@@ -281,12 +293,32 @@ function ProviderEditor({
     description: initial?.description ?? '',
     base_url: initial?.base_url ?? '',
     api_key: '', // никогда не pre-fill'им
+    secret_key: '', // никогда не pre-fill'им (backend не отдаёт plaintext)
     model: initial?.model ?? '',
     is_active: initial?.is_active ?? true,
-    extra: initial?.extra ?? null,
+    // extra без secret_key: маскированное значение из toApi() в JSON-редакторе
+    // показывать/гонять обратно нельзя. secret_key редактируется отдельным полем.
+    extra: stripSecretKey(initial?.extra ?? null),
   }));
   const [error, setError] = useState<string | null>(null);
   const [clearApiKey, setClearApiKey] = useState(false);
+  const [clearSecretKey, setClearSecretKey] = useState(false);
+
+  // Собрать extra для отправки: базовый extra (без secret_key) +
+  // secret_key только если введён новый или явно очищается.
+  const buildExtra = (): Record<string, unknown> | null => {
+    const base = stripSecretKey(draft.extra);
+    if (draft.kind !== 'dadata') return base;
+    if (draft.secret_key) {
+      return { ...(base ?? {}), secret_key: draft.secret_key };
+    }
+    if (clearSecretKey) {
+      return { ...(base ?? {}), secret_key: null };
+    }
+    // Не трогаем secret_key: на create — нет ключа; на patch — он останется
+    // в БД только если extra не передаётся целиком. См. save() ниже.
+    return base;
+  };
 
   const save = async () => {
     setError(null);
@@ -309,7 +341,7 @@ function ProviderEditor({
           api_key: draft.api_key || null,
           model: draft.model || null,
           is_active: draft.is_active,
-          extra: draft.extra,
+          extra: buildExtra(),
         });
       } else {
         // PATCH: api_key — особая логика. Пустое поле = не менять,
@@ -326,12 +358,22 @@ function ProviderEditor({
           base_url: draft.base_url || null,
           model: draft.model || null,
           is_active: draft.is_active,
-          extra: draft.extra,
         };
         if (clearApiKey) {
           patch.api_key = null;
         } else if (draft.api_key) {
           patch.api_key = draft.api_key;
+        }
+        // extra — full-replace на бэке. Включаем его в patch ТОЛЬКО когда
+        // реально что-то меняется в extra (новый/очищенный secret_key или
+        // изменённый non-secret extra), иначе stored secret_key затрётся.
+        const secretChanged =
+          draft.kind === 'dadata' && (!!draft.secret_key || clearSecretKey);
+        const baseChanged =
+          JSON.stringify(stripSecretKey(draft.extra)) !==
+          JSON.stringify(stripSecretKey(initial?.extra ?? null));
+        if (secretChanged || baseChanged) {
+          patch.extra = buildExtra();
         }
         await update.mutateAsync({ id: draft.id, patch });
       }
@@ -396,6 +438,7 @@ function ProviderEditor({
             >
               <option value="llm">LLM</option>
               <option value="ocr">OCR</option>
+              <option value="dadata">DaData (ЕГРЮЛ-обогащение)</option>
             </select>
           </div>
 
@@ -471,6 +514,49 @@ function ProviderEditor({
               </label>
             )}
           </div>
+
+          {draft.kind === 'dadata' && (
+            <div className="sm:col-span-2">
+              <label className="form-label">
+                Secret key (DaData, для cleaning API){' '}
+                {!isNew && initial?.has_secret_key && (
+                  <span className="text-xs font-normal text-slate-500 dark:text-slate-400">
+                    (установлен — пусто = не менять)
+                  </span>
+                )}
+              </label>
+              <input
+                type="password"
+                className="form-input font-mono text-sm"
+                value={draft.secret_key}
+                onChange={(e) => {
+                  setDraft((d) => ({ ...d, secret_key: e.target.value }));
+                  setClearSecretKey(false);
+                }}
+                placeholder={
+                  !isNew && initial?.has_secret_key ? '••••••••' : 'необязательно'
+                }
+                autoComplete="off"
+              />
+              {!isNew && initial?.has_secret_key && (
+                <label className="mt-1 flex items-center gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    checked={clearSecretKey}
+                    onChange={(e) => {
+                      setClearSecretKey(e.target.checked);
+                      if (e.target.checked) setDraft((d) => ({ ...d, secret_key: '' }));
+                    }}
+                  />
+                  Очистить secret key
+                </label>
+              )}
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                API key (Token) — поле выше. Secret key нужен только для будущей
+                стандартизации адресов; для ЕГРЮЛ-обогащения по ИНН достаточно Token.
+              </p>
+            </div>
+          )}
 
           <div>
             <label className="form-label">Модель (для LLM)</label>

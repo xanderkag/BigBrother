@@ -19,7 +19,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 
-export type ProviderKind = 'llm' | 'ocr';
+export type ProviderKind = 'llm' | 'ocr' | 'dadata';
 
 export interface ProviderEntry {
   id: string;
@@ -29,6 +29,7 @@ export interface ProviderEntry {
   base_url?: string | null;
   api_key_masked?: string | null; // ••••1234, никогда не plaintext
   has_api_key?: boolean;
+  has_secret_key?: boolean; // extra.secret_key установлен (plaintext не отдаём)
   model?: string | null;
   is_active: boolean;
   is_default?: boolean;

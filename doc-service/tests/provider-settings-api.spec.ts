@@ -78,4 +78,30 @@ describe('providerSettingsRepo.toApi', () => {
     expect(api.extra).toEqual({ gpu: 0 });
     expect(api.created_at).toBe('2026-05-01T00:00:00.000Z');
   });
+
+  it('dadata: masks extra.secret_key and sets has_secret_key, never plaintext', () => {
+    const r = row({
+      id: 'dadata',
+      kind: 'dadata',
+      display_name: 'DaData',
+      api_key: 'token-abcd1234',
+      extra: { secret_key: 'secret-wxyz9876', region: 'ru' },
+    });
+    const api = providerSettingsRepo.toApi(r);
+    expect(api.has_secret_key).toBe(true);
+    // secret_key замаскирован — plaintext не утекает
+    expect((api.extra as Record<string, unknown>).secret_key).toBe('••••9876');
+    expect(JSON.stringify(api)).not.toContain('secret-wxyz9876');
+    // non-secret поля extra проходят как есть
+    expect((api.extra as Record<string, unknown>).region).toBe('ru');
+    // api_key тоже только маска
+    expect('api_key' in api).toBe(false);
+    expect(api.api_key_masked).toBe('••••1234');
+  });
+
+  it('has_secret_key=false when no secret_key in extra', () => {
+    const r = row({ kind: 'dadata', extra: { region: 'ru' } });
+    const api = providerSettingsRepo.toApi(r);
+    expect(api.has_secret_key).toBe(false);
+  });
 });

@@ -355,7 +355,7 @@ async function processJobInner(
     // DaData (DADATA_API_KEY). Fail-soft: НИКОГДА не роняет job. Кладёт
     // результат в extracted._enrichment, который relay'ится через webhook.
     // Не запускаем в classify_only (extracted пустой — нечего обогащать).
-    if (!classifyOnly && profile.enrich_enabled && dadataClient.isAvailable()) {
+    if (!classifyOnly && profile.enrich_enabled && (await dadataClient.isAvailable())) {
       const enrichStart = Date.now();
       try {
         const result = await enrichWithDadata(
