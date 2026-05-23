@@ -34,7 +34,7 @@ ssh kb-docker 'cd parsdocs/doc-service; sed -i "s/^API_KEY=.*/API_KEY=$(openssl 
 | **Качество на реальных данных** — собрать свой mini-golden-set (10-15 реальных RU счетов/УПД/ТТН) + прогнать eval на **прод-конфиге (Qwen-VL)** | — | Первая честная цифра точности. Не ждёт SLAI. Разблокирует решение по моделям. |
 | **SLAI разблокировка** — нуднуть Q4 (service-token) + Q5 (ETA пилота) + Q9 (golden dataset) | SLAI | Все три на их стороне. См. INTEGRATION_QUEUE. |
 | **F3 items 1+3** — webhook-receiver + service-token `slai` | Q4/Q5 | 0.5 дня после разблокировки. |
-| **UI-7** — срезы Dashboard по engine / tier / consumer | — | Нужен бэк-агрегат (`GROUP BY` в `getOperationalSummary`). Рекоменд. объём: engine + tier; consumer-срез отложить. |
+| ~~**UI-7** — срезы Dashboard~~ | — | ✅ 2026-05-23 (engine + tier; consumer отложен). В `0807285`, ждёт деплоя с P0-1. |
 
 ---
 
