@@ -971,12 +971,17 @@ ConfidenceBar / extracted + field_confidence). `_multidoc_documents`
 сорт-список всех ключей, в т.ч. нес-displayed) — но у неё legacy-пороги 0.9/0.7
 и нет dark-mode. Если захотим одну шкалу на странице — выровнять под ConfidenceBar.
 
-### UI-7. Dashboard-срезы по tier / consumer / engine — backlog
+### UI-7. Dashboard-срезы по tier / engine — ✅ закрыто 2026-05-23 (consumer отложен)
 
-**Симптом:** появились оси tier (stable/beta/experimental), org-потребитель,
-OCR-движок — но Dashboard их не режет. **Лечение:** needs_review rate по tier
-(тянут ли experimental вниз?), объём по потребителям, mix OCR-движков. Нужен
-доступный бэкенд-агрегат (часть есть в `/metrics/operational`).
+`getOperationalSummary` получил `by_engine` (GROUP BY ocr_engine, `_none` для
+пустого) и `by_tier` (LEFT JOIN document_types, GROUP BY tier, `_untyped` для
+несматченных) — через DRY-хелпер `groupBreakdown`, тот же window+scope. Dashboard
+рисует две новые таблицы (`BreakdownTable`): «По OCR-движку» и «По зрелости типа»
+(TierBadge + колонка «% проверки» — видно, тянет ли experimental needs_review
+вниз). Пустые срезы скрыты.
+
+**Отложено:** consumer-срез (`by_organization`) — без super_admin вырождается в
+1 строку; вернёмся при мульти-tenant проде (см. ROADMAP «заморожено»-логика).
 
 ---
 

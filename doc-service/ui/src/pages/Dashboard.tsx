@@ -3,8 +3,11 @@ import { Link } from 'react-router-dom';
 import {
   useOperationalMetrics,
   type MetricsWindow,
+  type MetricsBreakdownRow,
 } from '@/queries/metrics';
 import { formatPercent, formatDateTime, formatNumber } from '@/lib/format';
+import TierBadge from '@/components/TierBadge';
+import type { DocumentTypeTier } from '@/queries/documentTypes';
 
 /**
  * Dashboard — главная страница UI v2. Показывает операционные метрики
@@ -193,75 +196,58 @@ export default function DashboardPage() {
 
           {/* By document type */}
           {data.by_type.length > 0 && (
-            <div className="card">
-              <div className="card-header">
-                <h3 className="card-title">По типам документов</h3>
-                <span className="text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">{data.by_type.length} типов</span>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="min-w-full text-sm">
-                  <thead className="bg-slate-50 dark:bg-slate-900/40 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-400 dark:text-slate-500">
-                    <tr>
-                      <th className="px-4 py-2">Тип</th>
-                      <th className="px-4 py-2 text-right">Всего</th>
-                      <th className="px-4 py-2 text-right">Готово</th>
-                      <th className="px-4 py-2 text-right">На проверке</th>
-                      <th className="px-4 py-2 text-right">Ошибки</th>
-                      <th className="px-4 py-2 text-right">p95 ms</th>
-                      <th className="px-4 py-2 text-right">avg conf.</th>
-                      <th className="px-4 py-2 text-right">LLM %</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                    {data.by_type.map((t) => (
-                      <tr key={t.slug} className="hover:bg-slate-50 dark:bg-slate-900/40">
-                        <td className="px-4 py-2">
-                          <Link
-                            to={`/jobs?document_type=${t.slug}`}
-                            className="font-medium text-slate-900 dark:text-slate-100 hover:underline"
-                          >
-                            {t.slug}
-                          </Link>
-                        </td>
-                        <td className="px-4 py-2 text-right font-mono">{formatNumber(t.total)}</td>
-                        <td className="px-4 py-2 text-right">
-                          <span className="font-mono text-emerald-700 dark:text-emerald-300">{formatNumber(t.done)}</span>
-                        </td>
-                        <td className="px-4 py-2 text-right">
-                          {t.needs_review > 0 ? (
-                            <span className="font-mono text-amber-700 dark:text-amber-300">
-                              {formatNumber(t.needs_review)}
-                            </span>
-                          ) : (
-                            <span className="text-slate-400 dark:text-slate-500">—</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-2 text-right">
-                          {t.failed > 0 ? (
-                            <span className="font-mono text-rose-700 dark:text-rose-300">
-                              {formatNumber(t.failed)}
-                            </span>
-                          ) : (
-                            <span className="text-slate-400 dark:text-slate-500">—</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-2 text-right font-mono text-slate-600 dark:text-slate-400 dark:text-slate-500">
-                          {fmtMs(t.latency_p95_ms)}
-                        </td>
-                        <td className="px-4 py-2 text-right font-mono">
-                          {t.avg_confidence !== null
-                            ? formatPercent(t.avg_confidence)
-                            : '—'}
-                        </td>
-                        <td className="px-4 py-2 text-right font-mono text-slate-600 dark:text-slate-400 dark:text-slate-500">
-                          {formatPercent(t.llm_fallback_rate)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+            <BreakdownTable
+              title="По типам документов"
+              count={`${data.by_type.length} типов`}
+              keyHeader="Тип"
+              rows={data.by_type}
+              rowKey={(t) => t.slug}
+              renderKey={(t) => (
+                <Link
+                  to={`/jobs?document_type=${t.slug}`}
+                  className="font-medium text-slate-900 dark:text-slate-100 hover:underline"
+                >
+                  {t.slug}
+                </Link>
+              )}
+            />
+          )}
+
+          {/* By OCR engine */}
+          {data.by_engine.length > 0 && (
+            <BreakdownTable
+              title="По OCR-движку"
+              count={`${data.by_engine.length} движков`}
+              keyHeader="Движок"
+              rows={data.by_engine}
+              rowKey={(e) => e.engine}
+              renderKey={(e) =>
+                e.engine === '_none' ? (
+                  <span className="text-slate-400 dark:text-slate-500">без движка</span>
+                ) : (
+                  <span className="font-medium text-slate-900 dark:text-slate-100">{e.engine}</span>
+                )
+              }
+            />
+          )}
+
+          {/* By document-type tier (maturity) */}
+          {data.by_tier.length > 0 && (
+            <BreakdownTable
+              title="По зрелости типа (tier)"
+              count={`${data.by_tier.length}`}
+              keyHeader="Зрелость"
+              rows={data.by_tier}
+              rowKey={(t) => t.tier}
+              showNeedsReviewRate
+              renderKey={(t) =>
+                t.tier === '_untyped' ? (
+                  <span className="text-slate-400 dark:text-slate-500">без типа</span>
+                ) : (
+                  <TierBadge tier={t.tier as DocumentTypeTier} />
+                )
+              }
+            />
           )}
         </>
       )}
@@ -272,6 +258,103 @@ export default function DashboardPage() {
 /* ------------------------------------------------------------------ */
 /* helpers                                                            */
 /* ------------------------------------------------------------------ */
+
+function BreakdownTable<T extends MetricsBreakdownRow>({
+  title,
+  count,
+  keyHeader,
+  rows,
+  rowKey,
+  renderKey,
+  showNeedsReviewRate = false,
+}: {
+  title: string;
+  count: string;
+  keyHeader: string;
+  rows: T[];
+  rowKey: (row: T) => string;
+  renderKey: (row: T) => React.ReactNode;
+  showNeedsReviewRate?: boolean;
+}) {
+  return (
+    <div className="card">
+      <div className="card-header">
+        <h3 className="card-title">{title}</h3>
+        <span className="text-xs text-slate-500 dark:text-slate-500">{count}</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead className="bg-slate-50 dark:bg-slate-900/40 text-left text-xs uppercase tracking-wide text-slate-500 dark:text-slate-500">
+            <tr>
+              <th className="px-4 py-2">{keyHeader}</th>
+              <th className="px-4 py-2 text-right">Всего</th>
+              <th className="px-4 py-2 text-right">Готово</th>
+              <th className="px-4 py-2 text-right">На проверке</th>
+              {showNeedsReviewRate && <th className="px-4 py-2 text-right">% проверки</th>}
+              <th className="px-4 py-2 text-right">Ошибки</th>
+              <th className="px-4 py-2 text-right">p95 ms</th>
+              <th className="px-4 py-2 text-right">avg conf.</th>
+              <th className="px-4 py-2 text-right">LLM %</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+            {rows.map((r) => (
+              <tr key={rowKey(r)} className="hover:bg-slate-50 dark:bg-slate-900/40">
+                <td className="px-4 py-2">{renderKey(r)}</td>
+                <td className="px-4 py-2 text-right font-mono">{formatNumber(r.total)}</td>
+                <td className="px-4 py-2 text-right">
+                  <span className="font-mono text-emerald-700 dark:text-emerald-300">
+                    {formatNumber(r.done)}
+                  </span>
+                </td>
+                <td className="px-4 py-2 text-right">
+                  {r.needs_review > 0 ? (
+                    <span className="font-mono text-amber-700 dark:text-amber-300">
+                      {formatNumber(r.needs_review)}
+                    </span>
+                  ) : (
+                    <span className="text-slate-400 dark:text-slate-500">—</span>
+                  )}
+                </td>
+                {showNeedsReviewRate && (
+                  <td className="px-4 py-2 text-right">
+                    {r.needs_review > 0 ? (
+                      <span className="font-mono font-semibold text-amber-700 dark:text-amber-300">
+                        {formatPercent(r.needs_review_rate)}
+                      </span>
+                    ) : (
+                      <span className="font-mono text-slate-400 dark:text-slate-500">
+                        {formatPercent(r.needs_review_rate)}
+                      </span>
+                    )}
+                  </td>
+                )}
+                <td className="px-4 py-2 text-right">
+                  {r.failed > 0 ? (
+                    <span className="font-mono text-rose-700 dark:text-rose-300">
+                      {formatNumber(r.failed)}
+                    </span>
+                  ) : (
+                    <span className="text-slate-400 dark:text-slate-500">—</span>
+                  )}
+                </td>
+                <td className="px-4 py-2 text-right font-mono text-slate-600 dark:text-slate-500">
+                  {fmtMs(r.latency_p95_ms)}
+                </td>
+                <td className="px-4 py-2 text-right font-mono">
+                  {r.avg_confidence !== null ? formatPercent(r.avg_confidence) : '—'}
+                </td>
+                <td className="px-4 py-2 text-right font-mono text-slate-600 dark:text-slate-500">
+                  {formatPercent(r.llm_fallback_rate)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
 
 function KpiCard({
   label,

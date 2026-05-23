@@ -34,23 +34,32 @@ export type OperationalSummary = {
   };
   avg_confidence: number | null;
   throughput_per_hour: number;
-  by_type: Array<{
-    slug: string;
-    total: number;
-    done: number;
-    needs_review: number;
-    failed: number;
-    validation_issues: number;
-    llm_used: number;
-    latency_p50_ms: number | null;
-    latency_p95_ms: number | null;
-    avg_confidence: number | null;
-    done_rate: number;
-    needs_review_rate: number;
-    failed_rate: number;
-    validation_issue_rate: number;
-    llm_fallback_rate: number;
-  }>;
+  by_type: OperationalGroupRow<'slug'>[];
+  by_engine: OperationalGroupRow<'engine'>[];
+  by_tier: OperationalGroupRow<'tier'>[];
+};
+
+/**
+ * Строка per-group breakdown. Ключ группы (`slug` / `engine` / `tier`)
+ * параметризован — метрики одинаковы для всех трёх разрезов.
+ */
+export type OperationalGroupRow<K extends string> = {
+  [P in K]: string;
+} & {
+  total: number;
+  done: number;
+  needs_review: number;
+  failed: number;
+  validation_issues: number;
+  llm_used: number;
+  latency_p50_ms: number | null;
+  latency_p95_ms: number | null;
+  avg_confidence: number | null;
+  done_rate: number;
+  needs_review_rate: number;
+  failed_rate: number;
+  validation_issue_rate: number;
+  llm_fallback_rate: number;
 };
 
 function emptySummary(windowHours: number): OperationalSummary {
@@ -78,6 +87,8 @@ function emptySummary(windowHours: number): OperationalSummary {
     avg_confidence: null,
     throughput_per_hour: 0,
     by_type: [],
+    by_engine: [],
+    by_tier: [],
   };
 }
 
@@ -740,69 +751,38 @@ class JobsRepo {
     const t = totalsRes.rows[0]!;
     const total = Number(t.total);
 
-    // --- 2. Per-type breakdown ---
+    // --- 2. Per-group breakdowns ---
     //
-    // Те же поля, но GROUP BY document_type. NULL document_type
-    // (классификатор не справился) попадает в свою строку с slug='_unknown'.
-    const byTypeSql = `
-      SELECT
-        COALESCE(document_type, '_unknown')                           AS slug,
-        COUNT(*)::text                                                AS total,
-        COUNT(*) FILTER (WHERE status = 'done')::text                 AS done,
-        COUNT(*) FILTER (WHERE status = 'needs_review')::text         AS needs_review,
-        COUNT(*) FILTER (WHERE status = 'failed')::text               AS failed,
-        COUNT(*) FILTER (
-          WHERE extracted ? '_issues'
-            AND jsonb_array_length(COALESCE(extracted->'_issues','[]'::jsonb)) > 0
-        )::text                                                       AS validation_issues,
-        COUNT(*) FILTER (WHERE last_llm_call IS NOT NULL)::text       AS llm_used,
-        percentile_cont(0.5) WITHIN GROUP (
-          ORDER BY EXTRACT(EPOCH FROM (finished_at - created_at)) * 1000
-        ) FILTER (WHERE finished_at IS NOT NULL)                      AS lat_p50,
-        percentile_cont(0.95) WITHIN GROUP (
-          ORDER BY EXTRACT(EPOCH FROM (finished_at - created_at)) * 1000
-        ) FILTER (WHERE finished_at IS NOT NULL)                      AS lat_p95,
-        AVG(confidence) FILTER (WHERE status IN ('done','needs_review'))::text AS avg_confidence
-      FROM jobs
-      WHERE created_at >= now() - ($1 || ' hours')::interval
-        ${whereExtra}
-      GROUP BY 1
-      ORDER BY COUNT(*) DESC, slug ASC
-    `;
-    const byTypeRes = await db.query<{
-      slug: string;
-      total: string;
-      done: string;
-      needs_review: string;
-      failed: string;
-      validation_issues: string;
-      llm_used: string;
-      lat_p50: string | null;
-      lat_p95: string | null;
-      avg_confidence: string | null;
-    }>(byTypeSql, params);
-
-    const byType = byTypeRes.rows.map((r) => {
-      const tot = Number(r.total);
-      return {
-        slug: r.slug,
-        total: tot,
-        done: Number(r.done),
-        needs_review: Number(r.needs_review),
-        failed: Number(r.failed),
-        validation_issues: Number(r.validation_issues),
-        llm_used: Number(r.llm_used),
-        latency_p50_ms: r.lat_p50 === null ? null : Math.round(Number(r.lat_p50)),
-        latency_p95_ms: r.lat_p95 === null ? null : Math.round(Number(r.lat_p95)),
-        avg_confidence: r.avg_confidence === null ? null : Number(r.avg_confidence),
-        // Pre-computed rates — UI не пересчитывает.
-        done_rate: tot === 0 ? 0 : Number(r.done) / tot,
-        needs_review_rate: tot === 0 ? 0 : Number(r.needs_review) / tot,
-        failed_rate: tot === 0 ? 0 : Number(r.failed) / tot,
-        validation_issue_rate: tot === 0 ? 0 : Number(r.validation_issues) / tot,
-        llm_fallback_rate: tot === 0 ? 0 : Number(r.llm_used) / tot,
-      };
-    });
+    // Три разреза с идентичным набором метрик, отличаются только
+    // выражением группы. Чтобы не дублировать длинный SELECT, собираем
+    // через groupBreakdown(). Все три используют тот же window+scope WHERE
+    // (whereExtra) и тот же массив params ($1 = windowHours, scope-параметры
+    // за ним) — фильтрация согласована с totals.
+    //
+    //  - by_type   GROUP BY document_type (NULL → '_unknown')
+    //  - by_engine GROUP BY ocr_engine    (NULL/'' → '_none')
+    //  - by_tier   LEFT JOIN document_types, GROUP BY tier (нет типа → '_untyped')
+    const byType = await this.groupBreakdown<'slug'>(
+      'slug',
+      `COALESCE(document_type, '_unknown')`,
+      'jobs',
+      whereExtra,
+      params,
+    );
+    const byEngine = await this.groupBreakdown<'engine'>(
+      'engine',
+      `COALESCE(NULLIF(ocr_engine, ''), '_none')`,
+      'jobs',
+      whereExtra,
+      params,
+    );
+    const byTier = await this.groupBreakdown<'tier'>(
+      'tier',
+      `COALESCE(dt.tier, '_untyped')`,
+      'jobs j LEFT JOIN document_types dt ON j.document_type = dt.slug',
+      whereExtra,
+      params,
+    );
 
     return {
       window_hours: windowHours,
@@ -836,7 +816,87 @@ class JobsRepo {
       avg_confidence: t.avg_confidence === null ? null : Number(t.avg_confidence),
       throughput_per_hour: total === 0 ? 0 : Math.round((total / windowHours) * 100) / 100,
       by_type: byType,
+      by_engine: byEngine,
+      by_tier: byTier,
     };
+  }
+
+  /**
+   * Один per-group breakdown для operational-сводки. Метрики идентичны
+   * для всех разрезов (by_type / by_engine / by_tier) — отличается только
+   * выражение группы (`groupExpr`) и FROM/JOIN (`from`). WHERE и params
+   * приходят снаружи, чтобы window+scope-фильтр был тем же, что у totals.
+   *
+   * `groupExpr` и `from` — статические литералы из вызывающего кода (не
+   * user-input), параметризуется только window/scope через `params`.
+   */
+  private async groupBreakdown<K extends string>(
+    keyAlias: K,
+    groupExpr: string,
+    from: string,
+    whereExtra: string,
+    params: unknown[],
+  ): Promise<OperationalGroupRow<K>[]> {
+    const sql = `
+      SELECT
+        ${groupExpr}                                                  AS grp,
+        COUNT(*)::text                                                AS total,
+        COUNT(*) FILTER (WHERE status = 'done')::text                 AS done,
+        COUNT(*) FILTER (WHERE status = 'needs_review')::text         AS needs_review,
+        COUNT(*) FILTER (WHERE status = 'failed')::text               AS failed,
+        COUNT(*) FILTER (
+          WHERE extracted ? '_issues'
+            AND jsonb_array_length(COALESCE(extracted->'_issues','[]'::jsonb)) > 0
+        )::text                                                       AS validation_issues,
+        COUNT(*) FILTER (WHERE last_llm_call IS NOT NULL)::text       AS llm_used,
+        percentile_cont(0.5) WITHIN GROUP (
+          ORDER BY EXTRACT(EPOCH FROM (finished_at - created_at)) * 1000
+        ) FILTER (WHERE finished_at IS NOT NULL)                      AS lat_p50,
+        percentile_cont(0.95) WITHIN GROUP (
+          ORDER BY EXTRACT(EPOCH FROM (finished_at - created_at)) * 1000
+        ) FILTER (WHERE finished_at IS NOT NULL)                      AS lat_p95,
+        AVG(confidence) FILTER (WHERE status IN ('done','needs_review'))::text AS avg_confidence
+      FROM ${from}
+      WHERE created_at >= now() - ($1 || ' hours')::interval
+        ${whereExtra}
+      GROUP BY 1
+      ORDER BY COUNT(*) DESC, grp ASC
+    `;
+    const res = await db.query<{
+      grp: string;
+      total: string;
+      done: string;
+      needs_review: string;
+      failed: string;
+      validation_issues: string;
+      llm_used: string;
+      lat_p50: string | null;
+      lat_p95: string | null;
+      avg_confidence: string | null;
+    }>(sql, params);
+
+    return res.rows.map((r) => {
+      const tot = Number(r.total);
+      const row = {
+        [keyAlias]: r.grp,
+        total: tot,
+        done: Number(r.done),
+        needs_review: Number(r.needs_review),
+        failed: Number(r.failed),
+        validation_issues: Number(r.validation_issues),
+        llm_used: Number(r.llm_used),
+        latency_p50_ms: r.lat_p50 === null ? null : Math.round(Number(r.lat_p50)),
+        latency_p95_ms: r.lat_p95 === null ? null : Math.round(Number(r.lat_p95)),
+        avg_confidence: r.avg_confidence === null ? null : Number(r.avg_confidence),
+        // Pre-computed rates — UI не пересчитывает.
+        done_rate: tot === 0 ? 0 : Number(r.done) / tot,
+        needs_review_rate: tot === 0 ? 0 : Number(r.needs_review) / tot,
+        failed_rate: tot === 0 ? 0 : Number(r.failed) / tot,
+        validation_issue_rate: tot === 0 ? 0 : Number(r.validation_issues) / tot,
+        llm_fallback_rate: tot === 0 ? 0 : Number(r.llm_used) / tot,
+      };
+      return row as OperationalGroupRow<K>;
+    });
   }
 
   /**

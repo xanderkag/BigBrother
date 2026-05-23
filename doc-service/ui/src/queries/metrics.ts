@@ -8,6 +8,23 @@ import { api } from '@/lib/api';
 
 export type MetricsWindow = '1h' | '24h' | '7d' | '30d';
 
+export interface MetricsBreakdownRow {
+  total: number;
+  done: number;
+  needs_review: number;
+  failed: number;
+  validation_issues: number;
+  llm_used: number;
+  latency_p50_ms: number | null;
+  latency_p95_ms: number | null;
+  avg_confidence: number | null;
+  done_rate: number;
+  needs_review_rate: number;
+  failed_rate: number;
+  validation_issue_rate: number;
+  llm_fallback_rate: number;
+}
+
 export interface OperationalMetrics {
   window: MetricsWindow;
   window_hours: number;
@@ -41,23 +58,9 @@ export interface OperationalMetrics {
   };
   avg_confidence: number | null;
   throughput_per_hour: number;
-  by_type: Array<{
-    slug: string;
-    total: number;
-    done: number;
-    needs_review: number;
-    failed: number;
-    validation_issues: number;
-    llm_used: number;
-    latency_p50_ms: number | null;
-    latency_p95_ms: number | null;
-    avg_confidence: number | null;
-    done_rate: number;
-    needs_review_rate: number;
-    failed_rate: number;
-    validation_issue_rate: number;
-    llm_fallback_rate: number;
-  }>;
+  by_type: Array<MetricsBreakdownRow & { slug: string }>;
+  by_engine: Array<MetricsBreakdownRow & { engine: string }>;
+  by_tier: Array<MetricsBreakdownRow & { tier: string }>;
 }
 
 export function useOperationalMetrics(window: MetricsWindow = '7d') {

@@ -45,11 +45,13 @@ describe('jobsRepo.getOperationalSummary', () => {
     expect(s.llm.tokens_in_p95).toBeNull();
     expect(s.throughput_per_hour).toBe(0);
     expect(s.by_type).toEqual([]);
+    expect(s.by_engine).toEqual([]);
+    expect(s.by_tier).toEqual([]);
   });
 
   it('shapes a typical response with totals/rates/percentiles/by_type', async () => {
     queryMock.mockReset();
-    // Первый вызов: тоталы. Второй: per-type breakdown.
+    // Вызовы по порядку: totals, by_type, by_engine, by_tier.
     queryMock
       .mockResolvedValueOnce({
         rows: [
@@ -74,7 +76,7 @@ describe('jobsRepo.getOperationalSummary', () => {
       .mockResolvedValueOnce({
         rows: [
           {
-            slug: 'invoice',
+            grp: 'invoice',
             total: '60',
             done: '50',
             needs_review: '8',
@@ -86,7 +88,7 @@ describe('jobsRepo.getOperationalSummary', () => {
             avg_confidence: '0.91',
           },
           {
-            slug: '_unknown',
+            grp: '_unknown',
             total: '10',
             done: '0',
             needs_review: '5',
@@ -98,11 +100,13 @@ describe('jobsRepo.getOperationalSummary', () => {
             avg_confidence: null,
           },
         ],
-      });
+      })
+      .mockResolvedValueOnce({ rows: [] }) // by_engine
+      .mockResolvedValueOnce({ rows: [] }); // by_tier
 
     const s = await jobsRepo.getOperationalSummary(168, { kind: 'all' });
 
-    expect(queryMock).toHaveBeenCalledTimes(2);
+    expect(queryMock).toHaveBeenCalledTimes(4);
     expect(s.window_hours).toBe(168);
     expect(s.totals).toEqual({
       total: 100,
@@ -169,6 +173,8 @@ describe('jobsRepo.getOperationalSummary', () => {
           },
         ],
       })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [] });
 
     const s = await jobsRepo.getOperationalSummary(24, { kind: 'all' });
@@ -179,6 +185,8 @@ describe('jobsRepo.getOperationalSummary', () => {
     expect(s.throughput_per_hour).toBe(0);
     expect(s.latency.p50_ms).toBeNull();
     expect(s.by_type).toEqual([]);
+    expect(s.by_engine).toEqual([]);
+    expect(s.by_tier).toEqual([]);
   });
 
   it('passes organization_id as scope param for kind:org', async () => {
@@ -204,15 +212,20 @@ describe('jobsRepo.getOperationalSummary', () => {
           },
         ],
       })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [] });
 
     await jobsRepo.getOperationalSummary(24, {
       kind: 'org',
       orgId: '11111111-1111-1111-1111-111111111111',
     });
-    const [sql, params] = queryMock.mock.calls[0]!;
-    expect(sql).toContain('organization_id =');
-    expect(params).toContain('11111111-1111-1111-1111-111111111111');
+    // Каждый из 4 запросов (totals + 3 breakdown) получает тот же scope WHERE.
+    expect(queryMock).toHaveBeenCalledTimes(4);
+    for (const [sql, params] of queryMock.mock.calls) {
+      expect(sql).toContain('organization_id =');
+      expect(params).toContain('11111111-1111-1111-1111-111111111111');
+    }
   });
 
   it('passes project_ids ANY-array for kind:projects', async () => {
@@ -238,6 +251,8 @@ describe('jobsRepo.getOperationalSummary', () => {
           },
         ],
       })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [] });
 
     await jobsRepo.getOperationalSummary(24, {
@@ -247,10 +262,164 @@ describe('jobsRepo.getOperationalSummary', () => {
         '33333333-3333-3333-3333-333333333333',
       ]),
     });
-    const [sql, params] = queryMock.mock.calls[0]!;
-    expect(sql).toContain('project_id = ANY');
-    const arr = (params as unknown[]).find((p) => Array.isArray(p)) as string[];
-    expect(arr).toHaveLength(2);
-    expect(arr).toContain('22222222-2222-2222-2222-222222222222');
+    // Scope ANY-array применяется ко всем 4 запросам.
+    expect(queryMock).toHaveBeenCalledTimes(4);
+    for (const [sql, params] of queryMock.mock.calls) {
+      expect(sql).toContain('project_id = ANY');
+      const arr = (params as unknown[]).find((p) => Array.isArray(p)) as string[];
+      expect(arr).toHaveLength(2);
+      expect(arr).toContain('22222222-2222-2222-2222-222222222222');
+    }
+  });
+
+  it('by_engine groups by ocr_engine; NULL/empty engine → _none label', async () => {
+    queryMock.mockReset();
+    queryMock
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            total: '30',
+            pending: '0',
+            processing: '0',
+            done: '25',
+            needs_review: '3',
+            failed: '2',
+            validation_issues: '1',
+            llm_used: '4',
+            lat_p50: null,
+            lat_p95: null,
+            tok_in_p95: null,
+            tok_out_p95: null,
+            llm_dur_p95: null,
+            avg_confidence: null,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] }) // by_type
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            grp: 'pdf-text',
+            total: '20',
+            done: '18',
+            needs_review: '2',
+            failed: '0',
+            validation_issues: '1',
+            llm_used: '0',
+            lat_p50: '2000.0',
+            lat_p95: '5000.0',
+            avg_confidence: '0.95',
+          },
+          {
+            grp: '_none',
+            total: '10',
+            done: '7',
+            needs_review: '1',
+            failed: '2',
+            validation_issues: '0',
+            llm_used: '4',
+            lat_p50: null,
+            lat_p95: null,
+            avg_confidence: null,
+          },
+        ],
+      }) // by_engine
+      .mockResolvedValueOnce({ rows: [] }); // by_tier
+
+    const s = await jobsRepo.getOperationalSummary(24, { kind: 'all' });
+
+    // by_engine SQL — GROUP BY ocr_engine, NULL→_none.
+    const engineSql = queryMock.mock.calls[2]![0] as string;
+    expect(engineSql).toContain('ocr_engine');
+    expect(engineSql).toContain("'_none'");
+
+    expect(s.by_engine).toHaveLength(2);
+    const pdf = s.by_engine[0]!;
+    expect(pdf.engine).toBe('pdf-text');
+    expect(pdf.total).toBe(20);
+    expect(pdf.done_rate).toBeCloseTo(18 / 20, 5);
+    expect(pdf.latency_p50_ms).toBe(2000);
+    expect(pdf.avg_confidence).toBeCloseTo(0.95, 3);
+
+    const none = s.by_engine[1]!;
+    expect(none.engine).toBe('_none');
+    expect(none.failed_rate).toBeCloseTo(2 / 10, 5);
+    expect(none.latency_p50_ms).toBeNull();
+    expect(none.avg_confidence).toBeNull();
+  });
+
+  it('by_tier LEFT JOINs document_types; no matching type → _untyped', async () => {
+    queryMock.mockReset();
+    queryMock
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            total: '15',
+            pending: '0',
+            processing: '0',
+            done: '12',
+            needs_review: '2',
+            failed: '1',
+            validation_issues: '0',
+            llm_used: '5',
+            lat_p50: null,
+            lat_p95: null,
+            tok_in_p95: null,
+            tok_out_p95: null,
+            llm_dur_p95: null,
+            avg_confidence: null,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ rows: [] }) // by_type
+      .mockResolvedValueOnce({ rows: [] }) // by_engine
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            grp: 'stable',
+            total: '10',
+            done: '9',
+            needs_review: '1',
+            failed: '0',
+            validation_issues: '0',
+            llm_used: '1',
+            lat_p50: '1500.0',
+            lat_p95: '4000.0',
+            avg_confidence: '0.88',
+          },
+          {
+            grp: '_untyped',
+            total: '5',
+            done: '3',
+            needs_review: '1',
+            failed: '1',
+            validation_issues: '0',
+            llm_used: '4',
+            lat_p50: null,
+            lat_p95: null,
+            avg_confidence: null,
+          },
+        ],
+      }); // by_tier
+
+    const s = await jobsRepo.getOperationalSummary(24, { kind: 'all' });
+
+    // by_tier SQL — LEFT JOIN document_types, GROUP BY tier, NULL→_untyped.
+    const tierSql = queryMock.mock.calls[3]![0] as string;
+    expect(tierSql).toContain('LEFT JOIN document_types dt');
+    expect(tierSql).toContain('dt.tier');
+    expect(tierSql).toContain("'_untyped'");
+
+    expect(s.by_tier).toHaveLength(2);
+    const stable = s.by_tier[0]!;
+    expect(stable.tier).toBe('stable');
+    expect(stable.total).toBe(10);
+    expect(stable.done_rate).toBeCloseTo(9 / 10, 5);
+    expect(stable.latency_p95_ms).toBe(4000);
+
+    const untyped = s.by_tier[1]!;
+    expect(untyped.tier).toBe('_untyped');
+    expect(untyped.llm_fallback_rate).toBeCloseTo(4 / 5, 5);
+    expect(untyped.latency_p50_ms).toBeNull();
   });
 });

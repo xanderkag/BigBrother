@@ -42,8 +42,8 @@ const OperationalQuery = z.object({
   window: WindowSchema.optional(),
 });
 
-const TypeRow = z.object({
-  slug: z.string(),
+// Общие метрики per-group разреза. Ключ группы добавляется .extend()'ом.
+const GroupMetrics = z.object({
   total: z.number().int(),
   done: z.number().int(),
   needs_review: z.number().int(),
@@ -59,6 +59,10 @@ const TypeRow = z.object({
   validation_issue_rate: z.number(),
   llm_fallback_rate: z.number(),
 });
+
+const TypeRow = GroupMetrics.extend({ slug: z.string() });
+const EngineRow = GroupMetrics.extend({ engine: z.string() });
+const TierRow = GroupMetrics.extend({ tier: z.string() });
 
 const OperationalResponse = z.object({
   window: WindowSchema,
@@ -94,6 +98,8 @@ const OperationalResponse = z.object({
   avg_confidence: z.number().nullable(),
   throughput_per_hour: z.number(),
   by_type: z.array(TypeRow),
+  by_engine: z.array(EngineRow),
+  by_tier: z.array(TierRow),
 });
 
 export async function operationalMetricsRoutes(app: FastifyInstance): Promise<void> {
@@ -135,6 +141,8 @@ export async function operationalMetricsRoutes(app: FastifyInstance): Promise<vo
         avg_confidence: summary.avg_confidence,
         throughput_per_hour: summary.throughput_per_hour,
         by_type: summary.by_type,
+        by_engine: summary.by_engine,
+        by_tier: summary.by_tier,
       };
     },
   );
