@@ -21,9 +21,7 @@
     "smoke": "tsx src/scripts/smoke.ts",
     "eval": "tsx src/scripts/eval/run.ts",
     "test": "vitest run",
-    "test:watch": "vitest",
-    "build:css": "tailwindcss -c web/tailwind.config.cjs -i web/input.css -o web/vendor/tailwind.css --minify",
-    "build:css:watch": "tailwindcss -c web/tailwind.config.cjs -i web/input.css -o web/vendor/tailwind.css --watch"
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1049.0",

@@ -570,26 +570,35 @@ function FieldConfidenceCard({ fc }: { fc: Record<string, number> }) {
         <h3 className="card-title">Per-field confidence</h3>
       </div>
       <div className="card-body space-y-2">
-        {entries.map(([k, v]) => (
-          <div key={k} className="flex items-center gap-3 text-sm">
-            <span className="w-40 truncate text-slate-700 dark:text-slate-300">{k}</span>
-            <div className="relative h-2 flex-1 overflow-hidden rounded-full bg-slate-200">
-              <div
-                className={`absolute inset-y-0 left-0 ${
-                  v >= 0.9
-                    ? 'bg-emerald-500'
-                    : v >= 0.7
-                    ? 'bg-amber-500'
-                    : 'bg-rose-500'
-                }`}
-                style={{ width: `${Math.max(0, Math.min(1, v)) * 100}%` }}
-              />
+        {entries.map(([k, v]) => {
+          const pct = Math.max(0, Math.min(1, v));
+          const barCls =
+            pct >= 0.85
+              ? 'bg-emerald-500 dark:bg-emerald-400'
+              : pct >= 0.6
+              ? 'bg-amber-500 dark:bg-amber-400'
+              : 'bg-rose-500 dark:bg-rose-400';
+          const labelCls =
+            pct >= 0.85
+              ? 'text-emerald-700 dark:text-emerald-300'
+              : pct >= 0.6
+              ? 'text-amber-700 dark:text-amber-300'
+              : 'text-rose-700 dark:text-rose-300';
+          return (
+            <div key={k} className="flex items-center gap-3 text-sm">
+              <span className="w-40 truncate text-slate-700 dark:text-slate-300">{k}</span>
+              <div className="relative h-2 flex-1 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
+                <div
+                  className={`absolute inset-y-0 left-0 ${barCls}`}
+                  style={{ width: `${pct * 100}%` }}
+                />
+              </div>
+              <span className={`w-12 text-right font-mono text-xs tabular-nums ${labelCls}`}>
+                {formatPercent(v)}
+              </span>
             </div>
-            <span className="w-12 text-right font-mono text-xs text-slate-600 dark:text-slate-400 dark:text-slate-500">
-              {formatPercent(v)}
-            </span>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

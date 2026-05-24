@@ -843,7 +843,7 @@ SGLang, TGI) выставляют OpenAI Chat Completions API; теперь pars
   - передаёт override в `parser.parse(...)` — `expected_fields`, `regex_fallback_threshold`, `llm_schema` из БД теперь живые;
   - читает `typeConfig.confidenceThreshold` для решения needs_review (вместо глобального `NEEDS_REVIEW_THRESHOLD`).
 - ✅ Тесты: `tests/resolve-config.spec.ts` (null row → fallback, DB row → override, частичный fallback по null-колонкам, immutability массивов), `tests/parsers.spec.ts` дополнен 5 кейсами на override-семантику.
-- ⏸ Осталось из CP1: классификатор всё ещё читает захардкоженные keywords; parser_kind в БД не используется для диспатча (`buildParsers` возвращает фиксированный мапинг); llm_prompt override не пробрасывается в inference-service (нужно расширение API).
+- ✅ **CP1 закрыт полностью** (проверено 2026-05-24): классификатор читает `classification_keywords`/веса из `document_types` (`classifier/keywords.ts:95-136`, hardcoded — только fallback пустой БД); parser_kind диспатчит парсер из БД (`orchestrator.ts:808-830`, CHECK-констрейнт на колонке); `llm_prompt` override доходит до inference-service (закрыто Phase 3 Day 8). Эта строка раньше была устаревшей.
 
 ### Phase 3 Day 2 — Validator Registry + первый runtime-шаг (2026-05-12)
 
@@ -858,7 +858,7 @@ SGLang, TGI) выставляют OpenAI Chat Completions API; теперь pars
 - ✅ Миграция `20260512000003_document_types.sql`: новая таблица + seed из 6 текущих типов (invoice, factInvoice, UPD, TTN, CMR, AKT) с их фактическими параметрами.
 - ✅ Repo `src/storage/document-types.ts` + API `GET /api/v1/document-types{/:slug}` для админ-UI.
 - ✅ Сайдбар-секция **Document types**: список с парсером/полями/валидаторами + детальная страница со всей конфигурацией.
-- ⏸ Парсеры, классификатор, OCR-пороги пока всё ещё хардкод — следующий шаг CP1.
+- ✅ Парсеры/классификатор/пороги стали DB-driven в Day 2-3 (CP1 закрыт — см. отметку 2026-05-24 в Day 3).
 
 ### Phase 2 Day 3 — Prometheus metrics + migration framework (2026-05-11)
 

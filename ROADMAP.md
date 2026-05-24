@@ -60,8 +60,8 @@ ssh kb-docker 'cd parsdocs/doc-service; sed -i "s/^API_KEY=.*/API_KEY=$(openssl 
 
 - **Per-tenant `provider_settings`** (свой LLM-ключ на клиента) — нет второго платящего клиента.
 - **Активное подключение новых потребителей** — CP7 готов в коде, эксплуатацию морозим до валидации ВЭД-пилота.
-- **Удаление `doc-service/web/`** (легаси-UI) — снят с раздачи (`/ui-legacy/` → 301 на `/ui/`), лежит мёртвым кодом; удалить можно в любой момент.
-- **Хвост UI-6** — старая `FieldConfidenceCard` на legacy-порогах 0.9/0.7 без dark-mode (косметика).
+
+_Закрыто 2026-05-24: удалён легаси `doc-service/web/` (+ Dockerfile/package.json чистка); UI-6-хвост выровнен под ConfidenceBar; устаревшая запись CP1 в TECH_DEBT исправлена (CP1 давно DB-driven)._
 
 ---
 

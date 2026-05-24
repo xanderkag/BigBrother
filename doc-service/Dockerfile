@@ -37,16 +37,13 @@ COPY package.json package-lock.json* ./
 RUN npm ci || npm install
 
 # --- Build layer ---
-# Три задачи:
+# Две задачи:
 #   1. TS → dist/ (backend код)
-#   2. Tailwind input.css → web/vendor/tailwind.css (legacy UI)
-#   3. Vite build → ui/dist/ (главный React UI — раздаётся на /ui/*)
-# cdn.tailwindcss.com заблокирован в корп.сети, поэтому self-hosted билд CSS.
+#   2. Vite build → ui/dist/ (React UI — раздаётся на /ui/*)
 FROM deps AS build
 COPY tsconfig.json ./
 COPY src ./src
-COPY web ./web
-RUN npm run build && npm run build:css
+RUN npm run build
 
 # UI v2 (React + Vite) — отдельный package.json/node_modules чтобы не
 # раздувать backend deps библиотеками react/pdfjs/tanstack-query. В
@@ -83,13 +80,8 @@ COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
 COPY migrations ./migrations
-# Operator UI — HTML + JS + precompiled vendor/ (tailwind.css, alpine.min.js).
-# Берём из build-stage чтобы захватить свежий vendor/tailwind.css.
-COPY --from=build /app/web ./web
-
 # Operator UI (React) — собранный bundle (index.html + assets/*).
-# Маунтится backend'ом на /ui/* как главный UI (см. server.ts).
-# Старый vanilla web/ остаётся на /ui-legacy/* как страховка.
+# Маунтится backend'ом на /ui/* как единственный UI (см. server.ts).
 COPY --from=build /app/ui/dist ./ui/dist
 
 # Storage volume mount point — must match STORAGE_DIR in .env.
