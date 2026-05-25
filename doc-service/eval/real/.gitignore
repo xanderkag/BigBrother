@@ -3,4 +3,5 @@ samples/
 golden-set*.json
 # run outputs embed expected values + extracted PII — keep local
 qwenvl-real-*.json
+jobmap.json
 _extract.txt

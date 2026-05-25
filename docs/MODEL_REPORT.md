@@ -284,6 +284,123 @@ number 5/9, date 7/9. Это первый честный сигнал, что **
 
 ---
 
+## Прогон #24 — RE-БЕНЧ после envelope-recovery fix (тот же 9-док golden-set, СВЕЖИЙ extract, 2026-05-25)
+
+**Цель:** проверить, восстановился ли field exact-match после фикса inference,
+который РАНЬШЕ дропал unwrapped-ответ phi4. До фикса backend выбрасывал поля,
+которые phi4 уже отдавал (но в кастомных ключах вроде `invoice_details.*`,
+`payment_details.*`, верхнеуровневые `seller_inn`), — отсюда был ИНН 0/8 и
+сплошные `miss` на 01/02 в #23.
+
+- **Модель:** `phi4` (Phi-4 14B, openai-compat backend) — без изменений vs #23.
+- **Промпт:** текущий prod (builtin-схемы + DB `llm_schema`), без изменений.
+- **Датасет:** те же 9 реальных документов, `doc-service/eval/real/golden-set.v1.json`
+  (60 field-ассертов), gitignored.
+- **Инстанс:** `http://10.10.13.10:8085` (prod), inference-контейнер пересобран
+  и healthy (openai-compat/phi4).
+
+### ✅ Это СВЕЖИЙ extract, не кэш (в отличие от #23)
+
+Кэш SHA-256 (миграция 0027) обойдён через **`POST /api/v1/jobs/:id/reprocess`** —
+перепрогон сохранённого `raw_text` тех же 9 job'ов через АКТУАЛЬНУЮ inference,
+без повторного OCR и без нового upload (dedup не срабатывает). Признаки свежего
+extract: латентность **17–73 с** на LLM-вызов (в #23 было 8–70 **мс** из кэша),
+`raw_response` непустой (1002–… байт), `last_llm_call.duration_ms` совпадает с
+wall-time. 03/04 — `llm=n/a` (LLM не вызывался, см. ниже).
+
+### Aggregate (9 фикстур, 60 field-ассертов)
+
+| Метрика | #23 (кэш, pre-fix) | **#24 (свежий, post-fix)** | Delta |
+|---|---|---|---|
+| Classification accuracy | 100.0% (9/9) | **100.0%** (9/9) | = |
+| Field exact-match | 41.7% (25/60) | **46.7%** (28/60) | **+5.0 п.п.** |
+| Field coverage (non-null) | 58.3% (35/60) | **73.3%** (44/60) | **+15.0 п.п.** |
+| match / mismatch / miss | 25 / 10 / 25 | **28 / 16 / 16** | miss −9 |
+| Latency P50 / P95 (LLM) | 12 / 70 мс *(кэш)* | **24.4 / 73.6 с** *(extract)* | реальный extract |
+
+Coverage скакнул сильнее exact-match: фикс **донёс данные до extracted**
+(miss 25→16), но часть приехала в форме/пути, которые не совпадают с golden →
+конвертировались в mismatch, а не match. Подробности ниже — это НЕ дрейф модели,
+а смесь (а) golden-path drift, (б) party-swap, (в) money-as-object.
+
+### Критичные поля — что реально извлекается (post-fix)
+
+| Док | type | number | date | seller ИНН | buyer ИНН | total |
+|---|---|---|---|---|---|---|
+| 01 invoice | ✅ | ✅ *(было miss)* | ✅ *(было miss)* | ⚠️ swap | ⚠️ swap | ⚠️ object |
+| 02 invoice | ✅ | ✅ *(было miss)* | ❌ `05 мая 2026 года` | ❌ «не указано» | ❌ «не указано» | ✅ *(было miss)* |
+| 03 tax_invoice | ✅ | ❌ `260422/012от22` | ❌ `2026-04-30` | ❌ miss | ❌ miss | ❌ `9` |
+| 04 tax_invoice | ✅ | ❌ `260430/015от30` | ✅ | ❌ miss | ❌ miss | ❌ `9` |
+| 05 UKD | ✅ | ✅ | ✅ | ⚠️ path | ⚠️ path | n/a |
+| 06 transfer_note | ✅ | ✅ | ✅ | — | — | n/a |
+| 07 services_act | ✅ | n/a | ✅ | — | — | ❌ path (`total_with_vat`) |
+| 08 contract_spec | ✅ | ✅ | ✅ | n/a | n/a | ✅ (`total`) / ❌ golden ждёт `total_amount` |
+| 09 contract_spec | ✅ | ✅ | ✅ | n/a | n/a | ✅ (`total`) / ❌ golden ждёт `total_amount` |
+
+### seller/buyer ИНН: scored 0/10, но фикс РАБОТАЕТ
+
+Scored ИНН (path-strict) = **0 match / 4 mismatch / 6 miss**. Но по факту:
+- **01** — оба ИНН корректны и присутствуют, но **перепутаны местами**
+  (получатель↔плательщик): phi4 отдал `seller.inn=7811472920`,
+  `buyer.inn=7704217370`, golden наоборот. Данные есть, сторона перепутана.
+- **05** — оба ИНН **корректны** (`7811472920` / `9715360914`) и присутствуют,
+  но под `seller.inn`/`buyer.inn`, тогда как golden-set для UKD ждёт **flat**
+  `seller_inn`/`buyer_inn`. Это **golden-path drift**, не ошибка модели.
+  (В #23 из кэша приходил flat-ключ → был match; новый канонический shape
+  кладёт в `seller`/`buyer` → harness читает null.)
+- **02** — phi4 буквально написал «не указано» (реально не извлёк).
+- **03/04** — tax_invoice не доходит до LLM (EXT-1), ИНН не извлекается.
+
+Итог: из 4 размеченных ИНН, доходящих до LLM (01×2, 05×2), **4/4 содержат
+правильное значение в extracted** — фикс именно это и чинил. Scored-ноль —
+артефакт (а) перепутанных сторон на 01 и (б) golden-path для 05.
+
+### Что ещё всплыло (не относится к этому фиксу)
+
+- **`total` как объект** на 01: `{"amount":522,"currency":"RUB"}` вместо скаляра.
+  `compareMoney`/`parseMoney` не парсит объект → mismatch, хотя сумма верна.
+  Хэндлер: либо backend нормализует money-объект в скаляр, либо golden/comparator
+  учитывает `.amount`. Поднять `backend`.
+- **golden-path drift** (07 `total_with_vat` vs golden `total`; 08/09 `total`
+  vs golden `total_amount`; 05 `seller_inn`): часть «провалов» — рассинхрон
+  golden-set v1 с текущим каноническим shape. QA: ревизия golden-set.v1.json
+  под актуальные пути ИЛИ canonical-алиасы в backend.
+- **number мангнут** на 03/04 (`260422/012от22`) и **total=`9`** — как в #23,
+  это OCR-склейка ячеек на tax_invoice, не трогается фиксом (нет LLM).
+- **positions.0.price/total** на 08/09 — арифметические галлюцинации phi4
+  (08 `3462.22` vs `3692.22`; 09 ровно ½: `6500`/`130000`). Не фикс.
+- **date** на 02 — freeform «05 мая 2026 года»; `parseDate` не знает русских
+  месяцев → mismatch (значение по сути верное).
+
+### Verdict
+
+**Фикс подтверждён: данные, которые phi4 эмитит, теперь выживают** — coverage
++15 п.п., miss 25→16, number 5/9→6/9, на 01/02 number+date+total/vat пришли из
+небытия. Регрессии гейта (drop >2 п.п. exact-match) НЕТ — exact-match вырос
+(+5 п.п.). НО: gate SLAI ≥95% по критичным полям по-прежнему **НЕ пройден** —
+scored ИНН 0/10 из-за party-swap (01) и golden-path (05), plus 03/04 без LLM.
+Реальный «честный» exact-match выше 46.7%, его душат три исправимых не-модельных
+артефакта (money-object, golden-path drift, party-swap). До перерасчёта golden /
+нормализации money цифра 46.7% — нижняя граница, не приговор модели.
+
+**Hand-off:**
+1. `backend` — нормализовать money-объект `{amount,currency}` → скаляр `total`
+   на канонизации; алиас `total_with_vat`/`total_amount` → `total` где это
+   один и тот же тотал.
+2. `backend` — party-disambiguation на invoice (seller=поставщик/плательщик-получатель):
+   phi4 путает получателя платежа с продавцом на Ozon-офертах.
+3. QA (я) — ревизия `golden-set.v1.json`: привести пути UKD (`seller_inn`→
+   `seller.inn`?) и spec (`total_amount`→`total`) к актуальному shape ЛИБО
+   зафиксировать, что это два разных контракта, и научить harness алиасам.
+4. 03/04 tax_invoice без LLM — EXT-1 config (не этот фикс), отдельный трек.
+
+**Артефакты прогона:** `doc-service/eval/real/qwenvl-real-v1-postfix-2026-05-25.json`
+(per-doc verdict + metrics), `doc-service/eval/real/jobmap.json` (fixture→job_id),
+скрипт `doc-service/src/scripts/eval/reprocess-score.ts` (reprocess+score через
+тот же `compare.ts`). Всё, кроме скрипта, gitignored (реальные данные).
+
+---
+
 ## V2 — расширенный corpus + 7 моделей под одним промптом
 
 **Что изменилось:**
