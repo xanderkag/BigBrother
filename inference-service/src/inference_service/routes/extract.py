@@ -24,4 +24,5 @@ async def extract(
             prompt_override=body.prompt_override,
             include_debug=body.include_debug,
             model_override=body.model,
+            image_base64=body.image_base64,
         )

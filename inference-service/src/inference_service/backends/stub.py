@@ -121,8 +121,9 @@ class StubBackend(ModelBackend):
         prompt_override: str | None = None,
         include_debug: bool = False,
         model_override: str | None = None,  # noqa: ARG002 — stub игнорит
+        image_base64: str | None = None,  # noqa: ARG002 — stub игнорит
     ) -> ExtractResponse:
-        del model_override
+        del model_override, image_base64
         # Stub mode: для смоук-тестирования pipeline'а возвращаем mock-данные
         # для известных типов документов. Это позволяет проверить ветки
         # llm_extract / multipass / items[] / per-line validators / resolution

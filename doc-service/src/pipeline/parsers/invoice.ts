@@ -62,6 +62,7 @@ export class InvoiceParser implements DocumentParser {
         'invoice',
         override?.expectedFields ?? EXPECTED_FIELDS.invoice,
         override?.llmPrompt,
+        override?.imagePath,
       );
     } catch {
       // LLM glitch — silently fall back to regex. The orchestrator will

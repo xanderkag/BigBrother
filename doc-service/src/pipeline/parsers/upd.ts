@@ -47,6 +47,7 @@ export class UpdParser implements DocumentParser {
         this.type,
         override?.expectedFields ?? EXPECTED_FIELDS[this.type],
         override?.llmPrompt,
+        override?.imagePath,
       );
     } catch {
       return regex;

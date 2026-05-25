@@ -11,7 +11,7 @@ On parse failure we report the issue rather than letting a downstream
 client crash.
 """
 
-import base64  # noqa: F401  — kept for symmetry with future helpers
+import base64
 import io
 import json
 import logging
@@ -102,6 +102,7 @@ class QwenVlBackend(ModelBackend):
         prompt_override: str | None = None,
         include_debug: bool = False,
         model_override: str | None = None,  # noqa: ARG002 — ignored
+        image_base64: str | None = None,
     ) -> ExtractResponse:
         del model_override
         prompt = extract_prompts.build(
@@ -109,7 +110,15 @@ class QwenVlBackend(ModelBackend):
         )
         async with self._admit():
             started = time.monotonic()
-            raw = await self._generate_text(prompt)
+            if image_base64:
+                # extraction-from-image: Qwen2.5-VL — нативно vision. Подаём
+                # изображение страницы + extract-prompt, модель извлекает
+                # поля напрямую из картинки.
+                raw_bytes = base64.b64decode(image_base64)
+                image = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+                raw = await self._generate_with_image(image, prompt)
+            else:
+                raw = await self._generate_text(prompt)
             duration_ms = int((time.monotonic() - started) * 1000)
         data = normalize_extract_response(_parse_json(raw) or {})
         extracted = data.get("extracted") if isinstance(data.get("extracted"), dict) else {}

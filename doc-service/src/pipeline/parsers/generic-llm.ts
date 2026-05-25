@@ -42,6 +42,7 @@ export class GenericLlmParser implements DocumentParser {
       this.type,
       override?.expectedFields ?? [],
       override?.llmPrompt,
+      override?.imagePath,
     );
   }
 }

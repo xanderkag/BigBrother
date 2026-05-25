@@ -23,6 +23,7 @@ export class CmrParser implements DocumentParser {
       'CMR',
       override?.expectedFields ?? EXPECTED_FIELDS.CMR,
       override?.llmPrompt,
+      override?.imagePath,
     );
   }
 }

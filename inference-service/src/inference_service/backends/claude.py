@@ -108,6 +108,7 @@ class ClaudeBackend(ModelBackend):
         prompt_override: str | None = None,
         include_debug: bool = False,
         model_override: str | None = None,  # noqa: ARG002 — ignored, см. classify()
+        image_base64: str | None = None,
     ) -> ExtractResponse:
         del model_override
         # F8: prompt caching. Разделяем static (system) и dynamic (user)
@@ -127,8 +128,27 @@ class ClaudeBackend(ModelBackend):
             # сразу с `{` (см. prompts/extract.py _STATIC_BUILTIN_HEADER) +
             # извлекать JSON через `_parse_json()` который умеет находить
             # outermost {...} даже если модель добавит вводный текст.
+            # extraction-from-image: Claude — vision-capable. Если пришло
+            # изображение, добавляем его content-блоком к user-сообщению,
+            # рядом с extract-prompt'ом. system_prompt (с prompt-caching)
+            # остаётся прежним.
+            if image_base64:
+                media_type, image_b64 = _reencode_base64_for_claude(image_base64)
+                user_content: list[dict[str, Any]] = [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": image_b64,
+                        },
+                    },
+                    {"type": "text", "text": user_prompt},
+                ]
+            else:
+                user_content = user_prompt  # type: ignore[assignment]
             raw, usage = await self._complete_with_usage(
-                messages=[{"role": "user", "content": user_prompt}],
+                messages=[{"role": "user", "content": user_content}],
                 system_prompt=system_prompt,
             )
             duration_ms = int((time.monotonic() - started) * 1000)
@@ -309,6 +329,19 @@ def _encode_image_for_claude(image: Image.Image) -> tuple[str, str]:
     buf = io.BytesIO()
     image.save(buf, format="JPEG", quality=90, optimize=True)
     return "image/jpeg", base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _reencode_base64_for_claude(image_base64: str) -> tuple[str, str]:
+    """Decode an incoming base64 image (PNG/JPEG bytes) and re-encode it as
+    JPEG for Claude vision. Returns (media_type, base64-string).
+
+    Re-encoding through PIL also validates the payload — a malformed image
+    raises here (surfaces as an extract failure) rather than going to the API
+    as a broken block.
+    """
+    raw = base64.b64decode(image_base64)
+    image = Image.open(io.BytesIO(raw)).convert("RGB")
+    return _encode_image_for_claude(image)
 
 
 def _parse_json(text: str) -> dict[str, Any] | None:

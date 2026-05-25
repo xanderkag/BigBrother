@@ -30,6 +30,7 @@ import type { LlmClient } from '../src/pipeline/llm/types.js';
 function mockLlm(extracted: Record<string, unknown>, confidence: number): LlmClient {
   return {
     isAvailable: () => true,
+    supportsVision: async () => false,
     classify: vi.fn(),
     extract: vi.fn().mockResolvedValue({ extracted, confidence, issues: [] }),
     visionOcr: vi.fn(),

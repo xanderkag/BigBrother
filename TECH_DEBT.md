@@ -9,6 +9,13 @@
 
 > **Закрытые долги** см. в [`TECH_DEBT_ARCHIVE.md`](./TECH_DEBT_ARCHIVE.md). Этот файл содержит только open + active секции.
 
+## Активные
+
+- **item A — extraction-from-image (build, не задеплоено).** Vision-модель извлекает структурированные поля напрямую из изображения первой страницы через реальный pipeline (`/v1/extract` + `image_base64`). Routing: `provider_settings.vision=true` (миграция `20260528000001`) ИЛИ `metadata._extract_from_image=true`. Открытые хвосты:
+  - **Single-page only (v1).** В extract уходит только первая страница (raster `-f 1 -l 1`). Многостраничные сканы → шапка с image, items[] (multipass Pass 2) — text-only. Multi-page image-extract — отдельный заход.
+  - **Seed vision-флага.** Миграция включает `vision=true` для `local-mistral-small-31` / `local-minicpm-v` + (на будущее) `local-qwen-vl-7b` / `local-qwen25-vl` / `local-llama32-vision` / `claude` / `anthropic`. Часть id ещё не заведена в `provider_settings` — UPDATE по ним no-op; завести vision-слот Qwen2.5-VL отдельно, когда модель будет в ollama.
+  - **Деплой fail-closed.** Включение требует прод `API_KEY` (guard). Деплой — на пользователе.
+
 ## Закрыто в этой итерации
 
 ### Базовые проверки границ

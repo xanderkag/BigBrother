@@ -50,6 +50,13 @@ export type ProviderSettingRow = {
   model: string | null;
   is_active: boolean;
   is_default: boolean;
+  /**
+   * Vision-capability flag (item A). Когда true и провайдер резолвится в
+   * hot-path, doc-service шлёт первую страницу документа в /v1/extract как
+   * image_base64 — модель извлекает поля напрямую из картинки. См.
+   * миграцию 20260528000001.
+   */
+  vision: boolean;
   extra: Record<string, unknown> | null;
   created_at: Date;
   updated_at: Date;
@@ -64,6 +71,7 @@ export type ProviderSettingInput = {
   api_key?: string | null;
   model?: string | null;
   is_active?: boolean;
+  vision?: boolean;
   extra?: Record<string, unknown> | null;
 };
 
@@ -145,8 +153,8 @@ class ProviderSettingsRepo {
   async upsert(input: ProviderSettingInput): Promise<ProviderSettingRow> {
     const { rows } = await db.query<ProviderSettingRow>(
       `INSERT INTO provider_settings
-         (id, kind, display_name, description, base_url, api_key, model, is_active, extra)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, true), $9)
+         (id, kind, display_name, description, base_url, api_key, model, is_active, vision, extra)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, true), COALESCE($9, false), $10)
        ON CONFLICT (id) DO UPDATE SET
          kind         = EXCLUDED.kind,
          display_name = EXCLUDED.display_name,
@@ -155,6 +163,7 @@ class ProviderSettingsRepo {
          api_key      = EXCLUDED.api_key,
          model        = EXCLUDED.model,
          is_active    = EXCLUDED.is_active,
+         vision       = EXCLUDED.vision,
          extra        = EXCLUDED.extra
        RETURNING *`,
       [
@@ -167,6 +176,7 @@ class ProviderSettingsRepo {
         encryptSecret(input.api_key ?? null),
         input.model ?? null,
         input.is_active ?? true,
+        input.vision ?? false,
         // extra.secret_key шифруется ДО записи, как и api_key.
         encryptExtraSecrets(input.extra),
       ],
@@ -197,6 +207,7 @@ class ProviderSettingsRepo {
     if (patch.api_key !== undefined) push('api_key', encryptSecret(patch.api_key));
     if (patch.model !== undefined) push('model', patch.model);
     if (patch.is_active !== undefined) push('is_active', patch.is_active);
+    if (patch.vision !== undefined) push('vision', patch.vision);
     if (patch.extra !== undefined) push('extra', encryptExtraSecrets(patch.extra));
     if (sets.length === 0) return this.findById(id);
 
@@ -284,6 +295,7 @@ class ProviderSettingsRepo {
       model: row.model,
       is_active: row.is_active,
       is_default: row.is_default,
+      vision: row.vision,
       extra,
       created_at: row.created_at.toISOString(),
       updated_at: row.updated_at.toISOString(),

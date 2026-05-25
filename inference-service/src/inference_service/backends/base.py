@@ -102,6 +102,7 @@ class ModelBackend(ABC):
         prompt_override: str | None = None,
         include_debug: bool = False,
         model_override: str | None = None,
+        image_base64: str | None = None,
     ) -> ExtractResponse:
         """Извлечь структурированные данные из текста.
 
@@ -110,6 +111,11 @@ class ModelBackend(ABC):
         document_types настроил кастомную инструкцию для своего типа
         документа. Backend сам решает, как использовать override —
         обычно: «вставить как system prompt, к нему прилепить text+schema».
+
+        `image_base64`: если задан И backend поддерживает vision —
+        extract строит multimodal-сообщение (изображение + extract-prompt)
+        и модель извлекает поля напрямую из картинки. Text-only backends
+        (или backend без vision) игнорируют параметр и работают по тексту.
 
         `include_debug`: если true, заполняет `ExtractResponse.debug`
         финальным prompt'ом и сырым ответом модели. Используется

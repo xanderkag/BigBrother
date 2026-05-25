@@ -197,16 +197,37 @@ class OpenAICompatibleBackend(ModelBackend):
         prompt_override: str | None = None,
         include_debug: bool = False,
         model_override: str | None = None,
+        image_base64: str | None = None,
     ) -> ExtractResponse:
         prompt = extract_prompts.build(
             text=text, schema=schema, hint=hint, prompt_override=prompt_override
         )
         async with self._admit():
             started = time.monotonic()
-            # Версия _complete_text с usage: возвращает (text, usage_dict | None).
-            raw, usage = await self._complete_text_with_usage(
-                prompt, json_mode=True, model_override=model_override
-            )
+            if image_base64:
+                # extraction-from-image: тот же extract-prompt + схема, но
+                # модель видит изображение страницы и извлекает поля напрямую
+                # из картинки. json_mode остаётся включённым — структурный
+                # JSON на выходе. Сообщение строим как в vision_ocr
+                # (image_url content-block), но с extract-инструкцией.
+                data_url = _decoded_image_to_data_url(image_base64)
+                messages: list[dict[str, Any]] = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": data_url}},
+                            {"type": "text", "text": prompt},
+                        ],
+                    }
+                ]
+                raw, usage = await self._complete_with_usage(
+                    messages, json_mode=True, model_override=model_override
+                )
+            else:
+                # Версия _complete_text с usage: возвращает (text, usage_dict | None).
+                raw, usage = await self._complete_text_with_usage(
+                    prompt, json_mode=True, model_override=model_override
+                )
             duration_ms = int((time.monotonic() - started) * 1000)
         # Восстанавливаем потерянную обёртку `extracted` + канонизируем stray-ключи
         # (phi4 теряет конверт / изобретает invoice_details.* — bench 2026-05-25).
@@ -452,6 +473,20 @@ def _image_to_data_url(image: Image.Image) -> str:
     image.save(buf, format="JPEG", quality=90, optimize=True)
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
     return f"data:image/jpeg;base64,{b64}"
+
+
+def _decoded_image_to_data_url(image_base64: str) -> str:
+    """Decode an incoming base64 image (PNG/JPEG bytes from doc-service) and
+    re-encode it through `_image_to_data_url` for a consistent JPEG data URL.
+
+    Re-encoding via PIL also validates the payload — a malformed base64/image
+    raises here instead of producing a broken `image_url` the model silently
+    ignores. Caller is inside `extract`, so the error surfaces as a normal
+    extract failure (job retries / fails-soft upstream).
+    """
+    raw = base64.b64decode(image_base64)
+    image = Image.open(io.BytesIO(raw)).convert("RGB")
+    return _image_to_data_url(image)
 
 
 def _parse_json(text: str) -> dict[str, Any] | None:

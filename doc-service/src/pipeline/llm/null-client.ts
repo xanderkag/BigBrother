@@ -10,6 +10,10 @@ export class NullLlmClient implements LlmClient {
     return false;
   }
 
+  async supportsVision(): Promise<boolean> {
+    return false;
+  }
+
   async classify(): Promise<never> {
     throw new Error('LLM client not configured');
   }

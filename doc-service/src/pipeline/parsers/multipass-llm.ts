@@ -106,6 +106,10 @@ export class MultiPassLlmParser implements DocumentParser {
         hint: this.type,
         promptOverride: override?.llmPrompt,
         includeDebug: true,
+        // extraction-from-image: только Pass 1 (header) видит изображение —
+        // image это одна страница (первая), а шапка как раз там. Pass 2
+        // (items батчами) остаётся text-only.
+        imagePath: override?.imagePath,
       });
     } catch (err) {
       // Pass 1 упал — возвращаем пустой результат с issue. Это означает что

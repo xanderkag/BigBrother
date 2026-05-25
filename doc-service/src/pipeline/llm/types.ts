@@ -44,6 +44,14 @@ export type LlmVerifyResult = {
 export interface LlmClient {
   isAvailable(): boolean;
 
+  /**
+   * Vision-capability resolved-провайдера (item A). Async, потому что
+   * DynamicLlmClient читает её из provider_settings (DB) с TTL-кэшем.
+   * Оркестратор вызывает её, чтобы решить, слать ли изображение в extract.
+   * Реализации без DB (Null/Http) возвращают зашитое значение.
+   */
+  supportsVision(): Promise<boolean>;
+
   classify(text: string): Promise<LlmClassifyResult>;
   extract(input: {
     text: string;
@@ -62,6 +70,15 @@ export interface LlmClient {
      * модели в `result.debug` — для job-debug-трассы в UI.
      */
     includeDebug?: boolean;
+    /**
+     * extraction-from-image (item A): путь к PNG/JPEG первой страницы
+     * документа. Если задан И провайдер vision-capable — клиент base64-
+     * кодирует файл и шлёт как `image_base64`, и модель извлекает поля
+     * напрямую из картинки. Если не задан — классический text-only extract.
+     * Оркестратор выставляет это поле только когда resolved-провайдер
+     * `vision=true` (или включён metadata-override).
+     */
+    imagePath?: string;
   }): Promise<LlmExtractResult>;
   visionOcr(input: { imagePath: string; prompt?: string }): Promise<LlmVisionResult>;
   verify(input: {

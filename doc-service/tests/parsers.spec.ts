@@ -10,6 +10,7 @@ const offlineLlm = () => new NullLlmClient();
 function mockLlm(extracted: Record<string, unknown>, confidence: number, issues: string[] = []): LlmClient {
   return {
     isAvailable: () => true,
+    supportsVision: async () => false,
     classify: vi.fn(),
     extract: vi.fn().mockResolvedValue({ extracted, confidence, issues }),
     visionOcr: vi.fn(),
@@ -140,6 +141,7 @@ describe('Phase 1 parsers — LLM fallback', () => {
   it('returns regex result when LLM throws', async () => {
     const failing: LlmClient = {
       isAvailable: () => true,
+      supportsVision: async () => false,
       classify: vi.fn(),
       extract: vi.fn().mockRejectedValue(new Error('inference-service down')),
       visionOcr: vi.fn(),

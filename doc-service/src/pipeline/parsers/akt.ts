@@ -24,6 +24,7 @@ export class AktParser implements DocumentParser {
       'AKT',
       override?.expectedFields ?? EXPECTED_FIELDS.AKT,
       override?.llmPrompt,
+      override?.imagePath,
     );
   }
 }

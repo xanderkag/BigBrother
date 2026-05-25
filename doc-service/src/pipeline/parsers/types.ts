@@ -45,6 +45,15 @@ export type ParserOverride = {
    * встроенный prompt для этого типа.
    */
   llmPrompt?: string;
+  /**
+   * extraction-from-image (item A): путь к PNG/JPEG первой страницы
+   * документа. Оркестратор выставляет его только когда resolved LLM-
+   * провайдер vision-capable (provider_settings.vision=true) или включён
+   * metadata-override `_extract_from_image`. Парсер пробрасывает его в
+   * `LlmClient.extract` как `imagePath`. Не задан → классический text-only
+   * extract (поведение не меняется).
+   */
+  imagePath?: string;
 };
 
 export interface DocumentParser {

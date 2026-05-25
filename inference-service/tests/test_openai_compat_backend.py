@@ -138,6 +138,68 @@ async def test_vision_ocr_sends_image_url_no_json_mode(
     assert image_part["image_url"]["url"].startswith("data:image/jpeg;base64,")
 
 
+def _png_base64() -> str:
+    """1x1 white PNG, base64-encoded (как doc-service шлёт image_base64)."""
+    import base64
+    import io
+
+    from PIL import Image
+
+    img = Image.new("RGB", (1, 1), color="white")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+@pytest.mark.asyncio
+async def test_extract_with_image_builds_multimodal_message(
+    backend_with_mock_client: tuple[OpenAICompatibleBackend, MagicMock],
+) -> None:
+    """extraction-from-image: при image_base64 extract строит multimodal-
+    сообщение (image_url + extract-prompt) и сохраняет json_mode=True."""
+    b, client = backend_with_mock_client
+    client.chat.completions.create.return_value = _make_response(
+        '{"extracted": {"number": "IMG-1", "total": 999}, "confidence": 0.9, "issues": []}'
+    )
+    r = await b.extract(
+        text="ocr text fallback",
+        schema={"type": "object"},
+        hint="invoice",
+        image_base64=_png_base64(),
+    )
+    assert r.extracted == {"number": "IMG-1", "total": 999}
+    assert r.confidence == pytest.approx(0.9)
+
+    args = client.chat.completions.create.call_args
+    # json_mode остаётся включённым — структурный JSON на выходе.
+    assert args.kwargs["response_format"] == {"type": "json_object"}
+    content = args.kwargs["messages"][0]["content"]
+    assert isinstance(content, list)
+    types = [part["type"] for part in content]
+    assert "image_url" in types
+    assert "text" in types
+    image_part = next(p for p in content if p["type"] == "image_url")
+    assert image_part["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    # extract-prompt (а не OCR-инструкция) попал в text-блок.
+    text_part = next(p for p in content if p["type"] == "text")
+    assert "invoice" in text_part["text"] or "JSON" in text_part["text"]
+
+
+@pytest.mark.asyncio
+async def test_extract_text_only_still_sends_string_content(
+    backend_with_mock_client: tuple[OpenAICompatibleBackend, MagicMock],
+) -> None:
+    """Без image_base64 extract остаётся text-only (content — строка)."""
+    b, client = backend_with_mock_client
+    client.chat.completions.create.return_value = _make_response(
+        '{"extracted": {"number": "T-1"}, "confidence": 0.8, "issues": []}'
+    )
+    r = await b.extract(text="some text", schema={"type": "object"}, hint="invoice")
+    assert r.extracted == {"number": "T-1"}
+    args = client.chat.completions.create.call_args
+    assert isinstance(args.kwargs["messages"][0]["content"], str)
+
+
 @pytest.mark.asyncio
 async def test_falls_back_when_json_mode_not_supported(
     backend_with_mock_client: tuple[OpenAICompatibleBackend, MagicMock],

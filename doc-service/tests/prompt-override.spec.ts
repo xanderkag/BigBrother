@@ -48,6 +48,7 @@ function mockLlm(): { llm: LlmClient; calls: Array<Record<string, unknown>> } {
   const calls: Array<Record<string, unknown>> = [];
   const llm: LlmClient = {
     isAvailable: () => true,
+    supportsVision: async () => false,
     classify: vi.fn(),
     extract: vi.fn(async (input) => {
       calls.push(input as Record<string, unknown>);

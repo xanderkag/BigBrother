@@ -63,6 +63,10 @@ class DynamicLlmClient implements LlmClient {
     return false;
   }
 
+  supportsVision(): Promise<boolean> {
+    return this.delegate().then((c) => c.supportsVision());
+  }
+
   classify(text: string): Promise<LlmClassifyResult> {
     return this.delegate().then((c) => c.classify(text));
   }
@@ -73,6 +77,7 @@ class DynamicLlmClient implements LlmClient {
     hint?: DocumentTypeSlug;
     promptOverride?: string;
     includeDebug?: boolean;
+    imagePath?: string;
   }): Promise<LlmExtractResult> {
     return this.delegate().then((c) => c.extract(input));
   }
@@ -159,6 +164,7 @@ class DynamicLlmClient implements LlmClient {
       apiKey,
       timeoutMs: config.llm.timeoutMs,
       model: row.model || undefined,
+      vision: row.vision === true,
     });
   }
 
@@ -190,6 +196,7 @@ class DynamicLlmClient implements LlmClient {
       // Если is_default-провайдер задал model — пробрасываем его в inference,
       // иначе inference использует свой OPENAI_MODEL из env.
       model: dbRow?.model || undefined,
+      vision: dbRow?.vision === true,
     });
   }
 }

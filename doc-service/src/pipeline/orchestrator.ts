@@ -184,6 +184,11 @@ async function processJobInner(
   // resolved at finalize time (we don't know status/type up front).
   const startedAt = Date.now();
 
+  // item A: cleanup-хэндлы (materialized-файл + tmp first-page PNG). Хоистим
+  // наружу try, чтобы outer catch тоже мог почистить при ошибке между OCR и
+  // parse (refusal / multidoc). Идемпотентны — повторный вызов безопасен.
+  let cleanupArtifacts: () => Promise<void> = async () => {};
+
   try {
     // ── OCR ────────────────────────────────────────────────────────────────
     // I8: per-job PII opt-out из metadata._disable_external_ocr. document_hint
@@ -206,14 +211,32 @@ async function processJobInner(
       typeof metaForRouter.prompt_override === 'string' && metaForRouter.prompt_override.length > 0
         ? (metaForRouter.prompt_override as string)
         : undefined;
+    // item A: metadata._extract_from_image=true форсирует image-extract даже
+    // на не-vision провайдере. Без флага — решение по provider.vision.
+    const forceExtractFromImage =
+      metaForRouter._extract_from_image === true ||
+      metaForRouter._extract_from_image === 'true';
 
     await stepEvent('ocr', 'started', { details: { mime: job.mime_type } });
     const ocrStart = Date.now();
     // A2: для S3-backend'а materialize стримит в tmp если локальный кэш
     // протух (worker в другом pod'е). Для local — возвращает оригинал,
-    // cleanup — no-op. try/finally гарантирует что tmp не утечёт даже
-    // на ошибке OCR / classifier.
+    // cleanup — no-op. Держим materialized живым до конца pipeline (parse
+    // тоже может ему понадобиться для image-extract); cleanup — в finally.
     const materialized = await fileStorage.materialize(job.file_path);
+    // item A: image первой страницы готовим один раз; cleanup вместе с
+    // materialized. Подготовка — fail-soft (вернёт undefined при проблемах).
+    let firstPageImage: { imagePath: string | undefined; cleanup: () => Promise<void> } = {
+      imagePath: undefined,
+      cleanup: async () => {},
+    };
+    let cleanedUp = false;
+    cleanupArtifacts = async () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      await firstPageImage.cleanup().catch(() => undefined);
+      await materialized.cleanup().catch(() => undefined);
+    };
     try {
       ocr = await runOcrChain(
         { filePath: materialized.absolutePath, mimeType: job.mime_type, tesseractLangsOverride },
@@ -223,8 +246,14 @@ async function processJobInner(
           disableExternalOcr,
         },
       );
-    } finally {
-      await materialized.cleanup().catch(() => undefined);
+      firstPageImage = await prepareFirstPageImage(
+        materialized.absolutePath,
+        job.mime_type,
+        log,
+      );
+    } catch (err) {
+      await cleanupArtifacts();
+      throw err;
     }
     timings.ocr_ms = Date.now() - ocrStart;
     // P0 (2026-05-20): убираем NUL/control-байты из OCR-текста до того, как он
@@ -318,11 +347,16 @@ async function processJobInner(
         promptOverride,
         organizationId: job.organization_id,
         classifyOnly,
+        imagePath: firstPageImage.imagePath,
+        forceExtractFromImage,
       },
       log,
       { jobId },
       timings,
     );
+    // item A: image первой страницы больше не нужен (parse завершён) — чистим
+    // tmp PNG + materialized-файл сразу. Не ждём конца processJob.
+    await cleanupArtifacts();
     documentType = post.documentType;
     await stepEvent('classify', 'done', {
       duration_ms: timings.classify_ms,
@@ -341,6 +375,8 @@ async function processJobInner(
           confidence: roundConf(post.parserConfidence),
           missing: post.parserMissing,
           llm_called: !!post.llmCall,
+          // item A: видимость в job detail — extract шёл по картинке или тексту.
+          extract_mode: post.extractMode ?? 'text',
         },
       });
     }
@@ -562,6 +598,9 @@ async function processJobInner(
       });
     }
   } catch (err) {
+    // item A: подчищаем tmp-артефакты (materialized + first-page PNG) на любом
+    // пути ошибки между OCR и parse. Идемпотентно (cleanedUp-guard).
+    await cleanupArtifacts().catch(() => undefined);
     const errMsg = err instanceof Error ? err.message : String(err);
     const totalDurationMs = Date.now() - startedAt;
     log.error(
@@ -715,6 +754,59 @@ export async function runOcrChain(
 }
 
 /**
+ * extraction-from-image (item A): подготовить путь к изображению первой
+ * страницы документа для image-extract.
+ *
+ *   - image/* MIME → сам файл уже изображение, возвращаем filePath (cleanup=no-op).
+ *   - application/pdf → растеризуем ТОЛЬКО первую страницу в tmp PNG.
+ *   - всё остальное (docx/xlsx/...) → null (нет смысла в image-extract).
+ *
+ * Fail-soft: если pdftoppm недоступен / PDF битый — возвращаем null, и
+ * pipeline тихо откатывается на text-only extract. Возвращает cleanup-хэндл,
+ * который caller обязан вызвать в finally (tmp PNG не должен утечь).
+ */
+async function prepareFirstPageImage(
+  filePath: string,
+  mimeType: string,
+  log: Logger,
+): Promise<{ imagePath: string | undefined; cleanup: () => Promise<void> }> {
+  const noop = { imagePath: undefined, cleanup: async () => {} };
+  if (mimeType.startsWith('image/')) {
+    return { imagePath: filePath, cleanup: async () => {} };
+  }
+  if (mimeType !== 'application/pdf') {
+    return noop;
+  }
+  let dir: string | undefined;
+  try {
+    dir = await mkdtemp(join(tmpdir(), 'docsvc-extract-img-'));
+    const prefix = join(dir, 'page');
+    // -f 1 -l 1 — только первая страница; -r 200 совпадает с OCR-растеризацией.
+    await execP(`pdftoppm -png -r 200 -f 1 -l 1 "${filePath}" "${prefix}"`, { timeout: 120_000 });
+    const pages = (await readdir(dir))
+      .filter((f) => f.startsWith('page') && f.endsWith('.png'))
+      .sort();
+    const first = pages[0];
+    if (!first) {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+      return noop;
+    }
+    const imagePath = join(dir, first);
+    const tmpDir = dir;
+    return {
+      imagePath,
+      cleanup: async () => {
+        await rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      },
+    };
+  } catch (err) {
+    log.warn({ err }, 'first-page rasterization for image-extract failed; falling back to text');
+    if (dir) await rm(dir, { recursive: true, force: true }).catch(() => {});
+    return noop;
+  }
+}
+
+/**
  * Pure post-OCR pipeline: classify (or honour caller-supplied hint), then
  * dispatch to the parser registered for that document type.
  *
@@ -736,6 +828,20 @@ export async function runDocumentPipeline(
      * OCR/classification confidence.
      */
     classifyOnly?: boolean;
+    /**
+     * extraction-from-image (item A): путь к PNG/JPEG первой страницы.
+     * Если задан И resolved LLM-провайдер vision-capable (или включён
+     * `forceExtractFromImage`) — extract пойдёт по image-пути (модель
+     * извлекает поля из картинки). Если провайдер не vision и override не
+     * задан — image игнорируется (классический text-only extract).
+     */
+    imagePath?: string;
+    /**
+     * metadata-override `_extract_from_image=true`: форсировать image-extract
+     * даже если у провайдера vision=false (на свой риск). Без него решение
+     * принимается по `llm.supportsVision()`.
+     */
+    forceExtractFromImage?: boolean;
   },
   log: Logger,
   context: Record<string, unknown> = {},
@@ -758,6 +864,13 @@ export async function runDocumentPipeline(
   typeConfig: ResolvedTypeConfig | null;
   /** Debug-след LLM-вызова (если парсер ходил в модель). */
   llmCall?: LlmExtractDebug;
+  /**
+   * extraction-from-image (item A): какой режим extract фактически
+   * отработал — 'image' (модель видела картинку) или 'text' (классический
+   * OCR-текст). undefined когда extract не запускался (classify_only / нет
+   * типа). Caller пишет это в pipeline step для видимости в job detail.
+   */
+  extractMode?: 'image' | 'text';
 }> {
   let documentType: DocumentTypeSlug | null = options.hint ?? null;
   let classificationSource: 'hint' | 'keyword' = documentType ? 'hint' : 'keyword';
@@ -790,6 +903,7 @@ export async function runDocumentPipeline(
   let validationIssues: string[] = [];
   let typeConfig: ResolvedTypeConfig | null = null;
   let llmCall: LlmExtractDebug | undefined;
+  let extractMode: 'image' | 'text' | undefined;
 
   if (documentType && options.classifyOnly) {
     // Phase 3 (CP7): classify_only — потребителю нужен только тип документа.
@@ -828,11 +942,33 @@ export async function runDocumentPipeline(
         : typeConfig?.parserKind === 'llm_extract'
           ? parsersFactory.getGeneric(documentType)
           : parsersFactory.get(documentType);
+
+    // extraction-from-image routing (item A): отдаём картинку парсеру только
+    // если (а) есть image-файл первой страницы, И (б) либо явный override
+    // metadata._extract_from_image, либо resolved LLM-провайдер vision-capable.
+    // Если провайдер не vision и override не задан — imagePath=undefined →
+    // классический text-only extract (поведение для phi4 не меняется).
+    // supportsVision() — fail-soft: ошибка резолва → считаем не-vision.
+    let imagePathForExtract: string | undefined;
+    if (options.imagePath) {
+      let visionCapable = false;
+      try {
+        visionCapable = await llm.supportsVision();
+      } catch {
+        visionCapable = false;
+      }
+      if (options.forceExtractFromImage || visionCapable) {
+        imagePathForExtract = options.imagePath;
+      }
+    }
+    extractMode = imagePathForExtract ? 'image' : 'text';
+
     const tParser = Date.now();
     const result = await parser.parse(rawText, {
       expectedFields: typeConfig.expectedFields,
       regexFallbackThreshold: typeConfig.regexFallbackThreshold,
       llmSchema: typeConfig.llmSchema,
+      imagePath: imagePathForExtract,
       // Кастомная инструкция админа (если задана) → пробрасывается
       // парсером в LLM-клиент → попадает как `prompt_override` в
       // inference-service → заменяет builtin prompt для этого типа.
@@ -914,5 +1050,6 @@ export async function runDocumentPipeline(
     validationIssues,
     typeConfig,
     llmCall,
+    extractMode,
   };
 }

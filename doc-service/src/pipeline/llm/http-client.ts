@@ -26,6 +26,12 @@ export type HttpLlmClientOptions = {
    * параметр игнорируется на стороне inference-service.
    */
   model?: string;
+  /**
+   * Vision-capability этого провайдера (из provider_settings.vision).
+   * Когда true, orchestrator может попросить extract из изображения
+   * (передав `imagePath`). См. LlmClient.supportsVision.
+   */
+  vision?: boolean;
 };
 
 export class HttpLlmClient implements LlmClient {
@@ -33,6 +39,10 @@ export class HttpLlmClient implements LlmClient {
 
   isAvailable(): boolean {
     return !!this.opts.baseUrl;
+  }
+
+  async supportsVision(): Promise<boolean> {
+    return this.opts.vision === true;
   }
 
   private withModel<T extends Record<string, unknown>>(body: T): T & { model?: string } {
@@ -49,14 +59,28 @@ export class HttpLlmClient implements LlmClient {
     hint?: DocumentTypeSlug;
     promptOverride?: string;
     includeDebug?: boolean;
+    imagePath?: string;
   }): Promise<LlmExtractResult> {
     // Inference-service ожидает snake_case (Python convention).
     // Перекладываем camelCase → snake_case на сетевой границе.
-    const { promptOverride, includeDebug, ...rest } = input;
+    const { promptOverride, includeDebug, imagePath, ...rest } = input;
+    // extraction-from-image: если задан imagePath — base64-кодируем файл
+    // и шлём как image_base64. Fail-soft: если файл нечитаем, продолжаем
+    // text-only (изображение — улучшение, не обязательное условие).
+    let imageBase64: string | undefined;
+    if (imagePath) {
+      try {
+        const buf = await readFile(imagePath);
+        imageBase64 = buf.toString('base64');
+      } catch {
+        imageBase64 = undefined;
+      }
+    }
     return this.post<LlmExtractResult>('/v1/extract', this.withModel({
       ...rest,
       ...(promptOverride ? { prompt_override: promptOverride } : {}),
       ...(includeDebug ? { include_debug: true } : {}),
+      ...(imageBase64 ? { image_base64: imageBase64 } : {}),
     }));
   }
 

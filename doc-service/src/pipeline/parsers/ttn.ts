@@ -28,6 +28,7 @@ export class TtnParser implements DocumentParser {
       'TTN',
       override?.expectedFields ?? EXPECTED_FIELDS.TTN,
       override?.llmPrompt,
+      override?.imagePath,
     );
   }
 }

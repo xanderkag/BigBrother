@@ -17,6 +17,7 @@ function mockLlm(extractResponse: {
 }): LlmClient {
   return {
     isAvailable: () => true,
+    supportsVision: async () => false,
     classify: vi.fn(),
     extract: vi.fn().mockResolvedValue({
       extracted: extractResponse.extracted,
@@ -123,6 +124,7 @@ describe('LLM-backed parsers — happy path with mock', () => {
   it('propagates LLM errors so BullMQ can retry', async () => {
     const failing: LlmClient = {
       isAvailable: () => true,
+      supportsVision: async () => false,
       classify: vi.fn(),
       extract: vi.fn().mockRejectedValue(new Error('inference-service 503')),
       visionOcr: vi.fn(),

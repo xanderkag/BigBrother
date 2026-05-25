@@ -47,6 +47,14 @@ class ExtractRequest(BaseModel):
     # Опциональный per-request model override. Если задан — backend использует
     # эту модель вместо OPENAI_MODEL из env. См. ClassifyRequest.model выше.
     model: str | None = None
+    # extraction-from-image (2026-05-25): base64-кодированное изображение
+    # первой страницы документа. Если задано И backend vision-capable —
+    # extract строит multimodal-сообщение (image + extract-prompt), и модель
+    # извлекает поля НАПРЯМУЮ из картинки, а не из OCR-текста. Бенч показал
+    # 90% exact / 96% critical на Qwen2.5-VL (vs 68% text-only). Если None —
+    # классический text-only путь (поведение не меняется). doc-service шлёт
+    # это поле только когда resolved-провайдер помечен vision=true.
+    image_base64: str | None = None
 
     # Allow population by both "schema" (the public name) and "schema_" (Python attr).
     # `schema` is a reserved attribute on BaseModel in Pydantic v1; the alias keeps

@@ -22,6 +22,7 @@ export async function llmExtract(
   hint: DocumentTypeSlug,
   expectedFields: readonly string[],
   promptOverride?: string,
+  imagePath?: string,
 ): Promise<ParseResult> {
   if (!llm.isAvailable()) {
     return {
@@ -34,7 +35,7 @@ export async function llmExtract(
   // Всегда просим debug — это включается доспро на стороне inference только
   // если бэкенд готов. Размер трассы — десятки KB на крупный prompt, что
   // приемлемо для платформы с job'ами по гигабайтам метаданных.
-  const result = await llm.extract({ text: rawText, schema, hint, promptOverride, includeDebug: true });
+  const result = await llm.extract({ text: rawText, schema, hint, promptOverride, includeDebug: true, imagePath });
   const extracted = unwrapSchemaEcho(result.extracted ?? {});
   const present = new Set(Object.keys(extracted));
   const missing = expectedFields.filter((f) => {
