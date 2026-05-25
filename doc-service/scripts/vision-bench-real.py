@@ -203,6 +203,7 @@ def main():
     ap.add_argument("--only", default=None, help="comma-separated fixture ids")
     ap.add_argument("--max-pages", type=int, default=1, help="0 = all pages")
     ap.add_argument("--num-ctx", type=int, default=8192)
+    ap.add_argument("--run", default="#26", help="run label for report")
     args = ap.parse_args()
     only = set(args.only.split(",")) if args.only else None
 
@@ -251,7 +252,7 @@ def main():
         nm = sum(1 for f in fields if f["verdict"] == "match")
         print(f"{r['dt']:.0f}s json={extracted is not None} cls={cls_match} match={nm}/{len(fields)}")
 
-    report = {"run": "#26", "model": args.model, "dpi": args.dpi,
+    report = {"run": args.run, "model": args.model, "dpi": args.dpi,
               "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
               "endpoint": OLLAMA_URL, "results": results}
     out_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
