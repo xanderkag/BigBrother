@@ -284,6 +284,161 @@ number 5/9, date 7/9. Это первый честный сигнал, что **
 
 ---
 
+## Прогон #25 — RE-БЕНЧ после трёх prod-фиксов (money-flatten + party-mapping + tax_invoice→LLM, СВЕЖИЙ extract, 2026-05-25)
+
+**Цель:** финальный пере-бенч 9 реальных документов после деплоя трёх фиксов на
+prod — против **path-corrected baseline 58.3% exact-match / 83.3% coverage**
+(прев. итерация, golden-set.v1.json с исправленными путями).
+
+**Что менялось на prod с #24:**
+1. **inference** — money-объекты `{amount,currency}` плющатся в скаляр
+   `total`/`vat`, валюта поднимается наверх; extract-промпт усилен явным
+   RU-маппингом ролей seller/buyer (чинит party-swap на 01).
+2. **DB-миграция** — `factInvoice` (slug `tax_invoice`) `parser_kind` →
+   `llm_extract`, т.е. счёт-фактура (03/04) теперь доходит до LLM, а не
+   возвращает regex-мусор (`total=9`).
+
+- **Модель:** `phi4` (Phi-4 14B, openai-compat) — без изменений vs #23/#24.
+- **Промпт:** текущий prod (builtin-схемы + DB `llm_schema`) с усиленным
+  party-mapping.
+- **Датасет:** те же 9 реальных документов,
+  `doc-service/eval/real/golden-set.v1.json` (60 field-ассертов, path-corrected,
+  gitignored).
+- **Инстанс:** `http://10.10.13.10:8085` (prod), inference пересобран, миграция
+  применена (подтверждено в DB).
+- **Механизм:** `POST /jobs/:id/reprocess` (re-run classify+extract на
+  сохранённом `raw_text`, без повторного OCR/upload, обходит SHA-dedup).
+
+### ✅ Свежий extract подтверждён
+
+LLM-латентность 16–75 с/вызов, `raw_response` непустой (686–3845 байт),
+`last_llm_call.duration_ms` совпадает с wall-time. **Критично: 03/04 теперь
+показывают `llm` активность (backend=openai-compat/phi4, output 456–481 ток),
+а в #24 было `llm=n/a`** — миграция parser_kind подтверждена на проде.
+*(Прим.: 02 поймал транзиентный `500 LLM /v1/extract` на reprocess → скрипт
+сделал fallback на `GET /jobs/:id`, т.е. 02 — последний удачный extract, не
+свежий. На метрику не влияет: значения те же, что и в #24.)*
+
+### Aggregate (9 фикстур, 60 field-ассертов)
+
+| Метрика | baseline (path-corrected, prev) | **#25 (post-all-fixes)** | Delta |
+|---|---|---|---|
+| Classification accuracy | 100.0% (9/9) | **100.0%** (9/9) | = |
+| Field exact-match | 58.3% (35/60) | **68.3%** (41/60) | **+10.0 п.п.** ✅ |
+| Field coverage (non-null) | 83.3% (50/60) | **88.3%** (53/60) | **+5.0 п.п.** |
+| match / mismatch / miss | 35 / — / — | **41 / 12 / 7** | miss ↓ |
+| Critical-field exact-match | — | **69.4%** (25/36) | — |
+| Latency P50 / P95 (LLM) | — | **26.6 с / 73.6 с** | extract |
+
+Для справки относительно #24 (as-stored, до path-correction): exact-match
+46.7%→**68.3%** (+21.6 п.п.), miss 16→**7**. Гейт регрессии (drop >2 п.п.) —
+**не нарушен, метрика выросла**.
+
+### Критичные поля — что реально извлекается (post-all-fixes)
+
+| Док | type | number | date | seller ИНН | buyer ИНН | total |
+|---|---|---|---|---|---|---|
+| 01 invoice | ✅ | ❌ miss *(регресс)* | ❌ `18.08.25` *(регресс)* | ❌ miss *(регресс)* | ✅ *(party-swap FIXED)* | ❌ miss *(регресс)* |
+| 02 invoice | ✅ | ✅ | ❌ `05 мая 2026 года` | ❌ «НЕ УКАЗАНО» | ❌ «НЕ УКАЗАНО» | ✅ scalar *(flatten OK)* |
+| 03 tax_invoice | ✅ | ✅ *(было `…от22`)* | ❌ `22 апреля 2026 г.` | ✅ *(было miss)* | ✅ *(было miss)* | ❌ nested-object |
+| 04 tax_invoice | ✅ | ✅ *(было `…от30`)* | ❌ `30 апреля 2026 г.` | ✅ *(было miss)* | ✅ *(было miss)* | ❌ nested-object |
+| 05 UKD | ✅ | ✅ | ✅ | ✅ *(path FIXED)* | ✅ *(path FIXED)* | n/a |
+| 06 transfer_note | ✅ | ✅ | ✅ | — | — | n/a |
+| 07 services_act | ✅ | n/a | ✅ | — | — | ✅ *(`total_with_vat` FIXED)* |
+| 08 contract_spec | ✅ | ✅ | ✅ | n/a | n/a | ✅ (`total` FIXED) |
+| 09 contract_spec | ✅ | ✅ | ✅ | n/a | n/a | ✅ (`total` FIXED) |
+
+### Что фиксы РЕАЛЬНО починили
+
+- **03/04 tax_invoice → LLM ✅** (главный фикс): number теперь чистый
+  (`260422/012`, `260430/015` — без `…от22`/`…от30`), **оба ИНН** извлечены
+  верно (seller `7811472920`; buyer `140400867068`/`143514408610`), `vat`
+  на 03 = 4075.41 ✅. Полный разворот с regex-мусора `total=9`.
+- **Party-swap на 01 — частично ✅**: `buyer.inn=7811472920` теперь в ПРАВИЛЬНОМ
+  слоте (в #24 было перепутано). Но `seller.inn` теперь **дропнут** (miss), а не
+  ошибочный — продавца модель не положила вовсе.
+- **money-flatten ✅** для invoice/spec/act: 02 `total`=23272 скаляр; 08/09
+  `total` скаляр; 07 `total_with_vat`=216490 — все совпали.
+- **05 UKD ИНН — path FIXED**: golden теперь `seller.inn`/`buyer.inn`,
+  совпадает с каноническим shape → оба match.
+
+### Регрессии (фикс что-то сломал)
+
+- **Док 01 — РЕГРЕСС на 3 поля**: `number` (был match в #24 → теперь miss),
+  `date` (был `18.05.2026`/match → теперь `18.08.25`/mismatch), `seller.inn`
+  (был mismatch/swap → теперь miss). Усиленный party-mapping промпт, видимо,
+  сместил извлечение на 01: buyer починился ценой seller+number+date. **Чистая
+  регрессия на одном документе** — поднять `backend`. Total на 01 тоже miss
+  (объект `{amount,currency}` больше не приходит — но и скаляр не пришёл).
+
+### Доминирующий остаточный класс ошибок
+
+1. **Nested-`total` на tax_invoice (03/04)** — flatten НЕ сработал для
+   compound-конверта счёта-фактуры: `total = {tax_amount, amount_with_tax,
+   amount_without_tax}`. Значения ВЕРНЫЕ (`amount_with_tax`=22600,
+   `amount_without_tax`=18524.59), но лежат вложенно → `compareMoney` валит
+   mismatch + `total_without_vat`/`vat_rate` читаются как miss. **Это
+   inference-gap, НЕ golden-path drift** (фикс был обязан сплющить, но для
+   этого конверта не сработал) — golden путь НЕ правил, чтобы не маскировать
+   баг. Hand-off `backend`: распространить money-flatten на tax_invoice total.
+2. **Русские словесные даты** (02 `05 мая 2026 года`, 03 `22 апреля 2026 г.`,
+   04 `30 апреля 2026 г.`) — `parseDate` не знает RU-месяцев → 3 mismatch при
+   верном значении. Hand-off `backend`/QA: либо нормализатор дат на стороне
+   inference, либо RU-месяцы в `parseDate`.
+3. **Скан-OCR качество на СФ** — даты на 03/04 приходят словесными из-за
+   layout скана; 02 ИНН «НЕ УКАЗАНО» (реально не извлёк из скан-формы).
+4. **Арифметика спек (08)** — `positions.0.price` 3469.22 vs 3692.22 (галлюц.);
+   на 09 уже починилось (13000 ✅). 08 `positions.0.name` усечён до «Счётчик
+   электроэнергии» (регресс vs #24 где было полное имя).
+
+### Golden-path: правок НЕ вносил
+
+Инструкция #3 разрешает править путь, только если фикс **сместил, куда падает
+значение**. Здесь единственный кандидат — tax_invoice `total` — это НЕ смещение,
+а **несработавший flatten** (значение по-прежнему вложено в объект, как и
+задумано LLM). Репатчить golden на `total.amount_with_tax` = замаскировать
+inference-баг → НЕ делал. Пути golden-set.v1.json оставлены как есть.
+
+### Verdict vs гейты SLAI
+
+| Гейт | Порог | #25 | Статус |
+|---|---|---|---|
+| Classification accuracy | ≥ 0.95 | **1.00** | ✅ PASS |
+| Field exact-match (overall) | ≥ 0.85 | **0.683** | ❌ FAIL |
+| Critical-fields exact-match | ≥ 0.95 | **0.694** | ❌ FAIL |
+| Regression guard (drop > 2 п.п.) | — | **+10.0 п.п.** | ✅ нет регресса гейта |
+| Latency P95 (MVP ≤ 90 с) | ≤ 90 с | **73.6 с** | ✅ PASS (MVP), ❌ target 30 с |
+
+**Ближе ли к пилоту:** ДА, ощутимо. Три фикса дали +10 п.п. exact-match над
+path-corrected baseline и развернули главный провал — счёт-фактура теперь
+извлекается через LLM (number+оба ИНН+vat на 03), а не regex-мусор. Классификация
+стабильно 100%. НО до SLAI-гейтов (exact ≥85%, critical ≥95%) ещё далеко: 68.3%
+overall, 69.4% critical. **Не пилот-ready по критичным полям.**
+
+**Доминирующий остаточный класс ошибок:** (а) **скан-OCR качество на СФ** —
+словесные даты + не-извлечённые ИНН на скан-формах 02/03/04; (б) **nested-total
+конверт на tax_invoice** (flatten не покрыл); (в) **party-mapping регресс на 01**
+(чиня buyer, сломали seller+number+date). Арифметика спек — вторична (на 09 уже
+ушла). Money-flatten и UKD-path — закрыты.
+
+**Hand-off:**
+1. `backend` — распространить money-flatten на tax_invoice `total`
+   (`{amount_with_tax}` → скаляр `total`, `amount_without_tax` →
+   `total_without_vat`).
+2. `backend` — РЕГРЕСС на 01: усиленный party-mapping починил buyer, но дропнул
+   seller + сломал number/date. Откатить/донастроить промпт так, чтобы 01 не
+   терял ранее извлекаемые поля.
+3. `backend`/QA — RU-словесные даты: нормализатор на inference ИЛИ RU-месяцы в
+   `parseDate` (вернёт ~3 поля без участия модели).
+4. Скан-СФ OCR — отдельный трек (vision vs text-OCR), вне этих трёх фиксов.
+
+**Артефакты прогона:** `doc-service/eval/real/qwenvl-real-v1-allfixes-2026-05-25.json`
+(per-doc verdict + metrics), `doc-service/eval/real/jobmap.json` (fixture→job_id),
+скрипт `doc-service/src/scripts/eval/reprocess-score.ts`. Всё, кроме скрипта,
+gitignored (реальные данные + PII).
+
+---
+
 ## Прогон #24 — RE-БЕНЧ после envelope-recovery fix (тот же 9-док golden-set, СВЕЖИЙ extract, 2026-05-25)
 
 **Цель:** проверить, восстановился ли field exact-match после фикса inference,
