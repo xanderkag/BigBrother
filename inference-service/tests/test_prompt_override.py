@@ -73,6 +73,33 @@ class TestPromptBuilder:
         # Документная часть не больше 12 KB символов
         assert prompt.count("A") <= 12000
 
+    def test_tail_reminder_after_document_text(self) -> None:
+        # bench 2026-05-25: напоминание о канонических ключах + обёртке
+        # extracted должно стоять ПОСЛЕ текста документа (последним), иначе
+        # маленькие модели его теряют.
+        prompt = extract_prompts.build(
+            text="DOCBODY", schema={"type": "object"}, hint="invoice",
+        )
+        assert "seller.inn" in prompt
+        assert "НЕ выноси" in prompt
+        # хвост-напоминание идёт после текста документа
+        assert prompt.index("DOCBODY") < prompt.rindex("НАПОМИНАНИЕ О ФОРМАТЕ ОТВЕТА")
+
+    def test_tail_reminder_present_in_override_mode(self) -> None:
+        prompt = extract_prompts.build(
+            text="x", schema={}, hint=None, prompt_override="custom",
+        )
+        assert "НАПОМИНАНИЕ О ФОРМАТЕ ОТВЕТА" in prompt
+        assert "seller.inn" in prompt
+
+    def test_cacheable_tail_reminder_in_user_part(self) -> None:
+        system, user = extract_prompts.build_cacheable(
+            text="DOCBODY", schema={"type": "object"}, hint="invoice",
+        )
+        # хвост-напоминание едет в user-части (не кэшируется), после текста
+        assert "НАПОМИНАНИЕ О ФОРМАТЕ ОТВЕТА" in user
+        assert user.index("DOCBODY") < user.index("НАПОМИНАНИЕ О ФОРМАТЕ ОТВЕТА")
+
 
 # --- StubBackend ---
 

@@ -73,7 +73,9 @@ BUILTIN_TEMPLATE = """Ты извлекаешь структурированны
 Текст документа:
 \"\"\"
 {text}
-\"\"\""""
+\"\"\"
+
+{tail_reminder}"""
 
 
 OVERRIDE_TEMPLATE = """{admin_instructions}
@@ -88,7 +90,24 @@ OVERRIDE_TEMPLATE = """{admin_instructions}
 Текст документа:
 \"\"\"
 {text}
-\"\"\""""
+\"\"\"
+
+{tail_reminder}"""
+
+
+# Короткое напоминание ПОСЛЕ текста документа. Маленькие модели (phi4) теряют
+# response-контракт, когда между ним и точкой генерации лежит 12 KB текста:
+# на bench 2026-05-25 phi4 систематически возвращал поля БЕЗ обёртки
+# `extracted` и под не-каноническими ключами (invoice_details.inn). Повтор у
+# самого конца промпта резко повышает шанс корректной формы.
+_TAIL_REMINDER = """НАПОМИНАНИЕ О ФОРМАТЕ ОТВЕТА (соблюдай строго):
+- Ответ — ОДИН JSON-объект, начинается с `{` и заканчивается `}`.
+- Все извлечённые поля клади ВНУТРЬ ключа "extracted". НЕ выноси number/date/
+  seller/buyer на верхний уровень ответа — они должны быть в extracted.
+- Используй РОВНО канонические ключи из схемы выше: seller.inn, buyer.inn,
+  number, date, total, vat, items[]. НЕ придумывай свои обёртки
+  (invoice_details, payment_details, invoice, party1/party2) — это ошибка.
+- seller и buyer — разные стороны; не меняй их местами."""
 
 
 def build(
@@ -109,6 +128,7 @@ def build(
         "schema": json.dumps(schema, ensure_ascii=False, indent=2),
         "text": text[:12000],
         "response_contract": _RESPONSE_CONTRACT,
+        "tail_reminder": _TAIL_REMINDER,
     }
     if prompt_override:
         return OVERRIDE_TEMPLATE.format(
@@ -276,5 +296,5 @@ def build_cacheable(
             f"Целевая JSON-схема (используй только эти поля, лишних не добавляй):\n{schema_json}\n\n"
             f"{_RESPONSE_CONTRACT.replace('{{', '{').replace('}}', '}')}"
         )
-    user = f'Текст документа:\n"""\n{text[:12000]}\n"""'
+    user = f'Текст документа:\n"""\n{text[:12000]}\n"""\n\n{_TAIL_REMINDER}'
     return system, user

@@ -1,0 +1,6 @@
+samples/
+*-report.json
+golden-set*.json
+# run outputs embed expected values + extracted PII — keep local
+qwenvl-real-*.json
+_extract.txt

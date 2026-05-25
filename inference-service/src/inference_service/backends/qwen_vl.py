@@ -24,6 +24,7 @@ from PIL import Image
 from ..prompts import classify as classify_prompts
 from ..prompts import extract as extract_prompts
 from ..prompts import verify as verify_prompts
+from ..prompts.response import normalize_extract_response
 from ..schemas import (
     ClassifyResponse,
     ExtractDebug,
@@ -110,7 +111,7 @@ class QwenVlBackend(ModelBackend):
             started = time.monotonic()
             raw = await self._generate_text(prompt)
             duration_ms = int((time.monotonic() - started) * 1000)
-        data = _parse_json(raw) or {}
+        data = normalize_extract_response(_parse_json(raw) or {})
         extracted = data.get("extracted") if isinstance(data.get("extracted"), dict) else {}
         confidence = float(data.get("confidence", 0.0) or 0.0)
         issues = data.get("issues") if isinstance(data.get("issues"), list) else []

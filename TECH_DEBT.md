@@ -919,6 +919,21 @@ SGLang, TGI) выставляют OpenAI Chat Completions API; теперь pars
 
 > **CP7, I6, Phase F** перенесены в `TECH_DEBT_ARCHIVE.md` → раздел «Deferred backlog (snapshot 2026-05-19)». Триггеры возврата записаны там.
 
+### EXT-1. tax_invoice / счёт-фактура уходит в regex-only, LLM не вызывается — 🟠 OPEN (2026-05-25)
+
+Real-doc bench 2026-05-25 (`eval/real/qwenvl-real-v1-2026-05-25.json`):
+для `tax_invoice` (doc 03/04) `raw_response` пустой, `total_duration_ms`
+10-12 мс → парсер вернул regex-результат и **не дошёл до LLM-fallback**.
+Следствие: `number` приходит из regex с cell-bleed (`260422/012от22`),
+а seller/buyer ИНН вообще не извлекаются (regex для счёт-фактуры их не
+ищет). Это **конфиг DB document_types**, не код: либо
+`regex_fallback_threshold` слишком низкий (regex проходит планку и LLM
+скипается), либо у типа нет привязки к llm_extract parser_kind. Чинить в
+проде через `document_types` row для tax_invoice (поднять
+`confidence_threshold` / `regex_fallback_threshold` или перевести на
+`llm_extract`). Code-fix не требуется. Передать product/qa для правки
+конфигурации перед ре-бенчем.
+
 ### UI-2. Mobile-responsive React UI — ✅ закрыто 2026-05-20
 
 Card-mode для таблиц на `<md` (JobsList / Tenants / DocumentTypes /

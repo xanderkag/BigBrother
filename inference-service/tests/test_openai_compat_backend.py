@@ -89,6 +89,27 @@ async def test_extract_tolerates_markdown_wrapped_json(
 
 
 @pytest.mark.asyncio
+async def test_extract_recovers_unwrapped_phi4_response(
+    backend_with_mock_client: tuple[OpenAICompatibleBackend, MagicMock],
+) -> None:
+    """bench 2026-05-25: phi4 теряет обёртку `extracted` и складывает поля на
+    верхний уровень под не-каноническими ключами. Backend должен восстановить
+    данные (раньше — молча выбрасывал, ИНН 0/8)."""
+    b, client = backend_with_mock_client
+    client.chat.completions.create.return_value = _make_response(
+        '{"seller": {"inn": "7811472920"}, "buyer": {"inn": "7704217370"}, '
+        '"invoice_details": {"invoice_number": "0134905056-0281", "total_amount": 522.0}, '
+        '"confidence": 0.8}'
+    )
+    r = await b.extract(text="t", schema={"type": "object"}, hint="invoice")
+    assert r.extracted["seller"]["inn"] == "7811472920"
+    assert r.extracted["buyer"]["inn"] == "7704217370"
+    assert r.extracted["number"] == "0134905056-0281"
+    assert r.extracted["total"] == 522.0
+    assert "invoice_details" not in r.extracted
+
+
+@pytest.mark.asyncio
 async def test_vision_ocr_sends_image_url_no_json_mode(
     backend_with_mock_client: tuple[OpenAICompatibleBackend, MagicMock],
 ) -> None:
