@@ -67,11 +67,15 @@ class TestPromptBuilder:
         assert "Custom instruction." in prompt
 
     def test_long_text_is_truncated_to_12k(self) -> None:
+        # Заполняем sentinel-символом из Private Use Area, которого заведомо
+        # нет в статическом шаблоне — иначе count() ловит буквы шаблона
+        # (напр. "A" из "SLAI") и тест ложно падает на 12001.
+        sentinel = ""
         prompt = extract_prompts.build(
-            text="A" * 20000, schema={}, hint=None,
+            text=sentinel * 20000, schema={}, hint=None,
         )
         # Документная часть не больше 12 KB символов
-        assert prompt.count("A") <= 12000
+        assert prompt.count(sentinel) <= 12000
 
     def test_tail_reminder_after_document_text(self) -> None:
         # bench 2026-05-25: напоминание о канонических ключах + обёртке

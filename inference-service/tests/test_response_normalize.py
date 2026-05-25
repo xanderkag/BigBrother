@@ -154,3 +154,83 @@ def test_unwrap_keeps_envelope_meta() -> None:
 def test_canonicalize_noop_on_clean() -> None:
     clean = {"number": "1", "seller": {"inn": "x"}, "items": [{"name": "a"}]}
     assert canonicalize_extracted(dict(clean)) == clean
+
+
+# --- Fix 1 (real-doc bench 2026-05-25): money-объект → скаляр ----------------
+
+
+def test_money_object_flattened_to_scalar() -> None:
+    # phi4: total как объект {"amount": 522, "currency": "RUB"}.
+    raw = {"extracted": {"number": "A", "total": {"amount": 522.0, "currency": "RUB"}}}
+    ext = normalize_extract_response(raw)["extracted"]
+    assert ext["total"] == 522.0
+    assert ext["currency"] == "RUB"
+
+
+def test_money_object_currency_lift_only_if_absent() -> None:
+    raw = {
+        "extracted": {
+            "currency": "USD",
+            "total": {"amount": 100, "currency": "RUB"},
+        }
+    }
+    ext = normalize_extract_response(raw)["extracted"]
+    assert ext["total"] == 100
+    # верхний currency уже был — не затираем
+    assert ext["currency"] == "USD"
+
+
+def test_money_value_and_sum_keys() -> None:
+    raw = {
+        "extracted": {
+            "total_with_vat": {"value": 1200.50},
+            "vat": {"sum": 200.50, "currency": "RUB"},
+        }
+    }
+    ext = normalize_extract_response(raw)["extracted"]
+    assert ext["total_with_vat"] == 1200.50
+    assert ext["vat"] == 200.50
+    assert ext["currency"] == "RUB"
+
+
+def test_money_scalar_is_noop() -> None:
+    raw = {"extracted": {"total": 522.0, "vat": 87.0, "currency": "RUB"}}
+    ext = normalize_extract_response(raw)["extracted"]
+    assert ext["total"] == 522.0
+    assert ext["vat"] == 87.0
+    assert ext["currency"] == "RUB"
+
+
+def test_money_object_without_amount_left_alone() -> None:
+    # Объект без amount/value/sum — не money-форма, не трогаем.
+    raw = {"extracted": {"total": {"foo": "bar"}}}
+    ext = normalize_extract_response(raw)["extracted"]
+    assert ext["total"] == {"foo": "bar"}
+    assert "currency" not in ext
+
+
+def test_money_object_in_items_flattened() -> None:
+    raw = {
+        "extracted": {
+            "items": [
+                {"name": "товар", "total": {"amount": 50.0, "currency": "RUB"}, "price": {"value": 25.0}},
+            ]
+        }
+    }
+    ext = normalize_extract_response(raw)["extracted"]
+    assert ext["items"][0]["total"] == 50.0
+    assert ext["items"][0]["price"] == 25.0
+
+
+def test_money_bool_not_treated_as_amount() -> None:
+    # True == 1 в Python — убедимся, что bool не схлопывается в скаляр.
+    raw = {"extracted": {"total": {"amount": True, "currency": "RUB"}}}
+    ext = normalize_extract_response(raw)["extracted"]
+    assert ext["total"] == {"amount": True, "currency": "RUB"}
+
+
+def test_money_normalization_idempotent() -> None:
+    raw = {"extracted": {"total": {"amount": 522.0, "currency": "RUB"}}}
+    once = normalize_extract_response(raw)
+    twice = normalize_extract_response(once)
+    assert once == twice

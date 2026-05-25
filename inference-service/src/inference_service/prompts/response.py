@@ -80,6 +80,14 @@ _PARTY_ALIASES: dict[str, str] = {
 # Массив позиций — те же legacy-имена что и в doc-service normalize-extracted.ts.
 _ITEM_ARRAY_ALIASES = ("positions", "services", "goods", "line_items")
 
+# Денежные поля, которые парсеры/валидаторы ждут СКАЛЯРОМ (number). phi4 на
+# реальных счетах иногда отдаёт их объектом {"amount": 522, "currency": "RUB"}
+# вместо скаляра + отдельного currency. Сплющиваем объект → скаляр.
+_MONEY_FIELDS = ("total", "total_with_vat", "total_without_vat", "vat")
+
+# Ключи внутри money-объекта, несущие саму сумму.
+_MONEY_VALUE_KEYS = ("amount", "value", "sum")
+
 
 def _set_path(target: dict[str, Any], dotted: str, value: Any) -> None:
     """Записать value по точечному пути, не затирая уже существующее
@@ -122,6 +130,45 @@ def unwrap_envelope(data: dict[str, Any]) -> dict[str, Any]:
     out = {k: data[k] for k in data.keys() if k in _ENVELOPE_KEYS}
     out["extracted"] = recovered
     return out
+
+
+def _flatten_money(obj: dict[str, Any], out: dict[str, Any]) -> Any | None:
+    """Если money-поле пришло объектом {"amount": N, "currency": "RUB"} —
+    вернуть скаляр N и (best-effort) поднять currency на верхний уровень out,
+    если там его ещё нет. Возвращает None, если объект не похож на money-форму.
+    """
+    scalar: Any | None = None
+    for key in _MONEY_VALUE_KEYS:
+        if key in obj and isinstance(obj[key], (int, float)) and not isinstance(obj[key], bool):
+            scalar = obj[key]
+            break
+    if scalar is None:
+        return None
+    cur = obj.get("currency")
+    if isinstance(cur, str) and cur and _is_empty(out.get("currency")):
+        out["currency"] = cur
+    return scalar
+
+
+def _normalize_money_fields(out: dict[str, Any]) -> None:
+    """In-place: сплющить money-поля-объекты в скаляр + поднять currency."""
+    for field in _MONEY_FIELDS:
+        val = out.get(field)
+        if isinstance(val, dict):
+            scalar = _flatten_money(val, out)
+            if scalar is not None:
+                out[field] = scalar
+    items = out.get("items")
+    if isinstance(items, list):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for field in (*_MONEY_FIELDS, "price"):
+                val = item.get(field)
+                if isinstance(val, dict):
+                    scalar = _flatten_money(val, out)
+                    if scalar is not None:
+                        item[field] = scalar
 
 
 def canonicalize_extracted(extracted: dict[str, Any]) -> dict[str, Any]:
@@ -194,6 +241,9 @@ def canonicalize_extracted(extracted: dict[str, Any]) -> dict[str, Any]:
             if isinstance(val, list) and val:
                 out["items"] = val
                 break
+
+    # 6. Money-поля-объекты {"amount": N, "currency": ...} → скаляр + currency.
+    _normalize_money_fields(out)
 
     return out
 
