@@ -96,3 +96,30 @@ jobs:
             echo "✗ /version не показал ${GIT_COMMIT_SHORT} за 30с"
             docker logs parsdocs-api-1 --tail 30
             exit 1
+
+      - name: Cleanup docker artefacts (housekeeping)
+        # Профилактика забивания диска (как у SLAI — у них 60ГБ съел
+        # build-cache + dangling images после активного дев-периода).
+        # Запускаем ПОСЛЕ успешного Deploy step (`if: success()` — дефолт),
+        # не `if: always()` — не хотим чистить если up упал и нужны
+        # промежуточные образы для дебага. `--filter until=72h` — не трогаем
+        # свежие билды (могут пригодиться для быстрого rollback'а через
+        # `docker compose up -d --no-deps <service>` со старого тега).
+        # `continue-on-error: true` — prune никогда не валит pipeline:
+        # housekeeping, не корректность деплоя.
+        uses: appleboy/ssh-action@v1
+        continue-on-error: true
+        with:
+          host: 95.216.43.235
+          port: 9022
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 5m
+          script: |
+            set +e
+            echo "→ Disk before cleanup:"
+            df -h /var/lib/docker | tail -1
+            docker image prune -f --filter "until=72h" || true
+            docker builder prune -f --filter "until=72h" || true
+            echo "→ Disk after cleanup:"
+            df -h /var/lib/docker | tail -1
