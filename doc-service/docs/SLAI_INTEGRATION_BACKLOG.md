@@ -124,8 +124,8 @@ UKD, transfer_note, contract_addendum, contract_specification, cash_receipt, wir
 
 | # | Шаг | Эффект | Сложность |
 |---|-----|--------|-----------|
-| 1 | **Hybrid-routing** — text/phi4 для чистых text-PDF (быстро, в SLA), vision-fallback для сканов/СФ/низкой OCR-уверенности | Снимает 80% docs в SLA | 2-3 дня |
-| 2 | **Extraction-from-image** путь полностью (image_base64 + multimodal message) | Уже частично (`2aff356`), завершить ~1-2 дня | 1-2 дня |
+| 1 | ✅ **Hybrid-routing** — text/phi4 для чистых text-PDF (в SLA), vision для сканов/низкой OCR-уверенности. Код `ef24a8d`, за флагом `HYBRID_ROUTING_ENABLED`, ждёт деплоя | Снимает ~80% docs в SLA | сделано |
+| 2 | ✅ **Extraction-from-image** путь (image_base64 + multimodal message) | `2aff356` | сделано |
 | 3 | **vLLM миграция Qwen-VL** на сервере 96 ГБ VRAM (в пути) | Кратное ускорение через continuous batching | После прихода сервера |
 | 4 | **Меньшая модель (qwen2.5vl:7b) + DPI/num_predict tuning** | Срезает latency, теряем точность ~5% | 1 день |
 | 5 | **Phi-4-multimodal** через vLLM (когда сервер придёт) | Бенчмаркить параллельно | 1 день после сервера |
