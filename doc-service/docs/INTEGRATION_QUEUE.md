@@ -68,7 +68,7 @@ SLAI у себя планирует pre-upload в свой blob (signed URL), з
 
 ### Q11. EXT-B — BYO LLM credentials через X-LLM-* заголовки
 
-- **Status:** OPEN (in our backlog)
+- **Status:** IMPLEMENTED (код + тесты `808e5cb`; ждёт деплоя + `BYO_LLM_ENABLED=true`. RESOLVED после интеграции SLAI)
 - **Asked:** 2026-05-26
 - **From:** SLAI_DEV (`slai-response-to-parsdocs-2026-05-26.md`)
 - **To:** PARSDOCS_DEV
@@ -93,7 +93,7 @@ LLM-контракты ИЛИ когда LLM-extraction переедет на с
 
 ### Q10. EXT-A — GET /capabilities + X-Extractor-Signature alias
 
-- **Status:** OPEN (in our backlog, in_progress)
+- **Status:** IMPLEMENTED (код `d798917` + тесты `808e5cb`; RESOLVED после деплоя + contract-test SLAI)
 - **Asked:** 2026-05-26
 - **From:** SLAI_DEV (`slai-response-to-parsdocs-2026-05-26.md`)
 - **To:** PARSDOCS_DEV

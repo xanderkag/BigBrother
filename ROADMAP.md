@@ -34,8 +34,8 @@ ssh kb-docker 'cd parsdocs/doc-service; sed -i "s/^API_KEY=.*/API_KEY=$(openssl 
 | **Качество на реальных данных** — собрать свой mini-golden-set (10-15 реальных RU счетов/УПД/ТТН) + прогнать eval на **прод-конфиге (Qwen-VL)** | — | Первая честная цифра точности. Не ждёт SLAI. Разблокирует решение по моделям. |
 | **SLAI разблокировка** — нуднуть Q4 (service-token) + Q5 (ETA пилота) + Q9 (golden dataset) | SLAI | Все три на их стороне. См. INTEGRATION_QUEUE. |
 | **F3 items 1+3** — webhook-receiver + service-token `slai` | Q4/Q5 | 0.5 дня после разблокировки. |
-| **EXT-A** — `GET /capabilities` + `X-Extractor-Signature` alias | — | ½ дня. Разблокирует SLAI contract-test их нового `ExtractorGateway`. Q10. |
-| **EXT-B** — BYO LLM credentials (`X-LLM-*` headers, redaction, метрики `extractor_llm_*`) | EXT-A | 1-2 дня. Consumer-микросервис шлёт свой LLM-ключ per-request — архитектурное удобство для multi-consumer. Q11. |
+| ~~**EXT-A** — `/capabilities` + `X-Extractor-Signature`~~ | — | ✅ код+тесты (`808e5cb`), ждёт деплоя. Q10. |
+| ~~**EXT-B** — BYO LLM credentials (`X-LLM-*` headers)~~ | — | ✅ код+тесты (`808e5cb`), ждёт деплоя + `BYO_LLM_ENABLED`. Q11. |
 | **EXT-D** — Pre-upload signed URL (приём файла по URL) | EXT-A+B | 1 день. Снимает 50MB multipart-bottleneck. Nice-to-have, не блокер MVP. Q12. |
 | **Bonus** — `docker prune` шаг в deploy.yml | — | 5 мин. Защита от забивания диска build-cache'ем (у SLAI забило 60ГБ, превентивно ставим у себя). |
 | ~~**UI-7** — срезы Dashboard~~ | — | ✅ 2026-05-23 (engine + tier; consumer отложен). В `0807285`, ждёт деплоя с P0-1. |
