@@ -75,6 +75,15 @@ export async function deliverWebhook(
           // старый `x-docservice-signature` оставляем для backwards-compat
           // на случай если другие потребители завязались на него. Через
           // 1-2 месяца после миграции SLAI старый header можно убрать.
+          //
+          // EXT-A (2026-05-26): добавлен extractor-agnostic alias
+          // `X-Extractor-Signature` — SLAI новый `ExtractorGateway` ищет
+          // именно его (parsdocs — один из adapter'ов, имя в подписи не
+          // должно его выдавать). Future consumer-микросервисы тоже могут
+          // полагаться на этот общий header без знания что внутри parsdocs.
+          'x-extractor-signature': `sha256=${signature}`,
+          'x-extractor-job-id': jobId,
+          'x-extractor-attempt': String(attempt),
           'x-parsdocs-signature': `sha256=${signature}`,
           'x-parsdocs-job-id': jobId,
           'x-parsdocs-attempt': String(attempt),
