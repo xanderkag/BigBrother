@@ -140,6 +140,24 @@ class ProviderSettingsRepo {
     return rows[0] ? this.decryptRow(rows[0]) : null;
   }
 
+  /**
+   * Hybrid-routing (SLAI #3): подобрать активного vision-capable LLM-провайдера.
+   * Используется роутером когда нужен vision-путь, но `HYBRID_VISION_PROVIDER_ID`
+   * не задан явно. Предпочитаем is_default (если он сам vision), иначе любую
+   * активную vision-строку (детерминированный порядок по display_name).
+   * Возвращает null если ни одной активной vision-строки нет → caller fail-soft
+   * откатывается на text-путь.
+   */
+  async findActiveVision(): Promise<ProviderSettingRow | null> {
+    const { rows } = await db.query<ProviderSettingRow>(
+      `SELECT * FROM provider_settings
+        WHERE kind = 'llm' AND is_active = true AND vision = true
+        ORDER BY is_default DESC, display_name
+        LIMIT 1`,
+    );
+    return rows[0] ? this.decryptRow(rows[0]) : null;
+  }
+
   /** Returns the (at most one) default provider for the given kind. */
   async findDefault(kind: ProviderKind): Promise<ProviderSettingRow | null> {
     const { rows } = await db.query<ProviderSettingRow>(

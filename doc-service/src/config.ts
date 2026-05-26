@@ -204,6 +204,28 @@ const ConfigSchema = z.object({
   byoLlmEnabled: z.coerce.boolean().default(false),
 
   /**
+   * Hybrid-routing (SLAI backlog Sequencing #3) — главный рычаг по latency.
+   *
+   * После OCR+classify, перед extract, роутер решает PATH per-job:
+   *   - чистый text-PDF (высокая OCR-уверенность, pdf-text engine) → быстрый
+   *     text-провайдер (phi4), в SLA, без картинки;
+   *   - скан / низкая OCR-уверенность / image / per-type prefer_vision →
+   *     vision-провайдер (Qwen-VL) с картинкой первой страницы (точность).
+   *
+   * enabled=false (default) → роутер не вмешивается, поведение в точности как
+   * сегодня: provider.vision + metadata._extract_from_image работают как раньше.
+   *
+   *   - visionConfThreshold: OCR-уверенность ниже которой считаем «нужен vision».
+   *   - visionProviderId: явный id строки provider_settings vision-провайдера.
+   *     Пусто → роутер сам ищет активную vision-строку (findActiveVision()).
+   */
+  hybridRouting: z.object({
+    enabled: z.coerce.boolean().default(false),
+    visionConfThreshold: numberFromEnv(0.7),
+    visionProviderId: z.string().optional(),
+  }),
+
+  /**
    * EXT-D (Q12): ingest a document by URL instead of multipart upload.
    * Consumer (SLAI) pre-uploads to its own blob and sends parsdocs a link —
    * removes the 50MB multipart bottleneck on large freight docs.
@@ -345,6 +367,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       timeoutMs: env.LLM_TIMEOUT_MS,
     },
     byoLlmEnabled: env.BYO_LLM_ENABLED,
+    hybridRouting: {
+      enabled: env.HYBRID_ROUTING_ENABLED,
+      visionConfThreshold: env.HYBRID_VISION_CONF_THRESHOLD,
+      visionProviderId: env.HYBRID_VISION_PROVIDER_ID || undefined,
+    },
     fileUrlIngest: {
       enabled: env.FILE_URL_INGEST_ENABLED,
       allowedHosts: env.FILE_URL_ALLOWED_HOSTS,

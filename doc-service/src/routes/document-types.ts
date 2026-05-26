@@ -92,6 +92,8 @@ const DocumentType = z.object({
   resolution_config: ResolutionConfigSchema.nullable(),
   // CP7: владелец типа. null = глобальный/builtin/shared. uuid = tenant-owned.
   organization_id: z.string().uuid().nullable(),
+  // Hybrid-routing (SLAI #3): per-type принудительный vision-путь.
+  prefer_vision: z.boolean(),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -125,6 +127,8 @@ const CreateBody = z.object({
   classification_keywords: z.array(z.string().min(1).max(200)).max(64).optional(),
   metadata: z.record(z.unknown()).nullable().optional(),
   resolution_config: ResolutionConfigSchema.nullable().optional(),
+  // Hybrid-routing (SLAI #3): per-type принудительный vision-путь.
+  prefer_vision: z.boolean().optional(),
   /**
    * CP7: владелец создаваемого типа.
    *   omitted / null ⇒ глобальный тип — только super_admin;

@@ -70,6 +70,12 @@ export type ResolvedTypeConfig = {
    * (row=null) дефолтим в 'experimental' — это самый осторожный bucket.
    */
   tier: DocumentTypeTier;
+  /**
+   * Hybrid-routing (SLAI #3): per-type принудительный vision-путь. true →
+   * роутер маршрутизирует extract этого типа через vision-провайдера даже при
+   * чистом text-слое. Fallback (row=null) → false. Гейтится HYBRID_ROUTING_ENABLED.
+   */
+  preferVision: boolean;
   /** Whether this config was DB-sourced or fully built from fallbacks. */
   source: 'db' | 'fallback';
 };
@@ -258,6 +264,7 @@ export function resolveConfigFromRow(
       parserKind: null,
       resolutionConfig: null,
       tier: 'experimental',
+      preferVision: false,
       source: 'fallback',
     };
   }
@@ -284,6 +291,7 @@ export function resolveConfigFromRow(
     // 'experimental'). Если по какой-то причине row из старого snapshot'а без
     // колонки — деградируем в 'experimental'.
     tier: (row.tier ?? 'experimental') as DocumentTypeTier,
+    preferVision: row.prefer_vision === true,
     source: 'db',
   };
 }

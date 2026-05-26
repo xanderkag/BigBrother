@@ -81,6 +81,13 @@ export type DocumentTypeRow = {
    * (CHECK chk_builtin_is_global в БД — backstop).
    */
   organization_id: string | null;
+  /**
+   * Hybrid-routing (SLAI #3): per-type opt-in в vision-путь. true → extract
+   * этого типа всегда идёт через designated vision-провайдера (картинка
+   * первой страницы), даже при чистом text-слое. false/default → решение по
+   * cheap-сигналам роутера. Гейтится HYBRID_ROUTING_ENABLED.
+   */
+  prefer_vision: boolean;
   created_at: Date;
   updated_at: Date;
 };
@@ -109,6 +116,8 @@ export type DocumentTypeCreateInput = {
    * слое; DB CHECK — backstop.
    */
   organization_id?: string | null;
+  /** Hybrid-routing: per-type принудительный vision-путь (см. row.prefer_vision). */
+  prefer_vision?: boolean;
 };
 
 /** Partial update. Любое поле = `undefined` оставляет колонку как есть. `null` — обнуляет. */
@@ -206,12 +215,12 @@ class DocumentTypesRepo {
          slug, display_name, description, is_active, is_builtin, tier, parser_kind,
          llm_prompt, llm_schema, expected_fields, validators,
          confidence_threshold, regex_fallback_threshold, classification_keywords, metadata,
-         resolution_config, organization_id
+         resolution_config, organization_id, prefer_vision
        ) VALUES (
          $1, $2, $3, COALESCE($4, true), false, COALESCE($5, 'experimental'), COALESCE($6, 'llm_extract'),
          $7, $8, COALESCE($9, ARRAY[]::TEXT[]), COALESCE($10, ARRAY[]::TEXT[]),
          $11, $12, COALESCE($13, ARRAY[]::TEXT[]), $14,
-         $15, $16
+         $15, $16, COALESCE($17, false)
        ) RETURNING *`,
       [
         input.slug,
@@ -230,6 +239,7 @@ class DocumentTypesRepo {
         input.metadata ?? null,
         input.resolution_config ?? null,
         input.organization_id ?? null,
+        input.prefer_vision ?? null,
       ],
     );
     return rows[0]!;
@@ -265,6 +275,7 @@ class DocumentTypesRepo {
       push('classification_keywords', patch.classification_keywords);
     if (patch.metadata !== undefined) push('metadata', patch.metadata);
     if (patch.resolution_config !== undefined) push('resolution_config', patch.resolution_config);
+    if (patch.prefer_vision !== undefined) push('prefer_vision', patch.prefer_vision);
     if (sets.length === 0) return this.findBySlug(slug);
 
     values.push(slug);
@@ -314,6 +325,7 @@ class DocumentTypesRepo {
       metadata: row.metadata,
       resolution_config: row.resolution_config,
       organization_id: row.organization_id,
+      prefer_vision: row.prefer_vision,
       created_at: row.created_at.toISOString(),
       updated_at: row.updated_at.toISOString(),
     };

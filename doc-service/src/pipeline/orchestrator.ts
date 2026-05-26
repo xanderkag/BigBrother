@@ -47,6 +47,11 @@ import { fileStorage } from '../storage/files.js';
 import { organizationSettingsRepo } from '../storage/organization-settings.js';
 import { DadataClient } from './enrich/dadata.js';
 import { enrichWithDadata } from './enrich/index.js';
+import {
+  decideExtractPath,
+  resolveVisionProviderId,
+  type RouteReason,
+} from './hybrid-router.js';
 
 // --- Wire dependencies once at module load. The pipeline is stateless beyond this.
 //
@@ -250,6 +255,13 @@ async function processJobInner(
     const forceExtractFromImage =
       metaForRouter._extract_from_image === true ||
       metaForRouter._extract_from_image === 'true';
+    // Hybrid-routing (SLAI #3): metadata._extract_from_text=true форсирует
+    // быстрый text-путь даже если роутер выбрал бы vision (оператор знает,
+    // что документ — чистый текст). Старше forceImage в decideExtractPath.
+    const forceExtractFromText =
+      metaForRouter._extract_from_text === true ||
+      metaForRouter._extract_from_text === 'true';
+    const isImageInput = job.mime_type.startsWith('image/');
 
     await stepEvent('ocr', 'started', { details: { mime: job.mime_type } });
     const ocrStart = Date.now();
@@ -383,6 +395,21 @@ async function processJobInner(
         classifyOnly,
         imagePath: firstPageImage.imagePath,
         forceExtractFromImage,
+        // Hybrid-routing (SLAI #3). Гейтится HYBRID_ROUTING_ENABLED — при
+        // выключенном флаге pipeline игнорирует hybrid и ведёт себя как раньше.
+        hybrid: config.hybridRouting.enabled
+          ? {
+              ocrEngine: ocr.engine,
+              ocrConfidence: ocr.confidence,
+              textLength: ocr.text.length,
+              pageCount: ocr.pages?.length ?? 1,
+              isImageInput,
+              forceImage: forceExtractFromImage,
+              forceText: forceExtractFromText,
+              visionConfThreshold: config.hybridRouting.visionConfThreshold,
+              visionProviderId: config.hybridRouting.visionProviderId,
+            }
+          : undefined,
       },
       log,
       { jobId },
@@ -411,6 +438,9 @@ async function processJobInner(
           llm_called: !!post.llmCall,
           // item A: видимость в job detail — extract шёл по картинке или тексту.
           extract_mode: post.extractMode ?? 'text',
+          // Hybrid-routing (SLAI #3): почему выбран этот путь (debug в job detail).
+          // undefined когда hybrid выключен — поле просто не пишется.
+          route_reason: post.routeReason,
         },
       });
     }
@@ -876,6 +906,27 @@ export async function runDocumentPipeline(
      * принимается по `llm.supportsVision()`.
      */
     forceExtractFromImage?: boolean;
+    /**
+     * Hybrid-routing (SLAI #3). Когда задан — после classify роутер решает
+     * text/vision PATH по дешёвым сигналам и (при vision) маршрутизирует
+     * extract через designated vision-провайдера + картинку. Передаётся ТОЛЬКО
+     * когда HYBRID_ROUTING_ENABLED=true (orchestrator гейтит). undefined →
+     * поведение как раньше (provider.vision / forceExtractFromImage).
+     *
+     * Fail-soft: если vision-провайдер недоступен или картинки нет — откат
+     * на text-путь, job не падает.
+     */
+    hybrid?: {
+      ocrEngine: import('./ocr/types.js').OcrResult['engine'];
+      ocrConfidence: number;
+      textLength: number;
+      pageCount: number;
+      isImageInput: boolean;
+      forceImage: boolean;
+      forceText: boolean;
+      visionConfThreshold: number;
+      visionProviderId?: string;
+    };
   },
   log: Logger,
   context: Record<string, unknown> = {},
@@ -905,6 +956,12 @@ export async function runDocumentPipeline(
    * типа). Caller пишет это в pipeline step для видимости в job detail.
    */
   extractMode?: 'image' | 'text';
+  /**
+   * Hybrid-routing (SLAI #3): причина выбора пути (low_ocr_conf / scan_engine /
+   * forced_image / clean_text / ...). undefined когда hybrid выключен или
+   * extract не запускался. Пишется в pipeline step для debug.
+   */
+  routeReason?: RouteReason;
 }> {
   let documentType: DocumentTypeSlug | null = options.hint ?? null;
   let classificationSource: 'hint' | 'keyword' = documentType ? 'hint' : 'keyword';
@@ -938,6 +995,7 @@ export async function runDocumentPipeline(
   let typeConfig: ResolvedTypeConfig | null = null;
   let llmCall: LlmExtractDebug | undefined;
   let extractMode: 'image' | 'text' | undefined;
+  let routeReason: RouteReason | undefined;
 
   if (documentType && options.classifyOnly) {
     // Phase 3 (CP7): classify_only — потребителю нужен только тип документа.
@@ -977,14 +1035,61 @@ export async function runDocumentPipeline(
           ? parsersFactory.getGeneric(documentType)
           : parsersFactory.get(documentType);
 
-    // extraction-from-image routing (item A): отдаём картинку парсеру только
-    // если (а) есть image-файл первой страницы, И (б) либо явный override
-    // metadata._extract_from_image, либо resolved LLM-провайдер vision-capable.
-    // Если провайдер не vision и override не задан — imagePath=undefined →
-    // классический text-only extract (поведение для phi4 не меняется).
-    // supportsVision() — fail-soft: ошибка резолва → считаем не-vision.
+    // ── Extract PATH routing ───────────────────────────────────────────────
+    // Два режима резолва картинки/провайдера:
+    //
+    //   (A) Hybrid-routing (SLAI #3, options.hybrid задан): роутер решает
+    //       text/vision по дешёвым сигналам (OCR conf / scan-engine / prefer_vision
+    //       / forced). При vision — резолвим designated vision-провайдера и
+    //       прогоняем extract через него (withForceProvider ALS) + картинка.
+    //       Fail-soft: нет vision-провайдера или нет картинки → откат на text.
+    //
+    //   (B) Legacy (item A, hybrid не задан / выключен): картинка идёт парсеру
+    //       только если есть image-файл И (forceExtractFromImage ИЛИ resolved
+    //       LLM-провайдер vision-capable). supportsVision() fail-soft.
     let imagePathForExtract: string | undefined;
-    if (options.imagePath) {
+    let forceVisionProviderId: string | null = null;
+
+    if (options.hybrid) {
+      const decision = decideExtractPath(
+        {
+          ocrEngine: options.hybrid.ocrEngine,
+          ocrConfidence: options.hybrid.ocrConfidence,
+          textLength: options.hybrid.textLength,
+          pageCount: options.hybrid.pageCount,
+          isImageInput: options.hybrid.isImageInput,
+          preferVision: typeConfig.preferVision,
+          forceImage: options.hybrid.forceImage,
+          forceText: options.hybrid.forceText,
+        },
+        { visionConfThreshold: options.hybrid.visionConfThreshold },
+      );
+      routeReason = decision.reason;
+      if (decision.mode === 'vision') {
+        // Нужен vision. Резолвим designated провайдера и проверяем что есть
+        // картинка. Любой провал (нет провайдера / нет картинки) → fail-soft
+        // откат на text-путь с понятным route_reason.
+        const visionId = await resolveVisionProviderId(options.hybrid.visionProviderId, log);
+        if (visionId && options.imagePath) {
+          forceVisionProviderId = visionId;
+          imagePathForExtract = options.imagePath;
+        } else {
+          log.warn(
+            {
+              ...context,
+              route_reason: decision.reason,
+              vision_provider_resolved: !!visionId,
+              has_image: !!options.imagePath,
+            },
+            'hybrid: vision path requested but unavailable — falling back to text',
+          );
+          // Откат на text: помечаем reason как clean_text-эквивалент по факту
+          // (extract пойдёт текстом). Оставляем оригинальный reason недоступным,
+          // фиксируем фактический режим в extractMode ниже.
+          routeReason = decision.reason; // why we WANTED vision; mode=text fact ниже
+        }
+      }
+    } else if (options.imagePath) {
       let visionCapable = false;
       try {
         visionCapable = await llm.supportsVision();
@@ -997,22 +1102,30 @@ export async function runDocumentPipeline(
     }
     extractMode = imagePathForExtract ? 'image' : 'text';
 
+    const runParse = () =>
+      parser.parse(rawText, {
+        expectedFields: typeConfig!.expectedFields,
+        regexFallbackThreshold: typeConfig!.regexFallbackThreshold,
+        llmSchema: typeConfig!.llmSchema,
+        imagePath: imagePathForExtract,
+        // Кастомная инструкция админа (если задана) → пробрасывается
+        // парсером в LLM-клиент → попадает как `prompt_override` в
+        // inference-service → заменяет builtin prompt для этого типа.
+        //
+        // F20 (SLAI ТЗ): per-job override через options.promptOverride
+        // приоритетнее чем per-type llmPrompt. Use case: оператор хочет
+        // переспросить документ с другим промптом для одного конкретного
+        // job (через `POST /jobs/:id/reprocess` с metadata.prompt_override).
+        llmPrompt: options.promptOverride ?? typeConfig!.llmPrompt ?? undefined,
+      });
+
     const tParser = Date.now();
-    const result = await parser.parse(rawText, {
-      expectedFields: typeConfig.expectedFields,
-      regexFallbackThreshold: typeConfig.regexFallbackThreshold,
-      llmSchema: typeConfig.llmSchema,
-      imagePath: imagePathForExtract,
-      // Кастомная инструкция админа (если задана) → пробрасывается
-      // парсером в LLM-клиент → попадает как `prompt_override` в
-      // inference-service → заменяет builtin prompt для этого типа.
-      //
-      // F20 (SLAI ТЗ): per-job override через options.promptOverride
-      // приоритетнее чем per-type llmPrompt. Use case: оператор хочет
-      // переспросить документ с другим промптом для одного конкретного
-      // job (через `POST /jobs/:id/reprocess` с metadata.prompt_override).
-      llmPrompt: options.promptOverride ?? typeConfig.llmPrompt ?? undefined,
-    });
+    // При hybrid-vision прогоняем extract через designated vision-провайдера
+    // (ALS-override). withForceProvider fail-soft'нет на default если id не
+    // резолвится — но мы уже проверили резолв выше, так что это безопасно.
+    const result = forceVisionProviderId
+      ? await dynamicLlm.withForceProvider(forceVisionProviderId, runParse)
+      : await runParse();
     const parserMs = Date.now() - tParser;
     if (timings) timings.extract_ms = parserMs;
     extracted = result.extracted;
@@ -1085,5 +1198,6 @@ export async function runDocumentPipeline(
     typeConfig,
     llmCall,
     extractMode,
+    routeReason,
   };
 }

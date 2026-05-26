@@ -96,6 +96,7 @@ function apiRow(over: Record<string, unknown> = {}) {
     metadata: null,
     resolution_config: null,
     organization_id: null,
+    prefer_vision: false,
     created_at: '2026-01-01T00:00:00.000Z',
     updated_at: '2026-01-01T00:00:00.000Z',
     ...over,
