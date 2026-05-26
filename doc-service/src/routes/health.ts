@@ -4,7 +4,14 @@ import { access, constants } from 'node:fs/promises';
 import { Redis as IORedis } from 'ioredis';
 import { config } from '../config.js';
 import { db } from '../db.js';
+import { documentTypesRepo } from '../storage/document-types.js';
 import { HealthResponse, ReadyResponse } from '../types/api-schemas.js';
+
+// EXT-A (2026-05-26): contract version, который parsdocs обещает SLAI'у
+// в `GET /capabilities`. Bump'аем при ломающих изменениях payload-структуры
+// (webhook payload, /jobs response, и т.п.). Минорные дополнения полей не
+// требуют bump'а — поведение consumer'ов от extras не ломается.
+const EXTRACTOR_CONTRACT_VERSION = '1';
 
 export async function healthRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
@@ -21,6 +28,34 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
     },
     async () => ({ status: 'ok' as const }),
   );
+
+  // EXT-A (2026-05-26): capability-discovery для consumer-микросервисов
+  // (SLAI и любых будущих). Публичный (без auth) — как /health и /version:
+  // их `ExtractorGateway` должен уметь дёрнуть до выставления токена.
+  // Содержит:
+  //   - adapter: 'parsdocs' — имя адаптера, под которым parsdocs регистрируется
+  //   - contractVersion: '1' — webhook payload + /jobs response shape
+  //   - supportedDocumentTypes: список активных slug'ов из БД (динамика —
+  //     не хардкод; админ может включить/выключить тип через UI)
+  //   - maxFileMB: текущий лимит multipart upload (config.maxUploadMb)
+  //   - webhookSupported: true — push-доставка работает. Polling доступен
+  //     всегда (GET /jobs/:id) — про него явный флаг не нужен по контракту.
+  //   - service / semver / commitShort — для drift-детекта без отдельного
+  //     запроса /version
+  app.get('/capabilities', async () => {
+    const types = await documentTypesRepo.listActive();
+    return {
+      adapter: 'parsdocs' as const,
+      contractVersion: EXTRACTOR_CONTRACT_VERSION,
+      service: 'parsdocs',
+      semver: process.env.APP_VERSION || '0.1.0',
+      commitShort: process.env.GIT_COMMIT_SHORT
+        || (process.env.GIT_COMMIT || 'unknown').slice(0, 7),
+      supportedDocumentTypes: types.map((t) => t.slug),
+      maxFileMB: config.maxUploadMb,
+      webhookSupported: true as const,
+    };
+  });
 
   // EPIC-7 Phase 1: версия билда — публичная (без auth, как /health),
   // чтобы внешний health-check SLAI видел version-drift. Git-метаданные

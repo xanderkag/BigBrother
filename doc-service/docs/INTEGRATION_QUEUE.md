@@ -48,6 +48,73 @@
 
 ## Active Questions
 
+### Q12. EXT-D — Pre-upload signed URL ingestion
+
+- **Status:** OPEN (deferred — после A+B, не блокер MVP)
+- **Asked:** 2026-05-26
+- **From:** SLAI_DEV (`slai-response-to-parsdocs-2026-05-26.md`)
+- **To:** PARSDOCS_DEV
+- **Что нужно:** принимать файл по URL (`POST /jobs {file_url, ...}`) вместо
+  multipart — снимает 50MB-bottleneck на больших фрахт-документах.
+- **Что сделать:** скачать с URL внутри upload-handler (sha256-verify,
+  size-cap, mime-sniff), дальше нормальный pipeline. ~1 день.
+
+#### Question / Context
+SLAI у себя планирует pre-upload в свой blob (signed URL), затем
+передавать parsdocs ссылку. Снимает зависимость от multipart-лимита и
+позволяет дедупить на их стороне до отправки нам.
+
+---
+
+### Q11. EXT-B — BYO LLM credentials через X-LLM-* заголовки
+
+- **Status:** OPEN (in our backlog)
+- **Asked:** 2026-05-26
+- **From:** SLAI_DEV (`slai-response-to-parsdocs-2026-05-26.md`)
+- **To:** PARSDOCS_DEV
+- **Что нужно:** parsdocs принимает per-request заголовки `X-LLM-Provider`,
+  `X-LLM-Api-Key`, `X-LLM-Model`, `X-LLM-Base-Url`. Использует их для
+  этого job вместо default из `provider_settings`. Ключ — никогда в логах,
+  events, audit, last_llm_call.
+- **Что сделать:** withForceProvider-эквивалент через AsyncLocalStorage
+  (паттерн уже есть), redaction в trace-логике, ENV-флаг `BYO_LLM_ENABLED`,
+  метрики `extractor_llm_credentials_supplied_total{provider}` и
+  `extractor_llm_provider_errors_total{provider, code}`. 1-2 дня.
+
+#### Question / Context
+SLAI — наш же микросервис, у него уже есть AI-инфра (Anthropic key для
+AI-чата). Передача того же ключа в parsdocs per-request — архитектурное
+удобство (parsdocs не настраивает свой ключ) + готовность к новым
+consumer-микросервисам после SLAI. Не коммерческая модель — один общий
+внутренний ключ. Exit criteria: снимаем когда parsdocs заведёт свои
+LLM-контракты ИЛИ когда LLM-extraction переедет на сторону consumer'а.
+
+---
+
+### Q10. EXT-A — GET /capabilities + X-Extractor-Signature alias
+
+- **Status:** OPEN (in our backlog, in_progress)
+- **Asked:** 2026-05-26
+- **From:** SLAI_DEV (`slai-response-to-parsdocs-2026-05-26.md`)
+- **To:** PARSDOCS_DEV
+- **Что нужно:**
+  1. `GET /api/v1/capabilities` → `{adapter:'parsdocs', contractVersion:'1',
+     supportedDocumentTypes:[...slugs], maxFileMB:50, webhookSupported:true}`.
+     Polling всегда доступен (явно не флагается).
+  2. Outbound webhook подписывается `X-Extractor-Signature: sha256=<hex>`
+     как alias к существующему `X-DocService-Signature`. Старый заголовок
+     не убираем (back-compat).
+- **Что сделать:** новый route, переиспользовать `documentTypeResolver`
+  для списка типов и `config.version` (EPIC-7) для contractVersion. В
+  webhook-delivery добавить второй заголовок (тот же HMAC). ½ дня.
+
+#### Question / Context
+Без этого SLAI не может написать contract-test для своего
+`ParsdocsAdapter` в их новом `ExtractorGateway`. Разблокирующий минимум —
+делать первым.
+
+---
+
 ### Q9. ТЗ от SLAI v1.0 — 18 типов документов, 8 open questions, golden dataset
 
 - **Status:** ANSWERED (наш ответ создан, ждём golden dataset)
@@ -245,3 +312,5 @@ F9 — изменено в `inference-service/.env.example`:
 | 2026-05-17 | F17 (transport_invoice форма 2013), F16 (transport_request) закрыты. **Все 10 типов Фазы 1 SLAI ТЗ покрыты**. Создан `Desktop\parsdocs-validation-bench\SLAI_SYNC_QUEUE.md` для async-вопросов к SLAI команде. |
 | 2026-05-19 | F5 закрыто полностью. PdfTextEngine теперь эмитит per-page text через кастомный pagerender в pdf-parse; Tesseract уже это умел; orchestrator + runner + webhook payload собраны раньше. Multi-doc путь активируется для xlsx multi-sheet, тексто-слойных PDF и сканов. Stale тесты `multidoc-splitter.spec.ts` (после relax'а 2026-05-18 commit 255d9e8) обновлены под новую `isMultiDocument` логику. |
 | 2026-05-19 | F3 item 4 закрыто — `doc-service/docs/openapi/v1.yaml` (OpenAPI 3.1, 13 схем, 4 примера, описаны HMAC headers, retry/idempotency, versioning, redact_pii, slug aliasing). Items 1/3 остаются заблокированы Q4/Q5 (ждём продакта SLAI). |
+| 2026-05-20 | 4 P0 фрахт-счетов SLAI закрыты (`92745ce`): UTF8 0x00 краш, items[] пустой, number=«на»/«No», ИНН продавца=покупателя. Добавлены транспортные атрибуты в `items[]` (vehicle_plate, order_ref, route_from, route_to, trip_date). Schema-echo defensive unwrap. Verified end-to-end на 3 эталонных счетах. |
+| 2026-05-26 | Получен `slai-response-to-parsdocs-2026-05-26.md`. Перефреймили как внутренний микросервис (не внешний клиент): отпали коммерческие пункты, A/B-встреча через квартал не нужна. Заведены Q10-Q12 (EXT-A/B/D). EXT-C `blocked-on-trigger` без даты, в очередь не пишем. Ответ — `PARSDOCS_REPLY_TO_SLAI_EXT_2026-05-26.md`. |
