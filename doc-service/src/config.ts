@@ -203,6 +203,40 @@ const ConfigSchema = z.object({
    */
   byoLlmEnabled: z.coerce.boolean().default(false),
 
+  /**
+   * EXT-D (Q12): ingest a document by URL instead of multipart upload.
+   * Consumer (SLAI) pre-uploads to its own blob and sends parsdocs a link —
+   * removes the 50MB multipart bottleneck on large freight docs.
+   *
+   * Default false (fail-closed): server-side fetch of an arbitrary
+   * user-supplied URL is an SSRF vector, so the whole feature is gated.
+   *
+   * SECURITY (см. pipeline/ingest/url-fetch.ts):
+   *   - только http(s) схемы;
+   *   - host резолвится и блокируется если указывает на private/loopback/
+   *     link-local/metadata IP (RFC1918, 127.x, 169.254.x, ::1, …);
+   *   - allowedHosts (FILE_URL_ALLOWED_HOSTS, CSV) — опциональный whitelist
+   *     для ужесточения. Пусто = block-private-IPs default;
+   *   - redirects запрещены (maxRedirections=0);
+   *   - hard byte-ceiling enforced mid-stream (не верим Content-Length);
+   *   - timeout.
+   */
+  fileUrlIngest: z.object({
+    enabled: z.coerce.boolean().default(false),
+    // CSV-список разрешённых хостов (case-insensitive). Пусто = любой
+    // публичный хост (private/internal всё равно блокируются IP-проверкой).
+    allowedHosts: z
+      .preprocess((v) => {
+        if (typeof v !== 'string' || v.trim() === '') return [];
+        return v
+          .split(',')
+          .map((h) => h.trim().toLowerCase())
+          .filter((h) => h.length > 0);
+      }, z.array(z.string()))
+      .default([]),
+    timeoutMs: numberFromEnv(20_000),
+  }),
+
   yandex: z.object({
     apiKey: z.string().optional(),
     folderId: z.string().optional(),
@@ -311,6 +345,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       timeoutMs: env.LLM_TIMEOUT_MS,
     },
     byoLlmEnabled: env.BYO_LLM_ENABLED,
+    fileUrlIngest: {
+      enabled: env.FILE_URL_INGEST_ENABLED,
+      allowedHosts: env.FILE_URL_ALLOWED_HOSTS,
+      timeoutMs: env.FILE_URL_FETCH_TIMEOUT_MS,
+    },
     yandex: {
       apiKey: env.YANDEX_VISION_API_KEY || undefined,
       folderId: env.YANDEX_FOLDER_ID || undefined,

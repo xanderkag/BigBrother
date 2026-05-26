@@ -42,6 +42,7 @@ import {
   stripInlineCredentials,
   INLINE_CREDS_METADATA_KEY,
 } from '../pipeline/llm/inline-credentials.js';
+import { fetchUrlToStream, UrlFetchError } from '../pipeline/ingest/url-fetch.js';
 
 /**
  * SHA-256 stream-hash файла. Используется для idempotent-кэша:
@@ -56,6 +57,26 @@ async function computeFileSha256(absolutePath: string): Promise<string> {
   const hash = createHash('sha256');
   await pipeline(createReadStream(absolutePath), hash);
   return hash.digest('hex');
+}
+
+/** Имя файла из path части URL (для storage). Fallback — 'download'. */
+function deriveFilenameFromUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    const last = u.pathname.split('/').filter(Boolean).pop();
+    return last && last.length > 0 ? decodeURIComponent(last) : 'download';
+  } catch {
+    return 'download';
+  }
+}
+
+/** Только host для лога (не светим query/path/креды из URL). */
+function safeHostForLog(raw: string): string {
+  try {
+    return new URL(raw).host;
+  } catch {
+    return 'invalid-url';
+  }
 }
 
 function isValidWebhookUrl(value: string): boolean {
@@ -131,7 +152,12 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
           'Обработка асинхронная — статус опрашивайте через GET /jobs/:id или подпишитесь webhook_url.',
           '',
           'Поля multipart/form-data:',
-          '- **file** (binary, обязательно) — сам документ. Тип проверяется по magic-bytes.',
+          '- **file** (binary, обязательно если нет file_url) — сам документ. Тип проверяется по magic-bytes.',
+          '- **file_url** (string, опционально) — ссылка на документ; сервер скачивает его сам ' +
+            '(альтернатива file-part, снимает 50MB multipart-лимит). Требует FILE_URL_INGEST_ENABLED. ' +
+            'Только http(s); приватные/internal адреса блокируются (SSRF-защита).',
+          '- **file_sha256** (string, опционально) — ожидаемый SHA-256 скачанного по file_url файла; ' +
+            'проверяется после загрузки, mismatch → 400.',
           '- **webhook_url** (string, опционально) — куда POST-нуть результат; тело подписывается HMAC-SHA256',
           '- **document_hint** (string, опционально) — invoice|factInvoice|UPD|TTN|CMR|AKT',
           '- **metadata** (string, опционально) — JSON-строка, echo обратно в ответе и webhook',
@@ -181,6 +207,12 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
       let webhookUrl: string | undefined;
       let documentHint: string | undefined;
       let metadata: unknown;
+      // EXT-D (Q12): альтернатива file-part — ссылка на документ в чужом
+      // blob'е. Скачиваем server-side после парсинга полей. file_sha256 —
+      // опциональная контрольная сумма для проверки целостности после
+      // загрузки.
+      let fileUrl: string | undefined;
+      let fileSha256Expected: string | undefined;
       // Tenant scope от клиента — опциональные multipart-поля. Если не заданы,
       // ниже падёт в default project текущего пользователя.
       let projectId: string | undefined;
@@ -205,6 +237,8 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
           const value = typeof part.value === 'string' ? part.value : '';
           if (part.fieldname === 'webhook_url') webhookUrl = value;
           else if (part.fieldname === 'document_hint') documentHint = value;
+          else if (part.fieldname === 'file_url') fileUrl = value;
+          else if (part.fieldname === 'file_sha256') fileSha256Expected = value;
           else if (part.fieldname === 'project_id') projectId = value;
           else if (part.fieldname === 'organization_id') organizationId = value;
           else if (part.fieldname === 'redact_pii') {
@@ -230,9 +264,72 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         }
       }
 
+      // EXT-D (Q12): file_url branch — клиент прислал ссылку вместо file-part.
+      // Скачиваем server-side в storage, далее идёт идентичный pipeline
+      // (magic-bytes, dedup, job create). Гейтится FILE_URL_INGEST_ENABLED.
+      if (!savedFile && fileUrl) {
+        if (!config.fileUrlIngest.enabled) {
+          reply.code(400);
+          return {
+            error: 'file_url ingest is not enabled on this deployment',
+            error_code: 'FILE_URL_DISABLED',
+          };
+        }
+        const maxBytes = config.maxUploadMb * 1024 * 1024;
+        try {
+          const fetched = await fetchUrlToStream(fileUrl, {
+            allowedHosts: config.fileUrlIngest.allowedHosts,
+            maxBytes,
+            timeoutMs: config.fileUrlIngest.timeoutMs,
+          });
+          savedFile = await fileStorage.saveStream({
+            // Имя берём из path URL; mime уточним по magic-bytes ниже.
+            filename: deriveFilenameFromUrl(fileUrl),
+            mimeType: fetched.contentType ?? 'application/octet-stream',
+            stream: fetched.stream,
+          });
+        } catch (err) {
+          // saveStream мог записать частичный файл до того как cap-стрим
+          // эмитнул TOO_LARGE — чистим. savedFile в catch ещё null (await
+          // saveStream бросил), поэтому ловим по best-effort через err.
+          if (err instanceof UrlFetchError) {
+            req.log.warn(
+              { file_url_host: safeHostForLog(fileUrl), code: err.code },
+              'file_url fetch rejected',
+            );
+            const map: Record<string, { status: number; code: string; msg: string }> = {
+              BLOCKED_SCHEME: { status: 400, code: 'FILE_URL_BLOCKED_HOST', msg: 'file_url scheme not allowed' },
+              BLOCKED_HOST: { status: 400, code: 'FILE_URL_BLOCKED_HOST', msg: 'file_url host is not allowed' },
+              TOO_LARGE: { status: 400, code: 'FILE_URL_TOO_LARGE', msg: 'downloaded file exceeds size limit' },
+              FETCH_FAILED: { status: 400, code: 'FILE_URL_FETCH_FAILED', msg: 'could not fetch file_url' },
+            };
+            const m = map[err.code] ?? map.FETCH_FAILED!;
+            reply.code(m.status);
+            return { error: m.msg, error_code: m.code };
+          }
+          req.log.warn({ file_url_host: safeHostForLog(fileUrl) }, 'file_url fetch failed (unexpected)');
+          reply.code(400);
+          return { error: 'could not fetch file_url', error_code: 'FILE_URL_FETCH_FAILED' };
+        }
+
+        // sha256-verify: если клиент прислал ожидаемую сумму — сверяем после
+        // полной загрузки. Mismatch → reject + удаляем файл.
+        if (fileSha256Expected) {
+          const actual = await computeFileSha256(savedFile.absolutePath);
+          if (actual.toLowerCase() !== fileSha256Expected.trim().toLowerCase()) {
+            await unlink(savedFile.absolutePath).catch(() => undefined);
+            reply.code(400);
+            return {
+              error: 'downloaded file sha256 does not match file_sha256',
+              error_code: 'FILE_URL_SHA_MISMATCH',
+            };
+          }
+        }
+      }
+
       if (!savedFile) {
         reply.code(400);
-        return { error: 'file field is required' };
+        return { error: 'file field or file_url is required' };
       }
 
       // Empty file usually means a misconfigured client (curl forgot -F, browser

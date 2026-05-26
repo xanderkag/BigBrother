@@ -36,7 +36,7 @@ ssh kb-docker 'cd parsdocs/doc-service; sed -i "s/^API_KEY=.*/API_KEY=$(openssl 
 | **F3 items 1+3** — webhook-receiver + service-token `slai` | Q4/Q5 | 0.5 дня после разблокировки. |
 | ~~**EXT-A** — `/capabilities` + `X-Extractor-Signature`~~ | — | ✅ код+тесты (`808e5cb`), ждёт деплоя. Q10. |
 | ~~**EXT-B** — BYO LLM credentials (`X-LLM-*` headers)~~ | — | ✅ код+тесты (`808e5cb`), ждёт деплоя + `BYO_LLM_ENABLED`. Q11. |
-| **EXT-D** — Pre-upload signed URL (приём файла по URL) | EXT-A+B | 1 день. Снимает 50MB multipart-bottleneck. Nice-to-have, не блокер MVP. Q12. |
+| ~~**EXT-D** — Pre-upload signed URL (приём файла по URL)~~ | — | ✅ код+тесты (SSRF-safe, fail-closed за `FILE_URL_INGEST_ENABLED`), ждёт деплоя. Q12. |
 | **Bonus** — `docker prune` шаг в deploy.yml | — | 5 мин. Защита от забивания диска build-cache'ем (у SLAI забило 60ГБ, превентивно ставим у себя). |
 | ~~**UI-7** — срезы Dashboard~~ | — | ✅ 2026-05-23 (engine + tier; consumer отложен). В `0807285`, ждёт деплоя с P0-1. |
 

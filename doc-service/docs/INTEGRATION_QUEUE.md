@@ -50,7 +50,7 @@
 
 ### Q12. EXT-D — Pre-upload signed URL ingestion
 
-- **Status:** OPEN (deferred — после A+B, не блокер MVP)
+- **Status:** IMPLEMENTED (код + тесты, не задеплоен; ждёт `FILE_URL_INGEST_ENABLED=true` + интеграции SLAI. RESOLVED после деплоя.)
 - **Asked:** 2026-05-26
 - **From:** SLAI_DEV (`slai-response-to-parsdocs-2026-05-26.md`)
 - **To:** PARSDOCS_DEV
@@ -63,6 +63,30 @@
 SLAI у себя планирует pre-upload в свой blob (signed URL), затем
 передавать parsdocs ссылку. Снимает зависимость от multipart-лимита и
 позволяет дедупить на их стороне до отправки нам.
+
+#### Реализация (2026-05-26)
+`POST /api/v1/jobs` принимает multipart-поля `file_url` (+ опц.
+`file_sha256`) как альтернативу `file`-парту. При `file_url` хэндлер
+скачивает документ server-side, далее идентичный pipeline (magic-bytes,
+SHA-dedup, job create). Webhook v1 контракт не тронут.
+
+SSRF-защита (`src/pipeline/ingest/url-fetch.ts`):
+- только `http(s)`; `file://`/`ftp://`/прочее → 400 `FILE_URL_BLOCKED_HOST`
+  (scheme reject c кодом BLOCKED_SCHEME внутри, маппится в BLOCKED_HOST наружу);
+- host резолвится; private/loopback/link-local/metadata/ULA/CGNAT IP
+  (10.x, 127.x, 169.254.169.254, 172.16/12, 192.168, 100.64/10, ::1, fe80,
+  fc00/7, ::ffff:v4-mapped) → блок ДО любого сетевого запроса;
+- блок если ХОТЬ ОДИН A-record приватный;
+- redirects не следуются (undici default), 3xx → `FILE_URL_FETCH_FAILED`;
+- hard byte-ceiling enforced mid-stream (Content-Length не доверяем) →
+  `FILE_URL_TOO_LARGE`; timeout на headers/body;
+- опц. allowlist `FILE_URL_ALLOWED_HOSTS` (CSV) для ужесточения;
+- `file_sha256` mismatch → `FILE_URL_SHA_MISMATCH`;
+- вся фича за флагом `FILE_URL_INGEST_ENABLED` (default false, fail-closed)
+  → выключено отдаёт `FILE_URL_DISABLED`.
+
+Тесты: `tests/file-url-ingest.spec.ts` (27, network/dns замоканы — реальные
+URL не дёргаем). Ошибки наружу без internal-деталей (host-only в логах).
 
 ---
 
@@ -314,3 +338,4 @@ F9 — изменено в `inference-service/.env.example`:
 | 2026-05-19 | F3 item 4 закрыто — `doc-service/docs/openapi/v1.yaml` (OpenAPI 3.1, 13 схем, 4 примера, описаны HMAC headers, retry/idempotency, versioning, redact_pii, slug aliasing). Items 1/3 остаются заблокированы Q4/Q5 (ждём продакта SLAI). |
 | 2026-05-20 | 4 P0 фрахт-счетов SLAI закрыты (`92745ce`): UTF8 0x00 краш, items[] пустой, number=«на»/«No», ИНН продавца=покупателя. Добавлены транспортные атрибуты в `items[]` (vehicle_plate, order_ref, route_from, route_to, trip_date). Schema-echo defensive unwrap. Verified end-to-end на 3 эталонных счетах. |
 | 2026-05-26 | Получен `slai-response-to-parsdocs-2026-05-26.md`. Перефреймили как внутренний микросервис (не внешний клиент): отпали коммерческие пункты, A/B-встреча через квартал не нужна. Заведены Q10-Q12 (EXT-A/B/D). EXT-C `blocked-on-trigger` без даты, в очередь не пишем. Ответ — `PARSDOCS_REPLY_TO_SLAI_EXT_2026-05-26.md`. |
+| 2026-05-26 | Q12 (EXT-D) реализовано: `file_url`-ingest в `POST /jobs` с SSRF-защитой (`src/pipeline/ingest/url-fetch.ts` — scheme/private-IP/redirect/byte-cap guards), флаг `FILE_URL_INGEST_ENABLED`, error_codes `FILE_URL_*`, тесты `tests/file-url-ingest.spec.ts` (27). Не задеплоено. Webhook v1 не тронут. |

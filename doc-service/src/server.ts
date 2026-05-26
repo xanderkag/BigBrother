@@ -197,12 +197,24 @@ async function main() {
             'multipart/form-data': {
               schema: {
                 type: 'object',
-                required: ['file'],
+                description: 'Передайте либо file (binary), либо file_url (ссылку).',
                 properties: {
                   file: {
                     type: 'string',
                     format: 'binary',
-                    description: 'Сам документ (PDF, JPG, PNG, BMP, TIFF)',
+                    description: 'Сам документ (PDF, JPG, PNG, BMP, TIFF). Обязателен, если не задан file_url.',
+                  },
+                  file_url: {
+                    type: 'string',
+                    format: 'uri',
+                    description:
+                      'EXT-D (Q12): ссылка на документ — сервер скачивает его сам (альтернатива file-part, снимает 50MB multipart-лимит). ' +
+                      'Требует FILE_URL_INGEST_ENABLED. Только http(s); приватные/internal адреса блокируются (SSRF-защита).',
+                  },
+                  file_sha256: {
+                    type: 'string',
+                    description:
+                      'Ожидаемый SHA-256 (hex) файла, скачанного по file_url. Проверяется после загрузки; mismatch → 400 FILE_URL_SHA_MISMATCH.',
                   },
                   webhook_url: {
                     type: 'string',
