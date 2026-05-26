@@ -37,6 +37,10 @@ export const JobIdParam = z.object({
 export const ErrorResponse = z
   .object({
     error: z.union([z.string(), z.record(z.unknown())]).describe('Описание ошибки'),
+    error_code: z
+      .string()
+      .optional()
+      .describe('Машиночитаемый код ошибки (например BYO_LLM_DISABLED, PASSWORD_REQUIRED)'),
   })
   .describe('Стандартная форма ошибки');
 

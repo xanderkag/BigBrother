@@ -185,6 +185,24 @@ const ConfigSchema = z.object({
     timeoutMs: numberFromEnv(60000),
   }),
 
+  /**
+   * EXT-B (Q11): BYO (bring-your-own) LLM credentials per request. Когда
+   * включено, consumer (SLAI) может передать свой LLM-провайдер/ключ/модель
+   * через заголовки `X-LLM-Provider` / `X-LLM-Api-Key` / `X-LLM-Model` /
+   * `X-LLM-Base-Url` на POST /jobs — и THIS job пойдёт через эти creds
+   * вместо default provider_settings.
+   *
+   * Default false (fail-closed): пока флаг выключен, заголовки `X-LLM-*`
+   * не принимаются — запрос с `X-LLM-Api-Key` отбивается 400 с понятным
+   * error_code (явный сигнал для SLAI, а не молчаливое игнорирование).
+   *
+   * SECURITY: переданный api_key НИКОГДА не пишется в БД/Redis/логи в
+   * plaintext — он шифруется secrets-envelope перед постановкой в очередь
+   * и расшифровывается только в воркере в hot-path (см.
+   * pipeline/llm/inline-credentials.ts).
+   */
+  byoLlmEnabled: z.coerce.boolean().default(false),
+
   yandex: z.object({
     apiKey: z.string().optional(),
     folderId: z.string().optional(),
@@ -292,6 +310,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       apiKey: env.LLM_API_KEY || undefined,
       timeoutMs: env.LLM_TIMEOUT_MS,
     },
+    byoLlmEnabled: env.BYO_LLM_ENABLED,
     yandex: {
       apiKey: env.YANDEX_VISION_API_KEY || undefined,
       folderId: env.YANDEX_FOLDER_ID || undefined,

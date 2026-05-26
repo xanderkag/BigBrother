@@ -28,7 +28,18 @@ import { validateExtractedWithResolver } from './validation/index.js';
 import { runPostExtractNormalization } from './normalize/run.js';
 import { deliverFinalizedJobWebhook } from './webhook-delivery.js';
 import { documentTypeResolver, type ResolvedTypeConfig } from './document-type-resolver.js';
-import { jobsDurationSeconds, jobsTotal, ocrEngineDurationSeconds } from '../metrics.js';
+import {
+  jobsDurationSeconds,
+  jobsTotal,
+  ocrEngineDurationSeconds,
+  llmCredentialsSuppliedTotal,
+  llmProviderErrorsTotal,
+} from '../metrics.js';
+import {
+  decryptInlineCredentials,
+  classifyLlmError,
+  INLINE_CREDS_METADATA_KEY,
+} from './llm/inline-credentials.js';
 import { runResolutionPipeline } from '../resolution/pipeline.js';
 import { tryMultiDoc } from './multidoc/runner.js';
 import { processFieldConfidence } from './normalize/field-confidence.js';
@@ -125,13 +136,36 @@ export async function processJob(
 
   await jobsRepo.markProcessing(jobId);
 
+  const meta = (job.metadata as Record<string, unknown> | null | undefined) ?? null;
+
+  // EXT-B (Q11): BYO inline LLM credentials. Зашифрованный envelope лежит в
+  // metadata._inline_llm_creds (route положил его туда secrets-envelope'ом).
+  // Расшифровываем ТОЛЬКО здесь, в hot-path воркера, в локальную переменную —
+  // ключ никуда не пишется, не логируется и не уходит дальше HttpLlmClient'а.
+  // Приоритетнее force_provider и default-провайдера.
+  const inlineCreds = decryptInlineCredentials(meta?.[INLINE_CREDS_METADATA_KEY]);
+  if (inlineCreds) {
+    // Лог только факт + provider (без ключа). Метрика supplied — by provider.
+    log.info({ jobId, byo_provider: inlineCreds.provider }, 'using BYO LLM credentials for this job');
+    llmCredentialsSuppliedTotal.inc({ provider: inlineCreds.provider });
+    return dynamicLlm.withInlineCredentials(inlineCreds, () =>
+      processJobInner(job, jobId, log, opts).catch((err: unknown) => {
+        // Грубый, редактированный код — никогда не текст ошибки целиком.
+        llmProviderErrorsTotal.inc({
+          provider: inlineCreds.provider,
+          code: classifyLlmError(err),
+        });
+        throw err;
+      }),
+    );
+  }
+
   // Per-job force_provider override: пользователь мог при загрузке выбрать
   // конкретного LLM-провайдера через UI Upload (передаётся как
   // `metadata._force_provider_id`). Если задан — оборачиваем всю обработку
   // в withForceProvider, который через AsyncLocalStorage заставит все вызовы
   // dynamicLlm внутри pipeline резолвиться к этому провайдеру.
-  const forceProviderId =
-    (job.metadata as Record<string, unknown> | null | undefined)?.['_force_provider_id'];
+  const forceProviderId = meta?.['_force_provider_id'];
   if (typeof forceProviderId === 'string' && forceProviderId.length > 0) {
     log.info({ jobId, force_provider: forceProviderId }, 'using forced LLM provider for this job');
     return dynamicLlm.withForceProvider(forceProviderId, () => processJobInner(job, jobId, log, opts));

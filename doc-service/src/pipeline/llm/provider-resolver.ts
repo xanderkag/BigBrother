@@ -21,6 +21,22 @@ import type { DocumentTypeSlug } from '../../types/documents.js';
 const forceProviderContext = new AsyncLocalStorage<{ providerId: string }>();
 
 /**
+ * EXT-B (Q11): per-request BYO LLM credentials. Заполняется processJob когда
+ * consumer передал `X-LLM-*` заголовки (и BYO_LLM_ENABLED). Несёт EPHEMERAL
+ * конфиг провайдера — в БД/кэш он НЕ персистится. Читается в delegate(),
+ * берёт приоритет НАД forceProviderContext и default-провайдером.
+ *
+ * SECURITY: apiKey живёт только в этом ALS-store на время обработки job'а.
+ * Никуда не логируется и не сериализуется (см. inline-credentials.ts).
+ */
+const inlineCredentialsContext = new AsyncLocalStorage<{
+  provider: string;
+  apiKey: string;
+  model?: string;
+  baseUrl?: string;
+}>();
+
+/**
  * DynamicLlmClient — wraps a real LlmClient, but reads its endpoint+key from
  * `provider_settings` (DB) на каждый вызов (с короткой TTL-кэшировкой).
  *
@@ -111,7 +127,51 @@ class DynamicLlmClient implements LlmClient {
     return forceProviderContext.run({ providerId }, fn);
   }
 
+  /**
+   * EXT-B (Q11): запустить `fn` со scoped BYO-провайдером. Все вызовы
+   * dynamicLlm внутри callback'а пойдут через ad-hoc HttpLlmClient,
+   * собранный из переданных creds — БЕЗ записи в БД и БЕЗ кэширования ключа.
+   * Приоритетнее withForceProvider и default-провайдера. После возврата
+   * контекст автоматически сбрасывается через AsyncLocalStorage.
+   */
+  withInlineCredentials<T>(
+    creds: { provider: string; apiKey: string; model?: string; baseUrl?: string },
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    return inlineCredentialsContext.run(creds, fn);
+  }
+
+  /**
+   * Собрать ad-hoc HttpLlmClient из inline-creds. baseUrl: явный из заголовка,
+   * иначе env-default (config.llm.url) — позволяет BYO передать только ключ
+   * для нашего же shared inference-endpoint'а. Без какого-либо base_url
+   * клиента не собрать — возвращаем null (caller fallback на default).
+   */
+  private buildInlineClient(ctx: {
+    provider: string;
+    apiKey: string;
+    model?: string;
+    baseUrl?: string;
+  }): LlmClient | null {
+    const baseUrl = ctx.baseUrl || config.llm.url || null;
+    if (!baseUrl) return null;
+    return new HttpLlmClient({
+      baseUrl,
+      apiKey: ctx.apiKey,
+      timeoutMs: config.llm.timeoutMs,
+      model: ctx.model || undefined,
+    });
+  }
+
   private async delegate(): Promise<LlmClient> {
+    // EXT-B: BYO inline-creds имеют наивысший приоритет — пер-job ephemeral
+    // провайдер, собранный из заголовков. Не кэшируем (ключ не должен жить
+    // дольше обработки). Если base_url собрать неоткуда — fallthrough.
+    const inline = inlineCredentialsContext.getStore();
+    if (inline) {
+      const adhoc = this.buildInlineClient(inline);
+      if (adhoc) return adhoc;
+    }
     // Если процессинговый код заявил force_provider — резолвим его без кэша
     // (per-job override должен быть детерминированным; кэш — только для
     // default-провайдера в стандартном hot-path).

@@ -68,6 +68,29 @@ export const llmCallDurationSeconds = new Histogram({
   registers: [registry],
 });
 
+// --- EXT-B (Q11): BYO LLM credentials ---
+
+// Incremented when a job is processed with consumer-supplied (BYO) LLM
+// credentials. Label `provider` is the X-LLM-Provider value (low cardinality:
+// claude | qwen_vl | openai_compatible | ...). The api_key is NEVER a label —
+// it must not appear in metrics.
+export const llmCredentialsSuppliedTotal = new Counter({
+  name: 'docservice_extractor_llm_credentials_supplied_total',
+  help: 'Jobs processed using consumer-supplied (BYO) LLM credentials, by provider.',
+  labelNames: ['provider'] as const,
+  registers: [registry],
+});
+
+// Incremented when an LLM call made with BYO credentials fails. `code` is a
+// coarse, redacted classification (http_4xx | http_5xx | timeout | network |
+// unknown) — never the raw error message, which could echo the key back.
+export const llmProviderErrorsTotal = new Counter({
+  name: 'docservice_extractor_llm_provider_errors_total',
+  help: 'LLM call failures while using BYO credentials, by provider and coarse error code.',
+  labelNames: ['provider', 'code'] as const,
+  registers: [registry],
+});
+
 // --- Webhook delivery ---
 
 export const webhookAttemptsTotal = new Counter({

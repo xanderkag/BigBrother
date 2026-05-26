@@ -145,6 +145,51 @@ async function main() {
       if (!doc.openapiObject) return doc.swaggerObject;
       const openapi = doc.openapiObject as { paths?: Record<string, Record<string, Record<string, unknown>>> };
       const post = openapi.paths?.['/api/v1/jobs']?.post;
+      if (post) {
+        // EXT-B (Q11): per-request BYO LLM credentials. Документируем заголовки
+        // только в OpenAPI (route читает их из req.headers — не через zod).
+        // Принимаются только если BYO_LLM_ENABLED=true; иначе 400 BYO_LLM_DISABLED.
+        const existingParams = Array.isArray((post as Record<string, unknown>).parameters)
+          ? ((post as Record<string, unknown>).parameters as unknown[])
+          : [];
+        (post as Record<string, unknown>).parameters = [
+          ...existingParams,
+          {
+            name: 'X-LLM-Provider',
+            in: 'header',
+            required: false,
+            description:
+              'BYO LLM: провайдер для этого job (claude | openai_compatible | qwen_vl | ...). ' +
+              'Действует только при BYO_LLM_ENABLED=true. Ключ НЕ попадает в логи/БД/webhook.',
+            schema: { type: 'string' },
+          },
+          {
+            name: 'X-LLM-Api-Key',
+            in: 'header',
+            required: false,
+            description:
+              'BYO LLM: api-ключ consumer\'а. Шифруется до постановки в очередь, ' +
+              'никогда не сериализуется в plaintext. Обязателен вместе с X-LLM-Provider.',
+            schema: { type: 'string' },
+          },
+          {
+            name: 'X-LLM-Model',
+            in: 'header',
+            required: false,
+            description: 'BYO LLM: модель (опционально), напр. claude-3-7-sonnet / gpt-4o.',
+            schema: { type: 'string' },
+          },
+          {
+            name: 'X-LLM-Base-Url',
+            in: 'header',
+            required: false,
+            description:
+              'BYO LLM: base URL inference-endpoint\'а (опционально). ' +
+              'Если не задан — используется дефолтный LLM_INFERENCE_URL сервиса.',
+            schema: { type: 'string' },
+          },
+        ];
+      }
       if (post && !post.requestBody) {
         post.requestBody = {
           required: true,

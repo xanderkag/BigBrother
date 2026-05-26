@@ -32,6 +32,7 @@ import { removeStoredFile } from '../storage/files.js';
 import { redactPii } from './normalize/pii-redact.js';
 import { processFieldConfidence } from './normalize/field-confidence.js';
 import { normalizeSlugForApi } from '../types/slug-normalize.js';
+import { stripInlineCredentials } from './llm/inline-credentials.js';
 
 /**
  * Доставить webhook для финализированного job'а, применив F2/F4
@@ -91,7 +92,11 @@ export async function deliverFinalizedJobWebhook(
   // Если редактим — extracted и metadata пишутся в payload в редактированном
   // виде; БД-хранилище остаётся как было (для аудита и переотправки
   // оператором). См. routes/jobs.ts и pipeline/normalize/pii-redact.ts.
-  const meta = (updated.metadata ?? null) as Record<string, unknown> | null;
+  // EXT-B: вычищаем reserved-ключ _inline_llm_creds (encrypted BYO-envelope)
+  // до любых трансформаций — он не должен уходить в webhook третьему лицу.
+  const meta = stripInlineCredentials(
+    (updated.metadata ?? null) as Record<string, unknown> | null,
+  );
   const shouldRedact = meta && (meta.redact_pii === true || meta.redact_pii === 'true');
   const extractedOut = shouldRedact ? redactPii(extractedNoMultidoc) : extractedNoMultidoc;
   const metadataOut = shouldRedact ? redactPii(meta) : meta;

@@ -36,6 +36,12 @@ import {
   requireProjectAccess,
   requireProjectWrite,
 } from '../authz.js';
+import {
+  readInlineCredHeaders,
+  encryptInlineCredentials,
+  stripInlineCredentials,
+  INLINE_CREDS_METADATA_KEY,
+} from '../pipeline/llm/inline-credentials.js';
 
 /**
  * SHA-256 stream-hash файла. Используется для idempotent-кэша:
@@ -331,6 +337,49 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         sanitizedMetadata = { ...(sanitizedMetadata ?? {}), redact_pii: true };
       }
 
+      // ─── EXT-B (Q11): BYO LLM credentials через X-LLM-* заголовки ──────────
+      // Если consumer (SLAI) передал свой LLM-провайдер/ключ — используем их
+      // для THIS job вместо default provider_settings. Гейтится флагом
+      // BYO_LLM_ENABLED (fail-closed). api_key шифруется secrets-envelope'ом
+      // ПЕРЕД постановкой в очередь — в БД/Redis ложится только непрозрачный
+      // envelope, plaintext-ключ никуда не пишется. Worker расшифровывает в
+      // hot-path (orchestrator.processJob).
+      let byoUsed = false;
+      const inlineCreds = readInlineCredHeaders(req.headers as Record<string, unknown>);
+      if (inlineCreds.present) {
+        if (!config.byoLlmEnabled) {
+          // Явный сигнал клиенту, а не молчаливое игнорирование: SLAI должен
+          // знать, что фича выключена, а не недоумевать почему его ключ не
+          // применился. error_code в общем union'е API.
+          await unlink(savedFile.absolutePath).catch(() => undefined);
+          reply.code(400);
+          return {
+            error: 'BYO LLM credentials are not enabled on this deployment',
+            error_code: 'BYO_LLM_DISABLED',
+          };
+        }
+        if (!inlineCreds.creds) {
+          // Заголовки есть, но без X-LLM-Api-Key / X-LLM-Provider — неполный набор.
+          await unlink(savedFile.absolutePath).catch(() => undefined);
+          reply.code(400);
+          return {
+            error: 'X-LLM-Api-Key and X-LLM-Provider are required when supplying BYO LLM credentials',
+            error_code: 'BYO_LLM_INCOMPLETE',
+          };
+        }
+        // НЕ логируем сам ключ. Лог только факт + provider (низкая кардинальность).
+        req.log.info(
+          { byo_provider: inlineCreds.creds.provider },
+          'BYO LLM credentials supplied for this job',
+        );
+        const envelope = encryptInlineCredentials(inlineCreds.creds);
+        sanitizedMetadata = {
+          ...(sanitizedMetadata ?? {}),
+          [INLINE_CREDS_METADATA_KEY]: envelope,
+        };
+        byoUsed = true;
+      }
+
       // ─── Optimization #4: SHA-256 cache lookup ─────────────────────────
       // Считаем hash файла. Если в БД есть finished job с тем же hash в
       // этой же организации за последние 24h — возвращаем cached job_id
@@ -344,7 +393,11 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
       const skipCache =
         (sanitizedMetadata && typeof sanitizedMetadata === 'object' &&
           (sanitizedMetadata as Record<string, unknown>)._skip_cache === true) ||
-        (req.query as Record<string, unknown> | undefined)?.force_reprocess === 'true';
+        (req.query as Record<string, unknown> | undefined)?.force_reprocess === 'true' ||
+        // EXT-B: BYO-job всегда обрабатывается заново — иначе вернули бы
+        // кэшированный результат, посчитанный на default-провайдере, и
+        // consumer'ские creds не применились бы.
+        byoUsed;
 
       const fileSha256 = skipCache
         ? null
@@ -739,7 +792,7 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         confidence: job.confidence !== null ? Number(job.confidence) : null,
         ocr_engine: job.ocr_engine ?? null,
         extracted: (job.extracted as Record<string, unknown> | null) ?? null,
-        metadata: (job.metadata as Record<string, unknown> | null) ?? null,
+        metadata: stripInlineCredentials((job.metadata as Record<string, unknown> | null) ?? null),
         error: job.error ?? null,
       };
       // Fire-and-forget: доставка идёт в фоне, ответ клиенту не ждёт.

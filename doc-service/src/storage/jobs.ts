@@ -1,6 +1,7 @@
 import { db } from '../db.js';
 import { normalizeExtracted } from './normalize-extracted.js';
 import { normalizeSlugForApi } from '../types/slug-normalize.js';
+import { stripInlineCredentials } from '../pipeline/llm/inline-credentials.js';
 import type { DocumentTypeSlug, JobStatus, OcrEngineName } from '../types/documents.js';
 
 /**
@@ -1023,7 +1024,9 @@ class JobsRepo {
       raw_text: row.raw_text,
       extracted: normalized,
       validation_issues: issues,
-      metadata: row.metadata,
+      // EXT-B: вычищаем reserved-ключ _inline_llm_creds (encrypted BYO-envelope)
+      // из любого outbound-представления job'а — он не должен светиться в API.
+      metadata: stripInlineCredentials(row.metadata),
       file_name: row.file_name,
       mime_type: row.mime_type,
       file_size: Number(row.file_size),
