@@ -1,6 +1,6 @@
 import { Worker, UnrecoverableError } from 'bullmq';
 import pino from 'pino';
-import { config } from './config.js';
+import { config, assertRuntimeConfig } from './config.js';
 import { QUEUE_NAME, redisConnection, type DocJobPayload, closeQueue } from './queue.js';
 import { closeDb } from './db.js';
 import { processJob } from './pipeline/orchestrator.js';
@@ -13,6 +13,11 @@ import { startWebhookSweeper } from './workers/webhook-sweeper.js';
 // log aggregation tools see a single shape. The base bindings (name=worker)
 // are inherited by every child logger we make for individual jobs.
 const log = pino({ level: config.logLevel, name: 'worker' });
+
+// H1: fail-closed на те же misconfigured external-call флаги, что и server.ts.
+// Воркер исполняет ASR-транскрипцию и расшифровку inline BYO-creds в hot-path,
+// поэтому эти combos должны падать на старте и здесь.
+assertRuntimeConfig(config);
 
 const worker = new Worker<DocJobPayload>(
   QUEUE_NAME,

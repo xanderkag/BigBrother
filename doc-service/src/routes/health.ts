@@ -54,6 +54,13 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
       supportedDocumentTypes: types.map((t) => t.slug),
       maxFileMB: config.maxUploadMb,
       webhookSupported: true as const,
+      // L1 (2026-05-27): enablement-флаги новых ingest-возможностей, чтобы SLAI
+      // обнаруживал их через /capabilities, а не ловил 400 на проде. Additive —
+      // contractVersion остаётся '1' (доп. поля не ломают consumer'ов).
+      fileUrlIngest: config.fileUrlIngest.enabled,
+      asr: config.asr.enabled,
+      byoLlm: config.byoLlmEnabled,
+      hybridRouting: config.hybridRouting.enabled,
     };
   });
 

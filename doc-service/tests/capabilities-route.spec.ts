@@ -60,6 +60,22 @@ describe('GET /capabilities — EXT-A contract', () => {
     expect(Array.isArray(body.supportedDocumentTypes)).toBe(true);
   });
 
+  it('L1: advertises ingest-capability flags (booleans reflecting config)', async () => {
+    listActive.mockResolvedValue([{ slug: 'invoice' }]);
+    const { config } = await import('../src/config.js');
+    const r = await app.inject({ method: 'GET', url: '/capabilities' });
+    expect(r.statusCode).toBe(200);
+    const body = r.json();
+    expect(typeof body.fileUrlIngest).toBe('boolean');
+    expect(typeof body.asr).toBe('boolean');
+    expect(typeof body.byoLlm).toBe('boolean');
+    expect(typeof body.hybridRouting).toBe('boolean');
+    expect(body.fileUrlIngest).toBe(config.fileUrlIngest.enabled);
+    expect(body.asr).toBe(config.asr.enabled);
+    expect(body.byoLlm).toBe(config.byoLlmEnabled);
+    expect(body.hybridRouting).toBe(config.hybridRouting.enabled);
+  });
+
   it('supportedDocumentTypes = slug-и активных типов из resolver', async () => {
     listActive.mockResolvedValue([
       { slug: 'invoice' },

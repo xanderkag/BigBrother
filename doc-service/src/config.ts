@@ -5,6 +5,18 @@ const numberFromEnv = (def: number) =>
     .preprocess((v) => (v === undefined || v === '' ? undefined : Number(v)), z.number())
     .default(def);
 
+// M1: confidence-пороги — это доли 0..1. Misconfig вроде
+// HYBRID_VISION_CONF_THRESHOLD=70 (думали «70%») роутил бы ВСЁ в vision.
+// Жёстко отбиваем out-of-range на старте с понятным сообщением — лучше
+// падение на boot'е, чем тихое неверное поведение (не clamp'аем молча).
+const confidence01FromEnv = (def: number) =>
+  z
+    .preprocess((v) => (v === undefined || v === '' ? undefined : Number(v)), z.number())
+    .refine((n) => n >= 0 && n <= 1, {
+      message: 'must be a confidence fraction between 0 and 1 (e.g. 0.7, not 70)',
+    })
+    .default(def);
+
 const ConfigSchema = z.object({
   port: numberFromEnv(3000),
   host: z.string().default('0.0.0.0'),
@@ -209,7 +221,7 @@ const ConfigSchema = z.object({
   asr: z.object({
     enabled: z.coerce.boolean().default(false),
     timeoutMs: numberFromEnv(300_000),
-    confidenceDefault: numberFromEnv(0.8),
+    confidenceDefault: confidence01FromEnv(0.8),
     language: z.string().optional(),
   }),
 
@@ -249,7 +261,7 @@ const ConfigSchema = z.object({
    */
   hybridRouting: z.object({
     enabled: z.coerce.boolean().default(false),
-    visionConfThreshold: numberFromEnv(0.7),
+    visionConfThreshold: confidence01FromEnv(0.7),
     visionProviderId: z.string().optional(),
   }),
 
@@ -497,6 +509,44 @@ export function assertAuthConfigured(
       'is not set. Set API_KEY or explicitly opt into no-auth dev mode ' +
       '(ALLOW_NO_AUTH=true).',
   );
+}
+
+/**
+ * H1: fail-closed cross-validation внешне-вызывающих флагов. Эти комбинации
+ * «загружаются успешно», но гарантированно ломаются в рантайме или роняют
+ * безопасность — лучше упасть на boot'е с понятным сообщением.
+ *
+ * Сейчас покрывает:
+ *   - BYO LLM включён, но SECRETS_ENCRYPTION_KEY пустой → consumer-ключи
+ *     шифровались бы insecure dev-default'ом (см. src/storage/secrets.ts:
+ *     пустой ключ → deterministic SHA-256 от константы). В prod недопустимо.
+ *   - ASR включён, но inference-endpoint (LLM_INFERENCE_URL → config.llm.url)
+ *     не задан → все аудио-job'ы падали бы в рантайме ('ASR transcriber not
+ *     configured'). Surface это на старте.
+ *
+ * Вызывается рядом с assertAuthConfigured() из server.ts main() и worker.ts.
+ */
+export function assertRuntimeConfig(
+  cfg: Pick<Config, 'byoLlmEnabled' | 'secretsEncryptionKey' | 'asr' | 'llm'>,
+): void {
+  // «Insecure dev key» = пустой SECRETS_ENCRYPTION_KEY. secrets.ts при пустом
+  // ключе использует deterministic dev-default (один и тот же у всех);
+  // непустой невалидный ключ уже отбивается getMasterKey() (64-hex guard).
+  if (cfg.byoLlmEnabled && cfg.secretsEncryptionKey.trim().length === 0) {
+    throw new Error(
+      'Refusing to start: BYO_LLM_ENABLED=true but SECRETS_ENCRYPTION_KEY is ' +
+        'unset. Consumer LLM credentials would be encrypted with the insecure ' +
+        'dev-default key. Set SECRETS_ENCRYPTION_KEY (openssl rand -hex 32).',
+    );
+  }
+
+  if (cfg.asr.enabled && !cfg.llm.url) {
+    throw new Error(
+      'Refusing to start: ASR_ENABLED=true but LLM_INFERENCE_URL is unset. ' +
+        'The ASR transcriber posts to <LLM_INFERENCE_URL>/v1/transcribe, so ' +
+        'every audio job would fail at runtime. Set LLM_INFERENCE_URL.',
+    );
+  }
 }
 
 export const config = loadConfig();

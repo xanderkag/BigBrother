@@ -13,7 +13,7 @@ import {
   validatorCompiler,
   type ZodTypeProvider,
 } from 'fastify-type-provider-zod';
-import { config, assertAuthConfigured } from './config.js';
+import { config, assertAuthConfigured, assertRuntimeConfig } from './config.js';
 import { documentTypesRoutes } from './routes/document-types.js';
 import { jobsRoutes } from './routes/jobs.js';
 import { slaiSyncRoutes } from './routes/integrations/slai-sync.js';
@@ -33,6 +33,10 @@ async function main() {
   // P0 security: fail-closed до того как мы начнём слушать порт. Бросает,
   // если auth выключился бы по умолчанию (нет ключей, нет ALLOW_NO_AUTH).
   assertAuthConfigured(config);
+
+  // H1: fail-closed на misconfigured external-call флаги (byo+no-key,
+  // asr+no-url) — surface на boot'е, не в рантайме.
+  assertRuntimeConfig(config);
 
   const app = Fastify({
     logger: { level: config.logLevel },
