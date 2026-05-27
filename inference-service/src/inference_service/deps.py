@@ -83,6 +83,17 @@ def get_providers_status() -> dict[str, object]:
     openai_compat_configured = bool(settings.openai_base_url and settings.openai_model)
     return {
         "active": settings.backend,
+        # ASR (speech-to-text) — independent of the model backend. Reported
+        # so the operator UI can tell whether the audio ingestion path is wired.
+        "asr": {
+            "enabled": settings.asr_enabled,
+            "configured": settings.asr_enabled and bool(settings.asr_base_url),
+            "model": settings.asr_model or None,
+            "description": (
+                "Speech-to-text via external OpenAI-compatible /audio/transcriptions "
+                "server. Requires ASR_ENABLED=true + ASR_BASE_URL. Model-agnostic."
+            ),
+        },
         "available": {
             "stub": {
                 "configured": True,

@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { config } from '../config.js';
 import {
+  ACCEPTED_AUDIO_MIMES,
   ACCEPTED_DOCUMENT_MIMES,
   detectFileType,
   fileStorage,
@@ -357,6 +358,19 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
           error:
             `file content is not one of the accepted document types ` +
             `(PDF, JPEG, PNG, BMP, TIFF, WebP). Detected: ${detected?.mime ?? 'unknown'}`,
+        };
+      }
+      // ASR gating: audio formats are only accepted when the voice ingestion
+      // path is enabled. When ASR_ENABLED is off we reject with a clear,
+      // machine-readable code instead of letting an OCR engine fail on it.
+      if (ACCEPTED_AUDIO_MIMES.has(detected.mime) && !config.asr.enabled) {
+        await unlink(savedFile.absolutePath).catch(() => undefined);
+        reply.code(400);
+        return {
+          error:
+            `audio input (${detected.mime}) requires the ASR/voice path, which is ` +
+            `not enabled on this server (set ASR_ENABLED=true)`,
+          error_code: 'ASR_DISABLED',
         };
       }
       if (detected.mime !== savedFile.mimeType) {

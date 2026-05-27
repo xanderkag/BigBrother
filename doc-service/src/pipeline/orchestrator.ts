@@ -8,6 +8,8 @@ import { config } from '../config.js';
 import { jobsRepo } from '../storage/jobs.js';
 import type { OcrEngine, OcrInput, OcrResult } from './ocr/types.js';
 import { detectOcrRefusal, OcrRefusedError } from './ocr/refusal.js';
+import { HttpAsrTranscriber, type AsrTranscriber } from './asr/transcribe.js';
+import { isAudioMime } from './asr/mime.js';
 
 const execP = promisify(exec);
 import { PdfTextEngine } from './ocr/pdf-text.js';
@@ -74,6 +76,18 @@ const engines: readonly OcrEngine[] = [
 
 const classifier = new KeywordClassifier();
 const dadataClient = new DadataClient(config.dadata);
+
+// ASR transcriber — «OCR for audio». Аудио-вход транскрибируется через
+// inference-service /v1/transcribe, затем результат идёт в тот же downstream
+// pipeline. Endpoint = тот же LLM_INFERENCE_URL; модель настраивается на
+// стороне inference-service (model-agnostic, без ключа).
+const asrTranscriber: AsrTranscriber = new HttpAsrTranscriber({
+  baseUrl: config.llm.url,
+  apiKey: config.llm.apiKey,
+  timeoutMs: config.asr.timeoutMs,
+  confidenceDefault: config.asr.confidenceDefault,
+  language: config.asr.language,
+});
 const parsersFactory = new ParsersFactory(llm, {
   regexFallbackThreshold: config.thresholds.regexFallback,
   multipass: config.multipass,
@@ -245,6 +259,12 @@ async function processJobInner(
       typeof metaForRouter.tesseract_langs === 'string' && metaForRouter.tesseract_langs.length > 0
         ? (metaForRouter.tesseract_langs as string)
         : undefined;
+    // Per-job override модели Yandex OCR (metadata._yandex_ocr_model). Побеждает
+    // env-default и per-type tableModel. Применяется только если Yandex в цепочке.
+    const yandexModelOverride =
+      typeof metaForRouter._yandex_ocr_model === 'string' && metaForRouter._yandex_ocr_model.length > 0
+        ? (metaForRouter._yandex_ocr_model as string)
+        : undefined;
     // F20: per-job override LLM-промпта (см. runDocumentPipeline.options.promptOverride)
     const promptOverride =
       typeof metaForRouter.prompt_override === 'string' && metaForRouter.prompt_override.length > 0
@@ -263,7 +283,9 @@ async function processJobInner(
       metaForRouter._extract_from_text === 'true';
     const isImageInput = job.mime_type.startsWith('image/');
 
-    await stepEvent('ocr', 'started', { details: { mime: job.mime_type } });
+    await stepEvent(isAudioMime(job.mime_type) ? 'transcribe' : 'ocr', 'started', {
+      details: { mime: job.mime_type },
+    });
     const ocrStart = Date.now();
     // A2: для S3-backend'а materialize стримит в tmp если локальный кэш
     // протух (worker в другом pod'е). Для local — возвращает оригинал,
@@ -283,20 +305,50 @@ async function processJobInner(
       await firstPageImage.cleanup().catch(() => undefined);
       await materialized.cleanup().catch(() => undefined);
     };
+    const audioInput = isAudioMime(job.mime_type);
     try {
-      ocr = await runOcrChain(
-        { filePath: materialized.absolutePath, mimeType: job.mime_type, tesseractLangsOverride },
-        log,
-        {
-          documentType: job.document_hint ?? undefined,
-          disableExternalOcr,
-        },
-      );
-      firstPageImage = await prepareFirstPageImage(
-        materialized.absolutePath,
-        job.mime_type,
-        log,
-      );
+      if (audioInput) {
+        // ── ASR path (audio → text) ────────────────────────────────────────
+        // Транскрибируем аудио в текст вместо OCR-цепочки; дальше пайплайн
+        // (classify → extract → validate → webhook) не отличается. Записываем
+        // отдельный pipeline-шаг `transcribe`. Гейтится config.asr.enabled на
+        // route'е (загрузка), но страхуемся и тут — fail с понятной ошибкой.
+        if (!config.asr.enabled || !asrTranscriber.isAvailable()) {
+          throw new Error(
+            'audio input received but ASR is not enabled/configured (ASR_ENABLED + LLM_INFERENCE_URL)',
+          );
+        }
+        const t = await asrTranscriber.transcribe({
+          filePath: materialized.absolutePath,
+          mimeType: job.mime_type,
+        });
+        ocr = {
+          engine: 'transcribe',
+          text: t.text,
+          confidence: t.confidence,
+          durationMs: t.durationMs,
+        };
+        // image-extract для аудио бессмысленен — firstPageImage остаётся noop.
+      } else {
+        ocr = await runOcrChain(
+          {
+            filePath: materialized.absolutePath,
+            mimeType: job.mime_type,
+            tesseractLangsOverride,
+            yandexModelOverride,
+          },
+          log,
+          {
+            documentType: job.document_hint ?? undefined,
+            disableExternalOcr,
+          },
+        );
+        firstPageImage = await prepareFirstPageImage(
+          materialized.absolutePath,
+          job.mime_type,
+          log,
+        );
+      }
     } catch (err) {
       await cleanupArtifacts();
       throw err;
@@ -307,7 +359,7 @@ async function processJobInner(
     // "invalid byte sequence for encoding UTF8: 0x00". Чистим один раз здесь —
     // дальше по пайплайну текст уже безопасен.
     ocr.text = sanitizeText(ocr.text);
-    await stepEvent(`ocr.${ocr.engine}`, 'done', {
+    await stepEvent(ocr.engine === 'transcribe' ? 'transcribe' : `ocr.${ocr.engine}`, 'done', {
       duration_ms: timings.ocr_ms,
       details: { confidence: roundConf(ocr.confidence), text_length: ocr.text.length },
     });
@@ -718,7 +770,12 @@ async function processJobInner(
  * Exported so the smoke CLI can reuse the same engine wiring.
  */
 export async function runOcrChain(
-  input: { filePath: string; mimeType: string; tesseractLangsOverride?: string },
+  input: {
+    filePath: string;
+    mimeType: string;
+    tesseractLangsOverride?: string;
+    yandexModelOverride?: string;
+  },
   log: Logger,
   options: { documentType?: string; disableExternalOcr?: boolean } = {},
 ): Promise<OcrResult> {
@@ -729,7 +786,11 @@ export async function runOcrChain(
     documentType: options.documentType,
     disableExternalOcr: options.disableExternalOcr,
     disableYandexForPii: config.yandex.disableForPii,
+    preferYandexForScans: config.yandex.preferForScans,
   });
+  // documentType прокидываем в OcrInput, чтобы YandexVisionEngine выбрал
+  // tableModel для табличных типов (счёт-фактура/УПД скан).
+  const inputWithType: OcrInput = { ...input, documentType: options.documentType };
   if (chain.length === 0) {
     throw new Error(`no OCR engine available for mime type ${input.mimeType}`);
   }
@@ -738,7 +799,7 @@ export async function runOcrChain(
   // second pdftoppm call if the first rasterizing engine (tesseract) doesn't
   // clear its threshold and vision-llm is tried next.
   let rasterDir: string | undefined;
-  let ocrInput: OcrInput = input;
+  let ocrInput: OcrInput = inputWithType;
   if (input.mimeType === 'application/pdf' && chain.length > 1) {
     try {
       rasterDir = await mkdtemp(join(tmpdir(), 'docsvc-raster-'));
@@ -748,7 +809,7 @@ export async function runOcrChain(
         .filter((f) => f.startsWith('page') && f.endsWith('.png'))
         .sort()
         .map((f) => join(rasterDir!, f));
-      ocrInput = { ...input, rasterizedPages };
+      ocrInput = { ...inputWithType, rasterizedPages };
       log.debug(
         { filePath: input.filePath, page_count: rasterizedPages.length },
         'pdf pre-rasterized (shared across engines)',

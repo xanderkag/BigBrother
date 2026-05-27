@@ -18,6 +18,13 @@ type YandexConfig = {
    * `handwritten`. Конфигурируется через YANDEX_OCR_MODEL.
    */
   model: string;
+  /**
+   * Модель для табличных типов (счёт-фактура/УПД скан). Применяется когда
+   * documentType входит в `tableModelTypes`. По умолчанию `table`.
+   */
+  tableModel?: string;
+  /** Slug'и типов, для которых OCR идёт через `tableModel` (UPPER-case). */
+  tableModelTypes?: string[];
 };
 
 const OCR_ENDPOINT = 'https://ocr.api.cloud.yandex.net/ocr/v1/recognizeText';
@@ -63,25 +70,47 @@ export class YandexVisionEngine implements OcrEngine {
     return !!this.cfg.apiKey && !!this.cfg.folderId;
   }
 
+  /**
+   * Выбор OCR-модели для конкретного входа. Приоритет (от старшего):
+   *   1. per-job `metadata._yandex_ocr_model` (input.yandexModelOverride);
+   *   2. per-type `tableModel`, если documentType ∈ tableModelTypes;
+   *   3. дефолтная `model` (YANDEX_OCR_MODEL).
+   * Чисто конфиг-driven — ничего не хардкодим.
+   */
+  private resolveModel(input: OcrInput): string {
+    const override = input.yandexModelOverride?.trim();
+    if (override) return override;
+    const docType = input.documentType?.trim().toUpperCase();
+    if (
+      docType &&
+      this.cfg.tableModelTypes &&
+      this.cfg.tableModelTypes.includes(docType)
+    ) {
+      return this.cfg.tableModel ?? 'table';
+    }
+    return this.cfg.model;
+  }
+
   async run(input: OcrInput): Promise<OcrResult> {
     const started = Date.now();
+    const model = this.resolveModel(input);
 
     // Multi-page path: orchestrator pre-rasterized the PDF into page PNGs.
     // recognizeText accepts only one page per call, so loop. (A5/F5 parity
     // with tesseract — populates `pages[]` so multi-doc splitting works.)
     if (input.rasterizedPages && input.rasterizedPages.length > 0) {
-      return this.processPages(input.rasterizedPages, started);
+      return this.processPages(input.rasterizedPages, started, model);
     }
 
     // Standalone PDF (no orchestrator pre-rasterization, e.g. tests/smoke):
     // the sync API only reads page 1, so rasterize ourselves like tesseract.
     if (input.mimeType === 'application/pdf') {
-      return this.runOnPdf(input, started);
+      return this.runOnPdf(input, started, model);
     }
 
     // Single image — one call.
     const buf = await readFile(input.filePath);
-    const page = await this.recognize(buf, input.mimeType);
+    const page = await this.recognize(buf, input.mimeType, model);
     return {
       engine: this.name,
       text: page.text,
@@ -90,7 +119,7 @@ export class YandexVisionEngine implements OcrEngine {
     };
   }
 
-  private async runOnPdf(input: OcrInput, started: number): Promise<OcrResult> {
+  private async runOnPdf(input: OcrInput, started: number, model: string): Promise<OcrResult> {
     const workDir = await mkdtemp(join(tmpdir(), 'docsvc-yandex-'));
     try {
       const prefix = join(workDir, 'page');
@@ -99,18 +128,22 @@ export class YandexVisionEngine implements OcrEngine {
         .filter((f) => f.startsWith('page') && f.endsWith('.png'))
         .sort()
         .map((f) => join(workDir, f));
-      return this.processPages(pageFiles, started);
+      return this.processPages(pageFiles, started, model);
     } finally {
       await rm(workDir, { recursive: true, force: true });
     }
   }
 
   /** Recognize an already-rasterized list of page PNG paths, one call each. */
-  private async processPages(pageFiles: string[], started: number): Promise<OcrResult> {
+  private async processPages(
+    pageFiles: string[],
+    started: number,
+    model: string,
+  ): Promise<OcrResult> {
     const pages: Array<{ text: string; confidence: number }> = [];
     for (const pf of pageFiles) {
       const buf = await readFile(pf);
-      pages.push(await this.recognize(buf, 'image/png'));
+      pages.push(await this.recognize(buf, 'image/png', model));
     }
 
     const fullText = pages.map((p) => p.text).join('\n\n');
@@ -130,12 +163,13 @@ export class YandexVisionEngine implements OcrEngine {
   private async recognize(
     buf: Buffer,
     mimeType: string,
+    model: string,
   ): Promise<{ text: string; confidence: number }> {
     const body = {
       content: buf.toString('base64'),
       mimeType,
       languageCodes: ['ru', 'en'],
-      model: this.cfg.model,
+      model,
     };
 
     const res = await request(OCR_ENDPOINT, {

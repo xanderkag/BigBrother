@@ -44,12 +44,38 @@ Yandex OCR заменяет **Tesseract** на плохих сканах (где
 ```env
 YANDEX_VISION_API_KEY=<api-key из шага 3>
 YANDEX_FOLDER_ID=<folder id из шага 1>
-# опц., по умолчанию "page":
-# YANDEX_OCR_MODEL=page
-# при желании запретить Яндекс для PII даже если включён (рекоменд. оставить true):
+YANDEX_TIMEOUT_MS=30000
+# OCR-модель по умолчанию (page / table / page-column-sort / handwritten):
+YANDEX_OCR_MODEL=page
+# Табличная модель для сканов счёт-фактур/УПД: для перечисленных типов
+# вместо YANDEX_OCR_MODEL применяется YANDEX_TABLE_MODEL. CSV slug'ов
+# (case-insensitive). Пусто = везде YANDEX_OCR_MODEL.
+YANDEX_TABLE_MODEL=table
+YANDEX_TABLE_MODEL_TYPES=invoice,tax_invoice,UPD
+# Сделать Яндекс первым scan-движком (перед tesseract/vision-llm) на растрах.
+# false = Яндекс остаётся last-resort fallback'ом (порядок цепочки не меняется).
+YANDEX_PREFER_FOR_SCANS=false
+# Запретить Яндекс для PII даже если включён (рекоменд. оставить true):
 YANDEX_DISABLE_FOR_PII=true
 ```
 Положить в секреты деплоя (не в git). Рестарт `api` + `worker`.
+
+Конфиг-сводка (все knob'ы env-driven, ключ — только в секретах деплоя):
+
+| Env | Назначение | Default |
+| --- | --- | --- |
+| `YANDEX_VISION_API_KEY` | API-ключ сервисного аккаунта. Пусто → движок OFF. | — |
+| `YANDEX_FOLDER_ID` | folder ID каталога. Пусто → движок OFF. | — |
+| `YANDEX_TIMEOUT_MS` | таймаут одного recognizeText-вызова. | `30000` |
+| `YANDEX_OCR_MODEL` | модель по умолчанию. | `page` |
+| `YANDEX_TABLE_MODEL` | модель для табличных типов. | `table` |
+| `YANDEX_TABLE_MODEL_TYPES` | CSV slug'ов → используют `YANDEX_TABLE_MODEL`. | пусто |
+| `YANDEX_PREFER_FOR_SCANS` | Яндекс впереди локальных scan-движков. | `false` |
+| `YANDEX_DISABLE_FOR_PII` | выключить Яндекс для PII-типов (TTN/CMR). | `false` |
+
+Per-job override (через `metadata`, побеждает env):
+- `_yandex_ocr_model` — принудительная модель для конкретного job'а.
+- `_disable_external_ocr=true` — не отправлять этот job в Яндекс (PII opt-out).
 
 ### 5. Smoke-проверка (обязательно до боевого прогона)
 Прогнать один тестовый печатный документ (без PII) через `src/scripts/smoke.ts`
@@ -60,8 +86,24 @@ YANDEX_DISABLE_FOR_PII=true
 
 ### 6. Включение в цепочку
 Никаких правок кода — как только env заполнен и сервис перезапущен, `isAvailable()`
-вернёт true и оркестратор начнёт пробовать Яндекс последним fallback'ом, когда
-`pdf-text` и `tesseract` не дотянули порог.
+вернёт true и оркестратор начнёт пробовать Яндекс. Где именно в цепочке:
+
+- **По умолчанию** (`YANDEX_PREFER_FOR_SCANS=false`) — Яндекс последний fallback,
+  после `pdf-text` → `tesseract` → `vision-llm` (как было).
+- **`YANDEX_PREFER_FOR_SCANS=true`** — на растровых входах (image/* и сканы PDF)
+  Яндекс встаёт ПЕРЕД локальными scan-движками (tesseract / vision-llm). Нативный
+  текстовый слой (`pdf-text` / xlsx / docx) всё равно пробуется первым — на чистом
+  тексте Яндекс не нужен. Так скан-документ маршрутизируется: pdf-text не дотянул
+  порог → **Яндекс table-OCR → текст → LLM-extract** (быстрый облачный OCR вместо
+  медленного локального vision). PII-гард сохраняется: на TTN/CMR (при
+  `YANDEX_DISABLE_FOR_PII=true`) и при `_disable_external_ocr=true` Яндекс
+  выкидывается из цепочки до всякого переупорядочивания.
+
+**Табличная модель.** Заполните `YANDEX_TABLE_MODEL_TYPES` slug'ами табличных типов
+(напр. `invoice,tax_invoice,UPD`). Тогда для этих типов Яндекс вызывается с
+`model=table` вместо `page` — точнее на сканах счёт-фактур. document_type берётся из
+`document_hint`/классификатора. Точечно можно форсировать модель per-job:
+`metadata._yandex_ocr_model=table`.
 
 ## Откат
 Очистить `YANDEX_VISION_API_KEY` (или `YANDEX_FOLDER_ID`) → рестарт. Движок мгновенно

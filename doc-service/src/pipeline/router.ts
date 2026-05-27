@@ -28,7 +28,21 @@ export type ChainOptions = {
   disableYandexForPii?: boolean;
   /** Slug типа документа (из classifier или document_hint). */
   documentType?: string;
+  /**
+   * YANDEX_PREFER_FOR_SCANS. Когда true и Yandex остался в цепочке после
+   * всех фильтров — двигаем его вперёд локальных scan-движков (tesseract,
+   * vision-llm), оставляя нативные текстовые движки (pdf-text/xlsx/docx)
+   * впереди. PII-фильтр выше: если Yandex выкинут, переупорядочивать нечего.
+   */
+  preferYandexForScans?: boolean;
 };
+
+/**
+ * Движки, работающие по растру (скан/картинка). Только их обгоняет Yandex
+ * при preferYandexForScans — нативные текстовые движки (pdf-text/xlsx/docx)
+ * остаются впереди (Yandex не нужен на чистом текстовом слое).
+ */
+const LOCAL_SCAN_ENGINES = new Set(['tesseract', 'vision-llm']);
 
 /**
  * Build the ordered list of OCR engines to try for a given input.
@@ -49,7 +63,7 @@ export function selectOcrChain(
   const isPiiDoc = options.documentType
     ? PII_DOCUMENT_TYPES.has(options.documentType)
     : false;
-  return engines.filter((e) => {
+  const chain = engines.filter((e) => {
     if (!e.isAvailable()) return false;
     if (!e.supports(input)) return false;
     // I8: PII opt-out для Yandex (per-job или глобальный для PII-типов)
@@ -57,4 +71,20 @@ export function selectOcrChain(
     if (e.name === 'yandex' && options.disableYandexForPii && isPiiDoc) return false;
     return true;
   });
+
+  // YANDEX_PREFER_FOR_SCANS: если Yandex остался в цепочке, ставим его перед
+  // первым локальным scan-движком. Нативные текстовые движки (pdf-text и пр.)
+  // остаются впереди — переставляем только относительно tesseract/vision-llm.
+  if (options.preferYandexForScans) {
+    const yandexIdx = chain.findIndex((e) => e.name === 'yandex');
+    if (yandexIdx >= 0) {
+      const firstScanIdx = chain.findIndex((e) => LOCAL_SCAN_ENGINES.has(e.name));
+      if (firstScanIdx >= 0 && firstScanIdx < yandexIdx) {
+        const [yandex] = chain.splice(yandexIdx, 1);
+        chain.splice(firstScanIdx, 0, yandex!);
+      }
+    }
+  }
+
+  return chain;
 }

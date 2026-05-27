@@ -173,3 +173,96 @@ describe('YandexVisionEngine — recognizeText contract', () => {
     ).toBe(true);
   });
 });
+
+describe('YandexVisionEngine — model selection', () => {
+  async function modelForRun(
+    cfg: ConstructorParameters<typeof YandexVisionEngine>[0],
+    extra: { documentType?: string; yandexModelOverride?: string },
+  ): Promise<string> {
+    requestMock.mockResolvedValue(reply({ statusCode: 200, json: OK_RESPONSE }));
+    const filePath = await makePng('img.png');
+    await new YandexVisionEngine(cfg).run({ filePath, mimeType: 'image/png', ...extra });
+    const body = JSON.parse(requestMock.mock.calls[0]![1]!.body as string);
+    return body.model;
+  }
+
+  it('uses default model when no overrides', async () => {
+    const model = await modelForRun(
+      { apiKey: 'k', folderId: 'f', timeoutMs: 30000, model: 'page' },
+      {},
+    );
+    expect(model).toBe('page');
+  });
+
+  it('uses tableModel for a documentType in tableModelTypes (case-insensitive)', async () => {
+    const model = await modelForRun(
+      {
+        apiKey: 'k',
+        folderId: 'f',
+        timeoutMs: 30000,
+        model: 'page',
+        tableModel: 'table',
+        tableModelTypes: ['INVOICE', 'TAX_INVOICE'],
+      },
+      { documentType: 'invoice' },
+    );
+    expect(model).toBe('table');
+  });
+
+  it('keeps default model for a documentType NOT in tableModelTypes', async () => {
+    const model = await modelForRun(
+      {
+        apiKey: 'k',
+        folderId: 'f',
+        timeoutMs: 30000,
+        model: 'page',
+        tableModel: 'table',
+        tableModelTypes: ['INVOICE'],
+      },
+      { documentType: 'TTN' },
+    );
+    expect(model).toBe('page');
+  });
+
+  it('per-job yandexModelOverride beats env default and per-type tableModel', async () => {
+    const model = await modelForRun(
+      {
+        apiKey: 'k',
+        folderId: 'f',
+        timeoutMs: 30000,
+        model: 'page',
+        tableModel: 'table',
+        tableModelTypes: ['INVOICE'],
+      },
+      { documentType: 'invoice', yandexModelOverride: 'handwritten' },
+    );
+    expect(model).toBe('handwritten');
+  });
+
+  it('applies resolved model to every page of a multi-page run', async () => {
+    requestMock
+      .mockResolvedValueOnce(reply({ statusCode: 200, json: { result: { textAnnotation: { fullText: 'P1' } } } }))
+      .mockResolvedValueOnce(reply({ statusCode: 200, json: { result: { textAnnotation: { fullText: 'P2' } } } }));
+    const p1 = await makePng('page-1.png');
+    const p2 = await makePng('page-2.png');
+
+    await new YandexVisionEngine({
+      apiKey: 'k',
+      folderId: 'f',
+      timeoutMs: 30000,
+      model: 'page',
+      tableModel: 'table',
+      tableModelTypes: ['INVOICE'],
+    }).run({
+      filePath: 'unused.pdf',
+      mimeType: 'application/pdf',
+      rasterizedPages: [p1, p2],
+      documentType: 'invoice',
+    });
+
+    expect(requestMock).toHaveBeenCalledTimes(2);
+    for (const call of requestMock.mock.calls) {
+      expect(JSON.parse(call[1]!.body as string).model).toBe('table');
+    }
+  });
+});

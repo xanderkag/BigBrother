@@ -1,5 +1,5 @@
 import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, mkdtemp, readdir, rmdir, stat, unlink } from 'node:fs/promises';
+import { open, mkdir, mkdtemp, readdir, rmdir, stat, unlink } from 'node:fs/promises';
 import { join, basename, dirname, extname } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { randomUUID } from 'node:crypto';
@@ -335,6 +335,20 @@ export class S3FileStorage implements FileStorage {
 }
 
 /**
+ * Audio MIME types accepted for the ASR (voice) ingestion path. Normalized
+ * to canonical forms — the audio sniffer + file-type both report these.
+ * (`audio/wave`, `audio/x-wav`, `audio/mp3` aliases are normalized to these
+ * canonical values by the detectors below.)
+ */
+const AUDIO_MIME_LIST = [
+  'audio/wav',
+  'audio/mpeg', // MP3
+  'audio/mp4', // .m4a in an ISO-BMFF container
+  'audio/x-m4a',
+  'audio/ogg',
+] as const;
+
+/**
  * Set of MIME types we know how to OCR. The route handler rejects uploads
  * whose magic bytes resolve to anything outside this set — defence against
  * a client that mis-labels Content-Type (innocent extension mix-up) or
@@ -369,7 +383,24 @@ export const ACCEPTED_DOCUMENT_MIMES: ReadonlySet<string> = new Set([
   // .doc (legacy binary, не OOXML) НЕ поддерживается — для него
   // клиент конвертирует в .docx или PDF.
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  // ASR (voice/audio) — «OCR for audio». Аудио транскрибируется в текст
+  // ASR-движком, после чего идёт тот же downstream-пайплайн. Принимается
+  // ТОЛЬКО когда ASR_ENABLED=true (route гейтит); набор MIME — см.
+  // ACCEPTED_AUDIO_MIMES ниже.
+  ...AUDIO_MIME_LIST,
 ]);
+
+/**
+ * Audio MIME types we route to the ASR (speech-to-text) engine. Kept as a
+ * separate set so the route handler can gate them behind ASR_ENABLED — when
+ * the feature is off an audio upload is rejected with a clear error instead
+ * of being silently fed to an OCR engine that can't read it.
+ *
+ * `audio/wav`/`audio/x-m4a`/`audio/ogg` are detected by `file-type`;
+ * `audio/mpeg` (MP3) with a leading ID3 tag is NOT, so `detectFileType` falls
+ * back to `sniffAudioSignature` for the formats file-type misses.
+ */
+export const ACCEPTED_AUDIO_MIMES: ReadonlySet<string> = new Set(AUDIO_MIME_LIST);
 
 export type DetectedFileType = { ext: string; mime: string };
 
@@ -383,7 +414,79 @@ export type DetectedFileType = { ext: string; mime: string };
  */
 export async function detectFileType(absolutePath: string): Promise<DetectedFileType | undefined> {
   const result = await fileTypeFromFile(absolutePath);
-  return result ? { ext: result.ext, mime: result.mime } : undefined;
+  if (result) {
+    // `file-type` reports OGG audio as the generic `application/ogg` — coerce
+    // to `audio/ogg` so it lands in ACCEPTED_AUDIO_MIMES and routes to ASR.
+    if (result.mime === 'application/ogg') {
+      return { ext: result.ext, mime: 'audio/ogg' };
+    }
+    return { ext: result.ext, mime: result.mime };
+  }
+  // Fallback for audio signatures `file-type` misses (notably MP3 with a
+  // leading ID3 tag → file-type returns undefined). Magic-bytes only; we
+  // never trust the client Content-Type.
+  return sniffAudioSignature(absolutePath);
+}
+
+/**
+ * Minimal magic-bytes sniffer for the audio formats the ASR path accepts.
+ * Runs only when `file-type` returns nothing, so it doesn't override the
+ * library's stronger detection. Reads just the leading 16 bytes.
+ *
+ * Covers:
+ *   - RIFF....WAVE         → audio/wav
+ *   - "ID3" tag prefix     → audio/mpeg (MP3 with metadata; file-type misses this)
+ *   - 0xFF 0xE_/0xF_ sync  → audio/mpeg (raw MP3 frame; usually file-type catches it)
+ *   - ....ftyp(M4A/mp4/iso)→ audio/mp4 / audio/x-m4a
+ *   - "OggS"               → audio/ogg
+ */
+export async function sniffAudioSignature(
+  absolutePath: string,
+): Promise<DetectedFileType | undefined> {
+  let head: Buffer;
+  try {
+    const fh = await open(absolutePath, 'r');
+    try {
+      const buf = Buffer.alloc(16);
+      const { bytesRead } = await fh.read(buf, 0, 16, 0);
+      head = buf.subarray(0, bytesRead);
+    } finally {
+      await fh.close();
+    }
+  } catch {
+    return undefined;
+  }
+  if (head.length < 4) return undefined;
+
+  const ascii = (start: number, len: number): string =>
+    head.subarray(start, start + len).toString('latin1');
+
+  // RIFF container with WAVE form-type.
+  if (ascii(0, 4) === 'RIFF' && head.length >= 12 && ascii(8, 4) === 'WAVE') {
+    return { ext: 'wav', mime: 'audio/wav' };
+  }
+  // OggS — Ogg bitstream (Vorbis/Opus audio).
+  if (ascii(0, 4) === 'OggS') {
+    return { ext: 'ogg', mime: 'audio/ogg' };
+  }
+  // ID3v2 tag → MP3 with metadata (the case file-type returns undefined for).
+  if (ascii(0, 3) === 'ID3') {
+    return { ext: 'mp3', mime: 'audio/mpeg' };
+  }
+  // Raw MPEG audio frame sync: 0xFF followed by 0xE_ or 0xF_ (MPEG-1/2 layer).
+  if (head[0] === 0xff && (head[1]! & 0xe0) === 0xe0) {
+    return { ext: 'mp3', mime: 'audio/mpeg' };
+  }
+  // ISO-BMFF ftyp box at offset 4. Major brand M4A/mp4*/isom/M4B → audio.
+  if (head.length >= 12 && ascii(4, 4) === 'ftyp') {
+    const brand = ascii(8, 4);
+    if (brand.startsWith('M4A') || brand.startsWith('M4B') || brand.startsWith('mp4') || brand === 'isom') {
+      // M4A is the audio-only profile; keep its dedicated mime so the router
+      // treats it as audio even when the brand is a generic mp4 container.
+      return { ext: 'm4a', mime: brand.startsWith('M4A') ? 'audio/x-m4a' : 'audio/mp4' };
+    }
+  }
+  return undefined;
 }
 
 /**

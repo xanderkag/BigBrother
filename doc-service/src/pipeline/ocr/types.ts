@@ -21,6 +21,19 @@ export type OcrInput = {
    * читает только rus+eng и не справится с китайскими иероглифами.
    */
   tesseractLangsOverride?: string;
+  /**
+   * Per-job override OCR-модели Yandex recognizeText (`metadata._yandex_ocr_model`).
+   * Если задан — побеждает и `YANDEX_OCR_MODEL`, и per-type `tableModel`.
+   * Формат как у Yandex: `page` | `table` | `page-column-sort` | `handwritten`.
+   * Используется только YandexVisionEngine; остальные движки игнорируют.
+   */
+  yandexModelOverride?: string;
+  /**
+   * Slug типа документа (из document_hint / classifier). YandexVisionEngine
+   * использует его, чтобы выбрать `tableModel` для типов из
+   * `YANDEX_TABLE_MODEL_TYPES`. Остальные движки игнорируют.
+   */
+  documentType?: string;
 };
 
 export type OcrResult = {

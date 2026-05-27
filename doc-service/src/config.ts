@@ -186,6 +186,34 @@ const ConfigSchema = z.object({
   }),
 
   /**
+   * ASR (voice/audio ingestion) — «OCR for audio». Когда включено, doc-service
+   * принимает аудио-файлы (audio/wav, audio/mpeg, audio/mp4, audio/ogg) на
+   * POST /jobs, транскрибирует их через inference-service `/v1/transcribe`, а
+   * затем гонит ПОЛУЧЕННЫЙ ТЕКСТ через тот же downstream-пайплайн (classify →
+   * extract → validate → webhook). Никаких изменений ниже по потоку.
+   *
+   * enabled=false (default) → аудио-загрузки отбиваются 4xx с понятным
+   * error_code ASR_DISABLED; поведение для всех остальных типов не меняется.
+   *
+   * Endpoint inference-сервиса берётся из того же llm.url (LLM_INFERENCE_URL) —
+   * /v1/transcribe живёт там же, где /v1/classify и /v1/extract. Сама ASR-модель
+   * настраивается на стороне inference-service (ASR_BASE_URL/ASR_MODEL) и
+   * model-agnostic — doc-service о ней ничего не знает. Ключ НЕ нужен.
+   *
+   *   - confidenceDefault: per-clip confidence ASR-серверы обычно не дают;
+   *     этим значением заполняем overall, чтобы downstream needs_review-логика
+   *     получила число. Дефолт 0.8 — нейтрально-высокий (не блокируем, но и не
+   *     слепо доверяем); понижайте, если хотите ручную проверку всех голосовых.
+   *   - language: опц. ISO 639-1 подсказка ('ru'), уходит в /v1/transcribe.
+   */
+  asr: z.object({
+    enabled: z.coerce.boolean().default(false),
+    timeoutMs: numberFromEnv(300_000),
+    confidenceDefault: numberFromEnv(0.8),
+    language: z.string().optional(),
+  }),
+
+  /**
    * EXT-B (Q11): BYO (bring-your-own) LLM credentials per request. Когда
    * включено, consumer (SLAI) может передать свой LLM-провайдер/ключ/модель
    * через заголовки `X-LLM-Provider` / `X-LLM-Api-Key` / `X-LLM-Model` /
@@ -266,6 +294,33 @@ const ConfigSchema = z.object({
     // Yandex OCR-модель для recognizeText. `page` — обычный текст (default).
     // Альтернативы: `table`, `page-column-sort`, `handwritten`.
     model: z.string().default('page'),
+    /**
+     * Per-type override OCR-модели. Для перечисленных slug'ов документов
+     * вместо `model` используется `tableModel` (по умолчанию `table`) —
+     * на сканах счёт-фактур / УПД табличная модель распознаёт таблицы
+     * заметно лучше. CSV slug'ов, case-insensitive. Пусто = поведение
+     * не меняется (везде `model`). Per-job override — metadata._yandex_ocr_model.
+     */
+    tableModel: z.string().default('table'),
+    tableModelTypes: z
+      .preprocess((v) => {
+        if (typeof v !== 'string' || v.trim() === '') return [];
+        return v
+          .split(',')
+          .map((s) => s.trim().toUpperCase())
+          .filter((s) => s.length > 0);
+      }, z.array(z.string()))
+      .default([]),
+    /**
+     * Когда Yandex настроен (key+folder) и флаг включён — Yandex OCR
+     * становится ПЕРВЫМ scan-движком (перед tesseract / vision-llm) для
+     * растровых входов (image/* и PDF). Нативные текстовые движки
+     * (pdf-text/xlsx/docx) всё равно идут первыми — Yandex не нужен на
+     * чистом текстовом слое. PII-гард сохраняется: на PII-типах /
+     * _disable_external_ocr Yandex по-прежнему выкидывается из цепочки.
+     * Default false → порядок цепочки не меняется (Yandex — last-resort).
+     */
+    preferForScans: z.coerce.boolean().default(false),
     /**
      * I8: глобальный флаг выключения Yandex для PII-документов (TTN, CMR).
      * Per-job opt-out также доступен через `metadata._disable_external_ocr=true`.
@@ -366,6 +421,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       apiKey: env.LLM_API_KEY || undefined,
       timeoutMs: env.LLM_TIMEOUT_MS,
     },
+    asr: {
+      enabled: env.ASR_ENABLED,
+      timeoutMs: env.ASR_TIMEOUT_MS,
+      confidenceDefault: env.ASR_CONFIDENCE_DEFAULT,
+      language: env.ASR_LANGUAGE || undefined,
+    },
     byoLlmEnabled: env.BYO_LLM_ENABLED,
     hybridRouting: {
       enabled: env.HYBRID_ROUTING_ENABLED,
@@ -382,6 +443,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       folderId: env.YANDEX_FOLDER_ID || undefined,
       timeoutMs: env.YANDEX_TIMEOUT_MS,
       model: env.YANDEX_OCR_MODEL || undefined,
+      tableModel: env.YANDEX_TABLE_MODEL || undefined,
+      tableModelTypes: env.YANDEX_TABLE_MODEL_TYPES,
+      preferForScans: env.YANDEX_PREFER_FOR_SCANS,
       disableForPii: env.YANDEX_DISABLE_FOR_PII,
     },
     dadata: {

@@ -106,6 +106,32 @@ class VisionResponse(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
 
 
+# --- /v1/transcribe (ASR) ---
+
+class TranscribeRequest(BaseModel):
+    audio_base64: str = Field(min_length=1)
+    # MIME входного аудио (audio/wav, audio/mpeg, audio/mp4, audio/ogg, …).
+    # Прокидывается транскрайбером в multipart filename/content-type, чтобы
+    # ASR-сервер выбрал правильный декодер. Свободная строка — мы не
+    # ограничиваем набор (валидация magic-bytes — на стороне doc-service).
+    mime_type: str = Field(min_length=1)
+    # Опциональная language-подсказка (ISO 639-1: "ru", "en"). Если задана —
+    # уходит как поле `language` в OpenAI-совместимый transcriptions-запрос.
+    # None → ASR-сервер сам определяет язык.
+    language: str | None = None
+
+
+class TranscribeResponse(BaseModel):
+    text: str
+    # Длительность аудио в секундах, если ASR-сервер её вернул. Не все
+    # серверы заполняют — тогда None.
+    duration_s: float | None = None
+    # Уверенность транскрипции 0..1, если сервер её даёт. Whisper-серверы
+    # обычно НЕ дают per-clip confidence → None. doc-service подставит
+    # дефолт, чтобы downstream-пайплайн получил число.
+    confidence: float | None = None
+
+
 # --- /v1/verify ---
 
 class VerifyRequest(BaseModel):

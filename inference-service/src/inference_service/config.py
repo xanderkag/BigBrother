@@ -84,5 +84,38 @@ class Settings(BaseSettings):
     qwen_dtype: str = "auto"
     qwen_max_new_tokens: int = Field(default=2048, ge=64, le=8192)
 
+    # --- ASR (speech-to-text) — «OCR for audio» ---
+    # ASR — это просто ещё один способ превратить вход в ТЕКСТ, после чего
+    # downstream-пайплайн (classify → extract → validate) не меняется.
+    #
+    # Модель-агностично и endpoint-конфигурируемо: транскрайбер ходит на
+    # **внешний** OpenAI-совместимый ASR-сервер по контракту
+    # `POST {ASR_BASE_URL}/audio/transcriptions` (multipart, returns `{text}`).
+    # Так говорят большинство локальных ASR-серверов (faster-whisper-server,
+    # whisper.cpp server, vLLM-whisper, и т.п.). «Простая модель на сервере»,
+    # которую развернут в другом окружении, реализует ровно этот контракт —
+    # тогда подключение = только env, без правок кода.
+    #
+    # Гейтинг:
+    #   - asr_enabled=false (default) → /v1/transcribe отвечает 503, ничего
+    #     не меняется в остальном сервисе.
+    #   - asr_base_url пустой → транскрайбер `is_available()=false`, даже если
+    #     флаг включён (404/503 с понятной причиной).
+    #
+    # Ключ обычно НЕ нужен для локального сервера — оставляем пустым.
+    # Примеры:
+    #   faster-whisper-server (локально, dev):
+    #     ASR_ENABLED=true
+    #     ASR_BASE_URL=http://faster-whisper:8000/v1
+    #     ASR_MODEL=Systran/faster-whisper-large-v3
+    #   GigaAM / кастомный сервер (прод, другое окружение):
+    #     ASR_BASE_URL=http://asr-server:9000/v1
+    #     ASR_MODEL=gigaam
+    asr_enabled: bool = False
+    asr_base_url: str = ""
+    asr_model: str = ""
+    asr_api_key: str = ""
+    asr_timeout_seconds: float = Field(default=300.0, ge=5.0)
+
 
 settings = Settings()

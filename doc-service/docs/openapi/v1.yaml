@@ -362,13 +362,17 @@ components:
         - yandex
         - xlsx
         - docx
+        - transcribe
       description: |
         Which engine produced the text used for classification and
         extraction. `pdf-text` is the cheapest fast-path for PDFs with
         a text layer; `tesseract` covers scans; `vision-llm` is the
         Qwen-VL / Claude vision fallback when text-extraction quality
         is low. `yandex` is currently disabled in production (152-ФЗ
-        risk) — listed for forward compatibility only.
+        risk) — listed for forward compatibility only. `transcribe` is
+        the ASR (speech-to-text) path: for audio uploads the transcript
+        replaces OCR text and feeds the same downstream pipeline. Only
+        produced when the voice/ASR path is enabled (ASR_ENABLED).
 
     Extracted:
       oneOf:

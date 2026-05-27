@@ -7,7 +7,15 @@ from fastapi import FastAPI, Request
 from .config import settings
 from .deps import get_backend
 from .metrics import request_duration_seconds, requests_total
-from .routes import classify, extract, metrics as metrics_route, providers, verify, vision
+from .routes import (
+    classify,
+    extract,
+    metrics as metrics_route,
+    providers,
+    transcribe,
+    verify,
+    vision,
+)
 
 logging.basicConfig(level=settings.log_level.upper())
 log = logging.getLogger("inference-service")
@@ -110,6 +118,7 @@ async def ready() -> dict[str, object]:
 app.include_router(classify.router, prefix="/v1", tags=["classify"])
 app.include_router(extract.router, prefix="/v1", tags=["extract"])
 app.include_router(vision.router, prefix="/v1", tags=["vision"])
+app.include_router(transcribe.router, prefix="/v1", tags=["transcribe"])
 app.include_router(verify.router, prefix="/v1", tags=["verify"])
 app.include_router(providers.router, prefix="/v1", tags=["providers"])
 app.include_router(metrics_route.router)  # exposed at /metrics, no prefix

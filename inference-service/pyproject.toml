@@ -16,6 +16,8 @@ dependencies = [
     "pillow>=10.4",
     "python-multipart>=0.0.20",
     "prometheus-client>=0.21",
+    # ASR transcribe client → external OpenAI-compatible /audio/transcriptions.
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
