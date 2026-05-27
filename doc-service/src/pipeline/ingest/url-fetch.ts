@@ -1,7 +1,8 @@
 import { lookup } from 'node:dns/promises';
+import { lookup as lookupCb, type LookupAddress, type LookupOptions } from 'node:dns';
 import { isIP } from 'node:net';
 import { Readable } from 'node:stream';
-import { request } from 'undici';
+import { Agent, request } from 'undici';
 
 /**
  * EXT-D (Q12): server-side fetch of a consumer-supplied document URL.
@@ -16,6 +17,11 @@ import { request } from 'undici';
  *     metadata/ULA (RFC1918, 127.x, 169.254.x, ::1, fc00::/7, …);
  *   - опциональный allowlist хостов (для ужесточения);
  *   - redirects запрещены (maxRedirections=0) — иначе публичный 302 → internal;
+ *   - connect-time re-validation: соединение идёт через одноразовый undici
+ *     Agent, чей connect.lookup ПОВТОРНО прогоняет каждый резолвнутый адрес
+ *     через isPrivateIp. Это закрывает DNS-rebind/TOCTOU-окно: даже если
+ *     резолвер вернул публичный IP на pre-check, а на connect — приватный
+ *     (атакующий контролирует DNS с TTL=0), connect отобьётся;
  *   - download time + byte-ceiling enforced mid-stream (Content-Length не
  *     доверяем: сервер может соврать или вообще его не прислать).
  *
@@ -112,9 +118,9 @@ export function validateUrlShape(raw: string, allowedHosts: readonly string[]): 
 /**
  * Резолвит host → IP(ы) и блокирует если ХОТЬ ОДИН резолвится в private/
  * internal. Если host — литеральный IP, проверяем напрямую (DNS не нужен).
- * Все адреса должны быть публичными — иначе SSRF через multi-A-record /
- * DNS-rebind частично прикрыт (полная защита требует pin-to-resolved-IP при
- * connect; см. note в коде).
+ * Все адреса должны быть публичными — иначе SSRF через multi-A-record.
+ * Это pre-check; connect-time re-validation (pinnedLookup ниже) закрывает
+ * DNS-rebind-окно между этим резолвом и фактическим соединением.
  */
 export async function assertHostNotInternal(
   host: string,
@@ -174,6 +180,14 @@ export async function fetchUrlToStream(
   const { url, host } = validateUrlShape(raw, opts.allowedHosts);
   await assertHostNotInternal(host, dnsLookup);
 
+  // DNS-rebind/TOCTOU защита: even though we just validated `host`, undici
+  // would re-resolve it at connect time — an attacker controlling DNS (TTL=0)
+  // could return a public IP for the pre-check and a private IP for connect.
+  // We pin a one-shot Agent whose connect.lookup re-runs isPrivateIp on EVERY
+  // address the resolver hands back, fail-closed. Only attached to the real
+  // undici path; an injected requestFn (tests) supplies its own transport.
+  const dispatcher = opts.requestFn ? undefined : buildPinnedAgent(opts.timeoutMs);
+
   let res: Awaited<ReturnType<typeof request>>;
   try {
     // undici.request НЕ следует редиректам по умолчанию (нет RedirectHandler
@@ -183,8 +197,16 @@ export async function fetchUrlToStream(
       method: 'GET',
       headersTimeout: opts.timeoutMs,
       bodyTimeout: opts.timeoutMs,
+      ...(dispatcher ? { dispatcher } : {}),
     });
-  } catch {
+  } catch (err) {
+    // A pinned-lookup rejection (rebind → private IP at connect) surfaces as
+    // a connect error; map to BLOCKED_HOST so it's not confused with a plain
+    // network failure, but never echo the underlying message.
+    if (err instanceof UrlFetchError) throw err;
+    if (isPinnedLookupRejection(err)) {
+      throw new UrlFetchError('BLOCKED_HOST', 'target resolves to a private/internal address');
+    }
     throw new UrlFetchError('FETCH_FAILED', 'fetch failed');
   }
 
@@ -213,6 +235,75 @@ export async function fetchUrlToStream(
 function singleHeader(v: string | string[] | undefined): string | undefined {
   if (Array.isArray(v)) return v[0];
   return v;
+}
+
+/** Sentinel-сообщение, которым pinnedLookup помечает свой reject. */
+const PINNED_LOOKUP_REJECT = 'url-fetch: connect-time address is private/internal';
+
+function isPinnedLookupRejection(err: unknown): boolean {
+  // undici оборачивает connect-ошибку; ищем наш sentinel в цепочке cause.
+  let cur: unknown = err;
+  for (let i = 0; i < 5 && cur; i++) {
+    if (cur instanceof Error) {
+      if (cur.message === PINNED_LOOKUP_REJECT) return true;
+      cur = (cur as { cause?: unknown }).cause;
+    } else {
+      break;
+    }
+  }
+  return false;
+}
+
+/**
+ * Одноразовый undici Agent, чей connect.lookup ПОВТОРНО валидирует каждый
+ * резолвнутый адрес через isPrivateIp перед тем как undici к нему подключится.
+ * Это и есть pin-to-validated-IP: connect использует тот же резолв, что мы
+ * проверили, и любой rebind на приватный адрес отбивается здесь (fail-closed).
+ */
+function buildPinnedAgent(timeoutMs: number): Agent {
+  return new Agent({
+    connectTimeout: timeoutMs,
+    connect: {
+      lookup(
+        hostname: string,
+        options: LookupOptions,
+        callback: (
+          err: NodeJS.ErrnoException | null,
+          address: string | LookupAddress[],
+          family?: number,
+        ) => void,
+      ): void {
+        // Литеральный IP — провалидировать напрямую, без резолва.
+        const litFam = isIP(hostname);
+        if (litFam !== 0) {
+          if (isPrivateIp(hostname)) {
+            callback(new Error(PINNED_LOOKUP_REJECT), '');
+            return;
+          }
+          callback(null, hostname, litFam);
+          return;
+        }
+        lookupCb(hostname, { ...options, all: true }, (err, addresses) => {
+          if (err) {
+            callback(err, '');
+            return;
+          }
+          const list = addresses as LookupAddress[];
+          if (!Array.isArray(list) || list.length === 0) {
+            callback(new Error(PINNED_LOOKUP_REJECT), '');
+            return;
+          }
+          for (const a of list) {
+            if (isPrivateIp(a.address)) {
+              callback(new Error(PINNED_LOOKUP_REJECT), '');
+              return;
+            }
+          }
+          callback(null, list);
+        });
+      },
+    },
+  });
 }
 
 /**

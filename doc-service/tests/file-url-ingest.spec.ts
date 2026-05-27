@@ -351,6 +351,37 @@ describe('happy path + mime-sniff + sha256 (route-level contract)', () => {
   });
 });
 
+describe('DNS-rebind / TOCTOU — connect-time re-validation pins the resolved IP', () => {
+  // The pre-check resolver (dnsLookup) is made to LIE: it returns a public IP
+  // so assertHostNotInternal passes. The real undici Agent then re-resolves
+  // `localhost` (→ 127.0.0.1) at connect time and the pinned lookup must
+  // block it. Uses a real loopback server + the REAL undici path (no
+  // injected requestFn), exercising buildPinnedAgent.
+  it('blocks a rebind where pre-check is public but connect resolves loopback', async () => {
+    const http = await import('node:http');
+    const srv = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/pdf' });
+      res.end(PDF_BYTES);
+    });
+    await new Promise<void>((r) => srv.listen(0, '127.0.0.1', () => r()));
+    const addr = srv.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+    try {
+      // dnsLookup lies (public) for the pre-check; NO requestFn → real Agent.
+      const err = await fetchUrlToStream(`http://localhost:${port}/x.pdf`, {
+        allowedHosts: [],
+        maxBytes: 1024 * 1024,
+        timeoutMs: 3000,
+        dnsLookup: fakeDns(['8.8.8.8']),
+      }).catch((e) => e);
+      expect(err).toBeInstanceOf(UrlFetchError);
+      expect((err as UrlFetchError).code).toBe('BLOCKED_HOST');
+    } finally {
+      await new Promise<void>((r) => srv.close(() => r()));
+    }
+  });
+});
+
 describe('config gating', () => {
   const baseEnv: NodeJS.ProcessEnv = {
     DATABASE_URL: 'postgres://t:t@localhost/t',
