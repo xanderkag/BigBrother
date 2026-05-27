@@ -22,33 +22,109 @@ def _can_import_anthropic() -> bool:
     return True
 
 
-def _reload_app(monkeypatch_env: dict[str, str]) -> TestClient:
-    """Fresh app + reloaded config under a controlled env.
+# Env keys these tests flip. We snapshot/restore them around every test so a
+# reload (which mutates os.environ + the global module cache) can't leak a
+# stale API_KEY into other test files that share the session-scoped app.
+_ENV_KEYS = ("BACKEND", "API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY")
 
-    We invalidate Python's module cache for the few inference-service
-    modules that read settings at import time. The lru_cache on
-    get_backend is invalidated by re-importing.
+
+def _reload_modules() -> "object":
+    """Reload modules that snapshot env at import time, in dependency order.
+
+    config first (rebuilds the settings singleton), then every module that
+    binds `from .config import settings` at import — otherwise it keeps a
+    stale reference to the pre-reload settings. `auth` must be reloaded before
+    `routes.providers` (which imports `require_api_key`) and `main`.
     """
     import importlib
 
-    for k, v in monkeypatch_env.items():
-        if v is None:
-            os.environ.pop(k, None)
-        else:
-            os.environ[k] = v
-
-    # Reload the modules that snapshot env at import time.
     import inference_service.config as cfg
     importlib.reload(cfg)
+    import inference_service.auth as auth
+    importlib.reload(auth)
     import inference_service.deps as deps
     importlib.reload(deps)
     import inference_service.routes.providers as providers
     importlib.reload(providers)
     import inference_service.main as main
     importlib.reload(main)
+    return main
 
-    main.app.state.backend = deps.get_backend()
-    return TestClient(main.app)
+
+# Modules whose object identity in sys.modules other test files depend on:
+# `test_concurrency` and `test_routes` do `from inference_service.main import
+# app` and override deps on it. `_reload_app` swaps these for fresh objects;
+# we restore the originals in teardown so later files get the shared app back.
+_IDENTITY_MODULES = (
+    "inference_service.main",
+    "inference_service.deps",
+    "inference_service.routes.providers",
+)
+
+
+@pytest.fixture(autouse=True)
+def _restore_env():
+    """Isolate each providers test's reload from the rest of the suite.
+
+    Two leaks to plug:
+      1. `importlib.reload(auth)` mutates the *existing* auth module dict in
+         place, so the conftest session-scoped app's already-bound
+         `require_api_key` (whose `__globals__` IS that dict) starts seeing our
+         `API_KEY=secret123`. → restore env, then reload config+auth so
+         `auth.settings.api_key` snaps back to the conftest default ("").
+      2. `_reload_app` replaces `inference_service.{main,deps,...}` in
+         sys.modules with fresh objects. Later files (`test_concurrency`,
+         `test_routes`) import `main.app` and override deps on it — they must
+         get the *original* shared app (with its cached backend + intact gate
+         dependency identity), not our throwaway reload. → snapshot the
+         original module objects and put them back."""
+    import importlib
+    import sys
+
+    saved_env = {k: os.environ.get(k) for k in _ENV_KEYS}
+    saved_modules = {name: sys.modules.get(name) for name in _IDENTITY_MODULES}
+    try:
+        yield
+    finally:
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        import inference_service.config as cfg
+        importlib.reload(cfg)
+        import inference_service.auth as auth
+        importlib.reload(auth)
+        for name, mod in saved_modules.items():
+            if mod is not None:
+                sys.modules[name] = mod
+        # The reloaded `deps` left a throwaway lru_cache; the restored original
+        # `deps.get_backend` may still hold a backend built under our flipped
+        # BACKEND env. Drop it so later tests rebuild against restored config.
+        restored_deps = saved_modules["inference_service.deps"]
+        if restored_deps is not None:
+            restored_deps.get_backend.cache_clear()
+
+
+def _reload_app(monkeypatch_env: dict[str, str]) -> TestClient:
+    """Fresh app + reloaded config under a controlled env.
+
+    We invalidate Python's module cache for the few inference-service
+    modules that read settings at import time. The lru_cache on
+    get_backend is invalidated by re-importing. Env mutations are reverted
+    by the autouse `_restore_env_and_modules` fixture after each test.
+    """
+    for k, v in monkeypatch_env.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
+    main = _reload_modules()
+    import inference_service.deps as deps
+
+    main.app.state.backend = deps.get_backend()  # type: ignore[attr-defined]
+    return TestClient(main.app)  # type: ignore[attr-defined]
 
 
 def test_status_reports_stub_active_with_no_keys() -> None:

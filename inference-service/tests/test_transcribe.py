@@ -15,7 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from inference_service import asr as asr_module
-from inference_service.asr import AsrTranscriber, get_transcriber, reset_transcriber
+from inference_service.asr import AsrTranscriber, reset_transcriber
 from inference_service.main import app
 
 

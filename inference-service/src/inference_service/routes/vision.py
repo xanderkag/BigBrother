@@ -1,13 +1,11 @@
-import base64
-import binascii
-
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 
 from ..admission import AdmissionGate, get_admission_gate
 from ..auth import require_api_key
 from ..backends.base import ModelBackend
 from ..deps import get_backend
 from ..schemas import VisionRequest, VisionResponse
+from ._payload import decode_b64_payload
 
 router = APIRouter()
 
@@ -24,24 +22,9 @@ async def vision_ocr(
     backend: ModelBackend = Depends(get_backend),
     gate: AdmissionGate = Depends(get_admission_gate),
 ) -> VisionResponse:
-    try:
-        image_bytes = base64.b64decode(body.image_base64, validate=True)
-    except (binascii.Error, ValueError) as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"image_base64 is not valid base64: {e}",
-        ) from e
-
-    if len(image_bytes) == 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="image_base64 decoded to zero bytes",
-        )
-    if len(image_bytes) > MAX_IMAGE_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"image too large: {len(image_bytes)} bytes (max {MAX_IMAGE_BYTES})",
-        )
+    image_bytes = decode_b64_payload(
+        body.image_base64, field="image_base64", max_bytes=MAX_IMAGE_BYTES
+    )
 
     async with gate.acquire():
         return await backend.vision_ocr(

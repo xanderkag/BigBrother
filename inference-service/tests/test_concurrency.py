@@ -67,6 +67,7 @@ class ProbeBackend(ModelBackend):
         prompt_override: str | None = None,
         include_debug: bool = False,
         model_override: str | None = None,
+        image_base64: str | None = None,
     ) -> ExtractResponse:
         async with self._admit():
             self.inside_count += 1
@@ -165,6 +166,7 @@ async def test_inflight_gauge_decrements_on_exception() -> None:
                 prompt_override: str | None = None,
                 include_debug: bool = False,
                 model_override: str | None = None,
+                image_base64: str | None = None,
             ) -> ExtractResponse:
                 async with self._admit():
                     raise RuntimeError("boom")
@@ -235,6 +237,7 @@ class SlowExtractBackend(ModelBackend):
         prompt_override: str | None = None,
         include_debug: bool = False,
         model_override: str | None = None,
+        image_base64: str | None = None,
     ) -> ExtractResponse:
         await asyncio.sleep(self.sleep_seconds)
         return ExtractResponse(extracted={}, confidence=1.0, issues=[])

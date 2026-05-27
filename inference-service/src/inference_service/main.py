@@ -64,6 +64,9 @@ async def prometheus_middleware(request: Request, call_next):
     endpoint = getattr(route, "path", path) if route else path
 
     started = time.perf_counter()
+    outcome = "exception"  # default — overwritten on normal return; guards
+    # against UnboundLocalError if a BaseException (e.g. CancelledError) skips
+    # the `except Exception` branch but still runs `finally`.
     try:
         response = await call_next(request)
         outcome = "success" if response.status_code < 400 else "error"

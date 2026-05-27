@@ -1,6 +1,3 @@
-import base64
-import binascii
-
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -8,6 +5,7 @@ from ..admission import AdmissionGate, get_admission_gate
 from ..asr import AsrTranscriber, AsrUnavailableError, get_transcriber
 from ..auth import require_api_key
 from ..schemas import TranscribeRequest, TranscribeResponse
+from ._payload import decode_b64_payload
 
 router = APIRouter()
 
@@ -33,24 +31,9 @@ async def transcribe(
             detail="ASR not enabled (set ASR_ENABLED=true and ASR_BASE_URL)",
         )
 
-    try:
-        audio_bytes = base64.b64decode(body.audio_base64, validate=True)
-    except (binascii.Error, ValueError) as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"audio_base64 is not valid base64: {e}",
-        ) from e
-
-    if len(audio_bytes) == 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="audio_base64 decoded to zero bytes",
-        )
-    if len(audio_bytes) > MAX_AUDIO_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"audio too large: {len(audio_bytes)} bytes (max {MAX_AUDIO_BYTES})",
-        )
+    audio_bytes = decode_b64_payload(
+        body.audio_base64, field="audio_base64", max_bytes=MAX_AUDIO_BYTES
+    )
 
     async with gate.acquire():
         try:

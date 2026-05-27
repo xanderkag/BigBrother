@@ -31,8 +31,22 @@ async def test_classify_returns_null(stub: StubBackend) -> None:
 
 
 @pytest.mark.asyncio
-async def test_extract_is_empty_with_issue(stub: StubBackend) -> None:
+async def test_extract_returns_mock_for_known_hint(stub: StubBackend) -> None:
+    # Stub теперь возвращает детерминированный mock канонической формы для
+    # известных типов (389f0f8) — это нужно для смоук-теста pipeline'а
+    # (items[]/per-line validators/resolution) без реальной LLM.
     r = await stub.extract(text="x", schema={}, hint="invoice")
+    assert r.extracted != {}
+    assert r.extracted["number"] == "СЧ-MOCK-001"
+    assert isinstance(r.extracted["items"], list)
+    assert r.confidence == 0.7
+    assert any("stub" in i.lower() for i in r.issues)
+
+
+@pytest.mark.asyncio
+async def test_extract_is_empty_for_unknown_hint(stub: StubBackend) -> None:
+    # hint вне известного набора → пустой extracted + confidence 0 + issue.
+    r = await stub.extract(text="x", schema={}, hint="unknown-type")
     assert r.extracted == {}
     assert r.confidence == 0.0
     assert any("stub" in i.lower() for i in r.issues)
