@@ -56,6 +56,8 @@ ssh kb-docker 'cd parsdocs/doc-service; sed -i "s/^API_KEY=.*/API_KEY=$(openssl 
 - **Phi-4-multimodal** — пользователь хочет прогнать через неё; в Ollama не заводится (архитектура vision/audio-LoRA), нужен **vLLM на сервере 96 ГБ**. После прихода сервера: поднять на vLLM + прогнать те же 9 доков, сравнить с Qwen2.5-VL #26.
 
 ### ASR / речь-в-текст (новая модальность)
+**✅ Приёмный путь построен технически (`164f83e`)** — model-agnostic, config-driven, без ключа: audio (wav/mp3/m4a/ogg, magic-bytes) → inference `POST /v1/transcribe` → конфигурируемый OpenAI-совместимый `/v1/audio/transcriptions` бэкенд (`ASR_BASE_URL`/`ASR_MODEL`) → транскрипт → тот же pipeline. За флагом `ASR_ENABLED` (default off). Серверная модель («простая на сервере») подключается через env, деплой — в другом месте. Тесты: 35 doc + 10 inference. Остаётся: поднять модель + включить флаг + (опц.) doc-типы `voice_message`/`call_transcript`.
+
 **Идея интеграции:** ASR = «OCR для звука». Транскрипт → тот же downstream-пайплайн
 (classify → extract → validate → webhook), без изменений после получения текста.
 
