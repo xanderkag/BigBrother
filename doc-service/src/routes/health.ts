@@ -13,6 +13,27 @@ import { HealthResponse, ReadyResponse } from '../types/api-schemas.js';
 // требуют bump'а — поведение consumer'ов от extras не ломается.
 const EXTRACTOR_CONTRACT_VERSION = '1';
 
+// EXT-LINE (2026-05-29): per-line/per-doc transport signal fields, которые
+// extractor умеет извлекать в items[i] и в корень документа. SLAI читает
+// этот список чтобы знать какие сигналы доступны для матчинга — без
+// `400`-сюрпризов на проде. Дополнения сюда — additive (contractVersion
+// остаётся '1'). Структура `{line: [...], doc: [...]}` чтобы различать.
+const EXTRACTOR_SUPPORTED_FIELDS = {
+  line: [
+    // фрахт-атрибуты (commit 92745ce, 2026-05-20):
+    'vehicle_plate', 'order_ref', 'route_from', 'route_to', 'trip_date',
+    // EXT-LINE (commit TBD, 2026-05-29):
+    'container_no', 'bl_no', 'cmr_no', 'ttn_no', 'declaration_no', 'driver_name',
+  ] as const,
+  doc: [
+    'period_from', 'period_to', 'contract_no', 'contract_date',
+  ] as const,
+};
+
+// adapterVersion — bump'аем при расширении SUPPORTED_FIELDS или сменах
+// поведения, видимых consumer'у. Формат YYYY.MM.DD.
+const EXTRACTOR_ADAPTER_VERSION = '2026.05.29';
+
 export async function healthRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
 
@@ -46,12 +67,15 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
     const types = await documentTypesRepo.listActive();
     return {
       adapter: 'parsdocs' as const,
+      adapterVersion: EXTRACTOR_ADAPTER_VERSION,
       contractVersion: EXTRACTOR_CONTRACT_VERSION,
       service: 'parsdocs',
       semver: process.env.APP_VERSION || '0.1.0',
       commitShort: process.env.GIT_COMMIT_SHORT
         || (process.env.GIT_COMMIT || 'unknown').slice(0, 7),
       supportedDocumentTypes: types.map((t) => t.slug),
+      supportedLineFields: EXTRACTOR_SUPPORTED_FIELDS.line,
+      supportedDocFields: EXTRACTOR_SUPPORTED_FIELDS.doc,
       maxFileMB: config.maxUploadMb,
       webhookSupported: true as const,
       // L1 (2026-05-27): enablement-флаги новых ingest-возможностей, чтобы SLAI
