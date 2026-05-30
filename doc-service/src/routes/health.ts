@@ -18,15 +18,33 @@ const EXTRACTOR_CONTRACT_VERSION = '1';
 // этот список чтобы знать какие сигналы доступны для матчинга — без
 // `400`-сюрпризов на проде. Дополнения сюда — additive (contractVersion
 // остаётся '1'). Структура `{line: [...], doc: [...]}` чтобы различать.
+//
+// Формат {name, since} (SLAI FOLLOWUP 2026-05-29 §1) — даёт version-visibility:
+// их DocumentMatcher feature-gate'ит логику «если в supportedLineFields нет
+// container_no — fallback на plate+route+date». Без `since` нужен отдельный
+// запрос «когда поле появилось». Extensible — добавить `deprecated_at`/
+// `accuracy_target` потом без breaking change.
 const EXTRACTOR_SUPPORTED_FIELDS = {
   line: [
     // фрахт-атрибуты (commit 92745ce, 2026-05-20):
-    'vehicle_plate', 'order_ref', 'route_from', 'route_to', 'trip_date',
-    // EXT-LINE (commit TBD, 2026-05-29):
-    'container_no', 'bl_no', 'cmr_no', 'ttn_no', 'declaration_no', 'driver_name',
+    { name: 'vehicle_plate', since: '2026-05-20' },
+    { name: 'order_ref',     since: '2026-05-20' },
+    { name: 'route_from',    since: '2026-05-20' },
+    { name: 'route_to',      since: '2026-05-20' },
+    { name: 'trip_date',     since: '2026-05-20' },
+    // EXT-LINE (commit 42adffc, 2026-05-29):
+    { name: 'container_no',   since: '2026-05-29' },
+    { name: 'bl_no',          since: '2026-05-29' },
+    { name: 'cmr_no',         since: '2026-05-29' },
+    { name: 'ttn_no',         since: '2026-05-29' },
+    { name: 'declaration_no', since: '2026-05-29' },
+    { name: 'driver_name',    since: '2026-05-29' },
   ] as const,
   doc: [
-    'period_from', 'period_to', 'contract_no', 'contract_date',
+    { name: 'period_from',   since: '2026-05-29' },
+    { name: 'period_to',     since: '2026-05-29' },
+    { name: 'contract_no',   since: '2026-05-29' },
+    { name: 'contract_date', since: '2026-05-29' },
   ] as const,
 };
 

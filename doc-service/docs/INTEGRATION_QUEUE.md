@@ -139,9 +139,28 @@ LLM-контракты ИЛИ когда LLM-extraction переедет на с
 
 ---
 
+### Q13. AC9 — Sandbox-тенант формат изоляции
+
+- **Status:** ANSWERED 2026-05-29 (SLAI FOLLOWUP)
+- **Asked:** 2026-05-26 (наш ответ EXT)
+- **From:** PARSDOCS_DEV
+- **To:** SLAI_DEV
+- **Что нужно:** определить параметры sandbox-тенанта для contract-test'ов
+- **Action plan:** после P0 deploy → `INSERT INTO organizations` (separate),
+  `INSERT INTO personal_access_tokens` (60 req/min, 7d retention) →
+  envelope-encrypt token → положить в `SLAI_SECRETS_INBOX.md` (блок S2)
+
+#### Answer (2026-05-29, SLAI FOLLOWUP)
+- (1) separate organization
+- retention 7d
+- rate-limit 60 req/min
+- Канал передачи токена нам→SLAI: `SLAI_SECRETS_INBOX.md` (envelope-encrypted PR)
+
+---
+
 ### Q9. ТЗ от SLAI v1.0 — 18 типов документов, 8 open questions, golden dataset
 
-- **Status:** ANSWERED (наш ответ создан, ждём golden dataset)
+- **Status:** ANSWERED 2026-05-29 (SLAI FOLLOWUP §Q9, ETA 2026-06-02..04)
 - **Asked:** 2026-05-17
 - **From:** SLAI_DEV
 - **To:** PARSDOCS_DEV / USER
@@ -185,7 +204,14 @@ LLM-контракты ИЛИ когда LLM-extraction переедет на с
 
 ### Q4. Service-token для SLAI side
 
-- **Status:** OPEN
+- **Status:** ANSWERED 2026-05-29 (SLAI FOLLOWUP §Q4, ETA secret 2026-05-30)
+- **Answer:** callback URL `https://api.demo.sls24.ru/api/v1/parsdocs/webhook`,
+  HMAC secret SLAI генерирует (`openssl rand -hex 32`), передаст через
+  `SLAI_SECRETS_INBOX.md` (блок S1) envelope-encrypted PR. ETA 2026-05-30.
+- **Action plan:** ждём envelope в S1 → расшифровать → положить в
+  `provider_settings` (encrypted-at-rest) или env `SLAI_WEBHOOK_SECRET` →
+  включить F3 webhook-receiver.
+- **was-OPEN:** asked 2026-05-16, ANSWERED 2026-05-29 (13 дней).
 - **Asked:** 2026-05-16
 - **From:** CLAUDE
 - **To:** USER
@@ -208,7 +234,14 @@ SLAI ответил (SLAI_REPLY_v2.md): «Сейчас в дев-фазе ток
 
 ### Q5. ETA пилота с реальными документами
 
-- **Status:** OPEN
+- **Status:** ANSWERED 2026-05-29 (SLAI FOLLOWUP §Q5: **WW-23, start 2026-06-02**)
+- **Plan:** W1 (WW22) подготовка → **W2 (WW23, 02-06.06) пилот старт** —
+  parsdocs шлёт первую дюжину webhook'ов, SLAI shadow-mode → W3 (WW24)
+  замер AC §B.4 + diff vs ручная привязка → W4 (WW25) prod rollout при метриках.
+- **Action plan parsdocs до 2026-06-02:** (a) P0 ROADMAP-deploy (API_KEY +
+  deploy-parsdocs.yml), (b) получить HMAC secret из S1, (c) поднять
+  sandbox-тенант (Q13/AC9), (d) confirm callback URL `api.demo.sls24.ru`.
+- **was-OPEN:** asked 2026-05-16, ANSWERED 2026-05-29 (13 дней).
 - **Asked:** 2026-05-16
 - **From:** CLAUDE
 - **To:** USER
@@ -338,5 +371,8 @@ F9 — изменено в `inference-service/.env.example`:
 | 2026-05-19 | F3 item 4 закрыто — `doc-service/docs/openapi/v1.yaml` (OpenAPI 3.1, 13 схем, 4 примера, описаны HMAC headers, retry/idempotency, versioning, redact_pii, slug aliasing). Items 1/3 остаются заблокированы Q4/Q5 (ждём продакта SLAI). |
 | 2026-05-20 | 4 P0 фрахт-счетов SLAI закрыты (`92745ce`): UTF8 0x00 краш, items[] пустой, number=«на»/«No», ИНН продавца=покупателя. Добавлены транспортные атрибуты в `items[]` (vehicle_plate, order_ref, route_from, route_to, trip_date). Schema-echo defensive unwrap. Verified end-to-end на 3 эталонных счетах. |
 | 2026-05-26 | Получен `slai-response-to-parsdocs-2026-05-26.md`. Перефреймили как внутренний микросервис (не внешний клиент): отпали коммерческие пункты, A/B-встреча через квартал не нужна. Заведены Q10-Q12 (EXT-A/B/D). EXT-C `blocked-on-trigger` без даты, в очередь не пишем. Ответ — `PARSDOCS_REPLY_TO_SLAI_EXT_2026-05-26.md`. |
+| 2026-05-29 утро | EXT-LINE (`42adffc`): 6 line + 4 doc-level транспортных полей в schema + adapterVersion 2026.05.29 + supportedLineFields[]/supportedDocFields[] в /capabilities. Ответ — `PARSDOCS_REPLY_TO_SLAI_LINE_SIGNALS_2026-05-29.md`. |
+| 2026-05-29 день | Followup-нудж по 4 блокерам production (`05e5c32`): Q4 service-token + Q5 ETA пилота + Q9 golden dataset + AC9 sandbox формат. Deadline 2026-06-05. |
+| 2026-05-29 вечер | SLAI FOLLOWUP закрыл все 4: Q4 webhook secret ETA 2026-05-30, Q5 пилот WW-23 (2026-06-02), Q9 golden dataset 2026-06-02..04, AC9 (separate org / 7d retention / 60 req/min). Заведён Q13 (AC9). Создан `SLAI_SECRETS_INBOX.md` (envelope-encrypted channel) с блоками S1/S2 + `doc-service/test-fixtures/slai-golden/` (PR-канал для PDF). /capabilities supportedLineFields переведён на `{name, since}` формат по их рекомендации. |
 | 2026-05-26 | Q12 (EXT-D) реализовано: `file_url`-ingest в `POST /jobs` с SSRF-защитой (`src/pipeline/ingest/url-fetch.ts` — scheme/private-IP/redirect/byte-cap guards), флаг `FILE_URL_INGEST_ENABLED`, error_codes `FILE_URL_*`, тесты `tests/file-url-ingest.spec.ts` (27). Не задеплоено. Webhook v1 не тронут. |
 | 2026-05-26 | Нудж SLAI по Q4/Q5/Q9 (все OPEN >7 дней) подготовлен — `doc-service/docs/PARSDOCS_NUDGE_SLAI_2026-05-26.md` (лид: EXT-A/B/D реализованы, 26 типов, vision проходит гейты 96%/90%; оговорки про digital-PDF и latency 186с). Статусы Q4/Q5/Q9 без изменений — ждём ответ. |
