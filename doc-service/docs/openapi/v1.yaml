@@ -86,9 +86,15 @@ paths:
         path is opaque to parsdocs; only the host + headers + JSON body
         defined here are part of the contract.
       parameters:
+        # Preferred (since EXT-A 2026-05-26) — extractor-agnostic alias.
+        - $ref: "#/components/parameters/ExtractorSignature"
+        - $ref: "#/components/parameters/ExtractorJobId"
+        - $ref: "#/components/parameters/ExtractorAttempt"
+        # Same payload, parsdocs-namespaced (still preferred for current consumers).
         - $ref: "#/components/parameters/Signature"
         - $ref: "#/components/parameters/JobId"
         - $ref: "#/components/parameters/Attempt"
+        # Legacy back-compat — pre-2026-05-18 header names. Remove in v2.
         - $ref: "#/components/parameters/LegacySignature"
         - $ref: "#/components/parameters/LegacyJobId"
         - $ref: "#/components/parameters/LegacyAttempt"
@@ -160,6 +166,42 @@ components:
         1-indexed attempt counter. Use for receiver-side dedup keys
         (e.g. `{job_id}:{attempt}` if you want to ack each attempt
         separately).
+      schema:
+        type: integer
+        minimum: 1
+
+    ExtractorSignature:
+      name: x-extractor-signature
+      in: header
+      required: true
+      description: |
+        Extractor-agnostic alias (since 2026-05-26, EXT-A). Тот же HMAC что и
+        `x-parsdocs-signature` — посылается одновременно ради consumer'ов
+        нового `ExtractorGateway`, который не должен знать, какой адаптер
+        внутри (parsdocs / другой extractor). Predпочтительный header для
+        новых интеграций; `x-parsdocs-signature` оставлен для back-compat.
+      schema:
+        type: string
+        pattern: "^sha256=[0-9a-f]{64}$"
+
+    ExtractorJobId:
+      name: x-extractor-job-id
+      in: header
+      required: true
+      description: |
+        Extractor-agnostic alias (since 2026-05-26). Тот же UUID что и
+        `x-parsdocs-job-id`.
+      schema:
+        type: string
+        format: uuid
+
+    ExtractorAttempt:
+      name: x-extractor-attempt
+      in: header
+      required: true
+      description: |
+        Extractor-agnostic alias (since 2026-05-26). Тот же counter что и
+        `x-parsdocs-attempt`.
       schema:
         type: integer
         minimum: 1
@@ -426,6 +468,12 @@ components:
 
     InvoicePosition:
       type: object
+      description: |
+        Одна строка items[]. Базовые товарные поля + транспортные сигналы
+        для счетов перевозчиков (EXT-LINE 2026-05-29). Все опциональные,
+        nullable если в строке физически отсутствуют.
+        parsdocs НЕ нормализует значения (upper-case / удаление пробелов
+        / валидация форматов) — отдаёт как написано, consumer canonicalize'ит.
       properties:
         name:
           type: string
@@ -437,6 +485,44 @@ components:
           type: number
         vat:
           type: number
+        # ── Транспортные сигналы (since 2026-05-20: vehicle_plate/order_ref/
+        #    route_*/trip_date; since 2026-05-29: container_no/bl_no/cmr_no/
+        #    ttn_no/declaration_no/driver_name).
+        #    Доступность видна в GET /capabilities → supportedLineFields[].
+        vehicle_plate:
+          type: string
+          description: "Госномер ТС (РФ-формат «А123ВС797» либо как в документе)."
+        order_ref:
+          type: string
+          description: "Номер заказа/заявки на перевозку («Заказ:» / «Заявка:»)."
+        route_from:
+          type: string
+          description: "Пункт отправления рейса (из «Маршрут: A → B»)."
+        route_to:
+          type: string
+          description: "Пункт назначения рейса."
+        trip_date:
+          type: string
+          format: date
+          description: "Дата рейса этой строки (ISO YYYY-MM-DD)."
+        container_no:
+          type: string
+          description: "Номер морского контейнера (ISO 6346 — 4 буквы + 7 цифр)."
+        bl_no:
+          type: string
+          description: "Номер коносамента (Bill of Lading)."
+        cmr_no:
+          type: string
+          description: "Номер CMR-накладной (международная авто)."
+        ttn_no:
+          type: string
+          description: "Номер ТТН (товарно-транспортная накладная РФ)."
+        declaration_no:
+          type: string
+          description: "Номер ДТ (таможенная декларация, для счетов брокеров)."
+        driver_name:
+          type: string
+          description: "ФИО водителя как написано в строке."
 
     InvoiceExtracted:
       type: object
@@ -461,6 +547,25 @@ components:
         vat_rate:
           type: number
           description: VAT rate as percent (e.g. `20`, `10`, `0`).
+        # ── Document-level header-fallback (EXT-LINE 2026-05-29). Consumer
+        #    использует когда у конкретной строки нет своих сигналов
+        #    (например «счёт за май → плечо завершилось в мае»). parsdocs
+        #    заполняет если в шапке есть, иначе поле отсутствует.
+        period_from:
+          type: string
+          format: date
+          description: "Дата начала периода оказания услуг (из «Период с … по …»)."
+        period_to:
+          type: string
+          format: date
+          description: "Дата конца периода оказания услуг."
+        contract_no:
+          type: string
+          description: "Номер договора (из «по договору №», «на основании договора №»)."
+        contract_date:
+          type: string
+          format: date
+          description: "Дата договора."
         positions:
           type: array
           items:
