@@ -59,10 +59,29 @@
 
 ### Ждёт деплоя
 
-Все EXT-A/B/D в гите но не на проде. Релиз блокирован **P0-1/P0-2 из ROADMAP**:
-- `API_KEY` пустой на проде → auth fail-closed не пускает старт (новый код)
-- Команда: `ssh kb-docker 'cd parsdocs/doc-service; sed -i "s/^API_KEY=.*/API_KEY=$(openssl rand -hex 32)/" .env'` → ручной запуск `deploy-parsdocs.yml`
-- После деплоя включить `BYO_LLM_ENABLED=true` и `FILE_URL_INGEST_ENABLED=true` когда SLAI готов
+**Deploy-target пилота WW-23 = `asha` (staging/demo, личный хост),
+не kb-docker.** Топология — `DEPLOY_TOPOLOGY.md`. SLAI (`api.sls24.ru`,
+`app.sls24.ru`) живёт на том же хосте → docker-сеть `ai-platform`, быстрый
+итерационный цикл без корп-деплоя.
+
+Состояние на Asha (на 2026-05-29):
+- parsdocs commit `cdbd8d6` — **отстаёт** от master (`a5cbd04`). Не доехали:
+  EXT-LINE (`42adffc`), `/capabilities` `{name,since}`, secrets-inbox,
+  golden fixtures, followup reply, hybrid-routing полный код.
+- `BACKEND=stub` — LLM выключен (правило хоста: реальные корп-данные не
+  пускаем; для пилота на синтетике + Anthropic через Red Shield VPN-прокси
+  будет настройка отдельно).
+- ASR работает (`voice-asr` + faster-whisper small).
+
+Действия для пилота WW-23:
+1. `git pull` на Asha → `docker compose up -d --build` → обновится до
+   `a5cbd04`.
+2. Включить `BYO_LLM_ENABLED=true` + `FILE_URL_INGEST_ENABLED=true` в
+   inference `.env`.
+3. Когда SLAI пришлёт webhook secret (S1) → положить в БД parsdocs Asha.
+4. Создать sandbox-org + token (AC9/Q13) → S2.
+
+kb-docker (corp prod) — отдельный track, **не блокер** для SLAI пилота.
 
 ---
 
