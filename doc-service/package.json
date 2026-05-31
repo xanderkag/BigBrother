@@ -18,8 +18,10 @@
     "migrate:create": "tsx src/scripts/migrate.ts create",
     "migrate:secrets": "tsx src/scripts/migrate-secrets.ts",
     "rotate:secrets": "tsx src/scripts/rotate-secrets.ts",
+    "provision:sandbox": "tsx src/scripts/provision-sandbox.ts",
     "smoke": "tsx src/scripts/smoke.ts",
     "eval": "tsx src/scripts/eval/run.ts",
+    "eval:golden": "tsx src/scripts/eval/run-golden.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
