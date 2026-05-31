@@ -42,10 +42,17 @@ at-rest, `SECRETS_ENCRYPTION_KEY`) или в env. Envelope из inbox можно
 веб-серверов ключей, простая CLI, проверенная криптография.
 
 **Получатель:** Aleksandr Liapustin / parsdocs-ops
-**Public key:**
+**Public key (age v1.2.1, сгенерировано 2026-05-31):**
 ```
-age1<TODO-2026-05-30: владелец сгенерирует через `age-keygen` и положит сюда publk-часть>
+age1xn6dalaepv98wve3a7te2pkyhzp8jawwkt9f4df4t3zw4e84tgkqed5wcq
 ```
+
+Соответствующий приватный ключ лежит в `~/.age/parsdocs.key` у владельца
+(локально, не в git). Бэкап — TODO владельцу (1Password / encrypted USB).
+Ротация: при подозрении на компрометацию — `age-keygen -o` новый, обновить
+public key выше + переотправить активные envelope'ы. Никаких pending PR
+не теряем — age envelope'ы привязаны к одному получателю на момент
+шифрования, дешифровка идёт под СТАРЫМ ключом.
 
 ### Установка `age` (одноразово)
 
@@ -135,26 +142,39 @@ shred -u /tmp/secret.txt
 
 - **Asked:** 2026-05-29 (наш `PARSDOCS_FOLLOWUP_2026-05-29_OLD_OPEN_QUESTIONS.md` §AC9)
 - **From:** PARSDOCS_DEV → SLAI_DEV (мы шлём токен ИМ)
-- **Status:** `PENDING` (ожидает: P0 deploy → INSERT INTO organizations →
-  INSERT INTO personal_access_tokens → envelope)
-- **Тип секрета:** personal_access_token (60+ hex)
+- **Status:** `PROVISIONED, AWAITING SLAI age public key` (2026-05-31)
+- **Тип секрета:** personal_access_token (~50 chars, prefix `pdpat_`)
 - **Назначение:** SLAI ↔ sandbox-тенант для contract-test'ов их
   ParsdocsAdapter. Параметры тенанта (закрыто в FOLLOWUP §AC9):
-  - separate organization (option 1)
-  - retention 7d
-  - rate-limit 60 req/min
+  - separate organization ✅ (option 1)
+  - retention: общий `FILE_RETENTION_DAYS=30` хоста Asha (per-tenant в БД-
+    схеме пока нет — это TODO миграции, для одного арендатора достаточно)
+  - rate-limit: общий `RATE_LIMIT_PER_MINUTE` хоста (per-tenant TODO)
+  - token expires_at: now + 90 дней
+
+#### Provisioned (2026-05-31 on Asha)
+
+```
+organization_id: 9a3cb9d3-e997-4669-a822-f8294f0dfed3
+user_id:         fc9f3f6e-876e-4b07-aef6-7a85d48af698
+token_name:      slai-sandbox-bot
+expires_at:      ~2026-08-29
+webhook_url:     https://api.demo.sls24.ru/api/v1/parsdocs/webhook
+host:            https://parsdocs.135.106.158.143.nip.io (Asha)
+```
 
 #### Envelope
-<сгенерируем после деплоя, попросим у SLAI их age public key через
-`xanderkag/SLAI/docs/SLAI_SECRETS_INBOX.md`>
+<плейнтекст token передан владельцу parsdocs в чате 2026-05-31; будет
+зашифрован под SLAI age public key и положен в их inbox PR'ом. В git plaintext
+никогда не попадает.>
 
-#### Применение
-После генерации:
-1. `INSERT INTO organizations (name='slai-sandbox', type='external', ...)`
-2. `INSERT INTO personal_access_tokens (organization_id=<above>, ...)`
-3. Конфигурация retention/rate-limit в org-settings.
-4. Envelope + положить в SLAI inbox.
-5. Status: APPLIED.
+#### Применение SLAI-side
+1. Принять envelope из своего inbox.
+2. Дешифровать: `age -d -i ~/.age/slai.key envelope.age > /tmp/token.txt`.
+3. Использовать как Bearer в HTTP: `Authorization: Bearer <token>`.
+4. Endpoint: `POST https://parsdocs.135.106.158.143.nip.io/api/v1/jobs`.
+5. Webhook от parsdocs прилетит на `https://api.demo.sls24.ru/api/v1/parsdocs/webhook`
+   с заголовком `X-Parsdocs-Signature` (HMAC от S1 secret).
 
 ---
 
