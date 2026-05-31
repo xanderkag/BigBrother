@@ -38,19 +38,69 @@ at-rest, `SECRETS_ENCRYPTION_KEY`) или в env. Envelope из inbox можно
 
 ## Recipient public key (parsdocs)
 
-**Тип:** age (https://age-encryption.org)
+**Тип:** age (https://age-encryption.org) — современная замена PGP, без
+веб-серверов ключей, простая CLI, проверенная криптография.
+
 **Получатель:** Aleksandr Liapustin / parsdocs-ops
 **Public key:**
 ```
-age1<TODO: владелец сгенерирует через `age-keygen` и положит publk-часть>
+age1<TODO-2026-05-30: владелец сгенерирует через `age-keygen` и положит сюда publk-часть>
 ```
 
-> Если у вас другой формат предпочтительнее (PGP/GPG ключ Гитхаба, 1Password
-> shared vault, Telegram secret-chat) — напишите в `INTEGRATION_QUEUE.md`,
-> переключим канал.
+### Установка `age` (одноразово)
 
-**Альтернативно** (если age недоступен) — Telegram `@xanderkag` с сообщением
-«envelope для SLAI_SECRETS_INBOX», передадим временный ключ.
+| OS | Команда |
+|----|---------|
+| macOS | `brew install age` |
+| Ubuntu/Debian | `sudo apt install age` |
+| Arch | `pacman -S age` |
+| Windows | `winget install FiloSottile.age` или https://github.com/FiloSottile/age/releases |
+
+### Генерация публичного ключа получателя (parsdocs-side, разово)
+
+```bash
+mkdir -p ~/.age && chmod 700 ~/.age
+age-keygen -o ~/.age/parsdocs.key
+# Выведет на экран строку "Public key: age1xxxxxxxxxxxxxxxx" — это её
+# нужно положить в этот файл выше как Recipient public key.
+grep "^# public key:" ~/.age/parsdocs.key | awk '{print $NF}'
+```
+
+`~/.age/parsdocs.key` — приватный ключ, **никогда не коммитить**. Бэкап
+держать отдельно (1Password / зашифрованный USB / encrypted-фолдер).
+
+### Шифрование секрета (SLAI-side, под каждый PR)
+
+```bash
+# Кладём plaintext во временный файл (можно прямо из stdin)
+echo "PARSDOCS_WEBHOOK_SECRET=abcdef0123456789...64hex" > /tmp/secret.txt
+
+# Шифруем под публичный ключ parsdocs
+age -r age1<PUBLIC-KEY-FROM-INBOX> -o /tmp/secret.age /tmp/secret.txt
+
+# armor-вариант (текстовый, для удобной вставки в PR markdown)
+age -r age1<PUBLIC-KEY> -a /tmp/secret.txt > /tmp/secret.age.txt
+
+# Удаляем plaintext (важно!)
+shred -u /tmp/secret.txt
+```
+
+Содержимое `/tmp/secret.age.txt` (multiline `-----BEGIN AGE ENCRYPTED FILE-----`)
+кладём в блок `#### Envelope` соответствующего S-блока.
+
+### Дешифровка (parsdocs-side, после получения PR)
+
+```bash
+age -d -i ~/.age/parsdocs.key /tmp/secret.age > /tmp/secret.txt
+# Или сразу в env:
+SECRET=$(age -d -i ~/.age/parsdocs.key /tmp/secret.age)
+echo $SECRET  # проверить → положить в нужное место
+shred -u /tmp/secret.txt
+```
+
+> Если age недоступен (не можете поставить) — Telegram `@xanderkag`
+> сообщением «envelope для SLAI_SECRETS_INBOX», передадим временный
+> канал (1Password shared vault либо secret-chat).
 
 ---
 
