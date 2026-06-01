@@ -160,7 +160,7 @@ user_id:         fc9f3f6e-876e-4b07-aef6-7a85d48af698
 token_name:      slai-sandbox-bot
 expires_at:      ~2026-08-29
 webhook_url:     https://api.demo.sls24.ru/api/v1/parsdocs/webhook
-host:            https://parsdocs.135.106.158.143.nip.io (Asha)
+host:            https://vanga.sls24.ru (Asha)
 ```
 
 #### Envelope
@@ -172,7 +172,7 @@ host:            https://parsdocs.135.106.158.143.nip.io (Asha)
 1. Принять envelope из своего inbox.
 2. Дешифровать: `age -d -i ~/.age/slai.key envelope.age > /tmp/token.txt`.
 3. Использовать как Bearer в HTTP: `Authorization: Bearer <token>`.
-4. Endpoint: `POST https://parsdocs.135.106.158.143.nip.io/api/v1/jobs`.
+4. Endpoint: `POST https://vanga.sls24.ru/api/v1/jobs`.
 5. Webhook от parsdocs прилетит на `https://api.demo.sls24.ru/api/v1/parsdocs/webhook`
    с заголовком `X-Parsdocs-Signature` (HMAC от S1 secret).
 

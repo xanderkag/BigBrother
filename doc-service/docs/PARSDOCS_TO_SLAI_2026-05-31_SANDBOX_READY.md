@@ -25,8 +25,8 @@
 
 | Параметр | Значение |
 |----------|----------|
-| Host (внутри сети) | `https://parsdocs.135.106.158.143.nip.io` |
-| API endpoint | `https://parsdocs.135.106.158.143.nip.io/api/v1/jobs` |
+| Host (внутри сети) | `https://vanga.sls24.ru` |
+| API endpoint | `https://vanga.sls24.ru/api/v1/jobs` |
 | Health | `/health`, `/ready`, `/version`, `/capabilities` (public) |
 | Commit deployed | `a920e80` (`/version` = `0.2.0+a920e80`) |
 | LLM backend | `stub` (правило хоста — без cloud LLM пока не настроен Red Shield VPN-прокси). Это значит классификация и базовые поля extract'ятся, но строковая LLM-extraction вернёт пустую структуру. Для тестов формата контракта и end-to-end webhook'ов — достаточно. Реальная extract-точность будет после prod-LLM. |
@@ -101,7 +101,7 @@ HMAC = `hmac_sha256(PARSDOCS_WEBHOOK_SECRET, raw_body)`. Verify через const
 ### Что вы шлёте parsdocs
 
 ```http
-POST https://parsdocs.135.106.158.143.nip.io/api/v1/jobs
+POST https://vanga.sls24.ru/api/v1/jobs
 Authorization: Bearer <sandbox-token>
 Content-Type: multipart/form-data
 
@@ -126,7 +126,7 @@ file_url=https://your-storage.../path/doc.pdf&file_sha256=<hex>
 ### Polling fallback
 
 ```http
-GET https://parsdocs.135.106.158.143.nip.io/api/v1/jobs/<job_id>
+GET https://vanga.sls24.ru/api/v1/jobs/<job_id>
 Authorization: Bearer <sandbox-token>
 ```
 

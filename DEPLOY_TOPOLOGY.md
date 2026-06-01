@@ -15,7 +15,7 @@
 | Хост | `135.106.158.143` (Selectel cloud, личный) |
 | Назначение | staging, demo, эксперименты, **SLAI пилот** |
 | Источник кода | GitHub-зеркало `xanderkag/BigBrother` |
-| Домен | `parsdocs.135.106.158.143.nip.io` |
+| Домен | `vanga.sls24.ru` |
 | Контейнеры parsdocs | `app-api-1` (3000), `app-worker-1`, `app-inference-1`, `app-postgres-1`, `app-redis-1` — сеть `ai-platform` |
 | Inference backend | `stub` по умолчанию (LLM выключен — правило: реальные корп-данные не пускаются на этот хост) |
 | LLM в перспективе | через VPN-прокси (Red Shield) к Anthropic/OpenAI — для синтетики и пилота |
