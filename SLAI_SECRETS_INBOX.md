@@ -116,29 +116,49 @@ shred -u /tmp/secret.txt
 ### S1. PARSDOCS_WEBHOOK_SECRET (Q4 closure)
 
 - **Asked:** 2026-05-29 (SLAI FOLLOWUP §Q4)
-- **From:** SLAI_DEV
-- **To:** PARSDOCS_DEV
-- **Status:** `PENDING` (ETA от SLAI: 2026-05-30)
-- **Тип секрета:** webhook HMAC-secret (`openssl rand -hex 32`)
-- **Назначение:** parsdocs→SLAI webhook auth. `X-Parsdocs-Signature:
-  sha256=hmac(secret, raw_body)` подписывается этим секретом, SLAI verify'ит
-  на `POST https://api.demo.sls24.ru/api/v1/parsdocs/webhook`.
+- **Received:** 2026-06-01 (SLAI prod-pragmatic decision — plain text в чат для
+  ускорения пилота; договорились перешифровать age после WW-23 если решат)
+- **Applied:** 2026-06-01 (UPDATE organization_settings SET
+  webhook_hmac_secret = '...' WHERE organization_id =
+  '9a3cb9d3-e997-4669-a822-f8294f0dfed3')
+- **From:** SLAI_DEV → PARSDOCS_DEV
+- **Status:** `APPLIED` (secret в БД на хосте Asha, длина 64 hex, для
+  outbound webhook на api.demo.sls24.ru)
+- **Тип секрета:** webhook HMAC-secret (64 hex)
 
 #### Envelope
-<ждём от SLAI>
+<plain text доставлен через чат 2026-06-01; в git plaintext НЕ попадает>
 
 #### Применение
-После RECEIVED:
-1. Расшифровать envelope.
-2. Положить в `provider_settings` (новый kind=`webhook_outbound` или extra на
-   существующем slai-провайдере) ИЛИ в env `SLAI_WEBHOOK_SECRET`.
-3. Включить F3 items 1+3 (webhook-receiver на нашей стороне для приёма
-   acknowledge'ов от SLAI после processing).
-4. Перевести этот блок в Status: APPLIED + написать commit ID + дата.
+1. ✅ UPDATE organization_settings.webhook_hmac_secret для org 9a3cb9d3
+2. Outbound webhook теперь подписывается этим секретом для
+   `api.demo.sls24.ru` (slai-sandbox)
+3. **TODO**: вопрос SLAI — нужен ли отдельный secret для negabarit
+   (org 73d314a6, webhook negabarit.sls24.ru)? Сейчас webhook_hmac_secret
+   для negabarit пустой → используется глобальный env-fallback.
 
 ---
 
-### S2. SANDBOX_TENANT_TOKEN (AC9 closure)
+### S3. SANDBOX_TENANT_TOKEN — slai-negabarit (Q-NEG-1)
+
+- **Asked:** 2026-06-01 (SLAI: «нужен второй sandbox под negabarit-стенд»)
+- **Provisioned:** 2026-06-01 on Asha
+- **From:** PARSDOCS_DEV → SLAI_DEV
+- **Status:** `DELIVERED_PLAIN` (передан в чат plain, договорились пилотный
+  режим — без age envelope)
+
+```
+organization_id : 73d314a6-c6bf-4860-a910-548fb6040d65
+user_id         : 9aac6337-b406-4b5f-a226-e0058044ea16
+token_name      : slai-negabarit-bot
+expires_at      : ~2026-08-30 (90 дней)
+webhook_url     : https://negabarit.sls24.ru/api/v1/parsdocs/webhook
+host            : https://vanga.sls24.ru
+```
+
+Token: <plain text delivered via chat 2026-06-01; не пишется в git>
+
+### S2. SANDBOX_TENANT_TOKEN (AC9 closure) — slai-sandbox
 
 - **Asked:** 2026-05-29 (наш `PARSDOCS_FOLLOWUP_2026-05-29_OLD_OPEN_QUESTIONS.md` §AC9)
 - **From:** PARSDOCS_DEV → SLAI_DEV (мы шлём токен ИМ)
@@ -164,9 +184,10 @@ host:            https://vanga.sls24.ru (Asha)
 ```
 
 #### Envelope
-<плейнтекст token передан владельцу parsdocs в чате 2026-05-31; будет
-зашифрован под SLAI age public key и положен в их inbox PR'ом. В git plaintext
-никогда не попадает.>
+<plain text доставлен в чат 2026-06-01; SLAI pragmatic decision — без age
+envelope для пилота. В git plaintext НЕ попадает.>
+
+Status: `DELIVERED_PLAIN`
 
 #### Применение SLAI-side
 1. Принять envelope из своего inbox.
