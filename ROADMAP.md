@@ -42,6 +42,9 @@ ssh kb-docker 'cd parsdocs/doc-service; sed -i "s/^API_KEY=.*/API_KEY=$(openssl 
 | **MTI-3** — unify key storage (UI Providers ключ реально доходит до Anthropic, а не лежит в БД мёртвым) | — | 1-2 дня. **Делать первым** перед MTI-1/2, иначе они бессмысленны. ТЗ — `doc-service/docs/MTI_TZ_2026-05-31.md`. Чинит обнаруженную 2026-05-31 архитектурную путаницу (3 места для одного ключа). |
 | **MTI-2** — model preset bundles (один Anthropic-провайдер = pack моделей sonnet/opus/haiku) | MTI-3 | 2-3 дня (backend+UI). Per-job выбор через `metadata._llm_model` + Test Lab dropdown + опц. auto-routing по типу документа. |
 | **MTI-1** — multi-instance SLAI management UI (страница Consumers + mass-actions + presets + Push to SLAI inbox) | MTI-3 (желательно) | 2-3 недели вместе с миграцией per-org rate-limit/retention. Размораживает CP7 multi-tenant CRUD (триггер: 3+ SLAI-инстансов на горизонте). |
+| **UX-1** — Simple/Advanced toggle в Providers (скрыть 5 из 8 полей под Advanced, дать happy-path) | MTI-3 | 1-2 дня UI. ТЗ — `doc-service/docs/UX_ANALYSIS_2026-05-31.md`. Источник: user-фидбэк 2026-05-31 «зачем 8 полей, легко ошибиться». |
+| **UX-2** — One-click «Сделать основным» wizard (вместо 5 шагов через 3 системы) | UX-1 + MTI-3 | 2 дня UI + ½ дня backend (runtime BACKEND switch без рестарта). |
+| **UX-3** — System Health лента (Dashboard top-bar показывает что работает, что сломано, куда идти чинить) | — | ½ дня UI. Источник: capabilities + health-checks, уже доступны. |
 
 ---
 
