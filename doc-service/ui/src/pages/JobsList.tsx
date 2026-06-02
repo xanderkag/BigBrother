@@ -6,6 +6,9 @@ import { useDocumentTypes } from '@/queries/documentTypes';
 import { api } from '@/lib/api';
 import ConfidenceBar from '@/components/ConfidenceBar';
 import TierBadge from '@/components/TierBadge';
+import ConfirmDialog from '@/components/ConfirmDialog';
+import BulkResultBanner from '@/components/BulkResultBanner';
+import { runBulk, type BulkResult } from '@/lib/bulk';
 import { extractAmounts } from '@/lib/extracted-summary';
 import {
   formatAge,
@@ -193,9 +196,50 @@ export default function JobsListPage() {
     [selected],
   );
   const clearSelection = useCallback(() => setSelected(new Set()), []);
+  const removeSelected = useCallback((ids: string[]) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      ids.forEach((id) => next.delete(id));
+      return next;
+    });
+  }, []);
   const pageAllSelected =
     items.length > 0 && items.every((i) => selected.has(i.id));
   const pageSomeSelected = items.some((i) => selected.has(i.id));
+
+  // ─── F6 — единый bulk-контракт ──────────────────────────────────
+  // Логику и сводку держим на уровне страницы (а не в BulkBar): иначе
+  // при полном успехе selected → 0, BulkBar анмаунтится и баннер с
+  // результатом исчезает. Здесь баннер живёт независимо от выбора.
+  const qc = useQueryClient();
+  const approve = useApproveJob();
+  const reprocess = useReprocessJob();
+  const [confirmKind, setConfirmKind] = useState<null | 'approve' | 'reprocess'>(null);
+  const [bulkRunning, setBulkRunning] = useState<null | 'approve' | 'reprocess'>(null);
+  const [bulkOutcome, setBulkOutcome] = useState<
+    { kind: 'approve' | 'reprocess'; result: BulkResult } | null
+  >(null);
+
+  const doBulk = useCallback(
+    async (kind: 'approve' | 'reprocess', ids: string[]) => {
+      if (ids.length === 0 || bulkRunning) return;
+      setBulkRunning(kind);
+      const mutateAsync = kind === 'approve' ? approve.mutateAsync : reprocess.mutateAsync;
+      const result = await runBulk(ids, (id) => mutateAsync(id), {
+        // reprocess дешёвый (ставит job в очередь) → можно параллельно;
+        // approve шлёт webhook → последовательно, чтобы не завалить
+        // систему-потребитель пачкой одновременных доставок.
+        parallel: kind === 'reprocess',
+        onItemSettled: (id, ok) => {
+          if (ok) removeSelected([id]);
+        },
+      });
+      setBulkRunning(null);
+      setBulkOutcome({ kind, result });
+      qc.invalidateQueries({ queryKey: jobsKeys.all });
+    },
+    [bulkRunning, approve, reprocess, qc, removeSelected],
+  );
 
   return (
     <div className="mx-auto max-w-[1600px] space-y-3 p-6">
@@ -227,8 +271,29 @@ export default function JobsListPage() {
       {/* Bulk action bar — заменяет status tabs пока есть выбор */}
       {selected.size > 0 && (
         <BulkBar
-          selectedIds={Array.from(selected)}
+          count={selected.size}
+          running={bulkRunning}
+          onApprove={() => setConfirmKind('approve')}
+          onReprocess={() => setConfirmKind('reprocess')}
           onClear={clearSelection}
+        />
+      )}
+
+      {/* F6 — сводка массовой операции (живёт независимо от выбора) */}
+      {bulkOutcome && (
+        <BulkResultBanner
+          result={bulkOutcome.result}
+          busy={bulkRunning !== null}
+          onRetry={
+            bulkOutcome.result.failed.length > 0
+              ? () =>
+                  doBulk(
+                    bulkOutcome.kind,
+                    bulkOutcome.result.failed.map((f) => f.id),
+                  )
+              : undefined
+          }
+          onDismiss={() => setBulkOutcome(null)}
         />
       )}
 
@@ -474,6 +539,34 @@ export default function JobsListPage() {
           )}
         </div>
       )}
+
+      {/* F6/F10 — подтверждение перед массовым действием */}
+      <ConfirmDialog
+        open={confirmKind !== null}
+        title={
+          confirmKind === 'approve'
+            ? `Одобрить ${selected.size} документ(ов)?`
+            : `Перепрогнать ${selected.size} документ(ов)?`
+        }
+        description={
+          confirmKind === 'approve'
+            ? 'Каждый документ будет помечен approved и пройдёт пост-обработку.'
+            : 'Для каждого документа заново запустится OCR и LLM-разбор; текущие результаты будут перезаписаны.'
+        }
+        warning={
+          confirmKind === 'approve'
+            ? 'На одобрение отправляется webhook клиенту — данные уходят во внешнюю систему. Отменить доставку нельзя.'
+            : undefined
+        }
+        confirmLabel={confirmKind === 'approve' ? 'Одобрить' : 'Перепрогнать'}
+        busy={bulkRunning !== null}
+        onConfirm={() => {
+          const kind = confirmKind;
+          setConfirmKind(null);
+          if (kind) doBulk(kind, Array.from(selected));
+        }}
+        onCancel={() => setConfirmKind(null)}
+      />
     </div>
   );
 }
@@ -865,68 +958,32 @@ function WebhookChip({ job }: { job: Job }) {
 
 /**
  * Bulk action bar — appears когда selected.size > 0. Заменяет статусные
- * табы на verticalном пространстве (важно — не двигает контент таблицы
- * вниз, ощущается как «контекстный switch»).
+ * табы на vertical пространстве (важно — не двигает контент таблицы вниз,
+ * ощущается как «контекстный switch»).
  *
- * Approve / Reprocess работают через параллельные one-shot вызовы —
- * не делаем bulk-endpoint backend'а ради 1 RTT (5 параллельных POST
- * не нагружают сервер заметно). Если в будущем кто-то будет бить по
- * 100+ jobs — переделаем на `/jobs/bulk-approve` с массивом id.
+ * F6: чисто презентационный — вся логика (подтверждение, runBulk, сводка)
+ * живёт на уровне страницы, чтобы баннер результата не исчезал, когда
+ * успешный bulk обнуляет выбор и бар анмаунтится. Кнопки лишь дёргают
+ * колбэки; `running` подсвечивает активную операцию.
  */
 function BulkBar({
-  selectedIds,
+  count,
+  running,
+  onApprove,
+  onReprocess,
   onClear,
 }: {
-  selectedIds: string[];
+  count: number;
+  running: null | 'approve' | 'reprocess';
+  onApprove: () => void;
+  onReprocess: () => void;
   onClear: () => void;
 }) {
-  const qc = useQueryClient();
-  const approve = useApproveJob();
-  const reprocess = useReprocessJob();
-  const [running, setRunning] = useState<null | 'approve' | 'reprocess'>(null);
-  const [progress, setProgress] = useState<{ done: number; failed: number } | null>(null);
-
-  const runBulk = useCallback(
-    async (kind: 'approve' | 'reprocess') => {
-      if (running) return;
-      const confirmMsg =
-        kind === 'approve'
-          ? `Одобрить ${selectedIds.length} документ(ов)? Действие пометит их статусом approved.`
-          : `Перепрогнать ${selectedIds.length} документ(ов)? Это запустит OCR/LLM заново для каждого.`;
-      if (!window.confirm(confirmMsg)) return;
-      setRunning(kind);
-      setProgress({ done: 0, failed: 0 });
-      const mutate = kind === 'approve' ? approve.mutateAsync : reprocess.mutateAsync;
-
-      // Параллельно, но с allSettled — частичный успех допустим
-      const results = await Promise.allSettled(selectedIds.map((id) => mutate(id)));
-      let done = 0;
-      let failed = 0;
-      for (const r of results) {
-        if (r.status === 'fulfilled') done++;
-        else failed++;
-      }
-      setProgress({ done, failed });
-      // Полный refetch списка — статусы поменялись
-      qc.invalidateQueries({ queryKey: jobsKeys.all });
-      // Очищаем выбор после успеха (или хотя бы partial успеха)
-      if (done > 0) onClear();
-      setRunning(null);
-      if (failed > 0) {
-        window.alert(
-          `Готово: ${done} успешно, ${failed} с ошибкой.\n` +
-            `Часть документов могла отказать — например approve работает только на needs_review.`,
-        );
-      }
-    },
-    [running, selectedIds, approve, reprocess, qc, onClear],
-  );
-
   return (
     <div className="flex flex-wrap items-center gap-3 rounded-sm border border-indigo-200 bg-indigo-50 px-3 py-2 dark:border-indigo-800 dark:bg-indigo-900/30">
       <span className="font-mono text-xs uppercase tracking-wider text-indigo-800 dark:text-indigo-200">
         <span className="rounded-sm bg-indigo-600 px-1.5 py-0.5 font-semibold text-white">
-          {selectedIds.length}
+          {count}
         </span>{' '}
         выбрано
       </span>
@@ -935,7 +992,7 @@ function BulkBar({
         type="button"
         className="btn-success disabled:opacity-50"
         disabled={!!running}
-        onClick={() => runBulk('approve')}
+        onClick={onApprove}
       >
         {running === 'approve' ? 'Одобряю…' : `Одобрить ✓`}
       </button>
@@ -943,20 +1000,10 @@ function BulkBar({
         type="button"
         className="btn-secondary disabled:opacity-50"
         disabled={!!running}
-        onClick={() => runBulk('reprocess')}
+        onClick={onReprocess}
       >
         {running === 'reprocess' ? 'Перепрогон…' : 'Перепрогнать'}
       </button>
-      {progress && !running && (
-        <span className="font-mono text-xs text-slate-600 dark:text-slate-400">
-          {progress.done} ok
-          {progress.failed > 0 && (
-            <span className="text-rose-600 dark:text-rose-400">
-              , {progress.failed} fail
-            </span>
-          )}
-        </span>
-      )}
       <button
         type="button"
         className="ml-auto rounded-sm px-2 py-1 font-mono text-xs uppercase tracking-wider text-indigo-700 hover:bg-indigo-100 dark:text-indigo-300 dark:hover:bg-indigo-800/50"

@@ -5,6 +5,9 @@ import { useDocumentTypes } from '@/queries/documentTypes';
 import { usePermissions } from '@/lib/permissions';
 import ConfidenceBar from '@/components/ConfidenceBar';
 import TierBadge from '@/components/TierBadge';
+import ConfirmDialog from '@/components/ConfirmDialog';
+import BulkResultBanner from '@/components/BulkResultBanner';
+import { runBulk, type BulkResult } from '@/lib/bulk';
 import { extractAmounts } from '@/lib/extracted-summary';
 import {
   formatAge,
@@ -84,6 +87,9 @@ export default function ReviewQueuePage() {
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkRunning, setBulkRunning] = useState(false);
+  // F6 — подтверждение перед запуском + сводка результата.
+  const [confirmBulk, setConfirmBulk] = useState(false);
+  const [bulkResult, setBulkResult] = useState<BulkResult | null>(null);
 
   // Filter chain: origin (client) + issue category (client)
   const allItems = data?.items ?? [];
@@ -133,31 +139,32 @@ export default function ReviewQueuePage() {
     });
   };
 
-  const bulkApprove = async () => {
-    if (selected.size === 0) return;
-    if (!confirm(`Одобрить ${selected.size} job'ов? Это вызовет webhook delivery.`)) {
-      return;
-    }
+  // F6 — единый bulk-контракт. Последовательно (на approve летит webhook,
+  // не параллелим, чтобы не завалить потребителя), до конца, не прерываясь
+  // на первой ошибке. Сводка {succeeded, failed[]} → BulkResultBanner.
+  // Успешные сразу убираем из выбора → «Повторить неуспешные» работает по
+  // оставшимся.
+  const doBulkApprove = async (ids: string[]) => {
+    if (ids.length === 0) return;
     setBulkRunning(true);
-    for (const jobId of Array.from(selected)) {
-      try {
-        await approve.mutateAsync(jobId);
+    const result = await runBulk(ids, (id) => approve.mutateAsync(id), {
+      onItemSettled: (id, ok) => {
+        if (!ok) return;
         setSelected((prev) => {
           const next = new Set(prev);
-          next.delete(jobId);
+          next.delete(id);
           return next;
         });
-      } catch (err) {
-        alert(
-          `Ошибка при одобрении ${jobId}: ${
-            err instanceof Error ? err.message : String(err)
-          }\n\nОстальные не одобрены.`,
-        );
-        break;
-      }
-    }
+      },
+    });
     setBulkRunning(false);
+    setBulkResult(result);
     refetch();
+  };
+
+  const confirmBulkApprove = async () => {
+    setConfirmBulk(false);
+    await doBulkApprove(Array.from(selected));
   };
 
   const allVisibleSelected =
@@ -194,6 +201,20 @@ export default function ReviewQueuePage() {
         <div className="error-banner">
           Ошибка: {error instanceof Error ? error.message : String(error)}
         </div>
+      )}
+
+      {/* F6 — сводка массовой операции */}
+      {bulkResult && (
+        <BulkResultBanner
+          result={bulkResult}
+          busy={bulkRunning}
+          onRetry={
+            bulkResult.failed.length > 0
+              ? () => doBulkApprove(bulkResult.failed.map((f) => f.id))
+              : undefined
+          }
+          onDismiss={() => setBulkResult(null)}
+        />
       )}
 
       {/* Filters */}
@@ -279,7 +300,7 @@ export default function ReviewQueuePage() {
                 type="button"
                 className="btn-success"
                 disabled={bulkRunning}
-                onClick={bulkApprove}
+                onClick={() => selected.size > 0 && setConfirmBulk(true)}
               >
                 {bulkRunning ? 'Одобряю…' : `Одобрить ${selected.size}`}
               </button>
@@ -372,6 +393,18 @@ export default function ReviewQueuePage() {
           </div>
         </details>
       ))}
+
+      {/* F6/F10 — подтверждение массового одобрения (webhook → внешняя система) */}
+      <ConfirmDialog
+        open={confirmBulk}
+        title={`Одобрить ${selected.size} документ(ов)?`}
+        description="Каждый документ будет помечен approved и пройдёт пост-обработку."
+        warning="На одобрение отправляется webhook клиенту — данные уходят во внешнюю систему. Отменить доставку нельзя."
+        confirmLabel={`Одобрить ${selected.size}`}
+        busy={bulkRunning}
+        onConfirm={confirmBulkApprove}
+        onCancel={() => setConfirmBulk(false)}
+      />
     </div>
   );
 }
