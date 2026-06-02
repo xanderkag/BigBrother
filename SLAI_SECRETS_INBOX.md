@@ -131,11 +131,11 @@ shred -u /tmp/secret.txt
 
 #### Применение
 1. ✅ UPDATE organization_settings.webhook_hmac_secret для org 9a3cb9d3
-2. Outbound webhook теперь подписывается этим секретом для
-   `api.demo.sls24.ru` (slai-sandbox)
-3. **TODO**: вопрос SLAI — нужен ли отдельный secret для negabarit
-   (org 73d314a6, webhook negabarit.sls24.ru)? Сейчас webhook_hmac_secret
-   для negabarit пустой → используется глобальный env-fallback.
+   (slai-sandbox, api.demo.sls24.ru)
+2. ✅ 2026-06-02: SLAI ответил «везде одинаковый» → продублирован тот же
+   secret для org 73d314a6 (slai-negabarit, negabarit.sls24.ru).
+3. Outbound webhook на оба endpoint'а подписывается одним и тем же
+   secret'ом. SLAI verify'ит одним секретом на обоих стендах.
 
 ---
 
