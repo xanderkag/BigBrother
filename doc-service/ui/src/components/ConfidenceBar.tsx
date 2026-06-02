@@ -1,4 +1,5 @@
 import { formatPercent } from '@/lib/format';
+import { confidenceBarClass, confidenceTextClass } from '@/lib/confidence';
 
 /**
  * Inline-bar для отображения confidence в таблицах. В отличие от
@@ -32,18 +33,8 @@ export default function ConfidenceBar({
     return <span className="text-slate-400 dark:text-slate-500">—</span>;
   }
   const pct = Math.max(0, Math.min(1, value));
-  const colorCls =
-    pct >= 0.85
-      ? 'bg-emerald-500 dark:bg-emerald-400'
-      : pct >= 0.6
-      ? 'bg-amber-500 dark:bg-amber-400'
-      : 'bg-rose-500 dark:bg-rose-400';
-  const labelCls =
-    pct >= 0.85
-      ? 'text-emerald-700 dark:text-emerald-300'
-      : pct >= 0.6
-      ? 'text-amber-700 dark:text-amber-300'
-      : 'text-rose-700 dark:text-rose-300';
+  const colorCls = confidenceBarClass(pct);
+  const labelCls = confidenceTextClass(pct);
 
   return (
     <span className="inline-flex items-center gap-2 whitespace-nowrap">

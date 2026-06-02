@@ -18,6 +18,14 @@ export const CONFIDENCE_THRESHOLDS = {
   medium: 0.6,
 } as const;
 
+/**
+ * Порог «обрати внимание» для компактного превью полей в очереди проверки —
+ * строже палитры (medium=0.6), потому что в превью оператор хочет ловить даже
+ * умеренно неуверенные поля. Ниже него поле в превью подсвечивается жёлтым и
+ * показывает свой %.
+ */
+export const PREVIEW_ATTENTION_THRESHOLD = 0.7;
+
 /** Значение уверенности, которое выставляется при ручной правке поля. */
 export const HUMAN_VERIFIED = 1.0;
 
@@ -39,6 +47,38 @@ export function confidenceValueClass(v: number | null | undefined): string {
       return 'rounded bg-rose-50 px-1.5 py-0.5 font-medium text-rose-900 dark:bg-rose-500/10 dark:text-rose-200';
     default:
       return '';
+  }
+}
+
+/**
+ * Класс заливки полоски (bar fill) под уровень — для ConfidenceBar и
+ * per-field баров на детальной. 'none' тут практически не встречается
+ * (значение всегда clamp'ится в [0,1]), но даём нейтральный фолбэк.
+ */
+export function confidenceBarClass(v: number | null | undefined): string {
+  switch (confidenceLevel(v)) {
+    case 'high':
+      return 'bg-emerald-500 dark:bg-emerald-400';
+    case 'medium':
+      return 'bg-amber-500 dark:bg-amber-400';
+    case 'low':
+      return 'bg-rose-500 dark:bg-rose-400';
+    default:
+      return 'bg-slate-300 dark:bg-slate-600';
+  }
+}
+
+/** Класс цвета ТЕКСТА-метки (%) под уровень — пара к confidenceBarClass. */
+export function confidenceTextClass(v: number | null | undefined): string {
+  switch (confidenceLevel(v)) {
+    case 'high':
+      return 'text-emerald-700 dark:text-emerald-300';
+    case 'medium':
+      return 'text-amber-700 dark:text-amber-300';
+    case 'low':
+      return 'text-rose-700 dark:text-rose-300';
+    default:
+      return 'text-slate-400 dark:text-slate-500';
   }
 }
 

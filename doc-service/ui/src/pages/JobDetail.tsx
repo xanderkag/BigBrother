@@ -20,6 +20,7 @@ import RawTextModal from '@/components/RawTextModal';
 import KeyboardHelp from '@/components/KeyboardHelp';
 import { useHotkeys } from '@/lib/useHotkeys';
 import { readJobNav, neighborsOf } from '@/lib/job-nav';
+import { confidenceBarClass, confidenceTextClass } from '@/lib/confidence';
 import { usePermissions } from '@/lib/permissions';
 import {
   formatFileSize,
@@ -829,18 +830,8 @@ function FieldConfidenceCard({ fc }: { fc: Record<string, number> }) {
       <div className="card-body space-y-2">
         {entries.map(([k, v]) => {
           const pct = Math.max(0, Math.min(1, v));
-          const barCls =
-            pct >= 0.85
-              ? 'bg-emerald-500 dark:bg-emerald-400'
-              : pct >= 0.6
-              ? 'bg-amber-500 dark:bg-amber-400'
-              : 'bg-rose-500 dark:bg-rose-400';
-          const labelCls =
-            pct >= 0.85
-              ? 'text-emerald-700 dark:text-emerald-300'
-              : pct >= 0.6
-              ? 'text-amber-700 dark:text-amber-300'
-              : 'text-rose-700 dark:text-rose-300';
+          const barCls = confidenceBarClass(pct);
+          const labelCls = confidenceTextClass(pct);
           return (
             <div key={k} className="flex items-center gap-3 text-sm">
               <span className="w-40 truncate text-slate-700 dark:text-slate-300">{k}</span>

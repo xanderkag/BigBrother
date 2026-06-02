@@ -10,6 +10,7 @@ import BulkResultBanner from '@/components/BulkResultBanner';
 import KeyboardHelp from '@/components/KeyboardHelp';
 import { runBulk, type BulkResult } from '@/lib/bulk';
 import { useHotkeys } from '@/lib/useHotkeys';
+import { confidenceLevel, PREVIEW_ATTENTION_THRESHOLD } from '@/lib/confidence';
 import type { JobNavState } from '@/lib/job-nav';
 import { extractAmounts } from '@/lib/extracted-summary';
 import {
@@ -608,9 +609,9 @@ function ReviewStats({
         sub={
           stats.avgConfidence === null
             ? 'нет данных'
-            : stats.avgConfidence < 0.6
+            : confidenceLevel(stats.avgConfidence) === 'low'
             ? 'низкая'
-            : stats.avgConfidence < 0.85
+            : confidenceLevel(stats.avgConfidence) === 'medium'
             ? 'средняя'
             : 'высокая'
         }
@@ -928,7 +929,8 @@ function ReviewRow({
                       | number
                       | undefined)
                   : undefined;
-                const lowConf = confVal !== undefined && confVal < 0.7;
+                const lowConf =
+                  confVal !== undefined && confVal < PREVIEW_ATTENTION_THRESHOLD;
                 return (
                   <div key={label} className="flex items-baseline gap-2 text-xs">
                     <span className="w-24 shrink-0 font-mono uppercase tracking-wider text-slate-500 dark:text-slate-400">

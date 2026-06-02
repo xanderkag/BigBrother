@@ -6,6 +6,7 @@ import {
   formatPercent,
 } from '@/lib/format';
 import ConfidenceBar from './ConfidenceBar';
+import { confidenceValueClass } from '@/lib/confidence';
 
 /**
  * Панель Extracted data с двумя вьюхами: Форма и JSON.
@@ -334,16 +335,11 @@ function Field({
 }) {
   const display = renderValue(value);
   const hasConf = typeof conf === 'number' && !Number.isNaN(conf);
-  // Пороги/палитра идентичны ConfidenceBar: ≥0.85 emerald, ≥0.6 amber, <0.6 rose.
-  // issues-highlight имеет приоритет — это явный сигнал валидатора.
-  const confValueCls =
-    !hasConf || highlight
-      ? ''
-      : conf >= 0.85
-      ? 'text-slate-900 dark:text-slate-100'
-      : conf >= 0.6
-      ? 'rounded bg-amber-50 px-1.5 py-0.5 font-medium text-amber-900 dark:bg-amber-500/10 dark:text-amber-200'
-      : 'rounded bg-rose-50 px-1.5 py-0.5 font-medium text-rose-900 dark:bg-rose-500/10 dark:text-rose-200';
+  // Палитра/пороги — из lib/confidence (single source). issues-highlight имеет
+  // приоритет — это явный сигнал валидатора, поэтому при нём conf-подсветку
+  // гасим. Для 'high'/'none' confidenceValueClass даёт '' → ниже фолбэк на
+  // нейтральный slate-900.
+  const confValueCls = !hasConf || highlight ? '' : confidenceValueClass(conf);
   return (
     <div className={wide ? 'sm:col-span-2' : undefined}>
       <dt className="text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">{label}</dt>
