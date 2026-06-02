@@ -120,10 +120,16 @@ export default function UploadPage() {
   const startUpload = async () => {
     setRunning(true);
     const queued = queue.filter((q) => q.status === 'queued');
+    // Был ли это одиночный файл (для авто-перехода на деталку после успеха).
+    const wasSingle = queue.length === 1 && queued.length === 1;
 
     // Простая семафор-логика: pool из MAX_PARALLEL воркеров.
     const remaining = [...queued];
     const workers: Array<Promise<void>> = [];
+    // §9 polish — копим job_id из ответов, чтобы перейти на деталку по факту
+    // успешной загрузки (раньше был setTimeout + чтение localStorage — хрупко,
+    // переход «по таймеру» мог опередить запись или промахнуться).
+    const uploadedJobIds: string[] = [];
 
     const doOne = async (): Promise<void> => {
       while (remaining.length > 0) {
@@ -138,6 +144,7 @@ export default function UploadPage() {
             documentHint: documentHint || undefined,
             webhookUrl: webhookUrl || undefined,
           });
+          uploadedJobIds.push(res.job_id);
           setQueue((prev) =>
             prev.map((q) =>
               q.id === item.id ? { ...q, status: 'done', jobId: res.job_id } : q,
@@ -170,15 +177,9 @@ export default function UploadPage() {
     await Promise.all(workers);
     setRunning(false);
 
-    // Если все ОК и был ровно один файл — переходим на job-detail
-    const justUploaded = queue.length === 1 && queued.length === 1;
-    if (justUploaded) {
-      // hack: queue ещё не обновился в state синхронно, используем последний recent
-      // — он будет добавлен последним
-      setTimeout(() => {
-        const last = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]') as RecentEntry[];
-        if (last[0]) navigate(`/jobs/${last[0].jobId}`);
-      }, 100);
+    // Один файл и он успешно загрузился → сразу на деталку (по факту ответа).
+    if (wasSingle && uploadedJobIds.length === 1) {
+      navigate(`/jobs/${uploadedJobIds[0]}`);
     }
   };
 

@@ -9,7 +9,7 @@ const STYLES: Record<DocumentTypeTier, { label: string; classes: string; title: 
   beta: {
     label: 'beta',
     classes: 'bg-amber-50 text-amber-700 ring-amber-600/20 dark:bg-amber-900/40 dark:text-amber-300',
-    title: 'Beta — LLM-only извлечение; есть classification keywords + valиdators; нет golden-set измерений',
+    title: 'Beta — LLM-only извлечение; есть classification keywords + validators; нет golden-set измерений',
   },
   experimental: {
     label: 'exp',
