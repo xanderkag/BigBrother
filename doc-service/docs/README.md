@@ -17,6 +17,7 @@
 | Док | О чём | Статус реализации |
 |---|---|---|
 | [`SLAI_TZ_v1_2026-05-17.md`](SLAI_TZ_v1_2026-05-17.md) | Исходное ТЗ SLAI (продукт-контракт, **неизменяемый вход**) | — |
+| [`SLAI_TZ_COVERAGE.md`](SLAI_TZ_COVERAGE.md) | **Матрица трассировки** ТЗ v1 → реализация: что закрыто / расходится / остатки (лист для ревью) | 🟢 живой |
 | [`EXT_B_BYO_LLM_TZ.md`](EXT_B_BYO_LLM_TZ.md) | BYO LLM credentials через `X-LLM-*` заголовки | ✅ реализовано (флаг `BYO_LLM_ENABLED`) |
 | [`PARSDOCS_XLSX_SUPPORT_TZ.md`](PARSDOCS_XLSX_SUPPORT_TZ.md) | Поддержка `.xls/.xlsx` | 🟡 частично (парсер есть, пайплайн нестабилен) |
 
