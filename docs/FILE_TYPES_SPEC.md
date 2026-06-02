@@ -1,7 +1,7 @@
 # Спецификация поддержки входящих файлов
 
 Рабочий технический документ. Для обзорного материала «что и зачем» см.
-[`INTEGRATION_TZ.md`](INTEGRATION_TZ.md). Здесь — детальные требования
+[`FILE_INTAKE_OVERVIEW.md`](FILE_INTAKE_OVERVIEW.md). Здесь — детальные требования
 по каждому формату: как детектируем, что делаем, что отвечаем на ошибку,
 какие тестовые файлы нужны.
 
@@ -158,14 +158,16 @@ ZIP, RAR, 7Z, encrypted PDF, multi-doc PDF.
 
 **Magic:** `50 4B 03 04` (zip), внутри `xl/workbook.xml`
 **MIME:** `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`
-**Что делаем:** Аналогично DOCX — конвертация в PDF через LibreOffice.
+**Что делаем:** sheetjs читает листы → CSV-секции (`=== Sheet: … ===`), **без**
+конвертации в PDF (в отличие от DOCX). Реализовано как `XlsxEngine`
+(`doc-service/src/pipeline/ocr/xlsx.ts`); полная спецификация и edge-cases — в
+[`PARSDOCS_XLSX_SUPPORT_TZ.md`](../doc-service/docs/PARSDOCS_XLSX_SUPPORT_TZ.md).
 **Edge cases:**
-- **Большие листы** (10000+ строк) — конвертация в PDF может породить
-  сотни страниц. Лимит N страниц после конвертации.
-- **Старый XLS** — `application/vnd.ms-excel`
-- **Формулы** — LibreOffice сам пересчитывает, мы видим результат
+- **Большие листы** — лимит 50 000 ячеек/лист, превышение → `[SKIPPED]`-маркер.
+- **Старый XLS** (BIFF8) — `application/vnd.ms-excel`, sheetjs читает напрямую.
+- **Формулы** — берём вычисленные значения (`cellFormula:false`), не исходники.
 
-**Текущий статус:** ❌ **не принимаем**
+**Текущий статус:** 🟡 парсер есть (`XlsxEngine`), но сквозной приём в пайплайне нестабилен.
 
 ---
 

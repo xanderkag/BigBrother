@@ -1,9 +1,12 @@
-# ТЗ. Интеграция parsdocs с инстансом slai (OpenAI-compatible LLM backend)
+# ТЗ. Inference-backend для parsdocs (инстанс slai, OpenAI-compatible LLM)
 
-> ⚠ **Не путать с ERP-интеграцией.** Этот документ — про parsdocs как
-> **OpenAI-совместимый LLM-backend** (inference). Контракт интеграции parsdocs ↔
-> SLAI **ERP** (webhook документов, авто-создание счетов, category-sync) описан
-> отдельно: `SLAI/docs/specs/parsdocs-integration.md` (канон, перепроверен по коду).
+> ⚠ **Не путать с ERP-интеграцией SLAI.** Этот документ — про parsdocs как
+> потребитель **OpenAI-совместимого LLM-backend** (inference-инстанс «slai»,
+> строчными). Контракт интеграции parsdocs ↔ Суперлогист **ERP** (webhook
+> документов, авто-создание счетов, category-sync) — это другой workstream:
+> статус в `SLAI_INTEGRATION_BACKLOG.md`, канон контракта
+> `SLAI/docs/specs/parsdocs-integration.md`. *(Переименован из
+> `SLAI_INTEGRATION_TZ.md` 02.06 — старое имя путалось с BACKLOG.)*
 
 > **Статус:** v0.1, draft.
 > **Автор задачи:** Ляпустин А.Ю. (`klgaigpt3@gmail.com`).

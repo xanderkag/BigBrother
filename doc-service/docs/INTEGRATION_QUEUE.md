@@ -65,28 +65,14 @@ SLAI у себя планирует pre-upload в свой blob (signed URL), з
 позволяет дедупить на их стороне до отправки нам.
 
 #### Реализация (2026-05-26)
-`POST /api/v1/jobs` принимает multipart-поля `file_url` (+ опц.
-`file_sha256`) как альтернативу `file`-парту. При `file_url` хэндлер
-скачивает документ server-side, далее идентичный pipeline (magic-bytes,
-SHA-dedup, job create). Webhook v1 контракт не тронут.
-
-SSRF-защита (`src/pipeline/ingest/url-fetch.ts`):
-- только `http(s)`; `file://`/`ftp://`/прочее → 400 `FILE_URL_BLOCKED_HOST`
-  (scheme reject c кодом BLOCKED_SCHEME внутри, маппится в BLOCKED_HOST наружу);
-- host резолвится; private/loopback/link-local/metadata/ULA/CGNAT IP
-  (10.x, 127.x, 169.254.169.254, 172.16/12, 192.168, 100.64/10, ::1, fe80,
-  fc00/7, ::ffff:v4-mapped) → блок ДО любого сетевого запроса;
-- блок если ХОТЬ ОДИН A-record приватный;
-- redirects не следуются (undici default), 3xx → `FILE_URL_FETCH_FAILED`;
-- hard byte-ceiling enforced mid-stream (Content-Length не доверяем) →
-  `FILE_URL_TOO_LARGE`; timeout на headers/body;
-- опц. allowlist `FILE_URL_ALLOWED_HOSTS` (CSV) для ужесточения;
-- `file_sha256` mismatch → `FILE_URL_SHA_MISMATCH`;
-- вся фича за флагом `FILE_URL_INGEST_ENABLED` (default false, fail-closed)
-  → выключено отдаёт `FILE_URL_DISABLED`.
-
-Тесты: `tests/file-url-ingest.spec.ts` (27, network/dns замоканы — реальные
-URL не дёргаем). Ошибки наружу без internal-деталей (host-only в логах).
+`POST /api/v1/jobs` принимает `file_url` (+опц. `file_sha256`) вместо multipart;
+server-side download → обычный pipeline (magic-bytes, SHA-dedup, job). SSRF-защита
+в `src/pipeline/ingest/url-fetch.ts`: scheme-whitelist `http(s)`, блок private/
+loopback/link-local/metadata/CGNAT IP **до** сетевого запроса (любой приватный
+A-record), no-redirect, mid-stream byte-ceiling, опц. allowlist
+`FILE_URL_ALLOWED_HOSTS`, sha-mismatch. Коды `FILE_URL_*`, флаг
+`FILE_URL_INGEST_ENABLED` (default off, fail-closed). Тесты
+`tests/file-url-ingest.spec.ts` (27, network/dns замоканы). Webhook v1 не тронут.
 
 ---
 
@@ -106,12 +92,9 @@ URL не дёргаем). Ошибки наружу без internal-детале
   `extractor_llm_provider_errors_total{provider, code}`. 1-2 дня.
 
 #### Question / Context
-SLAI — наш же микросервис, у него уже есть AI-инфра (Anthropic key для
-AI-чата). Передача того же ключа в parsdocs per-request — архитектурное
-удобство (parsdocs не настраивает свой ключ) + готовность к новым
-consumer-микросервисам после SLAI. Не коммерческая модель — один общий
-внутренний ключ. Exit criteria: снимаем когда parsdocs заведёт свои
-LLM-контракты ИЛИ когда LLM-extraction переедет на сторону consumer'а.
+Контракт и детали — `EXT_B_BYO_LLM_TZ.md`. Кратко: SLAI (наш микросервис) шлёт
+свой Anthropic-ключ per-request, parsdocs не настраивает свой. Не коммерческая
+модель. Exit: снимаем когда parsdocs заведёт свои LLM-контракты.
 
 ---
 
@@ -222,14 +205,6 @@ LLM-контракты ИЛИ когда LLM-extraction переедет на с
   3. Отправить SLAI через защищённый канал (1Password / signal / encrypted email)
   4. Зафиксировать дату ротации (через 6 месяцев)
 
-#### Question / Context
-SLAI ответил (SLAI_REPLY_v2.md): «Сейчас в дев-фазе токен не нужен. Когда продакт скажет деплоим — сгенерим вам сразу через openssl rand -hex 32. Передам через 1Password / secure channel.»
-
-То есть **они тоже ждут команды от продакта**. Q4 зависит от Q5 ETA.
-
-#### Answer
-<ждём ETA от продакта>
-
 ---
 
 ### Q5. ETA пилота с реальными документами
@@ -251,106 +226,18 @@ SLAI ответил (SLAI_REPLY_v2.md): «Сейчас в дев-фазе ток
   - **2-3 недели** → + F5 (multi-doc PDF) + F2 (per-field confidence)
   - **Месяц+** → широкий пакет + пересмотр моделей через bench
 
-#### Question / Context
-SLAI оценили (Q5 в их `SLAI_REPLY_v2.md`): **2-3 недели**, с распределением:
-- Неделя 1: наш M3.4 + M3.5 (multi-doc + per-field confidence) + их TypeORM realtime sync
-- Неделя 2: интеграционный smoke на обоих staging
-- Неделя 3: 1-2 логиста пилот на прод
-
-«Финальное решение за продактом SLAI.» **Ждём подтверждения.**
-
-#### Answer
-<ждём>
-
 ---
 
-## Resolved Questions (последние 7 дней)
+## Resolved Questions (сжато; переписка — в `archive/`)
 
-### Q1. ANTHROPIC_API_KEY для F11 baseline bench
-
-- **Status:** RESOLVED (2026-05-17)
-- **From:** CLAUDE → USER
-- **Resolution:** прогон Claude Sonnet 4.6 на 10 синтетических PDF (1.3 мин total, 9/10 valid JSON, items_F1 70%, Cost $0.0165/doc → $25/мес для 50 doc/day). MODEL_REPORT.md прогон #21. Найдены F14/F15 (закрыты 2026-05-17). USER должен ротировать ключ в Anthropic Console.
-
----
-
-### Q7. SLAI matcher / target_entity_hint / HMAC verify review
-
-- **Status:** RESOLVED (2026-05-17)
-- **From:** SLAI_DEV → PARSDOCS_DEV
-- **Resolution:** ответ в `doc-service/docs/PARSDOCS_Q7_MATCHER_REVIEW.md` — их matcher принципиально устраивает (правильные сигналы plate/ИНН, threshold HIGH≥70+2×, timing-safe HMAC, `target_entity_hint` auto-detect). 3 nice-to-have уточнения зависли до пилота.
-
----
-
-### Q8. 7 open questions по continuous category sync
-
-- **Status:** RESOLVED (2026-05-16)
-- **From:** SLAI_DEV → PARSDOCS_DEV / CLAUDE
-- **Resolution:** ответ в `doc-service/docs/PARSDOCS_CATEGORY_SYNC_REPLY.md` — receiver `POST /api/v1/integrations/slai/sync/nomenclature` + `/snapshot`, Redis lookup-table TTL 24ч, 2 отдельных HMAC секрета, header `X-SLAI-Version: v1`, retry-с-backoff + `sync_inbox`. F13 (closed) в TECH_DEBT_ARCHIVE.
-
----
-
-### Q2. SLAI ответ на наш SLAI_OUR_REPLY.md
-
-- **Status:** RESOLVED
-- **Asked:** 2026-05-16
-- **From:** CLAUDE
-- **To:** SLAI_DEV
-
-#### Answer (2026-05-16, SLAI_DEV)
-См. `SLAI_REPLY_v2.md` (xanderkag/SLAI commit `296b2b9f`, docs/PARSDOCS_REPLY_v2_2026-05-16.md). Сжато:
-- **Все 14 [ПРОДУКТ]-решений приняты** ✅
-- **Все 6 наших ответов приняты**, причём 4 из них уже реализованы в коде SLAI:
-  - `target_entity_hint` в matcher (auto-detect через vehicle.plate)
-  - HMAC verify (timing-safe)
-  - `redact_pii: true` flag в DocPlatformProcessor
-  - matcher scoring (+50/+30/+25/+15/+10/+5)
-- 2 ждут нашей доставки:
-  - multi-doc PDF (`documents: Array<>` типы готовы, активируют когда мы запустим F5)
-  - per-field confidence (типы готовы `_field_confidence`, добавят в matcher в M3.3 когда мы запустим F2)
-
-#### Resolution
-- Q2 закрыт. Все принципиальные продуктовые расхождения сняты — переходим к технической имплементации
-- Q7 (новый) — нужно прочитать их код matcher/HMAC и подтвердить детали реализации (TODO для Claude)
-- Q8 (новый) — 7 вопросов по category sync, ответы в этом же commit'е
-
----
-
-### Q3. Hist категорий номенклатуры
-
-- **Status:** RESOLVED
-- **Asked:** 2026-05-16
-- **From:** CLAUDE
-- **To:** SLAI_DEV
-
-#### Answer (2026-05-16, SLAI_DEV)
-Endpoint **`GET /api/v1/admin/nomenclature/hist`** уже реализован (SLAI commit `65f731c`). SQL и формат описаны в `SLAI_REPLY_v2.md` раздел Q3.
-
-**Реальные данные — после деплоя SLAI на prod** (на дев-стенде синтетика, отдавать смысла нет).
-
-**Workflow после деплоя:** admin прогоняет `curl` → кладёт `slai_hist.json` в общую папку → parsdocs Claude подгружает и сравнивает с нашими 17 категориями → обновляет keyword-mapper в `categories.ts` → push в 3 ремоута.
-
-#### Resolution
-- Q3 закрыт принципиально (механизм согласован)
-- Реальная синхронизация будет через Q8 механизм (continuous sync), а разовый hist остаётся как fallback
-- На дев пока не нужен, ждём prod-деплой
-
----
-
-### Q0. (пример формата) Sonnet vs Opus как production default
-
-- **Status:** RESOLVED
-- **Asked:** 2026-05-16
-- **From:** CLAUDE
-- **To:** USER
-
-#### Answer (2026-05-16, USER)
-Sonnet. Опус только если будут провалы качества на пилоте.
-
-#### Resolution (2026-05-16, Claude)
-F9 — изменено в `inference-service/.env.example`:
-`ANTHROPIC_MODEL_ID=claude-sonnet-4-7-20260301`. Commit `e8f3f6f`.
-Через provider_settings UI пользователь может переключить на Opus для отдельных типов документов.
+| Q | Тема | Итог |
+|---|------|------|
+| Q1 | ANTHROPIC_API_KEY для baseline bench | RESOLVED 17.05 — прогон Sonnet 4.6 на 10 синт. PDF ($0.0165/doc, 9/10 valid JSON, items_F1 70%), `MODEL_REPORT.md` #21; нашли F14/F15. |
+| Q7 | SLAI matcher / target_entity_hint / HMAC | RESOLVED 17.05 — matcher устраивает (сигналы plate/ИНН, threshold HIGH≥70+2×, timing-safe HMAC, auto-detect hint); 3 nice-to-have до пилота. `archive/PARSDOCS_Q7_MATCHER_REVIEW.md`. |
+| Q8 | 7 вопросов по continuous category sync | RESOLVED 16.05 — receiver `/sync/nomenclature`+`/snapshot`, Redis TTL 24ч, 2 HMAC, `X-SLAI-Version: v1`, retry+`sync_inbox`. `archive/PARSDOCS_CATEGORY_SYNC_REPLY.md`. |
+| Q2 | SLAI ответ на наш reply | RESOLVED 16.05 — **все 14 [ПРОДУКТ]-решений + 6 наших ответов приняты** (4 уже в коде SLAI: target_entity_hint, timing-safe HMAC, redact_pii, scoring). Ждут нашей доставки F5 multi-doc + F2 confidence. `SLAI_REPLY_v2.md` (`296b2b9f`). |
+| Q3 | Hist категорий номенклатуры | RESOLVED 16.05 — endpoint `GET /admin/nomenclature/hist` (SLAI `65f731c`); реальные данные после prod-деплоя SLAI, иначе fallback к Q8-sync. |
+| Q0 | Sonnet vs Opus как prod default | RESOLVED 16.05 — Sonnet (Opus только при провалах на пилоте); `ANTHROPIC_MODEL_ID` в `inference-service/.env.example`, commit `e8f3f6f`. |
 
 ---
 

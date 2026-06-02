@@ -1,5 +1,11 @@
 # ТЗ: Обработка разнообразных входящих файлов в parsedocs
 
+> ⚠ **Не путать с интеграцией SLAI/ERP.** Этот документ — про **приём входящих
+> файлов** (форматы, конвертация, приведение к каноническому виду), а не про
+> интеграцию с Суперлогистом. Детальные требования по каждому формату —
+> [`FILE_TYPES_SPEC.md`](FILE_TYPES_SPEC.md). *(Переименован из `INTEGRATION_TZ.md`
+> 02.06 — старое имя ложно намекало на «интеграцию».)*
+
 **Дата:** 15 мая 2026
 **Статус:** черновик
 **Главная проблема:** документы которые присылают сотрудники и контрагенты — **очень разные**. Один файл может быть нормальным PDF с векторным текстом, следующий — фото с iPhone в HEIC, третий — архив с 50 jpg по странице, четвёртый — email с вложениями. Система должна понять что пришло, привести к рабочему виду и обработать.
@@ -62,74 +68,31 @@
 
 ---
 
-## Что мы умеем СЕЙЧАС
+## Что умеем сейчас / чего пока нет
 
-✅ **PDF** (vector + scanned) — pdf-text + Tesseract  
-✅ **JPG, PNG, BMP, TIFF** (одиночные) — Tesseract  
-✅ **Magic-bytes** проверка типа файла (не доверяем заголовку Content-Type)  
-✅ **Multipage PDF** — pdftoppm раскладывает на страницы, Tesseract / Vision-LLM по странице  
-✅ **Rotation auto** через Tesseract OSD (orientation detection)  
-✅ **Лимит размера** — 50 МБ default через `MAX_UPLOAD_MB`  
-✅ **Языки рус + eng** одновременно (через `TESSERACT_LANGS=rus+eng`)
+Актуальный статус по каждому формату (детект, edge-cases, «работает / не принимаем»)
+— в [`FILE_TYPES_SPEC.md`](FILE_TYPES_SPEC.md) («Формат-за-форматом» + «Сводная таблица
+состояний»). Кратко:
 
-## Что мы НЕ умеем
-
-❌ **HEIC** — iPhone-фото нужно конвертировать в JPG  
-❌ **DOCX / XLSX** — выгрузки из Word/Excel  
-❌ **EML / MSG** — email с вложениями  
-❌ **ZIP / RAR** архивы  
-❌ **Зашифрованные PDF** — мы открываем без пароля, на encrypted падаем  
-❌ **Защищённые от extraction PDF** — `pdf-parse` возвращает пустую строку, fallback есть но идёт сразу в OCR  
-❌ **Splitter** — склейка нескольких документов в один PDF не разделяется  
-❌ **Deskew / denoise** — нет pre-processing'а перед OCR  
-❌ **Detection пустых страниц** — обрабатываем всё подряд  
-❌ **Detect duplicate pages**  
-❌ **Билингв-документы** (русский + китайский) — нужен языковый detector + динамический выбор Tesseract pack  
-❌ **Rукописный текст** — не пытаемся читать  
-❌ **Vision-LLM на сканах** — модель есть, на нашем железе не помещается
+- **Принимаем:** PDF (vector + scan), JPG/PNG/BMP/TIFF/WebP, multipage PDF, auto-rotate
+  (Tesseract OSD), языки `rus+eng`, лимит 50 МБ (`MAX_UPLOAD_MB`); тип файла — по magic-bytes.
+- **Не принимаем (а в потоке есть):** HEIC, DOCX/XLSX, EML/MSG, ZIP/RAR, encrypted/multi-doc
+  PDF; нет deskew/denoise, blank/dup-page detection, китайского, рукописного, vision-LLM на сканах.
 
 ---
 
 ## Pre-processing пайплайн (что нужно построить)
 
-```
-Входной файл
-    │
-    ▼
-[1] Detection — что это?
-    ├─ Magic-bytes → PDF / JPG / PNG / TIFF / HEIC / ZIP / EML / DOCX / ...
-    ├─ Encrypted check (PDF)
-    ├─ Page count
-    └─ Содержание-anchors (vector text, scan, mixed)
-    │
-    ▼
-[2] Extraction & Conversion → набор canonical-image страниц
-    ├─ PDF native → pdftoppm @ 200 DPI / pdf-parse для текста
-    ├─ HEIC → libheif → JPG
-    ├─ DOCX → unoconv / libreoffice → PDF → pdftoppm
-    ├─ XLSX → libreoffice → PDF → pdftoppm
-    ├─ EML/MSG → mailparser → extract attachments → recurse
-    ├─ ZIP/RAR → unzip → recurse каждое содержимое
-    └─ Encrypted PDF → ask password / reject
-    │
-    ▼
-[3] Quality enhancement (только для image-страниц)
-    ├─ Auto-rotate (Tesseract OSD)
-    ├─ Deskew (skew detection + поворот)
-    ├─ Denoise (median filter)
-    ├─ Binarize (Otsu или adaptive)
-    ├─ Detect blank page → drop
-    └─ Detect duplicate page → dedup
-    │
-    ▼
-[4] Splitting (для multi-doc PDF)
-    ├─ Heuristic: blank-page separator
-    ├─ Heuristic: «СЧЁТ № ...» / «УПД № ...» на странице = граница нового документа
-    └─ LLM-classifier: «эти страницы один документ или разные?»
-    │
-    ▼
-Создание N jobs, каждый отдельной обработки
-```
+Новый слой **до** OCR-цепочки, 4 стадии:
+
+1. **Detection** — magic-bytes (формат), encrypted-check, page count, тип содержания (vector/scan/mixed).
+2. **Extraction & Conversion** — привести к canonical-страницам: PDF→pdftoppm/pdf-parse,
+   HEIC→JPG, DOCX/XLSX→PDF, EML/ZIP→рекурсия по вложениям, encrypted→ask/reject.
+3. **Quality enhancement** (для image-страниц) — auto-rotate, deskew, denoise, binarize, drop blank, dedup.
+4. **Splitting** (multi-doc PDF) — маркеры `«СЧЁТ № »`/`«УПД № »`, blank-separator, LLM-classifier → N jobs.
+
+Канонический интерфейс модуля (`PreprocessInput`/`PreprocessResult`/коды ошибок) и порядок
+реализации — в [`FILE_TYPES_SPEC.md`](FILE_TYPES_SPEC.md).
 
 ---
 
@@ -161,105 +124,43 @@
 
 ---
 
-## Что мы предлагаем строить — приоритеты
+## Что предлагаем строить — приоритеты
 
-### P0 — критично, без этого живая работа невозможна (1.5-2 недели)
+Детальная разбивка по спринтам с оценками — в [`FILE_TYPES_SPEC.md`](FILE_TYPES_SPEC.md)
+(«Дорожная карта»). Кратко по уровням:
 
-| Что | Зачем | Срок |
-|------|------|------|
-| **HEIC → JPG конвертация** | iPhone-фото без этого не примем | 0.5 дня |
-| **Encrypted PDF detection + UX** | Чтобы внятно сказать «пришлите пароль» вместо crash | 0.5 дня |
-| **Multi-doc PDF splitter** (по `«СЧЁТ N»` / `«УПД N»` маркерам в OCR-тексте) | 1 файл с пачкой счетов = N jobs | 2 дня |
-| **Auto-rotate + deskew** перед OCR | Кривые сканы поднимутся с 50% до 80%+ confidence | 1.5 дня |
-| **Detection пустых страниц** | Чтобы не считать сепараторы из автоподатчика как страницы | 0.5 дня |
-| **DOCX/XLSX → PDF** через libreoffice (heavy container) | Word-файлы от менеджеров | 1.5 дня |
-| **EML / MSG mail-parser** | Forward писем — критичный канал бухгалтерии | 1 день |
-| **ZIP / RAR распаковка → N jobs** | Архивы за период | 1 день |
-| **Pre-processing pipeline** (структура `src/pipeline/preprocess/`) | Объединить всё в один шаг до OCR | 2 дня |
-| **Чёткая обработка битых файлов** | Понятные `error_code` вместо stacktrace | 0.5 дня |
-
-### P1 — нужно к боевой нагрузке (2-3 недели)
-
-- Denoise / binarize для плохих сканов
-- Detection дубликатных страниц
-- XML-парсер для Контур.Диадок / СБИС / Эдо.Такском (когда метаданные приходят отдельно от PDF)
-- Watermark removal (грубое — через image stats)
-- Doc-classifier на pre-processing-стадии (когда нет hint)
-- Page-level quality scoring (если confidence страницы <0.4 — пометить, не валить весь job)
-
-### P2 — продвинутые сценарии
-
-- `chi_sim`, `kaz`, `uzb` Tesseract packs для ВЭД
-- Рукописный текст через vision-LLM (Qwen-VL, нужен GPU)
-- Splitter через LLM-classifier (не только по маркерам)
-- Smart-cropping (вырезать сам документ из фото где видна рука / стол вокруг)
-- HEIC HDR-обработка (iPhone делает 2 кадра, mix'ом)
-- TIFF многослойный (CCITT-4 fax + Group 4)
+- **P0 (критично, ~1.5-2 нед):** HEIC→JPG, encrypted-PDF detection+UX, multi-doc splitter
+  (маркеры `«СЧЁТ N»`/`«УПД N»`), auto-rotate+deskew, blank-page detection, DOCX/XLSX→PDF,
+  EML/MSG parser, ZIP/RAR→N jobs, каркас `src/pipeline/preprocess/`, внятная обработка битых файлов.
+- **P1 (к боевой нагрузке):** denoise/binarize, dup-page detection, XML-парсер ЭДО
+  (Диадок/СБИС/Такском), watermark removal, doc-classifier на pre-stage, page-level quality scoring.
+- **P2 (продвинутое):** `chi_sim`/`kaz`/`uzb` packs, рукописное через vision-LLM,
+  splitter через LLM, smart-cropping фото, HEIC HDR, многослойный TIFF (CCITT-4/Group 4).
 
 ---
 
 ## Архитектура pre-processing'а
 
-Сейчас pipeline:
-```
-file → OCR chain → classify → parse → validate → resolve
-```
+Сейчас: `file → OCR chain → classify → parse → validate → resolve`. Станет:
+`file → [preprocess: detect → convert → enhance → split] → OCR chain → …`.
+Новая папка `src/pipeline/preprocess/` (`detect.ts`, `convert.ts`, `enhance.ts`, `split.ts`);
+каждый модуль принимает `OcrInput` + signals и возвращает новый `OcrInput`, массив (split)
+или `failed` с кодом (напр. `password_required`).
 
-Должен стать:
-```
-file
-  ↓
-[preprocess]
-  ├─ detect format / encryption / corruption
-  ├─ convert to canonical image stack (PDF pages or images)
-  ├─ enhance quality (rotate / deskew / binarize / denoise / drop blanks)
-  └─ split multi-doc → N jobs (создаются прямо в worker'е через docQueue.add)
-  ↓
-OCR chain → classify → parse → validate → resolve
-```
-
-В коде это **новая папка** `src/pipeline/preprocess/`:
-- `detect.ts` — magic bytes + encryption + corruption check
-- `convert.ts` — HEIC, DOCX, XLSX, EML, ZIP → набор canonical-картинок
-- `enhance.ts` — rotate, deskew, denoise, binarize
-- `split.ts` — multi-doc detection и разделение
-
-Каждый модуль:
-- Принимает `OcrInput` + дополнительные signals
-- Возвращает новый `OcrInput` (возможно с другим путём к файлу) или массив (для split)
-- Может пометить job статусом `failed` с понятной причиной (e.g. `password_required`)
-
-### Бинарные зависимости
-
-| Tool | Что делает | Размер в контейнере |
-|------|------------|---------------------|
-| `libheif-tools` / `heif-convert` | HEIC → JPG | ~5 МБ |
-| `libreoffice --headless` | DOCX/XLSX → PDF | ~600 МБ (heavy!) |
-| `unrar` | RAR-архивы | ~1 МБ |
-| `7z` | 7z-архивы | ~3 МБ |
-| `qpdf` | encrypted PDF detection / password | ~3 МБ |
-| `imagemagick` или `vips` | rotate, deskew, denoise | ~30 МБ |
-| `tesseract --psm 0` | OSD orientation detection | уже есть |
-| `pdfimages` | extract images from PDF | уже есть |
-
-LibreOffice — это +600 МБ к docker image. Альтернативы:
-- Отдельный sidecar контейнер `libreoffice-converter` который принимает DOCX и возвращает PDF
-- Облачное API (есть платные services, но это уже не offline)
-- Просто отказывать на DOCX в первой версии, принимать только PDF и переводить юзеров «сохраните как PDF из Word»
+Бинарные зависимости (libheif, libreoffice/unoserver-sidecar ~600 МБ, unrar, 7z, qpdf,
+imagemagick/vips) и развилка по LibreOffice (sidecar vs deny) — в
+[`FILE_TYPES_SPEC.md`](FILE_TYPES_SPEC.md) (per-format + §Решения).
 
 ---
 
-## Что нужно решить
+## Что нужно решить (бизнес)
 
-| Вопрос | Кто решает | До чего нужно |
-|--------|-----------|---------------|
-| **DOCX поддержка обязательна?** | Бизнес | Если да — +600 МБ image, иначе deny с инструкцией |
-| **Email-приём через свой SMTP-сервер или IMAP-поллинг чужого?** | ИТ + Безопасность | На какой mailbox писать |
-| **Encrypted PDF — что отвечать?** | Бизнес/UX | Просить пароль через UI или return error |
-| **Multi-doc PDF: автоматически делить или спрашивать оператора?** | Бизнес | Авто vs ручной выбор |
-| **Min DPI quality cutoff** | Бизнес | <150 DPI — отказ или предупреждение? |
-| **Размер архива** | ИТ | ZIP с 1000 PDF — обработаем или отклоним по лимиту? |
-| **Сохраняем ли оригиналы внутри ZIP?** | Юристы | Если 5 лет — нужно отдельное архивное хранилище |
+По большинству развилок (DOCX-поддержка, encrypted-PDF UX, авто vs ручной split,
+лимит размера архива, хранение оригиналов из ZIP, EXIF) уже зафиксированы
+**working-defaults** в [`FILE_TYPES_SPEC.md`](FILE_TYPES_SPEC.md) (§«Решения по
+открытым вопросам») — бизнес может пересмотреть по запросу. **Реально открыто:**
+(1) канал приёма email — свой SMTP или IMAP-поллинг чужого ящика (ИТ+Безопасность,
+на какой mailbox писать); (2) min-DPI cutoff (<150 DPI — отказ или предупреждение? — бизнес).
 
 ---
 
