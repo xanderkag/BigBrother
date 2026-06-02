@@ -1,10 +1,38 @@
+import { issueFieldKeys, fieldAnchorId } from '@/lib/issue-fields';
+
 /**
  * Sticky banner со списком validation issues. Показывается сверху над
  * extracted data — устраняет дубль из старого UI (раньше issues были
  * И в банере, И повторно во вкладке Form).
+ *
+ * §9 polish: если issue по эвристике сопоставляется с полем (НДС, итог,
+ * ИНН — см. lib/issue-fields), показываем его кликабельной ссылкой —
+ * клик прокручивает к полю и подсвечивает его кольцом на ~1.4 c. Issue
+ * без привязки к полю остаётся обычным текстом.
  */
 interface Props {
   issues: string[];
+}
+
+/**
+ * Найти поле по ключам issue и привлечь к нему внимание: прокрутить в
+ * центр, дать фокус (a11y) и кратко подсветить кольцом. Берём первый
+ * ключ, для которого элемент реально есть в DOM (поле могло быть в
+ * JSON-вьюхе/не отрендерено — тогда мягко ничего не делаем).
+ */
+function flashField(issue: string) {
+  for (const key of issueFieldKeys(issue)) {
+    const el = document.getElementById(fieldAnchorId(key));
+    if (!el) continue;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.focus({ preventScroll: true });
+    el.classList.add('ring-2', 'ring-amber-400', 'rounded');
+    window.setTimeout(
+      () => el.classList.remove('ring-2', 'ring-amber-400', 'rounded'),
+      1400,
+    );
+    return;
+  }
 }
 
 export default function ValidationBanner({ issues }: Props) {
@@ -26,9 +54,26 @@ export default function ValidationBanner({ issues }: Props) {
       <div className="flex-1">
         <div className="font-semibold">Validation issues ({issues.length})</div>
         <ul className="mt-1 space-y-0.5 text-sm">
-          {issues.map((issue, i) => (
-            <li key={i}>• {issue}</li>
-          ))}
+          {issues.map((issue, i) => {
+            const hasField = issueFieldKeys(issue).length > 0;
+            return (
+              <li key={i}>
+                •{' '}
+                {hasField ? (
+                  <button
+                    type="button"
+                    onClick={() => flashField(issue)}
+                    className="text-left underline decoration-dotted underline-offset-2 hover:decoration-solid"
+                    title="Перейти к полю"
+                  >
+                    {issue}
+                  </button>
+                ) : (
+                  issue
+                )}
+              </li>
+            );
+          })}
         </ul>
       </div>
     </div>

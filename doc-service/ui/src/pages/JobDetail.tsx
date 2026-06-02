@@ -18,9 +18,14 @@ import ExtractedEditor from '@/components/ExtractedEditor';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import RawTextModal from '@/components/RawTextModal';
 import KeyboardHelp from '@/components/KeyboardHelp';
+import { SkeletonBlock } from '@/components/Skeleton';
 import { useHotkeys } from '@/lib/useHotkeys';
 import { readJobNav, neighborsOf } from '@/lib/job-nav';
-import { confidenceBarClass, confidenceTextClass } from '@/lib/confidence';
+import {
+  confidenceBarClass,
+  confidenceTextClass,
+  confidenceValueClass,
+} from '@/lib/confidence';
 import { usePermissions } from '@/lib/permissions';
 import {
   formatFileSize,
@@ -193,11 +198,7 @@ export default function JobDetailPage() {
   );
 
   if (isLoading) {
-    return (
-      <div className="flex h-full items-center justify-center text-sm text-slate-500 dark:text-slate-400 dark:text-slate-500">
-        Загрузка job'а…
-      </div>
-    );
+    return <JobDetailSkeleton />;
   }
 
   if (error || !job) {
@@ -345,7 +346,15 @@ export default function JobDetailPage() {
               {job.confidence !== null && (
                 <span>
                   confidence{' '}
-                  <span className="font-medium text-slate-700 dark:text-slate-300">
+                  {/* §9 polish: уверенность в шапке — текстом (не баром),
+                      привести к виду как у полей: цвет значения по уровню
+                      (confidenceValueClass), high/none — нейтральный. */}
+                  <span
+                    className={`font-medium ${
+                      confidenceValueClass(Number(job.confidence)) ||
+                      'text-slate-700 dark:text-slate-300'
+                    }`}
+                  >
                     {formatPercent(Number(job.confidence))}
                   </span>{' '}
                   via {job.ocr_engine ?? '—'}
@@ -553,6 +562,47 @@ export default function JobDetailPage() {
 /* ------------------------------------------------------------------ */
 /* Helper components                                                  */
 /* ------------------------------------------------------------------ */
+
+/**
+ * §9 polish: скелетон-лоадер вместо текста «Загрузка job'а…». Повторяет
+ * каркас реальной страницы (шапка + 2-колоночный grid: PDF слева, карточки
+ * данных справа) — пользователь сразу видит «куда смотреть», без скачка
+ * layout'а когда данные приедут.
+ */
+function JobDetailSkeleton() {
+  return (
+    <div className="flex h-full flex-col">
+      <div className="shrink-0 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-6 py-3">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0 space-y-2">
+            <SkeletonBlock className="h-6 w-64" />
+            <div className="flex gap-3">
+              <SkeletonBlock className="h-3 w-20" />
+              <SkeletonBlock className="h-3 w-16" />
+              <SkeletonBlock className="h-3 w-24" />
+              <SkeletonBlock className="h-3 w-28" />
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <SkeletonBlock className="h-9 w-24" />
+            <SkeletonBlock className="h-9 w-28" />
+            <SkeletonBlock className="h-9 w-24" />
+          </div>
+        </div>
+      </div>
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-px bg-slate-200 dark:bg-slate-800 lg:grid-cols-[1fr_minmax(420px,40%)]">
+        <div className="min-h-0 bg-white p-4 dark:bg-slate-900">
+          <SkeletonBlock className="h-full w-full" />
+        </div>
+        <div className="flex min-h-0 flex-col gap-3 overflow-hidden bg-slate-50 p-4 dark:bg-slate-900/40">
+          <SkeletonBlock className="h-32 w-full" />
+          <SkeletonBlock className="h-48 w-full" />
+          <SkeletonBlock className="h-24 w-full" />
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function StatusBadge({ status }: { status: string }) {
   const cls =

@@ -7,6 +7,7 @@ import {
 } from '@/lib/format';
 import ConfidenceBar from './ConfidenceBar';
 import { confidenceValueClass } from '@/lib/confidence';
+import { issueFieldKeys, fieldAnchorId } from '@/lib/issue-fields';
 
 /**
  * Панель Extracted data с двумя вьюхами: Форма и JSON.
@@ -156,18 +157,14 @@ function FormView({
     return out;
   }, [extracted]);
 
-  // Помечаем поля, упомянутые в issues — для подсветки
+  // Помечаем поля, упомянутые в issues — для подсветки. Эвристика
+  // issue→ключ вынесена в lib/issue-fields (общая с ValidationBanner,
+  // который по тем же ключам прокручивает к полю).
   const issueKeys = useMemo(() => {
     const keys = new Set<string>();
     if (!issues) return keys;
     for (const issue of issues) {
-      // Эвристика: если в issue упомянуто слово "НДС" → подсвечиваем поле vat
-      if (/НДС|vat/i.test(issue)) keys.add('vat');
-      if (/totals?|итог/i.test(issue)) keys.add('total_with_vat');
-      if (/ИНН|inn/i.test(issue)) {
-        keys.add('seller.inn');
-        keys.add('buyer.inn');
-      }
+      for (const k of issueFieldKeys(issue)) keys.add(k);
     }
     return keys;
   }, [issues]);
@@ -193,6 +190,7 @@ function FormView({
           value={formatMoney(extracted.total_with_vat as number, '')}
           highlight={issueKeys.has('total_with_vat')}
           conf={conf('total_with_vat')}
+          anchorKey="total_with_vat"
         />
         <Field
           label="Total без НДС"
@@ -204,6 +202,7 @@ function FormView({
           value={formatMoney(extracted.vat as number, '')}
           highlight={issueKeys.has('vat')}
           conf={conf('vat')}
+          anchorKey="vat"
         />
         <Field
           label="Ставка НДС"
@@ -231,6 +230,7 @@ function FormView({
             value={seller.inn}
             highlight={issueKeys.has('seller.inn')}
             conf={conf('seller.inn')}
+            anchorKey="seller.inn"
           />
           <Field label="КПП" value={seller.kpp} conf={conf('seller.kpp')} />
           <Field label="Наименование" value={seller.name} wide conf={conf('seller.name')} />
@@ -249,6 +249,7 @@ function FormView({
             value={buyer.inn}
             highlight={issueKeys.has('buyer.inn')}
             conf={conf('buyer.inn')}
+            anchorKey="buyer.inn"
           />
           <Field label="КПП" value={buyer.kpp} conf={conf('buyer.kpp')} />
           <Field label="Наименование" value={buyer.name} wide conf={conf('buyer.name')} />
@@ -325,6 +326,7 @@ function Field({
   highlight,
   wide,
   conf,
+  anchorKey,
 }: {
   label: string;
   value: unknown;
@@ -332,6 +334,13 @@ function Field({
   wide?: boolean;
   /** UI-6: confidence поля 0..1. Пороги — как в ConfidenceBar. */
   conf?: number;
+  /**
+   * Ключ поля для якоря (§9 polish). Если задан — обёртка получает
+   * стабильный DOM id, по которому ValidationBanner прокручивает к полю
+   * при клике по проблеме. tabIndex=-1 — чтобы поле могло принять фокус
+   * программно (для screen reader), но не попадало в Tab-навигацию.
+   */
+  anchorKey?: string;
 }) {
   const display = renderValue(value);
   const hasConf = typeof conf === 'number' && !Number.isNaN(conf);
@@ -341,7 +350,11 @@ function Field({
   // нейтральный slate-900.
   const confValueCls = !hasConf || highlight ? '' : confidenceValueClass(conf);
   return (
-    <div className={wide ? 'sm:col-span-2' : undefined}>
+    <div
+      id={anchorKey ? fieldAnchorId(anchorKey) : undefined}
+      tabIndex={anchorKey ? -1 : undefined}
+      className={`scroll-mt-16 outline-none ${wide ? 'sm:col-span-2' : ''}`}
+    >
       <dt className="text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">{label}</dt>
       <dd
         className={`mt-0.5 text-sm ${
