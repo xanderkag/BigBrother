@@ -353,12 +353,16 @@ function NavItem({ entry, collapsed }: { entry: NavEntry; collapsed: boolean }) 
           )}
           <span className="relative shrink-0 text-slate-400 group-hover:text-current dark:text-slate-500">
             {entry.icon}
-            {/* В свёрнутом виде — count'er как точка-индикатор поверх иконки */}
+            {/* §9 polish — в свёрнутом виде раньше был безликий dot; теперь
+                показываем само число (как notification-бейдж), >99 → «99+»,
+                чтобы влезть в узкую рейку. Полное число и в title NavLink. */}
             {collapsed && entry.count !== undefined && entry.count > 0 && (
               <span
-                className="absolute -right-1.5 -top-1.5 inline-block h-1.5 w-1.5 rounded-full bg-indigo-500 dark:bg-indigo-400"
+                className="absolute -right-2 -top-1.5 inline-flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-indigo-500 px-1 font-mono text-[9px] font-semibold leading-none text-white dark:bg-indigo-400 dark:text-slate-900"
                 aria-hidden="true"
-              />
+              >
+                {entry.count > 99 ? '99+' : entry.count}
+              </span>
             )}
           </span>
           {!collapsed && <span className="flex-1 truncate">{entry.label}</span>}
