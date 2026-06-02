@@ -4,6 +4,7 @@ import { useUploadJob, useJob } from '@/queries/jobs';
 import { useDocumentTypes } from '@/queries/documentTypes';
 import { useProviders } from '@/queries/providers';
 import { useProvidersStatus } from '@/queries/settings';
+import { usePermissions } from '@/lib/permissions';
 import { formatFileSize } from '@/lib/format';
 
 /**
@@ -18,7 +19,10 @@ import { formatFileSize } from '@/lib/format';
  *     not in terminal status), результат рендерится прямо на странице
  *   - badges цепочки OCR-движков (что будет пробоваться)
  *
- * Доступ — admin. Полная Upload-страница (/upload) для бизнес-пользователя.
+ * Доступ (F9): страница видна всем авторизованным (read-only обзор цепочки
+ * и провайдеров полезен и оператору), но запуск прогона — действие записи,
+ * поэтому доступен только manager+. Viewer видит форму, но кнопка прогона
+ * скрыта, на её месте — пояснение про read-only.
  */
 const ACCEPT_EXT = '.pdf,.jpg,.jpeg,.png,.heic,.heif,.bmp,.tif,.tiff,.webp';
 
@@ -29,6 +33,7 @@ export default function TestLabPage() {
   const [providerId, setProviderId] = useState('');
   const [jobId, setJobId] = useState<string | null>(null);
 
+  const { isWriter } = usePermissions();
   const upload = useUploadJob();
   const { data: docTypes } = useDocumentTypes();
   const { data: providersStatus } = useProvidersStatus();
@@ -189,18 +194,27 @@ export default function TestLabPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            <button
-              type="button"
-              className="btn-primary"
-              disabled={!file || upload.isPending}
-              onClick={run}
-            >
-              {upload.isPending ? 'Отправляю…' : '▶ Прогнать'}
-            </button>
-            {file && !upload.isPending && (
-              <button type="button" className="btn-ghost" onClick={reset}>
-                Сбросить
-              </button>
+            {isWriter ? (
+              <>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  disabled={!file || upload.isPending}
+                  onClick={run}
+                >
+                  {upload.isPending ? 'Отправляю…' : '▶ Прогнать'}
+                </button>
+                {file && !upload.isPending && (
+                  <button type="button" className="btn-ghost" onClick={reset}>
+                    Сбросить
+                  </button>
+                )}
+              </>
+            ) : (
+              <p className="text-sm text-slate-500 dark:text-slate-400">
+                Режим только для чтения — запуск прогона доступен ролям
+                manager и выше.
+              </p>
             )}
           </div>
         </div>

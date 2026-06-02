@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { isAuthenticated } from '@/lib/auth';
 import { useCurrentUser } from '@/queries/me';
+import { usePermissions, type AccessLevel } from '@/lib/permissions';
 import LoginPage from '@/pages/Login';
 import DashboardPage from '@/pages/Dashboard';
 import JobsListPage from '@/pages/JobsList';
@@ -53,18 +54,66 @@ export default function App() {
                 <Route index element={<LandingRoute />} />
                 <Route path="jobs" element={<JobsListPage />} />
                 <Route path="jobs/:jobId" element={<JobDetailPage />} />
-                <Route path="upload" element={<UploadPage />} />
+                <Route
+                  path="upload"
+                  element={
+                    <RequireRole level="writer">
+                      <UploadPage />
+                    </RequireRole>
+                  }
+                />
                 <Route path="review" element={<ReviewQueuePage />} />
-                <Route path="document-types" element={<DocumentTypesPage />} />
-                <Route path="providers" element={<ProvidersPage />} />
+                <Route
+                  path="document-types"
+                  element={
+                    <RequireRole level="admin">
+                      <DocumentTypesPage />
+                    </RequireRole>
+                  }
+                />
+                <Route
+                  path="providers"
+                  element={
+                    <RequireRole level="admin">
+                      <ProvidersPage />
+                    </RequireRole>
+                  }
+                />
+                {/* Журнал аудита — виден всем авторизованным (решение владельца) */}
                 <Route path="audit-log" element={<AuditLogPage />} />
-                <Route path="settings" element={<SettingsPage />} />
-                <Route path="tenants" element={<TenantsPage />} />
-                <Route path="reference-lists" element={<ReferenceListsPage />} />
+                <Route
+                  path="settings"
+                  element={
+                    <RequireRole level="admin">
+                      <SettingsPage />
+                    </RequireRole>
+                  }
+                />
+                <Route
+                  path="tenants"
+                  element={
+                    <RequireRole level="admin">
+                      <TenantsPage />
+                    </RequireRole>
+                  }
+                />
+                <Route
+                  path="reference-lists"
+                  element={
+                    <RequireRole level="admin">
+                      <ReferenceListsPage />
+                    </RequireRole>
+                  }
+                />
                 <Route
                   path="reference-lists/:slug"
-                  element={<ReferenceListEntriesPage />}
+                  element={
+                    <RequireRole level="admin">
+                      <ReferenceListEntriesPage />
+                    </RequireRole>
+                  }
                 />
+                {/* Тест-лаборатория — видна всем; запуск прогона гейтит сама страница */}
                 <Route path="test-lab" element={<TestLabPage />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
@@ -79,6 +128,34 @@ export default function App() {
 function RequireAuth({ children }: { children: React.ReactNode }) {
   if (!isAuthenticated()) {
     return <Navigate to="/login" replace />;
+  }
+  return <>{children}</>;
+}
+
+/**
+ * F9 — ролевой гейт маршрута. Пока грузим /users/me — лёгкий лоадер,
+ * чтобы не выкинуть админа при перезагрузке страницы по прямому URL.
+ * Не хватает прав → редирект на безопасный лендинг (оператор попадёт в
+ * /review), а НЕ 403-экран: пользователь просто не видит того, что ему
+ * не положено.
+ */
+function RequireRole({
+  level,
+  children,
+}: {
+  level: AccessLevel;
+  children: React.ReactNode;
+}) {
+  const perms = usePermissions();
+  if (!perms.ready) {
+    return (
+      <div className="flex h-64 items-center justify-center text-sm text-slate-500 dark:text-slate-400">
+        Загрузка…
+      </div>
+    );
+  }
+  if (!perms.can(level)) {
+    return <Navigate to="/" replace />;
   }
   return <>{children}</>;
 }

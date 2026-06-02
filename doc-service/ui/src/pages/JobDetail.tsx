@@ -8,6 +8,7 @@ import ConfidenceBar from '@/components/ConfidenceBar';
 import TierBadge from '@/components/TierBadge';
 import ValidationBanner from '@/components/ValidationBanner';
 import ExtractedEditor from '@/components/ExtractedEditor';
+import { usePermissions } from '@/lib/permissions';
 import {
   formatFileSize,
   formatPercent,
@@ -92,6 +93,9 @@ export default function JobDetailPage() {
   const { data: docTypes } = useDocumentTypes();
   const approve = useApproveJob();
   const reprocess = useReprocessJob();
+  // F9 — viewer работает в read-only: одобрение/перепрогон/правка скрыты,
+  // выгрузка JSON и просмотр остаются.
+  const { isWriter } = usePermissions();
   const [editorOpen, setEditorOpen] = useState(false);
   const [activeDoc, setActiveDoc] = useState(0);
 
@@ -202,7 +206,7 @@ export default function JobDetailPage() {
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            {job.status === 'needs_review' && (
+            {isWriter && job.status === 'needs_review' && (
               <button
                 type="button"
                 className="btn-success"
@@ -212,14 +216,16 @@ export default function JobDetailPage() {
                 {approve.isPending ? 'Одобряю…' : 'Одобрить ✓'}
               </button>
             )}
-            <button
-              type="button"
-              className="btn-secondary"
-              disabled={reprocess.isPending}
-              onClick={() => reprocess.mutate(job.id)}
-            >
-              {reprocess.isPending ? 'Перепрогон…' : 'Перепрогнать'}
-            </button>
+            {isWriter && (
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={reprocess.isPending}
+                onClick={() => reprocess.mutate(job.id)}
+              >
+                {reprocess.isPending ? 'Перепрогон…' : 'Перепрогнать'}
+              </button>
+            )}
             <button
               type="button"
               className="btn-secondary"
@@ -229,19 +235,21 @@ export default function JobDetailPage() {
             >
               ↓ JSON
             </button>
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={() => setEditorOpen(true)}
-              disabled={classifyOnly}
-              title={
-                classifyOnly
-                  ? 'Извлечение отключено профилем (classify_only)'
-                  : 'Редактировать extracted JSON'
-              }
-            >
-              ✎ Edit
-            </button>
+            {isWriter && (
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => setEditorOpen(true)}
+                disabled={classifyOnly}
+                title={
+                  classifyOnly
+                    ? 'Извлечение отключено профилем (classify_only)'
+                    : 'Редактировать extracted JSON'
+                }
+              >
+                ✎ Edit
+              </button>
+            )}
           </div>
         </div>
       </div>

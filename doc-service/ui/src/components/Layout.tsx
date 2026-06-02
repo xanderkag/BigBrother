@@ -8,6 +8,7 @@ import { useDocumentTypes } from '@/queries/documentTypes';
 import { useProviders } from '@/queries/providers';
 import { useReferenceListTypes } from '@/queries/referenceLists';
 import { useReady } from '@/queries/health';
+import { usePermissions, type AccessLevel } from '@/lib/permissions';
 import { useWorkspaceOrgId } from '@/lib/workspace';
 import { cycleTheme, getTheme, type ThemeChoice } from '@/lib/theme';
 import { useSidebarCollapsed } from '@/lib/sidebar';
@@ -254,6 +255,8 @@ interface NavEntry {
   count?: number;
   /** В каком sidebar-блоке отображать — разделяем основной workflow от admin'а. */
   end?: boolean;
+  /** F9 — минимальный уровень доступа для показа пункта (нет → виден всем). */
+  min?: AccessLevel;
 }
 
 function SidebarNav({ collapsed }: { collapsed: boolean }) {
@@ -266,28 +269,30 @@ function SidebarNav({ collapsed }: { collapsed: boolean }) {
   const tenants = useOrganizations();
   const [orgId] = useWorkspaceOrgId();
   const refLists = useReferenceListTypes(orgId);
+  const perms = usePermissions();
 
-  // Главные workflow-пункты
+  // Главные workflow-пункты. Загрузка — write (manager+); остальное видно всем.
   const main: NavEntry[] = useMemo(
     () => [
       { to: '/', end: true, label: 'Сводка', icon: <IconDashboard /> },
       { to: '/jobs', label: 'Журнал работ', icon: <IconFile />, count: jobsCnt.data?.total },
       { to: '/review', label: 'Очередь ревью', icon: <IconCircle />, count: reviewCnt.data?.total },
-      { to: '/upload', label: 'Загрузка', icon: <IconUpload /> },
+      { to: '/upload', label: 'Загрузка', icon: <IconUpload />, min: 'writer' },
       { to: '/test-lab', label: 'Тест-лаборатория', icon: <IconBeaker /> },
     ],
     [jobsCnt.data?.total, reviewCnt.data?.total],
   );
 
-  // Admin / справочники
+  // Admin / справочники. Журнал аудита — виден всем (решение владельца),
+  // остальное — только админам (разделы конфигурации).
   const admin: NavEntry[] = useMemo(
     () => [
-      { to: '/document-types', label: 'Типы документов', icon: <IconGrid />, count: docTypes.data?.items.length },
-      { to: '/providers', label: 'Провайдеры', icon: <IconCircle />, count: providers.data?.items.length },
+      { to: '/document-types', label: 'Типы документов', icon: <IconGrid />, count: docTypes.data?.items.length, min: 'admin' },
+      { to: '/providers', label: 'Провайдеры', icon: <IconCircle />, count: providers.data?.items.length, min: 'admin' },
       { to: '/audit-log', label: 'Журнал аудита', icon: <IconList /> },
-      { to: '/tenants', label: 'Организации', icon: <IconList />, count: tenants.data?.items.length },
-      { to: '/reference-lists', label: 'Справочники', icon: <IconList />, count: refLists.data?.length },
-      { to: '/settings', label: 'Настройки', icon: <IconGear /> },
+      { to: '/tenants', label: 'Организации', icon: <IconList />, count: tenants.data?.items.length, min: 'admin' },
+      { to: '/reference-lists', label: 'Справочники', icon: <IconList />, count: refLists.data?.length, min: 'admin' },
+      { to: '/settings', label: 'Настройки', icon: <IconGear />, min: 'admin' },
     ],
     [
       docTypes.data?.items.length,
@@ -297,18 +302,26 @@ function SidebarNav({ collapsed }: { collapsed: boolean }) {
     ],
   );
 
+  // F9 — фильтр по роли. Пока /users/me не загружен (perms.ready=false) —
+  // показываем только пункты без ограничения, чтобы не мигнуть админ-меню.
+  const canSee = (e: NavEntry) => !e.min || (perms.ready && perms.can(e.min));
+  const mainVisible = main.filter(canSee);
+  const adminVisible = admin.filter(canSee);
+
   return (
     <nav className={`flex-1 overflow-y-auto py-3 ${collapsed ? 'px-1.5' : 'px-2'}`}>
       <div className="space-y-0.5">
-        {main.map((e) => (
+        {mainVisible.map((e) => (
           <NavItem key={e.to} entry={e} collapsed={collapsed} />
         ))}
       </div>
-      <div className="mt-4 space-y-0.5 border-t border-slate-200 pt-3 dark:border-slate-800">
-        {admin.map((e) => (
-          <NavItem key={e.to} entry={e} collapsed={collapsed} />
-        ))}
-      </div>
+      {adminVisible.length > 0 && (
+        <div className="mt-4 space-y-0.5 border-t border-slate-200 pt-3 dark:border-slate-800">
+          {adminVisible.map((e) => (
+            <NavItem key={e.to} entry={e} collapsed={collapsed} />
+          ))}
+        </div>
+      )}
     </nav>
   );
 }

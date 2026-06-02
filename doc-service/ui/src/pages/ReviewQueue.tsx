@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useJobsList, useApproveJob, useReprocessJob } from '@/queries/jobs';
 import { useDocumentTypes } from '@/queries/documentTypes';
+import { usePermissions } from '@/lib/permissions';
 import ConfidenceBar from '@/components/ConfidenceBar';
 import TierBadge from '@/components/TierBadge';
 import { extractAmounts } from '@/lib/extracted-summary';
@@ -77,6 +78,9 @@ export default function ReviewQueuePage() {
   }, [docTypes]);
   const approve = useApproveJob();
   const reprocess = useReprocessJob();
+  // F9 — viewer работает в read-only: чекбоксы и кнопки одобрения/перепрогона
+  // скрыты, остаётся «Открыть».
+  const { isWriter } = usePermissions();
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkRunning, setBulkRunning] = useState(false);
@@ -237,16 +241,18 @@ export default function ReviewQueuePage() {
       {items.length > 0 && (
         <div className="sticky top-0 z-10 flex items-center justify-between rounded-sm border border-slate-200 bg-white px-3 py-2 dark:border-slate-800 dark:bg-slate-900">
           <div className="flex items-center gap-3">
-            <input
-              type="checkbox"
-              checked={allVisibleSelected}
-              ref={(el) => {
-                if (el) el.indeterminate = !allVisibleSelected && items.some((i) => selected.has(i.id));
-              }}
-              onChange={toggleAllVisible}
-              className="h-3.5 w-3.5 cursor-pointer rounded-sm border-slate-300 text-indigo-600"
-              aria-label="Выбрать все видимые"
-            />
+            {isWriter && (
+              <input
+                type="checkbox"
+                checked={allVisibleSelected}
+                ref={(el) => {
+                  if (el) el.indeterminate = !allVisibleSelected && items.some((i) => selected.has(i.id));
+                }}
+                onChange={toggleAllVisible}
+                className="h-3.5 w-3.5 cursor-pointer rounded-sm border-slate-300 text-indigo-600"
+                aria-label="Выбрать все видимые"
+              />
+            )}
             <span className="font-mono text-xs uppercase tracking-wider text-slate-700 dark:text-slate-300">
               {selected.size > 0 ? (
                 <>
@@ -260,7 +266,7 @@ export default function ReviewQueuePage() {
               )}
             </span>
           </div>
-          {selected.size > 0 && (
+          {isWriter && selected.size > 0 && (
             <div className="flex items-center gap-2">
               <button
                 type="button"
@@ -354,6 +360,7 @@ export default function ReviewQueuePage() {
                 key={job.id}
                 job={job}
                 tier={job.document_type ? tierBySlug.get(job.document_type) ?? null : null}
+                canWrite={isWriter}
                 checked={selected.has(job.id)}
                 onToggle={() => toggleSelected(job.id)}
                 onApprove={() => approve.mutate(job.id)}
@@ -654,6 +661,7 @@ const PREVIEW_FIELDS: {
 function ReviewRow({
   job,
   tier,
+  canWrite,
   checked,
   onToggle,
   onApprove,
@@ -663,6 +671,7 @@ function ReviewRow({
 }: {
   job: Job;
   tier: DocumentTypeTier | null;
+  canWrite: boolean;
   checked: boolean;
   onToggle: () => void;
   onApprove: () => void;
@@ -709,13 +718,15 @@ function ReviewRow({
       }`}
     >
       <div className="flex items-start gap-3 p-3">
-        <input
-          type="checkbox"
-          checked={checked}
-          onChange={onToggle}
-          className="mt-1 h-3.5 w-3.5 shrink-0 cursor-pointer rounded-sm border-slate-300 text-indigo-600"
-          aria-label={`Выбрать ${job.file_name}`}
-        />
+        {canWrite && (
+          <input
+            type="checkbox"
+            checked={checked}
+            onChange={onToggle}
+            className="mt-1 h-3.5 w-3.5 shrink-0 cursor-pointer rounded-sm border-slate-300 text-indigo-600"
+            aria-label={`Выбрать ${job.file_name}`}
+          />
+        )}
 
         <div className="min-w-0 flex-1 space-y-2">
           {/* Top line: filename + badges + meta */}
@@ -851,24 +862,28 @@ function ReviewRow({
           <Link to={`/jobs/${job.id}`} className="btn-ghost text-center" title="Открыть деталку">
             Открыть
           </Link>
-          <button
-            type="button"
-            className="btn-secondary text-xs"
-            disabled={isReprocessing || isApproving}
-            onClick={onReprocess}
-            title="Перепрогнать через pipeline (новый OCR + LLM)"
-          >
-            {isReprocessing ? 'Перепрогон…' : '↻ Перепрогон'}
-          </button>
-          <button
-            type="button"
-            className="btn-success"
-            disabled={isApproving || isReprocessing}
-            onClick={onApprove}
-            title="Одобрить (отправит webhook клиенту)"
-          >
-            {isApproving ? 'Одобряю…' : 'Одобрить ✓'}
-          </button>
+          {canWrite && (
+            <>
+              <button
+                type="button"
+                className="btn-secondary text-xs"
+                disabled={isReprocessing || isApproving}
+                onClick={onReprocess}
+                title="Перепрогнать через pipeline (новый OCR + LLM)"
+              >
+                {isReprocessing ? 'Перепрогон…' : '↻ Перепрогон'}
+              </button>
+              <button
+                type="button"
+                className="btn-success"
+                disabled={isApproving || isReprocessing}
+                onClick={onApprove}
+                title="Одобрить (отправит webhook клиенту)"
+              >
+                {isApproving ? 'Одобряю…' : 'Одобрить ✓'}
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>
