@@ -15,6 +15,7 @@ export const jobsKeys = {
   list: (filters: ListJobsFilters) => ['jobs', 'list', filters] as const,
   detail: (id: string) => ['jobs', id] as const,
   file: (id: string) => ['jobs', id, 'file'] as const,
+  rawText: (id: string) => ['jobs', id, 'raw-text'] as const,
 };
 
 export interface ListJobsFilters {
@@ -201,6 +202,42 @@ export function useReprocessJob() {
       // Forced refetch — статус сейчас pending/processing
       qc.invalidateQueries({ queryKey: jobsKeys.detail(jobId) });
     },
+  });
+}
+
+/**
+ * Повторная доставка вебхука (F10/F11) — внешний эффект: данные уйдут
+ * в систему-потребитель (SLAI). Всегда шлём `?force=true`, т.к. кнопка в
+ * UI — осознанное действие оператора (бэк иначе блокирует повтор уже
+ * доставленного вебхука 409-ой).
+ */
+export function useRedeliverWebhook() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (jobId: string): Promise<Job> => {
+      const raw = await api.post<ApiJob>(
+        `/api/v1/jobs/${jobId}/redeliver-webhook?force=true`,
+      );
+      return normalizeJob(raw);
+    },
+    onSuccess: (data, jobId) => {
+      qc.setQueryData(jobsKeys.detail(jobId), data);
+    },
+  });
+}
+
+/**
+ * Сырой OCR-текст (F11/F21) — то, что распознал OCR ДО LLM-структурирования.
+ * Загружается по требованию (enabled), не кэшируется агрессивно: текст
+ * статичен после терминального статуса. text/plain → api.getText.
+ */
+export function useJobRawText(jobId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: jobsKeys.rawText(jobId),
+    queryFn: () => api.getText(`/api/v1/jobs/${jobId}/raw-text`),
+    enabled: enabled && !!jobId,
+    staleTime: 5 * 60 * 1000,
+    retry: false, // 404 «нет raw_text» — не ретраим
   });
 }
 

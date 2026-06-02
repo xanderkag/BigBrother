@@ -111,6 +111,38 @@ export const api = {
     const res = await request<Response>(path, { method: 'GET', rawResponse: true });
     return res.blob();
   },
+  /**
+   * GET → сырой Response (для проверки статуса/заголовков перед чтением
+   * тела). На 401 редирект делает уже request(); тут только !ok-обработка
+   * остаётся на вызывающем.
+   */
+  getResponse: (path: string, init?: RequestInit): Promise<Response> =>
+    request<Response>(path, { ...init, method: 'GET', rawResponse: true }),
+  /**
+   * GET → текст (для text/plain эндпоинтов, напр. /jobs/:id/raw-text).
+   * Бросает ApiError на не-2xx, чтобы 404 «нет raw_text» дошёл сообщением.
+   */
+  getText: async (path: string, init?: RequestInit): Promise<string> => {
+    const res = await request<Response>(path, { ...init, method: 'GET', rawResponse: true });
+    if (!res.ok) {
+      let body = '';
+      try {
+        body = await res.text();
+      } catch {
+        /* ignore */
+      }
+      // text/plain эндпоинты на ошибке отдают JSON {error}; вытащим его.
+      let msg = body || `HTTP ${res.status}`;
+      try {
+        const parsed = JSON.parse(body) as { error?: string; message?: string };
+        msg = parsed.error ?? parsed.message ?? msg;
+      } catch {
+        /* body не JSON — оставляем как есть */
+      }
+      throw new ApiError(res.status, body, msg);
+    }
+    return res.text();
+  },
 };
 
 export { ApiError };

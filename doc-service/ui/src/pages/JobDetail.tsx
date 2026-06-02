@@ -1,13 +1,22 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { useJob, useJobFile, useApproveJob, useReprocessJob } from '@/queries/jobs';
+import {
+  useJob,
+  useJobFile,
+  useApproveJob,
+  useReprocessJob,
+  useRedeliverWebhook,
+} from '@/queries/jobs';
 import { useDocumentTypes, type DocumentTypeTier } from '@/queries/documentTypes';
+import { api } from '@/lib/api';
 import PdfViewer from '@/components/PdfViewer';
 import ExtractedDataPanel from '@/components/ExtractedDataPanel';
 import ConfidenceBar from '@/components/ConfidenceBar';
 import TierBadge from '@/components/TierBadge';
 import ValidationBanner from '@/components/ValidationBanner';
 import ExtractedEditor from '@/components/ExtractedEditor';
+import ConfirmDialog from '@/components/ConfirmDialog';
+import RawTextModal from '@/components/RawTextModal';
 import { usePermissions } from '@/lib/permissions';
 import {
   formatFileSize,
@@ -98,6 +107,10 @@ export default function JobDetailPage() {
   const { isWriter } = usePermissions();
   const [editorOpen, setEditorOpen] = useState(false);
   const [activeDoc, setActiveDoc] = useState(0);
+  // F10/F11 — подтверждение reprocess + просмотр сырого текста.
+  const [confirmReprocess, setConfirmReprocess] = useState(false);
+  const [rawTextOpen, setRawTextOpen] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
 
   const tierBySlug = useMemo(() => {
     const m = new Map<string, DocumentTypeTier>();
@@ -174,6 +187,35 @@ export default function JobDetailPage() {
     URL.revokeObjectURL(url);
   };
 
+  // F11 — скачать оригинал документа (GET /jobs/:id/file). Проверяем статус
+  // (после retention-чистки бэк отдаёт 410), чтобы не сохранить error-JSON
+  // под видом файла. Имя берём из job.file_name.
+  const handleDownloadOriginal = async () => {
+    setDownloadError(null);
+    try {
+      const res = await api.getResponse(`/api/v1/jobs/${job.id}/file`);
+      if (!res.ok) {
+        setDownloadError(
+          res.status === 410
+            ? 'Оригинал уже удалён (истёк срок хранения).'
+            : `Не удалось скачать файл (HTTP ${res.status}).`,
+        );
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = job.file_name || job.id;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setDownloadError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   return (
     <div className="flex h-full flex-col">
       {/* Top bar — title + meta + actions */}
@@ -221,7 +263,7 @@ export default function JobDetailPage() {
                 type="button"
                 className="btn-secondary"
                 disabled={reprocess.isPending}
-                onClick={() => reprocess.mutate(job.id)}
+                onClick={() => setConfirmReprocess(true)}
               >
                 {reprocess.isPending ? 'Перепрогон…' : 'Перепрогнать'}
               </button>
@@ -234,6 +276,22 @@ export default function JobDetailPage() {
               title="Скачать извлечённые данные в JSON"
             >
               ↓ JSON
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={handleDownloadOriginal}
+              title="Скачать исходный файл"
+            >
+              ↓ Оригинал
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => setRawTextOpen(true)}
+              title="Показать сырой OCR-текст"
+            >
+              Сырой текст
             </button>
             {isWriter && (
               <button
@@ -253,6 +311,14 @@ export default function JobDetailPage() {
           </div>
         </div>
       </div>
+
+      {downloadError && (
+        <div className="shrink-0 px-6 pt-3">
+          <div className="error-banner">
+            <span className="font-medium">Скачивание:</span> {downloadError}
+          </div>
+        </div>
+      )}
 
       {/* Main grid: 2-колоночный layout */}
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-px bg-slate-200 lg:grid-cols-[1fr_minmax(420px,40%)]">
@@ -309,7 +375,7 @@ export default function JobDetailPage() {
             </>
           )}
 
-          <WebhookDeliveryCard job={job} />
+          <WebhookDeliveryCard job={job} canWrite={isWriter} />
 
           {job.pipeline_steps && job.pipeline_steps.length > 0 && (
             <PipelineStepsCard steps={job.pipeline_steps} />
@@ -325,6 +391,34 @@ export default function JobDetailPage() {
           onClose={() => setEditorOpen(false)}
         />
       )}
+
+      {rawTextOpen && (
+        <RawTextModal
+          jobId={job.id}
+          fileName={job.file_name}
+          onClose={() => setRawTextOpen(false)}
+        />
+      )}
+
+      <ConfirmDialog
+        open={confirmReprocess}
+        title="Перепрогнать документ?"
+        description={
+          <>
+            Документ будет заново разобран по текущей конфигурации типа
+            (промпт / схема / валидаторы). OCR не повторяется — используется
+            сохранённый текст. Текущие извлечённые данные будут перезаписаны.
+          </>
+        }
+        objectName={job.file_name ?? job.id}
+        confirmLabel="Перепрогнать"
+        busy={reprocess.isPending}
+        error={reprocess.isError ? (reprocess.error as Error)?.message : null}
+        onCancel={() => setConfirmReprocess(false)}
+        onConfirm={() =>
+          reprocess.mutate(job.id, { onSuccess: () => setConfirmReprocess(false) })
+        }
+      />
     </div>
   );
 }
@@ -646,12 +740,18 @@ function FieldConfidenceCard({ fc }: { fc: Record<string, number> }) {
  * pull-режиме, ничего не рисуем. Иначе показываем состояние доставки:
  * доставлен / ошибка(retry) / ожидает.
  */
-function WebhookDeliveryCard({ job }: { job: Job }) {
+function WebhookDeliveryCard({ job, canWrite }: { job: Job; canWrite: boolean }) {
+  const redeliver = useRedeliverWebhook();
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
   if (!job.webhook_url) return null;
 
   const delivered = job.webhook_delivered_at != null;
   const failed = !delivered && job.webhook_last_error != null;
   const pending = !delivered && !failed;
+  // Повтор возможен только в терминальном статусе (бэк отбивает pending/processing).
+  const terminal =
+    job.status !== 'pending' && job.status !== 'processing';
 
   return (
     <div className="card">
@@ -714,7 +814,46 @@ function WebhookDeliveryCard({ job }: { job: Job }) {
             Документ ещё не отправлен потребителю.
           </p>
         )}
+
+        {canWrite && (
+          <div className="pt-1">
+            <button
+              type="button"
+              className="btn-secondary"
+              disabled={!terminal || redeliver.isPending}
+              onClick={() => setConfirmOpen(true)}
+              title={
+                terminal
+                  ? 'Повторно отправить вебхук потребителю'
+                  : 'Доступно после завершения обработки'
+              }
+            >
+              {redeliver.isPending ? 'Отправляю…' : '↻ Повторить доставку'}
+            </button>
+          </div>
+        )}
       </div>
+
+      <ConfirmDialog
+        open={confirmOpen}
+        title="Повторить доставку вебхука?"
+        description="Данные документа будут заново отправлены потребителю по указанному адресу."
+        objectName={job.webhook_url}
+        warning={
+          <>
+            Это <strong>внешний эффект</strong>: запрос уйдёт во внешнюю систему
+            (например, SLAI). Если вебхук уже был доставлен, потребитель получит
+            данные повторно.
+          </>
+        }
+        confirmLabel="Отправить повторно"
+        busy={redeliver.isPending}
+        error={redeliver.isError ? (redeliver.error as Error)?.message : null}
+        onCancel={() => setConfirmOpen(false)}
+        onConfirm={() =>
+          redeliver.mutate(job.id, { onSuccess: () => setConfirmOpen(false) })
+        }
+      />
     </div>
   );
 }
