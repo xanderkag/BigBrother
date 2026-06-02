@@ -131,6 +131,24 @@ async function main(): Promise<void> {
     );
     const userId = userRes.rows[0]!.id;
 
+    // Без user_project_access юзер получает '403 no access to this project'
+    // при upload. Bearer auth прошёл, но jobs.ts резолвит project через
+    // grants. Роль здесь — отдельный constraint (admin | manager | viewer),
+    // не путать с users.role (super_admin | org_admin | ...). Выдаём 'admin'
+    // на default-проект новой org — sandbox-бот сможет грузить документы и
+    // читать свои jobs.
+    const projRes = await db.query<{ id: string }>(
+      `SELECT id FROM projects WHERE organization_id = $1 AND name = 'default' LIMIT 1`,
+      [orgId],
+    );
+    const projectId = projRes.rows[0]!.id;
+    await db.query(
+      `INSERT INTO user_project_access (user_id, organization_id, project_id, role)
+       VALUES ($1, $2, $3, 'admin')
+       ON CONFLICT (user_id, project_id) DO NOTHING`,
+      [userId, orgId, projectId],
+    );
+
     const plaintext = `pdpat_${randomBytes(32).toString('base64url')}`;
     const hash = hashToken(plaintext);
     const expiresAt =
