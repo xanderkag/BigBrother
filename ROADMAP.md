@@ -48,6 +48,7 @@ ssh kb-docker 'cd parsdocs/doc-service; sed -i "s/^API_KEY=.*/API_KEY=$(openssl 
 | **UX-4** — Full UI audit по всем 13 экранам React UI (дубликаты + technical leak + лишние клики + missing states) | UX-1 | 3-4 дня анализ + 1-2 недели implementation. Источник: `doc-service/docs/IDEAS_2026-06-01_DISCUSSION.md`. |
 | **Epic-5** — Local Agent Models bench (Mistral/Llama vs OpenAI для tool-calling) | GPU-сервер 96 ГБ VRAM | SLAI-side эпик. parsdocs может предоставить inference endpoint. После прихода железа. |
 | **Epic-8** — Voice Command Flow (Whisper → агент → tool) | ASR endpoint в .env | parsdocs ASR pipeline готов (`164f83e`); ждёт `ASR_BASE_URL` в `inference-service/.env` + SLAI frontend recording. ~2-3 дня обе стороны. |
+| **EXT-LLM-PROXY** — parsdocs как OpenAI-compat LLM-gateway для SLAI multi-instance (chat completions + streaming + tools + per-org metering) | MTI-3 (must), MTI-1 (для full варианта) | Запрос SLAI 2026-06-01 — multi-instance key sprawl. **Owner-decision**: A (отказать → LiteLLM), B (light proxy + metering, 2-3 дня) или C (full gateway + quotas, 2 недели). ТЗ — `doc-service/docs/EXT_LLM_PROXY_TZ_2026-06-01.md` с 6 open questions. |
 
 ---
 
