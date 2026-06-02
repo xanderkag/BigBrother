@@ -41,6 +41,8 @@ export interface PdfViewerHandle {
   zoomIn: () => void;
   zoomOut: () => void;
   resetZoom: () => void;
+  rotateCw: () => void;
+  rotateCcw: () => void;
 }
 
 const PdfViewer = forwardRef<PdfViewerHandle, PdfViewerProps>(function PdfViewer(
@@ -52,6 +54,9 @@ const PdfViewer = forwardRef<PdfViewerHandle, PdfViewerProps>(function PdfViewer
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pageNumber, setPageNumber] = useState<number>(1);
   const [scale, setScale] = useState<number>(1);
+  // §9 polish: поворот (для криво сканированных). Кратен 90°, общий для
+  // всех страниц — скан обычно перекошен целиком, не по одной странице.
+  const [rotation, setRotation] = useState<number>(0);
 
   useImperativeHandle(
     ref,
@@ -61,6 +66,8 @@ const PdfViewer = forwardRef<PdfViewerHandle, PdfViewerProps>(function PdfViewer
       zoomIn: () => setScale((s) => Math.min(3, s + 0.1)),
       zoomOut: () => setScale((s) => Math.max(0.5, s - 0.1)),
       resetZoom: () => setScale(1),
+      rotateCw: () => setRotation((r) => (r + 90) % 360),
+      rotateCcw: () => setRotation((r) => (r + 270) % 360),
     }),
     [numPages],
   );
@@ -87,13 +94,35 @@ const PdfViewer = forwardRef<PdfViewerHandle, PdfViewerProps>(function PdfViewer
     return (
       <div
         ref={containerRef}
-        className="flex h-full w-full flex-col items-center justify-start overflow-auto bg-slate-100 dark:bg-slate-800 p-4"
+        className="relative flex h-full w-full flex-col items-center justify-start overflow-auto bg-slate-100 dark:bg-slate-800 p-4"
       >
         <img
           src={fileUrl}
           alt="Document preview"
-          className="max-w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm"
+          className="max-w-full rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm transition-transform"
+          style={{ transform: `rotate(${rotation}deg)` }}
         />
+        {/* §9 polish: поворот для криво сканированных картинок. */}
+        <div className="absolute right-3 top-3 flex items-center gap-1 rounded-lg border border-slate-200 bg-white/90 p-1 shadow-sm dark:border-slate-800 dark:bg-slate-900/90">
+          <button
+            type="button"
+            className="btn-ghost h-8 px-2"
+            onClick={() => setRotation((r) => (r + 270) % 360)}
+            aria-label="Повернуть против часовой"
+            title="Повернуть против часовой"
+          >
+            ↺
+          </button>
+          <button
+            type="button"
+            className="btn-ghost h-8 px-2"
+            onClick={() => setRotation((r) => (r + 90) % 360)}
+            aria-label="Повернуть по часовой"
+            title="Повернуть по часовой (R)"
+          >
+            ↻
+          </button>
+        </div>
       </div>
     );
   }
@@ -117,6 +146,7 @@ const PdfViewer = forwardRef<PdfViewerHandle, PdfViewerProps>(function PdfViewer
           <Page
             pageNumber={pageNumber}
             width={containerWidth * scale}
+            rotate={rotation}
             renderTextLayer={true}
             renderAnnotationLayer={true}
             loading={
@@ -187,6 +217,26 @@ const PdfViewer = forwardRef<PdfViewerHandle, PdfViewerProps>(function PdfViewer
             aria-label="Сбросить масштаб"
           >
             100%
+          </button>
+          {/* §9 polish: поворот для криво сканированных PDF. */}
+          <span className="mx-1 h-5 w-px bg-slate-200 dark:bg-slate-700" />
+          <button
+            type="button"
+            className="btn-ghost h-8 px-2"
+            onClick={() => setRotation((r) => (r + 270) % 360)}
+            aria-label="Повернуть против часовой"
+            title="Повернуть против часовой"
+          >
+            ↺
+          </button>
+          <button
+            type="button"
+            className="btn-ghost h-8 px-2"
+            onClick={() => setRotation((r) => (r + 90) % 360)}
+            aria-label="Повернуть по часовой"
+            title="Повернуть по часовой (R)"
+          >
+            ↻
           </button>
         </div>
       </div>

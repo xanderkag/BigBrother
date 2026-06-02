@@ -164,6 +164,7 @@ export default function JobDetailPage() {
       { keys: ['+', '='], handler: () => pdfRef.current?.zoomIn() },
       { keys: ['-', '_'], handler: () => pdfRef.current?.zoomOut() },
       { keys: ['0'], handler: () => pdfRef.current?.resetZoom() },
+      { keys: ['r', 'R'], handler: () => pdfRef.current?.rotateCw() },
       { keys: ['?'], handler: () => setHelpOpen(true) },
       {
         keys: ['Escape'],
@@ -545,6 +546,7 @@ export default function JobDetailPage() {
           { keys: ['[', ']'], label: 'Страницы PDF (пред. / след.)' },
           { keys: ['+', '−'], label: 'Зум PDF (больше / меньше)' },
           { keys: ['0'], label: 'Сбросить зум' },
+          { keys: ['r'], label: 'Повернуть страницу на 90°' },
           ...(isWriter
             ? [
                 { keys: ['a'], label: 'Одобрить (если needs_review)' },
