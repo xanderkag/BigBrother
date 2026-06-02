@@ -321,6 +321,7 @@ export default function JobDetailPage() {
         <ExtractedEditor
           jobId={job.id}
           initial={job.extracted}
+          documentType={job.document_type}
           onClose={() => setEditorOpen(false)}
         />
       )}

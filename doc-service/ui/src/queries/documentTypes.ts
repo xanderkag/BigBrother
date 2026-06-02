@@ -46,10 +46,24 @@ interface ListResponse {
   items: DocumentTypeEntry[];
 }
 
+/**
+ * Эффективная схема полей типа (для schema-driven редактора extracted).
+ * Возвращает `GET /document-types/:slug/schema`: admin-override из БД ??
+ * встроенный fallback. `expected_fields` — грубый список верхнего уровня,
+ * `schema` — полная JSON Schema (`{type:'object', properties:{}}`).
+ */
+export interface DocumentTypeSchemaResponse {
+  slug: string;
+  schema: Record<string, unknown>;
+  expected_fields: string[];
+  source: 'db' | 'fallback';
+}
+
 export const documentTypesKeys = {
   all: ['document-types'] as const,
   list: () => ['document-types', 'list'] as const,
   detail: (slug: string) => ['document-types', slug] as const,
+  schema: (slug: string) => ['document-types', slug, 'schema'] as const,
 };
 
 export function useDocumentTypes() {
@@ -65,6 +79,21 @@ export function useDocumentType(slug: string | undefined) {
     queryKey: documentTypesKeys.detail(slug ?? ''),
     queryFn: () => api.get<DocumentTypeEntry>(`/api/v1/document-types/${slug}`),
     enabled: !!slug,
+  });
+}
+
+/**
+ * Эффективная схема полей типа — для F2-редактора. Отдаётся отдельным
+ * endpoint'ом (resolveConfig: DB override ?? fallback), т.к. у встроенных
+ * типов `llm_schema` в БД NULL, а богатая схема лежит в коде бэка.
+ */
+export function useDocumentTypeSchema(slug: string | undefined) {
+  return useQuery({
+    queryKey: documentTypesKeys.schema(slug ?? ''),
+    queryFn: () =>
+      api.get<DocumentTypeSchemaResponse>(`/api/v1/document-types/${slug}/schema`),
+    enabled: !!slug,
+    staleTime: 5 * 60 * 1000,
   });
 }
 

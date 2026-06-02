@@ -5,6 +5,7 @@ import { documentTypesRepo } from '../storage/document-types.js';
 import { auditLogRepo } from '../storage/audit-log.js';
 import { jobsRepo } from '../storage/jobs.js';
 import { documentTypeResolver } from '../pipeline/document-type-resolver.js';
+import type { DocumentTypeSlug } from '../types/documents.js';
 import { ErrorResponse, Job } from '../types/api-schemas.js';
 import { bearerAuthHook } from '../auth.js';
 import { requireSuperAdmin, requireOrgAdmin, getEffectiveScope } from '../authz.js';
@@ -100,6 +101,21 @@ const DocumentType = z.object({
 
 const ListResponse = z.object({
   items: z.array(DocumentType),
+});
+
+/**
+ * F2 (§8.2): эффективная схема полей типа для schema-driven редактора.
+ * Возвращает JSON Schema, фактически используемую пайплайном (admin-override
+ * из БД ?? встроенный fallback по slug'у), плюс список ожидаемых полей. Фронт
+ * строит из неё форму ввода. `schema` может быть пустым `{}` для типов без
+ * встроенной схемы и без override — тогда фронт деградирует в форму по
+ * фактически распознанным полям.
+ */
+const SchemaResponse = z.object({
+  slug: z.string(),
+  schema: z.record(z.unknown()),
+  expected_fields: z.array(z.string()),
+  source: z.enum(['db', 'fallback']),
 });
 
 const SlugParam = z.object({
@@ -228,6 +244,38 @@ export async function documentTypesRoutes(app: FastifyInstance): Promise<void> {
         return { error: 'document type not found' };
       }
       return documentTypesRepo.toApi(row);
+    },
+  );
+
+  // F2 (§8.2): эффективная схема полей для schema-driven редактора в UI.
+  // Любой авторизованный — это read-only справка о полях типа; права на саму
+  // правку extracted проверяет PATCH /jobs/:id/extracted. Резолвер отдаёт
+  // схему даже для builtin'ов с NULL llm_schema (встроенный fallback), чего
+  // не делает обычный GET :slug (он возвращает сырую строку с llm_schema=null).
+  r.get(
+    '/document-types/:slug/schema',
+    {
+      schema: {
+        tags: ['document-types'],
+        summary: 'Эффективная схема полей типа (для редактора extracted)',
+        security: [{ bearerAuth: [] }],
+        params: SlugParam,
+        response: {
+          200: SchemaResponse,
+          401: ErrorResponse,
+        },
+      },
+    },
+    async (req) => {
+      const resolved = await documentTypeResolver.resolveConfig(
+        req.params.slug as DocumentTypeSlug,
+      );
+      return {
+        slug: resolved.slug,
+        schema: resolved.llmSchema ?? {},
+        expected_fields: resolved.expectedFields,
+        source: resolved.source,
+      };
     },
   );
 

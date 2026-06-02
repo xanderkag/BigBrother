@@ -210,8 +210,12 @@ export function useReprocessJob() {
  * Тело запроса — сам extracted объект (не { extracted: ... }), как
  * указано в `ExtractedPatchBody = z.record(z.unknown())` на backend'е.
  * Сервер пере-валидирует payload через document_type правила и
- * вернёт обновлённый Job (статус становится 'done' если был
- * 'needs_review').
+ * вернёт обновлённый Job.
+ *
+ * F2 — два режима сохранения (см. §8.1):
+ *   keepStatus=false (по умолчанию) → «Одобрить»: статус → 'done';
+ *   keepStatus=true (`?keep_status=true`) → «Сохранить»: правки пишутся,
+ *     но статус остаётся needs_review (правка ≠ одобрение).
  */
 export function useUpdateExtracted() {
   const qc = useQueryClient();
@@ -219,12 +223,14 @@ export function useUpdateExtracted() {
     mutationFn: async ({
       jobId,
       extracted,
+      keepStatus = false,
     }: {
       jobId: string;
       extracted: Record<string, unknown>;
+      keepStatus?: boolean;
     }): Promise<Job> => {
       const raw = await api.patch<ApiJob>(
-        `/api/v1/jobs/${jobId}/extracted`,
+        `/api/v1/jobs/${jobId}/extracted${keepStatus ? '?keep_status=true' : ''}`,
         extracted,
       );
       return normalizeJob(raw);
