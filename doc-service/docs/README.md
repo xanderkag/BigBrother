@@ -27,6 +27,7 @@
 |---|---|
 | [`YANDEX_OCR_SETUP.md`](YANDEX_OCR_SETUP.md) | Подключение Yandex OCR |
 | [`UX_ANALYSIS_2026-05-31.md`](UX_ANALYSIS_2026-05-31.md) | Анализ UX + список правок (F1–F12) |
+| [`UI_FRONTEND_TZ.md`](UI_FRONTEND_TZ.md) | **ТЗ по фронту**: остаток работ (F2/F5/F6/F8/F9/F10) + критерии приёмки + решения по развилкам 🟢 |
 
 ## Кросс-сервисные доки
 
