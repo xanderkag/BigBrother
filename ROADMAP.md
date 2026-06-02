@@ -45,6 +45,9 @@ ssh kb-docker 'cd parsdocs/doc-service; sed -i "s/^API_KEY=.*/API_KEY=$(openssl 
 | **UX-1** — Simple/Advanced toggle в Providers (скрыть 5 из 8 полей под Advanced, дать happy-path) | MTI-3 | 1-2 дня UI. ТЗ — `doc-service/docs/UX_ANALYSIS_2026-05-31.md`. Источник: user-фидбэк 2026-05-31 «зачем 8 полей, легко ошибиться». |
 | **UX-2** — One-click «Сделать основным» wizard (вместо 5 шагов через 3 системы) | UX-1 + MTI-3 | 2 дня UI + ½ дня backend (runtime BACKEND switch без рестарта). |
 | **UX-3** — System Health лента (Dashboard top-bar показывает что работает, что сломано, куда идти чинить) | — | ½ дня UI. Источник: capabilities + health-checks, уже доступны. |
+| **UX-4** — Full UI audit по всем 13 экранам React UI (дубликаты + technical leak + лишние клики + missing states) | UX-1 | 3-4 дня анализ + 1-2 недели implementation. Источник: `doc-service/docs/IDEAS_2026-06-01_DISCUSSION.md`. |
+| **Epic-5** — Local Agent Models bench (Mistral/Llama vs OpenAI для tool-calling) | GPU-сервер 96 ГБ VRAM | SLAI-side эпик. parsdocs может предоставить inference endpoint. После прихода железа. |
+| **Epic-8** — Voice Command Flow (Whisper → агент → tool) | ASR endpoint в .env | parsdocs ASR pipeline готов (`164f83e`); ждёт `ASR_BASE_URL` в `inference-service/.env` + SLAI frontend recording. ~2-3 дня обе стороны. |
 
 ---
 
