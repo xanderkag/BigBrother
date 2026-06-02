@@ -1,5 +1,5 @@
 import { useMemo, useState, useCallback } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueries, useQueryClient } from '@tanstack/react-query';
 import { useJobsList, useApproveJob, useReprocessJob, jobsKeys } from '@/queries/jobs';
 import { useDocumentTypes } from '@/queries/documentTypes';
@@ -495,10 +495,24 @@ function JobRow({
   const fullDate = formatDateTime(job.created_at);
   const age = formatAge(job.created_at, now);
   const duration = computeDuration(job, now);
+  const navigate = useNavigate();
+
+  // F7 — кликабельна вся строка (большая мишень для целодневной работы).
+  // Не перехватываем клики по интерактивным элементам (чекбокс, ссылка на
+  // имя файла) и активное выделение текста. Ссылка на имени остаётся для
+  // клавиатуры и открытия в новой вкладке (ctrl/⌘+клик).
+  const handleRowClick = (e: React.MouseEvent<HTMLTableRowElement>) => {
+    if (e.defaultPrevented) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('a, button, input, label, [role="button"]')) return;
+    if (window.getSelection()?.toString()) return;
+    navigate(`/jobs/${job.id}`);
+  };
 
   return (
     <tr
-      className={`group ${
+      onClick={handleRowClick}
+      className={`group cursor-pointer ${
         selected
           ? 'bg-indigo-50/60 dark:bg-indigo-900/20'
           : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'

@@ -270,11 +270,11 @@ function SidebarNav({ collapsed }: { collapsed: boolean }) {
   // Главные workflow-пункты
   const main: NavEntry[] = useMemo(
     () => [
-      { to: '/', end: true, label: 'Dashboard', icon: <IconDashboard /> },
+      { to: '/', end: true, label: 'Сводка', icon: <IconDashboard /> },
       { to: '/jobs', label: 'Журнал работ', icon: <IconFile />, count: jobsCnt.data?.total },
       { to: '/review', label: 'Очередь ревью', icon: <IconCircle />, count: reviewCnt.data?.total },
-      { to: '/upload', label: 'Upload', icon: <IconUpload /> },
-      { to: '/test-lab', label: 'Тест. лаборатория', icon: <IconBeaker /> },
+      { to: '/upload', label: 'Загрузка', icon: <IconUpload /> },
+      { to: '/test-lab', label: 'Тест-лаборатория', icon: <IconBeaker /> },
     ],
     [jobsCnt.data?.total, reviewCnt.data?.total],
   );
@@ -282,12 +282,12 @@ function SidebarNav({ collapsed }: { collapsed: boolean }) {
   // Admin / справочники
   const admin: NavEntry[] = useMemo(
     () => [
-      { to: '/document-types', label: 'Document Types', icon: <IconGrid />, count: docTypes.data?.items.length },
-      { to: '/providers', label: 'Providers', icon: <IconCircle />, count: providers.data?.items.length },
-      { to: '/audit-log', label: 'Audit Log', icon: <IconList /> },
-      { to: '/tenants', label: 'Tenants', icon: <IconList />, count: tenants.data?.items.length },
-      { to: '/reference-lists', label: 'Reference Lists', icon: <IconList />, count: refLists.data?.length },
-      { to: '/settings', label: 'Settings', icon: <IconGear /> },
+      { to: '/document-types', label: 'Типы документов', icon: <IconGrid />, count: docTypes.data?.items.length },
+      { to: '/providers', label: 'Провайдеры', icon: <IconCircle />, count: providers.data?.items.length },
+      { to: '/audit-log', label: 'Журнал аудита', icon: <IconList /> },
+      { to: '/tenants', label: 'Организации', icon: <IconList />, count: tenants.data?.items.length },
+      { to: '/reference-lists', label: 'Справочники', icon: <IconList />, count: refLists.data?.length },
+      { to: '/settings', label: 'Настройки', icon: <IconGear /> },
     ],
     [
       docTypes.data?.items.length,
@@ -502,18 +502,18 @@ interface Crumb {
 
 function buildCrumbs(pathname: string): Crumb[] {
   const parts = pathname.split('/').filter(Boolean);
-  if (parts.length === 0) return [{ label: 'Dashboard', to: null }];
+  if (parts.length === 0) return [{ label: 'Сводка', to: null }];
   const labels: Record<string, string> = {
     jobs: 'Журнал работ',
     review: 'Очередь ревью',
-    upload: 'Upload',
-    'test-lab': 'Test Lab',
-    'document-types': 'Document Types',
-    providers: 'Providers',
-    'audit-log': 'Audit Log',
-    tenants: 'Tenants',
-    'reference-lists': 'Reference Lists',
-    settings: 'Settings',
+    upload: 'Загрузка',
+    'test-lab': 'Тест-лаборатория',
+    'document-types': 'Типы документов',
+    providers: 'Провайдеры',
+    'audit-log': 'Журнал аудита',
+    tenants: 'Организации',
+    'reference-lists': 'Справочники',
+    settings: 'Настройки',
   };
   return parts.map((p, i) => {
     const isLast = i === parts.length - 1;

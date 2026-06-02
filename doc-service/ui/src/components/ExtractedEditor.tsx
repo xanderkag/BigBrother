@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useUpdateExtracted } from '@/queries/jobs';
 
 /**
@@ -28,6 +28,8 @@ interface Props {
 
 export default function ExtractedEditor({ jobId, initial, onClose, onSaved }: Props) {
   const [text, setText] = useState('');
+  // pristine — снапшот исходного JSON; dirty = есть несохранённые правки.
+  const [pristine, setPristine] = useState('');
   const [parseError, setParseError] = useState<string | null>(null);
   const update = useUpdateExtracted();
 
@@ -39,8 +41,42 @@ export default function ExtractedEditor({ jobId, initial, onClose, onSaved }: Pr
     delete cleaned._field_confidence;
     delete cleaned._normalized_fields;
     delete cleaned._totals_recomputed;
-    setText(JSON.stringify(cleaned, null, 2));
+    const serialized = JSON.stringify(cleaned, null, 2);
+    setText(serialized);
+    setPristine(serialized);
   }, [initial]);
+
+  const dirty = text !== pristine;
+
+  // F3 dirty-guard: не закрываем редактор молча, если есть правки.
+  // Закрытие — только осознанное (крестик / Отмена / Esc / фон), и при
+  // непустых изменениях спрашиваем подтверждение, чтобы не потерять работу.
+  const requestClose = useCallback(() => {
+    if (dirty && !window.confirm('Есть несохранённые изменения. Закрыть без сохранения?')) {
+      return;
+    }
+    onClose();
+  }, [dirty, onClose]);
+
+  // Esc закрывает (через тот же guard).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') requestClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [requestClose]);
+
+  // Защита от ухода со страницы (reload / закрытие вкладки) при наличии правок.
+  useEffect(() => {
+    if (!dirty) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [dirty]);
 
   const handleSave = async () => {
     setParseError(null);
@@ -67,15 +103,25 @@ export default function ExtractedEditor({ jobId, initial, onClose, onSaved }: Pr
   return (
     <div
       className="fixed inset-0 z-30 flex items-center justify-center bg-slate-900/40 p-4"
-      onClick={onClose}
+      onClick={requestClose}
     >
       <div
         className="card flex max-h-[90vh] w-full max-w-3xl flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="card-header">
-          <h3 className="card-title">Редактировать extracted</h3>
-          <button type="button" className="btn-ghost" onClick={onClose} aria-label="Закрыть">
+          <h3 className="card-title">
+            Редактировать extracted
+            {dirty && (
+              <span
+                className="ml-2 align-middle text-xs font-normal text-amber-600 dark:text-amber-400"
+                title="Есть несохранённые изменения"
+              >
+                • не сохранено
+              </span>
+            )}
+          </h3>
+          <button type="button" className="btn-ghost" onClick={requestClose} aria-label="Закрыть">
             ✕
           </button>
         </div>
@@ -99,7 +145,7 @@ export default function ExtractedEditor({ jobId, initial, onClose, onSaved }: Pr
           )}
         </div>
         <div className="flex shrink-0 items-center justify-end gap-2 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/40 px-5 py-3">
-          <button type="button" className="btn-secondary" onClick={onClose}>
+          <button type="button" className="btn-secondary" onClick={requestClose}>
             Отмена
           </button>
           <button

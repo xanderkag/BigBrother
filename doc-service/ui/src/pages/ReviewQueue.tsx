@@ -587,12 +587,68 @@ function FilterStrip({
 /**
  * Top-N полей из extracted для preview. Не показываем всё — это карточка
  * в списке, нужен скан глазами. Фокус: «кто, кому, сколько, когда».
+ *
+ * F1-fix (2026-06-01): схема `extracted` ВЛОЖЕННАЯ (`seller.name`, `number`,
+ * `date`), а не плоская (`seller_name`, `document_number`). Раньше превью
+ * читало плоские ключи → значения были `undefined` → блок «кто/кому/сколько/
+ * когда» не отображался ни для одного обычного документа. Теперь резолвим
+ * так же, как `ExtractedDataPanel` (вложенные party + алиасы number/doc_number),
+ * с фолбэком на плоские ключи на случай уже-нормализованных payload'ов.
+ *   - get      — достаёт значение (вложенное → плоский фолбэк)
+ *   - confKeys — ключи в `_field_confidence` (алиасы number/doc_number)
+ *   - flagKeys — ключи, по которым `flaggedFields` подсвечивает поле
  */
-const PREVIEW_FIELDS: { key: string; label: string }[] = [
-  { key: 'seller_name', label: 'Продавец' },
-  { key: 'buyer_name', label: 'Покупатель' },
-  { key: 'document_number', label: '№' },
-  { key: 'document_date', label: 'Дата' },
+type ExtractedBag = Record<string, unknown>;
+
+function nestedName(bag: ExtractedBag, ...objKeys: string[]): unknown {
+  for (const ok of objKeys) {
+    const obj = bag[ok];
+    if (obj && typeof obj === 'object' && 'name' in (obj as ExtractedBag)) {
+      const n = (obj as ExtractedBag).name;
+      if (n !== null && n !== undefined && n !== '') return n;
+    }
+  }
+  return undefined;
+}
+
+function firstDefined(bag: ExtractedBag, ...keys: string[]): unknown {
+  for (const k of keys) {
+    const v = bag[k];
+    if (v !== null && v !== undefined && v !== '') return v;
+  }
+  return undefined;
+}
+
+const PREVIEW_FIELDS: {
+  label: string;
+  get: (e: ExtractedBag) => unknown;
+  confKeys: string[];
+  flagKeys: string[];
+}[] = [
+  {
+    label: 'Продавец',
+    get: (e) => nestedName(e, 'seller', 'shipper', 'supplier') ?? firstDefined(e, 'seller_name'),
+    confKeys: ['seller.name'],
+    flagKeys: [],
+  },
+  {
+    label: 'Покупатель',
+    get: (e) => nestedName(e, 'buyer', 'consignee', 'customer') ?? firstDefined(e, 'buyer_name'),
+    confKeys: ['buyer.name'],
+    flagKeys: [],
+  },
+  {
+    label: '№',
+    get: (e) => firstDefined(e, 'number', 'doc_number', 'document_number'),
+    confKeys: ['number', 'doc_number'],
+    flagKeys: [],
+  },
+  {
+    label: 'Дата',
+    get: (e) => firstDefined(e, 'date', 'document_date'),
+    confKeys: ['date'],
+    flagKeys: ['document_date'],
+  },
 ];
 
 function ReviewRow({
@@ -727,13 +783,18 @@ function ReviewRow({
           {/* Extracted preview — top fields (не для classify-only: полей нет) */}
           {job.extracted && !classifyOnly && (
             <div className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2">
-              {PREVIEW_FIELDS.map(({ key, label }) => {
-                const v = (job.extracted as Record<string, unknown>)[key];
+              {PREVIEW_FIELDS.map(({ label, get, confKeys, flagKeys }) => {
+                const v = get(job.extracted as ExtractedBag);
                 if (v === null || v === undefined || v === '') return null;
-                const flagged = flaggedFields.has(key);
-                const lowConf = fc?.[key] !== undefined && fc[key] < 0.7;
+                const flagged = flagKeys.some((k) => flaggedFields.has(k));
+                const confVal = fc
+                  ? (confKeys.map((k) => fc[k]).find((x) => typeof x === 'number') as
+                      | number
+                      | undefined)
+                  : undefined;
+                const lowConf = confVal !== undefined && confVal < 0.7;
                 return (
-                  <div key={key} className="flex items-baseline gap-2 text-xs">
+                  <div key={label} className="flex items-baseline gap-2 text-xs">
                     <span className="w-24 shrink-0 font-mono uppercase tracking-wider text-slate-500 dark:text-slate-400">
                       {label}
                     </span>
@@ -748,7 +809,7 @@ function ReviewRow({
                       {String(v)}
                       {lowConf && (
                         <span className="ml-1 text-[10px] text-amber-600 dark:text-amber-400">
-                          ({(fc![key] * 100).toFixed(0)}%)
+                          ({(confVal! * 100).toFixed(0)}%)
                         </span>
                       )}
                     </span>

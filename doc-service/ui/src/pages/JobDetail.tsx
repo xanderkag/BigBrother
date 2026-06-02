@@ -151,6 +151,25 @@ export default function JobDetailPage() {
       : [];
   const isMultiDoc = segments.length > 0;
 
+  // F11 — выгрузка извлечённых данных в JSON. Отдаём `extracted` целиком
+  // (включая _issues/_field_confidence/_enrichment), чтобы файл был
+  // самодостаточным для разбора вне UI. Имя — по исходному файлу.
+  const handleDownloadJson = () => {
+    if (!job.extracted) return;
+    const blob = new Blob([JSON.stringify(job.extracted, null, 2)], {
+      type: 'application/json',
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const base = job.file_name?.replace(/\.[^.]+$/, '') || job.id;
+    a.download = `${base}.extracted.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="flex h-full flex-col">
       {/* Top bar — title + meta + actions */}
@@ -200,6 +219,15 @@ export default function JobDetailPage() {
               onClick={() => reprocess.mutate(job.id)}
             >
               {reprocess.isPending ? 'Перепрогон…' : 'Перепрогнать'}
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={handleDownloadJson}
+              disabled={!job.extracted}
+              title="Скачать извлечённые данные в JSON"
+            >
+              ↓ JSON
             </button>
             <button
               type="button"

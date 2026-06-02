@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { isAuthenticated } from '@/lib/auth';
+import { useCurrentUser } from '@/queries/me';
 import LoginPage from '@/pages/Login';
 import DashboardPage from '@/pages/Dashboard';
 import JobsListPage from '@/pages/JobsList';
@@ -20,7 +21,8 @@ import Layout from '@/components/Layout';
  * только страховка на случай rollback'а — будет удалён после стабильной
  * работы 1-2 месяца).
  *
- *   /                       → Dashboard (операционные метрики)
+ *   /                       → ролезависимый лендинг: оператор (manager/viewer)
+ *                             → /review, админ → Dashboard (операционные метрики)
  *   /jobs                   → JobsList (таблица всех документов)
  *   /jobs/:id               → JobDetail (PDF + extracted data + edit)
  *   /upload                 → Upload (bulk drag-drop)
@@ -48,7 +50,7 @@ export default function App() {
           <RequireAuth>
             <Layout>
               <Routes>
-                <Route index element={<DashboardPage />} />
+                <Route index element={<LandingRoute />} />
                 <Route path="jobs" element={<JobsListPage />} />
                 <Route path="jobs/:jobId" element={<JobDetailPage />} />
                 <Route path="upload" element={<UploadPage />} />
@@ -79,4 +81,28 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
     return <Navigate to="/login" replace />;
   }
   return <>{children}</>;
+}
+
+/**
+ * F4 — ролезависимый лендинг. Работа оператора (manager/viewer) — очередь
+ * ревью, поэтому ведём его сразу в /review, без лишнего захода на Dashboard.
+ * Админам (super_admin/admin) полезнее операционный Dashboard. Пока грузим
+ * /users/me — показываем лёгкий лоадер, чтобы не мигнуть «не тем» экраном.
+ * Неизвестная роль / ошибка → безопасный дефолт Dashboard.
+ */
+function LandingRoute() {
+  const me = useCurrentUser();
+  if (me.isLoading) {
+    return (
+      <div className="flex h-64 items-center justify-center text-sm text-slate-500 dark:text-slate-400">
+        Загрузка…
+      </div>
+    );
+  }
+  const role = me.data?.role;
+  const isOperator = role === 'manager' || role === 'viewer';
+  if (isOperator) {
+    return <Navigate to="/review" replace />;
+  }
+  return <DashboardPage />;
 }
