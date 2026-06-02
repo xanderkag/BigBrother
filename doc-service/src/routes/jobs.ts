@@ -747,9 +747,13 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         tags: ['jobs'],
         summary: 'Перезаписать поле extracted (ручная корректировка)',
         description:
-          'Полностью заменяет текущий extracted; статус переходит в "done", фиксируется extracted_corrected_at.',
+          'Полностью заменяет текущий extracted и фиксирует extracted_corrected_at. ' +
+          'По умолчанию статус переходит в "done" (сохранить = одобрить). ' +
+          'С `?keep_status=true` статус не меняется — правка сохраняется, но job ' +
+          'остаётся в текущем статусе (например, needs_review) до явного одобрения.',
         security: [{ bearerAuth: [] }],
         params: JobIdParam,
+        querystring: z.object({ keep_status: z.coerce.boolean().default(false) }),
         body: ExtractedPatchBody,
         response: {
           200: Job,
@@ -783,7 +787,11 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         if (issues.length > 0) sanitizedBody._issues = issues;
       }
 
-      const updated = await jobsRepo.applyExtractedCorrection(req.params.id, sanitizedBody);
+      const updated = await jobsRepo.applyExtractedCorrection(
+        req.params.id,
+        sanitizedBody,
+        req.query.keep_status,
+      );
       if (!updated) {
         reply.code(404);
         return { error: 'job not found' };

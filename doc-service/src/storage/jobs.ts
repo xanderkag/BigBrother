@@ -357,14 +357,26 @@ class JobsRepo {
     return rows[0] ?? null;
   }
 
+  /**
+   * Ручная корректировка extracted.
+   *
+   * По умолчанию (`keepStatus=false`) переводит job в `done` — поведение
+   * «сохранить = одобрить», как было исторически.
+   *
+   * При `keepStatus=true` (ТЗ §8.1, вариант A) статус НЕ трогаем: оператор
+   * правит данные, но job остаётся в `needs_review` до явного одобрения.
+   * Это разводит «сохранить черновик правки» и «одобрить» на два действия.
+   * В обоих случаях фиксируем `extracted_corrected_at`.
+   */
   async applyExtractedCorrection(
     id: string,
     extracted: Record<string, unknown>,
+    keepStatus = false,
   ): Promise<JobRow | null> {
     const { rows } = await db.query<JobRow>(
       `UPDATE jobs SET
          extracted = $2::jsonb,
-         status = 'done',
+         ${keepStatus ? '' : "status = 'done',"}
          extracted_corrected_at = now()
        WHERE id = $1
        RETURNING *`,
