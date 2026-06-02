@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   useJob,
   useJobFile,
@@ -9,7 +9,7 @@ import {
 } from '@/queries/jobs';
 import { useDocumentTypes, type DocumentTypeTier } from '@/queries/documentTypes';
 import { api } from '@/lib/api';
-import PdfViewer from '@/components/PdfViewer';
+import PdfViewer, { type PdfViewerHandle } from '@/components/PdfViewer';
 import ExtractedDataPanel from '@/components/ExtractedDataPanel';
 import ConfidenceBar from '@/components/ConfidenceBar';
 import TierBadge from '@/components/TierBadge';
@@ -17,6 +17,9 @@ import ValidationBanner from '@/components/ValidationBanner';
 import ExtractedEditor from '@/components/ExtractedEditor';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import RawTextModal from '@/components/RawTextModal';
+import KeyboardHelp from '@/components/KeyboardHelp';
+import { useHotkeys } from '@/lib/useHotkeys';
+import { readJobNav, neighborsOf } from '@/lib/job-nav';
 import { usePermissions } from '@/lib/permissions';
 import {
   formatFileSize,
@@ -111,6 +114,9 @@ export default function JobDetailPage() {
   const [confirmReprocess, setConfirmReprocess] = useState(false);
   const [rawTextOpen, setRawTextOpen] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
+  // F5 — шпаргалка по клавишам + императивное управление PDF с клавиатуры.
+  const [helpOpen, setHelpOpen] = useState(false);
+  const pdfRef = useRef<PdfViewerHandle>(null);
 
   const tierBySlug = useMemo(() => {
     const m = new Map<string, DocumentTypeTier>();
@@ -127,6 +133,63 @@ export default function JobDetailPage() {
       if (fileUrl) URL.revokeObjectURL(fileUrl);
     };
   }, [fileUrl]);
+
+  // F8 — контекст выборки (Review/Jobs) из history-state. Прямой заход или
+  // перезагрузка → navCtx === null → стрелки соседей не показываем.
+  const location = useLocation();
+  const navigate = useNavigate();
+  const navCtx = useMemo(() => readJobNav(location.state), [location.state]);
+  const neighbors = neighborsOf(navCtx, jobId);
+  const goToNeighbor = (id: string | null) => {
+    if (!id || !navCtx) return;
+    // Контекст несём дальше → цепочка j/k работает и со следующего документа.
+    navigate(`/jobs/${id}`, { state: { jobNav: navCtx } });
+  };
+
+  // F5 — горячие клавиши. Отключаем, пока открыт модал/редактор/справка
+  // (у них свой Esc и свой фокус). Мутирующие (`a`,`e`) — только writer'у.
+  const hotkeysEnabled = !(editorOpen || rawTextOpen || confirmReprocess || helpOpen);
+  useHotkeys(
+    [
+      { keys: ['j', 'ArrowDown'], handler: () => goToNeighbor(neighbors.nextId) },
+      { keys: ['k', 'ArrowUp'], handler: () => goToNeighbor(neighbors.prevId) },
+      { keys: ['['], handler: () => pdfRef.current?.prevPage() },
+      { keys: [']'], handler: () => pdfRef.current?.nextPage() },
+      { keys: ['+', '='], handler: () => pdfRef.current?.zoomIn() },
+      { keys: ['-', '_'], handler: () => pdfRef.current?.zoomOut() },
+      { keys: ['0'], handler: () => pdfRef.current?.resetZoom() },
+      { keys: ['?'], handler: () => setHelpOpen(true) },
+      {
+        keys: ['Escape'],
+        handler: () => {
+          if (navCtx?.backTo) navigate(navCtx.backTo);
+        },
+      },
+      ...(isWriter
+        ? [
+            {
+              keys: ['a'],
+              handler: () => {
+                if (job?.status === 'needs_review' && !approve.isPending) {
+                  approve.mutate(job.id);
+                }
+              },
+            },
+            {
+              keys: ['e'],
+              handler: () => {
+                const classifyOnlyNow =
+                  job?.pipeline_steps?.some(
+                    (s) => s.step === 'parse' && s.status === 'skipped',
+                  ) ?? false;
+                if (job && !classifyOnlyNow) setEditorOpen(true);
+              },
+            },
+          ]
+        : []),
+    ],
+    hotkeysEnabled,
+  );
 
   if (isLoading) {
     return (
@@ -220,6 +283,49 @@ export default function JobDetailPage() {
     <div className="flex h-full flex-col">
       {/* Top bar — title + meta + actions */}
       <div className="shrink-0 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-6 py-3">
+        {/* F8 — навигация по соседям в пределах исходной выборки */}
+        {navCtx && (
+          <div className="mb-2 flex items-center gap-3 text-xs">
+            <Link
+              to={navCtx.backTo}
+              className="btn-ghost"
+              title="Вернуться к списку (Esc)"
+            >
+              ← {navCtx.label}
+            </Link>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                className="btn-ghost"
+                disabled={!neighbors.prevId}
+                onClick={() => goToNeighbor(neighbors.prevId)}
+                title="Предыдущий документ (k / ↑)"
+              >
+                ← пред.
+              </button>
+              <span className="font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                {neighbors.index >= 0 ? neighbors.index + 1 : '?'} / {neighbors.total}
+              </span>
+              <button
+                type="button"
+                className="btn-ghost"
+                disabled={!neighbors.nextId}
+                onClick={() => goToNeighbor(neighbors.nextId)}
+                title="Следующий документ (j / ↓)"
+              >
+                след. →
+              </button>
+            </div>
+            <button
+              type="button"
+              className="btn-ghost ml-auto"
+              onClick={() => setHelpOpen(true)}
+              title="Горячие клавиши (?)"
+            >
+              ? клавиши
+            </button>
+          </div>
+        )}
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
@@ -325,7 +431,7 @@ export default function JobDetailPage() {
         {/* PDF слева */}
         <div className="min-h-0 bg-white dark:bg-slate-900">
           {fileUrl ? (
-            <PdfViewer fileUrl={fileUrl} mimeType={job.mime_type} />
+            <PdfViewer ref={pdfRef} fileUrl={fileUrl} mimeType={job.mime_type} />
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-slate-500 dark:text-slate-400 dark:text-slate-500">
               Загрузка файла…
@@ -418,6 +524,26 @@ export default function JobDetailPage() {
         onConfirm={() =>
           reprocess.mutate(job.id, { onSuccess: () => setConfirmReprocess(false) })
         }
+      />
+
+      <KeyboardHelp
+        open={helpOpen}
+        onClose={() => setHelpOpen(false)}
+        items={[
+          { keys: ['j', '↓'], label: 'Следующий документ' },
+          { keys: ['k', '↑'], label: 'Предыдущий документ' },
+          { keys: ['[', ']'], label: 'Страницы PDF (пред. / след.)' },
+          { keys: ['+', '−'], label: 'Зум PDF (больше / меньше)' },
+          { keys: ['0'], label: 'Сбросить зум' },
+          ...(isWriter
+            ? [
+                { keys: ['a'], label: 'Одобрить (если needs_review)' },
+                { keys: ['e'], label: 'Редактировать поля' },
+              ]
+            : []),
+          { keys: ['Esc'], label: 'Вернуться к списку' },
+          { keys: ['?'], label: 'Эта справка' },
+        ]}
       />
     </div>
   );

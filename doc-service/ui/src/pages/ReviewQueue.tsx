@@ -1,5 +1,5 @@
-import { useState, useMemo } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { useState, useMemo, useEffect } from 'react';
+import { Link, useSearchParams, useNavigate, useLocation } from 'react-router-dom';
 import { useJobsList, useApproveJob, useReprocessJob } from '@/queries/jobs';
 import { useDocumentTypes } from '@/queries/documentTypes';
 import { usePermissions } from '@/lib/permissions';
@@ -7,7 +7,10 @@ import ConfidenceBar from '@/components/ConfidenceBar';
 import TierBadge from '@/components/TierBadge';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import BulkResultBanner from '@/components/BulkResultBanner';
+import KeyboardHelp from '@/components/KeyboardHelp';
 import { runBulk, type BulkResult } from '@/lib/bulk';
+import { useHotkeys } from '@/lib/useHotkeys';
+import type { JobNavState } from '@/lib/job-nav';
 import { extractAmounts } from '@/lib/extracted-summary';
 import {
   formatAge,
@@ -90,6 +93,11 @@ export default function ReviewQueuePage() {
   // F6 — подтверждение перед запуском + сводка результата.
   const [confirmBulk, setConfirmBulk] = useState(false);
   const [bulkResult, setBulkResult] = useState<BulkResult | null>(null);
+  // F5 — клавиатурный курсор по очереди + шпаргалка.
+  const [cursor, setCursor] = useState(0);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const navigate = useNavigate();
+  const location = useLocation();
 
   // Filter chain: origin (client) + issue category (client)
   const allItems = data?.items ?? [];
@@ -111,6 +119,68 @@ export default function ReviewQueuePage() {
 
   // Group by doc_type — для удобной навигации когда очередь >20 items
   const grouped = useMemo(() => groupByDocType(items), [items]);
+
+  // F5/F8 — плоский порядок «как на экране» (для курсора j/k и для
+  // прокидывания соседей в JobDetail).
+  const orderedItems = useMemo(
+    () => grouped.flatMap(([, jobs]) => jobs),
+    [grouped],
+  );
+  const cursorId = orderedItems[cursor]?.id ?? null;
+
+  // F8 — контекст выборки, который уносим в деталку (history-state).
+  const navState = useMemo<JobNavState>(
+    () => ({
+      jobNav: {
+        ids: orderedItems.map((j) => j.id),
+        label: 'очередь проверки',
+        backTo: location.pathname + location.search,
+      },
+    }),
+    [orderedItems, location.pathname, location.search],
+  );
+
+  // Курсор не должен «уезжать» за пределы списка при смене фильтров.
+  useEffect(() => {
+    setCursor((c) => Math.min(c, Math.max(0, orderedItems.length - 1)));
+  }, [orderedItems.length]);
+
+  // Подкручиваем выделенную строку в зону видимости.
+  useEffect(() => {
+    if (!cursorId) return;
+    document
+      .getElementById(`review-row-${cursorId}`)
+      ?.scrollIntoView({ block: 'nearest' });
+  }, [cursorId]);
+
+  // F5 — горячие клавиши очереди. Отключаем, пока открыт диалог/справка.
+  useHotkeys(
+    [
+      {
+        keys: ['j', 'ArrowDown'],
+        handler: () => setCursor((c) => Math.min(orderedItems.length - 1, c + 1)),
+      },
+      { keys: ['k', 'ArrowUp'], handler: () => setCursor((c) => Math.max(0, c - 1)) },
+      {
+        keys: ['Enter'],
+        handler: () => {
+          if (cursorId) navigate(`/jobs/${cursorId}`, { state: navState });
+        },
+      },
+      { keys: ['?'], handler: () => setHelpOpen(true) },
+      ...(isWriter
+        ? [
+            {
+              keys: ['a'],
+              handler: () => {
+                if (cursorId) approve.mutate(cursorId);
+              },
+            },
+          ]
+        : []),
+    ],
+    !confirmBulk && !helpOpen,
+  );
 
   const updateFilter = (key: string, value: string) => {
     const next = new URLSearchParams(searchParams);
@@ -383,6 +453,8 @@ export default function ReviewQueuePage() {
                 tier={job.document_type ? tierBySlug.get(job.document_type) ?? null : null}
                 canWrite={isWriter}
                 checked={selected.has(job.id)}
+                isCursor={job.id === cursorId}
+                navState={navState}
                 onToggle={() => toggleSelected(job.id)}
                 onApprove={() => approve.mutate(job.id)}
                 onReprocess={() => reprocess.mutate(job.id)}
@@ -404,6 +476,18 @@ export default function ReviewQueuePage() {
         busy={bulkRunning}
         onConfirm={confirmBulkApprove}
         onCancel={() => setConfirmBulk(false)}
+      />
+
+      <KeyboardHelp
+        open={helpOpen}
+        onClose={() => setHelpOpen(false)}
+        items={[
+          { keys: ['j', '↓'], label: 'Следующий документ' },
+          { keys: ['k', '↑'], label: 'Предыдущий документ' },
+          { keys: ['Enter'], label: 'Открыть выделенный' },
+          ...(isWriter ? [{ keys: ['a'], label: 'Одобрить выделенный' }] : []),
+          { keys: ['?'], label: 'Эта справка' },
+        ]}
       />
     </div>
   );
@@ -696,6 +780,8 @@ function ReviewRow({
   tier,
   canWrite,
   checked,
+  isCursor,
+  navState,
   onToggle,
   onApprove,
   onReprocess,
@@ -706,6 +792,8 @@ function ReviewRow({
   tier: DocumentTypeTier | null;
   canWrite: boolean;
   checked: boolean;
+  isCursor: boolean;
+  navState: JobNavState;
   onToggle: () => void;
   onApprove: () => void;
   onReprocess: () => void;
@@ -744,7 +832,10 @@ function ReviewRow({
 
   return (
     <div
-      className={`rounded-sm border ${
+      id={`review-row-${job.id}`}
+      className={`scroll-mt-2 rounded-sm border ${
+        isCursor ? 'ring-2 ring-indigo-500 dark:ring-indigo-400 ' : ''
+      }${
         checked
           ? 'border-indigo-300 bg-indigo-50/40 dark:border-indigo-700 dark:bg-indigo-900/20'
           : 'border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900'
@@ -766,6 +857,7 @@ function ReviewRow({
           <div className="flex flex-wrap items-center gap-2">
             <Link
               to={`/jobs/${job.id}`}
+              state={navState}
               className="truncate font-medium text-slate-900 hover:text-indigo-600 dark:text-slate-100 dark:hover:text-indigo-400"
               title={job.file_name}
             >
@@ -892,7 +984,12 @@ function ReviewRow({
 
         {/* Actions */}
         <div className="flex shrink-0 flex-col items-stretch gap-1.5">
-          <Link to={`/jobs/${job.id}`} className="btn-ghost text-center" title="Открыть деталку">
+          <Link
+            to={`/jobs/${job.id}`}
+            state={navState}
+            className="btn-ghost text-center"
+            title="Открыть деталку"
+          >
             Открыть
           </Link>
           {canWrite && (

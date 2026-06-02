@@ -1,5 +1,5 @@
 import { useMemo, useState, useCallback } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { useQueries, useQueryClient } from '@tanstack/react-query';
 import { useJobsList, useApproveJob, useReprocessJob, jobsKeys } from '@/queries/jobs';
 import { useDocumentTypes } from '@/queries/documentTypes';
@@ -17,6 +17,7 @@ import {
   shortIdSplit,
 } from '@/lib/format';
 import { isSynthetic, matchesOrigin, type DocOrigin } from '@/lib/synthetic';
+import type { JobNavState } from '@/lib/job-nav';
 import type { DocumentTypeTier } from '@/queries/documentTypes';
 import type { Job, JobStatus } from '@/lib/types';
 import { EmptyState, SkeletonTable } from '@/components/Skeleton';
@@ -55,6 +56,7 @@ const PAGE_SIZE = 50;
 
 export default function JobsListPage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
   const status = searchParams.get('status') ?? '';
   const documentType = searchParams.get('document_type') ?? '';
   const q = searchParams.get('q') ?? '';
@@ -165,6 +167,21 @@ export default function JobsListPage() {
     [allItems],
   );
   const realOnPage = allItems.length - synthOnPage;
+
+  // F8 — контекст выборки для навигации по соседям на JobDetail. Список id
+  // в том порядке, как показан в таблице (после origin-фильтра); backTo —
+  // текущий адрес с фильтрами, чтобы «← в список документов» вернул ровно
+  // в это состояние. Кладём в history state ссылок (см. lib/job-nav.ts).
+  const navState = useMemo<JobNavState>(
+    () => ({
+      jobNav: {
+        ids: items.map((j) => j.id),
+        label: 'список документов',
+        backTo: location.pathname + location.search,
+      },
+    }),
+    [items, location.pathname, location.search],
+  );
 
   // ─── Bulk-select state ──────────────────────────────────────────
   // Set хранит id'ы выбранных job'ов. При смене страницы / фильтра
@@ -487,6 +504,7 @@ export default function JobsListPage() {
                     selected={selected.has(j.id)}
                     onToggle={() => toggleOne(j.id)}
                     tier={j.document_type ? tierBySlug.get(j.document_type) ?? null : null}
+                    navState={navState}
                   />
                 ))}
               </tbody>
@@ -505,6 +523,7 @@ export default function JobsListPage() {
                 selected={selected.has(j.id)}
                 onToggle={() => toggleOne(j.id)}
                 tier={j.document_type ? tierBySlug.get(j.document_type) ?? null : null}
+                navState={navState}
               />
             ))}
           </ul>
@@ -577,12 +596,14 @@ function JobRow({
   selected,
   onToggle,
   tier,
+  navState,
 }: {
   job: Job;
   now: Date;
   selected: boolean;
   onToggle: () => void;
   tier: DocumentTypeTier | null;
+  navState: JobNavState;
 }) {
   const amounts = extractAmounts(job.extracted);
   const fullDate = formatDateTime(job.created_at);
@@ -594,12 +615,14 @@ function JobRow({
   // Не перехватываем клики по интерактивным элементам (чекбокс, ссылка на
   // имя файла) и активное выделение текста. Ссылка на имени остаётся для
   // клавиатуры и открытия в новой вкладке (ctrl/⌘+клик).
+  // F8 — прокидываем контекст выборки в history state, чтобы деталка
+  // показала стрелки соседей и кнопку возврата.
   const handleRowClick = (e: React.MouseEvent<HTMLTableRowElement>) => {
     if (e.defaultPrevented) return;
     const target = e.target as HTMLElement;
     if (target.closest('a, button, input, label, [role="button"]')) return;
     if (window.getSelection()?.toString()) return;
-    navigate(`/jobs/${job.id}`);
+    navigate(`/jobs/${job.id}`, { state: navState });
   };
 
   return (
@@ -627,6 +650,7 @@ function JobRow({
       <td className="px-3 py-2">
         <Link
           to={`/jobs/${job.id}`}
+          state={navState}
           className="flex items-center gap-2 text-slate-900 dark:text-slate-100 hover:text-indigo-600 dark:hover:text-indigo-400"
         >
           <svg
@@ -748,12 +772,14 @@ function JobCard({
   selected,
   onToggle,
   tier,
+  navState,
 }: {
   job: Job;
   now: Date;
   selected: boolean;
   onToggle: () => void;
   tier: DocumentTypeTier | null;
+  navState: JobNavState;
 }) {
   const amounts = extractAmounts(job.extracted);
   const fullDate = formatDateTime(job.created_at);
@@ -784,6 +810,7 @@ function JobCard({
           {/* Имя файла → деталка */}
           <Link
             to={`/jobs/${job.id}`}
+            state={navState}
             className="flex items-center gap-2 text-slate-900 hover:text-indigo-600 dark:text-slate-100 dark:hover:text-indigo-400"
           >
             <svg

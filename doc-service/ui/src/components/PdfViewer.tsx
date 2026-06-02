@@ -1,4 +1,11 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import {
+  useEffect,
+  useState,
+  useCallback,
+  useRef,
+  forwardRef,
+  useImperativeHandle,
+} from 'react';
 import { Document, Page } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
@@ -23,12 +30,40 @@ interface PdfViewerProps {
   mimeType: string;
 }
 
-export default function PdfViewer({ fileUrl, mimeType }: PdfViewerProps) {
+/**
+ * F5 — императивный хэндл для управления вьюером с клавиатуры (JobDetail
+ * вешает `[`/`]` на страницы и `+`/`-` на зум). Сами кнопки в тулбаре
+ * остаются — это просто второй способ дёрнуть те же сеттеры.
+ */
+export interface PdfViewerHandle {
+  prevPage: () => void;
+  nextPage: () => void;
+  zoomIn: () => void;
+  zoomOut: () => void;
+  resetZoom: () => void;
+}
+
+const PdfViewer = forwardRef<PdfViewerHandle, PdfViewerProps>(function PdfViewer(
+  { fileUrl, mimeType },
+  ref,
+) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState<number>(800);
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pageNumber, setPageNumber] = useState<number>(1);
   const [scale, setScale] = useState<number>(1);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      prevPage: () => setPageNumber((n) => Math.max(1, n - 1)),
+      nextPage: () => setPageNumber((n) => (numPages ? Math.min(numPages, n + 1) : n)),
+      zoomIn: () => setScale((s) => Math.min(3, s + 0.1)),
+      zoomOut: () => setScale((s) => Math.max(0.5, s - 0.1)),
+      resetZoom: () => setScale(1),
+    }),
+    [numPages],
+  );
 
   // ResizeObserver — пересчитываем target width при ресайзе.
   useEffect(() => {
@@ -157,4 +192,6 @@ export default function PdfViewer({ fileUrl, mimeType }: PdfViewerProps) {
       </div>
     </div>
   );
-}
+});
+
+export default PdfViewer;
