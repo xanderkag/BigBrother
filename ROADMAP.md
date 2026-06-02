@@ -39,6 +39,17 @@ ssh kb-docker 'cd parsdocs/doc-service; sed -i "s/^API_KEY=.*/API_KEY=$(openssl 
 | ~~**EXT-D** — Pre-upload signed URL (приём файла по URL)~~ | — | ✅ код+тесты (SSRF-safe, fail-closed за `FILE_URL_INGEST_ENABLED`), ждёт деплоя. Q12. |
 | **Bonus** — `docker prune` шаг в deploy.yml | — | 5 мин. Защита от забивания диска build-cache'ем (у SLAI забило 60ГБ, превентивно ставим у себя). |
 | ~~**UI-7** — срезы Dashboard~~ | — | ✅ 2026-05-23 (engine + tier; consumer отложен). В `0807285`, ждёт деплоя с P0-1. |
+| **MTI-3** — unify key storage (UI Providers ключ реально доходит до Anthropic, а не лежит в БД мёртвым) | — | 1-2 дня. **Делать первым** перед MTI-1/2, иначе они бессмысленны. ТЗ — `doc-service/docs/MTI_TZ_2026-05-31.md`. Чинит обнаруженную 2026-05-31 архитектурную путаницу (3 места для одного ключа). |
+| **MTI-2** — model preset bundles (один Anthropic-провайдер = pack моделей sonnet/opus/haiku) | MTI-3 | 2-3 дня (backend+UI). Per-job выбор через `metadata._llm_model` + Test Lab dropdown + опц. auto-routing по типу документа. |
+| **MTI-1** — multi-instance SLAI management UI (страница Consumers + mass-actions + presets + Push to SLAI inbox) | MTI-3 (желательно) | 2-3 недели вместе с миграцией per-org rate-limit/retention. Размораживает CP7 multi-tenant CRUD (триггер: 3+ SLAI-инстансов на горизонте). |
+| **UX-1** — Simple/Advanced toggle в Providers (скрыть 5 из 8 полей под Advanced, дать happy-path) | MTI-3 | 1-2 дня UI. ТЗ — `doc-service/docs/UX_ANALYSIS_2026-05-31.md`. Источник: user-фидбэк 2026-05-31 «зачем 8 полей, легко ошибиться». |
+| **UX-2** — One-click «Сделать основным» wizard (вместо 5 шагов через 3 системы) | UX-1 + MTI-3 | 2 дня UI + ½ дня backend (runtime BACKEND switch без рестарта). |
+| **UX-3** — System Health лента (Dashboard top-bar показывает что работает, что сломано, куда идти чинить) | — | ½ дня UI. Источник: capabilities + health-checks, уже доступны. |
+| **UX-4** — Full UI audit по всем 13 экранам React UI (дубликаты + technical leak + лишние клики + missing states) | UX-1 | 3-4 дня анализ + 1-2 недели implementation. Источник: `doc-service/docs/IDEAS_2026-06-01_DISCUSSION.md`. |
+| **Epic-5** — Local Agent Models bench (Mistral/Llama vs OpenAI для tool-calling) | GPU-сервер 96 ГБ VRAM | SLAI-side эпик. parsdocs может предоставить inference endpoint. После прихода железа. |
+| **Epic-8** — Voice Command Flow (Whisper → агент → tool) | ASR endpoint в .env | parsdocs ASR pipeline готов (`164f83e`); ждёт `ASR_BASE_URL` в `inference-service/.env` + SLAI frontend recording. ~2-3 дня обе стороны. |
+| **EXT-LLM-PROXY-B** — light LLM-gateway (chat completions + streaming + tools passthrough + usage metering, БЕЗ per-org quotas/RL) | MTI-3 (must) | **Owner-decision 2026-06-01: B сейчас, C по триггеру (5+ инстансов SLAI или incident).** Implementation ТЗ — `doc-service/docs/EXT_LLM_PROXY_B_IMPL_TZ_2026-06-01.md`. Размер MTI-3 (2д) + EXT-LLM-PROXY-B (3д) = ~неделя. После: SLAI инстансы переключают `api.anthropic.com` на `vanga.sls24.ru/v1/chat/completions`. |
+| **EXT-LLM-PROXY-C** (отложено по триггеру) | EXT-LLM-PROXY-B + MTI-1 | Расширение B до full gateway (per-org rate-limit + квоты + cost-calc + admin endpoints + webhook'и). Делать при 5+ SLAI-инстансов ИЛИ первом incident'е runaway LLM-расхода. ТЗ — `doc-service/docs/EXT_LLM_PROXY_TZ_2026-06-01.md` §Вариант C. |
 
 ---
 
@@ -75,8 +86,8 @@ ssh kb-docker 'cd parsdocs/doc-service; sed -i "s/^API_KEY=.*/API_KEY=$(openssl 
 
 ## 🧊 Заморожено (YAGNI до триггера)
 
-- **Per-tenant `provider_settings`** (свой LLM-ключ на клиента) — нет второго платящего клиента.
-- **Активное подключение новых потребителей** — CP7 готов в коде, эксплуатацию морозим до валидации ВЭД-пилота.
+- ~~**Per-tenant `provider_settings`**~~ — **РАЗМОРОЖЕНО 2026-05-31** в виде MTI-1 (per-org overrides + multi-instance UI). Триггер: 3+ SLAI-инстансов на горизонте.
+- ~~**Активное подключение новых потребителей**~~ — **РАЗМОРОЖЕНО 2026-05-31** в виде MTI-1. CP7 multi-tenant CRUD идёт в работу.
 
 _Закрыто 2026-05-24: удалён легаси `doc-service/web/` (+ Dockerfile/package.json чистка); UI-6-хвост выровнен под ConfidenceBar; устаревшая запись CP1 в TECH_DEBT исправлена (CP1 давно DB-driven)._
 

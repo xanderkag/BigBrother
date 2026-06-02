@@ -48,6 +48,26 @@
 
 ## Active Questions
 
+### Q-NEG-1. Второй sandbox-тенант для negabarit-стенда
+
+- **Status:** RESOLVED 2026-06-01
+- **Asked:** 2026-06-01 (SLAI)
+- **Provisioned:** 2026-06-01 on Asha
+- **From:** SLAI_DEV → PARSDOCS_DEV
+
+```
+organization_id : 73d314a6-c6bf-4860-a910-548fb6040d65
+token_name      : slai-negabarit-bot
+webhook_url     : https://negabarit.sls24.ru/api/v1/parsdocs/webhook
+expires         : 90 дней
+```
+
+Plain token доставлен в чат. webhook_hmac_secret для negabarit — пока
+пустой (используется global env-fallback); SLAI должна решить нужен ли
+отдельный secret под этот endpoint.
+
+---
+
 ### Q12. EXT-D — Pre-upload signed URL ingestion
 
 - **Status:** IMPLEMENTED (код + тесты, не задеплоен; ждёт `FILE_URL_INGEST_ENABLED=true` + интеграции SLAI. RESOLVED после деплоя.)
