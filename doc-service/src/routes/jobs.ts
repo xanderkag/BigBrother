@@ -414,8 +414,28 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         scopeOrgId = organizationId ?? project.organization_id;
         scopeProjectId = project.id;
       } else {
-        scopeOrgId = organizationId ?? SYSTEM_DEFAULT_ORG_ID;
         scopeProjectId = req.user?.default_project_id ?? SYSTEM_DEFAULT_PROJECT_ID;
+        // BUG-FIX 2026-06-03: раньше scopeOrgId всегда падал в SYSTEM_DEFAULT_ORG_ID,
+        // если клиент не передал organizationId — это ломало per-tenant webhook
+        // routing: job под PAT'ом org_admin'а из org X писался в SYSTEM_ORG, и
+        // worker не находил `organization_settings.webhook_url` для X. Теперь
+        // резолвим в порядке приоритета:
+        //   1) явный organizationId из multipart;
+        //   2) organization_id юзера (из его users-row) — основной кейс
+        //      sandbox/tenant PAT'ов;
+        //   3) org проекта если он не системный (для super_admin'ов с
+        //      grant'ом на чужой проект);
+        //   4) SYSTEM_ORG как последний fallback (root API_KEY без org).
+        if (organizationId) {
+          scopeOrgId = organizationId;
+        } else if (req.user?.organization_id) {
+          scopeOrgId = req.user.organization_id;
+        } else if (scopeProjectId !== SYSTEM_DEFAULT_PROJECT_ID) {
+          const project = await projectsRepo.findById(scopeProjectId);
+          scopeOrgId = project?.organization_id ?? SYSTEM_DEFAULT_ORG_ID;
+        } else {
+          scopeOrgId = SYSTEM_DEFAULT_ORG_ID;
+        }
       }
 
       // --- Authz: проверяем что у пользователя есть write-доступ к проекту ---
