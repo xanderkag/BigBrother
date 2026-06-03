@@ -96,6 +96,12 @@ export async function deliverWebhook(
         method: 'POST',
         headers: {
           'content-type': 'application/json',
+          // 2026-06-03 (SLAI): обязательный header контракт-версии. Их новый
+          // verify-guard на negabarit-стенде использует его для маршрутизации
+          // на нужный contract-handler (v1 vs будущие v2). Без него guard
+          // отбрасывает 401 «Invalid parsdocs signature» (misleading message —
+          // на самом деле header missing). Значение совпадает с payload.version.
+          'x-parsdocs-version': 'v1',
           // 2026-05-18 (SLAI Issue #5): дублируем подпись под их header'ом.
           // SLAI ищет `X-Parsdocs-Signature` (см. их HMAC verifier);
           // старый `x-docservice-signature` оставляем для backwards-compat
