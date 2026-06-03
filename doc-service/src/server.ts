@@ -26,6 +26,7 @@ import { auditLogRoutes } from './routes/audit-log.js';
 import { tenantRoutes } from './routes/tenants.js';
 import { referenceListsRoutes } from './routes/reference-lists.js';
 import { resolutionRoutes } from './routes/resolution.js';
+import { authRoutes } from './routes/auth.js';
 import { closeDb } from './db.js';
 import { closeQueue } from './queue.js';
 
@@ -301,6 +302,8 @@ async function main() {
   await app.register(operationalMetricsRoutes, { prefix: '/api/v1' });
   await app.register(referenceListsRoutes, { prefix: '/api/v1' });
   await app.register(resolutionRoutes, { prefix: '/api/v1' });
+  // UX-AUTH: публичный (без bearerAuthHook) login by email+password.
+  await app.register(authRoutes, { prefix: '/api/v1' });
 
   // F13: SLAI category sync receiver. Не использует Bearer auth — защищается
   // своим HMAC (X-SLAI-Signature). Поэтому регистрируется БЕЗ префикса

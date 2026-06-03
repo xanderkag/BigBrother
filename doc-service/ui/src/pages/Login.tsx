@@ -4,33 +4,64 @@ import { setToken } from '@/lib/auth';
 import { api, ApiError } from '@/lib/api';
 
 /**
- * Простой login-screen. Пользователь вводит API token, мы делаем
- * один проверочный запрос (GET /api/v1/whoami) — если OK, сохраняем
- * токен и переходим к app.
+ * UX-AUTH: вход по email + password.
  *
- * NOTE: backend whoami возвращает org_id + project_id; берём из
- * последнего job-history. Если /whoami недоступен — fallback на
- * /api/v1/jobs?limit=1 (любой 200 = валидный токен).
+ * Бекенд POST /api/v1/auth/login принимает {email, password}, возвращает
+ * долгоживущий personal access token (90 дней). Кладём в localStorage,
+ * дальше api-клиент сам подставляет его в Bearer-заголовок.
+ *
+ * Fallback на ввод токена напрямую — сохранён через ссылку "Вход по
+ * токену" для совместимости с CI/curl-юзкейсами и для случая, когда
+ * пользователь получил pdpat_ от админа.
  */
+
+type LoginMode = 'password' | 'token';
+
+type LoginResponse = {
+  token: string;
+  user: { id: string; email: string | null; display_name: string; role: string };
+  expires_at: string | null;
+};
+
 export default function LoginPage() {
   const navigate = useNavigate();
+  const [mode, setMode] = useState<LoginMode>('password');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [token, setTokenInput] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  async function handleSubmit(e: FormEvent) {
+  async function handlePasswordLogin(e: FormEvent) {
     e.preventDefault();
     setError(null);
     setSubmitting(true);
     try {
-      // Сохраняем токен до запроса — api клиент возьмёт его из localStorage
+      const res = await api.post<LoginResponse>('/api/v1/auth/login', { email, password });
+      setToken(res.token);
+      navigate('/');
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        setError('Неверный email или пароль.');
+      } else {
+        setError(`Ошибка: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleTokenLogin(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setSubmitting(true);
+    try {
       setToken(token);
-      // Проверочный запрос
       await api.get('/api/v1/jobs?limit=1');
       navigate('/');
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
-        setError('Неверный токен. Попробуйте ещё раз.');
+        setError('Неверный токен.');
       } else {
         setError(`Ошибка: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -55,32 +86,96 @@ export default function LoginPage() {
               </svg>
               parsedocs
             </div>
-            <p className="text-sm text-slate-500 dark:text-slate-400 dark:text-slate-500">Введите API-токен для входа</p>
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              {mode === 'password' ? 'Введите email и пароль' : 'Введите API-токен'}
+            </p>
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label htmlFor="token" className="form-label">
-                API token
-              </label>
-              <input
-                id="token"
-                type="password"
-                autoComplete="current-password"
-                value={token}
-                onChange={(e) => setTokenInput(e.target.value)}
-                className="form-input font-mono"
-                placeholder="sk-..."
-                required
-              />
-            </div>
+          {mode === 'password' ? (
+            <form onSubmit={handlePasswordLogin} className="space-y-4">
+              <div>
+                <label htmlFor="email" className="form-label">Email</label>
+                <input
+                  id="email"
+                  type="email"
+                  autoComplete="username"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="form-input"
+                  placeholder="operator@vanga.local"
+                  required
+                />
+              </div>
+              <div>
+                <label htmlFor="password" className="form-label">Пароль</label>
+                <input
+                  id="password"
+                  type="password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="form-input"
+                  required
+                />
+              </div>
 
-            {error && <div className="error-banner">{error}</div>}
+              {error && <div className="error-banner">{error}</div>}
 
-            <button type="submit" className="btn-primary w-full" disabled={submitting || !token}>
-              {submitting ? 'Проверка...' : 'Войти'}
-            </button>
-          </form>
+              <button
+                type="submit"
+                className="btn-primary w-full"
+                disabled={submitting || !email || !password}
+              >
+                {submitting ? 'Проверка...' : 'Войти'}
+              </button>
+
+              <div className="text-center text-xs text-slate-500 dark:text-slate-400">
+                <button
+                  type="button"
+                  className="underline hover:text-slate-700 dark:hover:text-slate-300"
+                  onClick={() => { setMode('token'); setError(null); }}
+                >
+                  Войти по API-токену
+                </button>
+              </div>
+            </form>
+          ) : (
+            <form onSubmit={handleTokenLogin} className="space-y-4">
+              <div>
+                <label htmlFor="token" className="form-label">API token</label>
+                <input
+                  id="token"
+                  type="password"
+                  autoComplete="current-password"
+                  value={token}
+                  onChange={(e) => setTokenInput(e.target.value)}
+                  className="form-input font-mono"
+                  placeholder="pdpat_..."
+                  required
+                />
+              </div>
+
+              {error && <div className="error-banner">{error}</div>}
+
+              <button
+                type="submit"
+                className="btn-primary w-full"
+                disabled={submitting || !token}
+              >
+                {submitting ? 'Проверка...' : 'Войти'}
+              </button>
+
+              <div className="text-center text-xs text-slate-500 dark:text-slate-400">
+                <button
+                  type="button"
+                  className="underline hover:text-slate-700 dark:hover:text-slate-300"
+                  onClick={() => { setMode('password'); setError(null); }}
+                >
+                  Войти по email/паролю
+                </button>
+              </div>
+            </form>
+          )}
         </div>
       </div>
     </div>
