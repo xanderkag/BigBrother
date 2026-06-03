@@ -17,6 +17,8 @@
  */
 
 import type { FastifyInstance } from 'fastify';
+import type { ZodTypeProvider } from 'fastify-type-provider-zod';
+import { z } from 'zod';
 import { db } from '../db.js';
 import { verifyPassword } from '../storage/password.js';
 import { tokensRepo } from '../storage/tokens.js';
@@ -25,53 +27,44 @@ import type { UserRow } from '../storage/users.js';
 const TOKEN_TTL_DAYS = 90;
 const TOKEN_NAME_PREFIX = 'ui-login';
 
+const LoginBody = z.object({
+  email: z.string().email(),
+  password: z.string().min(1),
+});
+
+const LoginOk = z.object({
+  token: z.string(),
+  user: z.object({
+    id: z.string(),
+    email: z.string().nullable(),
+    display_name: z.string(),
+    role: z.string(),
+    organization_id: z.string().nullable(),
+  }),
+  expires_at: z.string().nullable(),
+});
+
+const ErrorResponse = z.object({
+  statusCode: z.number(),
+  error: z.string(),
+  message: z.string(),
+});
+
 export async function authRoutes(app: FastifyInstance): Promise<void> {
-  app.post(
+  const r = app.withTypeProvider<ZodTypeProvider>();
+
+  r.post(
     '/auth/login',
     {
       schema: {
         tags: ['auth'],
         summary: 'Login by email + password → personal access token',
-        body: {
-          type: 'object',
-          required: ['email', 'password'],
-          properties: {
-            email: { type: 'string', format: 'email' },
-            password: { type: 'string', minLength: 1 },
-          },
-          additionalProperties: false,
-        },
-        response: {
-          200: {
-            type: 'object',
-            properties: {
-              token: { type: 'string' },
-              user: {
-                type: 'object',
-                properties: {
-                  id: { type: 'string' },
-                  email: { type: 'string', nullable: true },
-                  display_name: { type: 'string' },
-                  role: { type: 'string' },
-                  organization_id: { type: 'string', nullable: true },
-                },
-              },
-              expires_at: { type: 'string', nullable: true },
-            },
-          },
-          401: {
-            type: 'object',
-            properties: {
-              statusCode: { type: 'integer' },
-              error: { type: 'string' },
-              message: { type: 'string' },
-            },
-          },
-        },
+        body: LoginBody,
+        response: { 200: LoginOk, 401: ErrorResponse },
       },
     },
     async (req, reply) => {
-      const { email, password } = req.body as { email: string; password: string };
+      const { email, password } = req.body;
 
       // Normalize email (lower + trim) — DB не enforce'ит lowercase, но мы храним
       // и ищем единообразно. Без отдельного индекса по lower(email) — у нас на
@@ -87,8 +80,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       const user = rows[0];
 
       // Run verifyPassword даже если user не найден — постоянное время
-      // против user-enumeration. Fake-hash в формате scrypt$<salt>$<key>
-      // выдаст false без раскрытия.
+      // против user-enumeration. verifyPassword(null) → false без раскрытия.
       const storedHash = user?.password_hash ?? null;
       const ok = await verifyPassword(password, storedHash);
 
