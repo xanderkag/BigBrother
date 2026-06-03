@@ -33,6 +33,9 @@ const PARTY = {
     name: { type: 'string', description: 'Наименование' },
     inn: { type: 'string', description: INN_DESCRIPTION },
     kpp: { type: 'string', description: KPP_DESCRIPTION },
+    // EXT-LINE-3 (SLAI 2026-06-03): ОГРН (13 цифр ЮЛ / 15 цифр ИП) — нужен
+    // SLAI matcher для дозаполнения реквизитов контрагента из их БД.
+    ogrn: { type: 'string', description: 'ОГРН организации (13 цифр для ЮЛ, 15 для ИП)' },
     address: { type: 'string' },
     // F19 (2026-05-17): банковские реквизиты для invoice / payment_order /
     // других платёжных документов. Все поля optional — модель заполняет
@@ -168,6 +171,33 @@ const ITEM_PROPERTIES = {
       'ФИО водителя как написано в строке. Извлечь после «Водитель:», «ФИО водителя:». ' +
       'Пример: "Иванов И.И.". Best-effort, дополнительный сигнал.',
   },
+  // ── EXT-LINE-3 (SLAI 2026-06-03): категория услуги для line-level matching.
+  // Совпадает с SLAI service-type enum (transportation/loading/escort/...).
+  category: {
+    type: 'string',
+    enum: [
+      'transportation',
+      'loading',
+      'unloading',
+      'storage',
+      'escort',
+      'permit_fee',
+      'customs_clearance',
+      'demurrage',
+      'insurance',
+      'documents',
+      'route_approval',
+      'crane_loading',
+      'pilot_driver',
+      'other',
+    ],
+    description:
+      'Категория услуги/работы (для матчинга позиции в SLAI). Один из: ' +
+      'transportation (перевозка), loading/unloading (ПРР), storage (хранение), ' +
+      'escort (сопровождение), permit_fee (сбор за разрешение), customs_clearance, ' +
+      'demurrage (простой), insurance, documents, route_approval, crane_loading, ' +
+      'pilot_driver, other (fallback).',
+  },
 } as const;
 
 const ITEMS_ARRAY = {
@@ -258,6 +288,10 @@ const INVOICE_SCHEMA = {
       description: 'Транспортное средство если упомянуто в счёте (для счетов за перевозку).',
       properties: {
         plate: { type: 'string', description: 'Гос. номер ТС (формат А777ОО777 / К123АВ77).' },
+        // EXT-LINE-4 (SLAI 2026-06-03): доп. метаданные ТС для негабарита.
+        model: { type: 'string', description: 'Модель тягача. Пример: "MAN TGS 33.480".' },
+        trailer: { type: 'string', description: 'Модель прицепа/трала. Пример: "Goldhofer STZ-VL5".' },
+        axles: { type: 'integer', description: 'Количество осей (для негабарита — определяет тип трала).' },
       },
     },
     route_from: {
@@ -271,6 +305,97 @@ const INVOICE_SCHEMA = {
     permit_no: {
       type: 'string',
       description: 'Номер спецразрешения (для негабаритных перевозок). Из «согласно спецразрешению № 77-2026-12345».',
+    },
+    // ── EXT-LINE-3 (SLAI 2026-06-03 P0): платёжный блок.
+    due_date: {
+      type: 'string',
+      description: 'Срок оплаты счёта (ISO YYYY-MM-DD). Из «оплатить до DD.MM.YYYY», «срок оплаты DD.MM.YYYY».',
+    },
+    payment_method: {
+      type: 'string',
+      enum: ['cash', 'bank_transfer', 'prepayment', 'postpayment', 'card', 'other'],
+      description: 'Способ оплаты. Один из: cash (нал), bank_transfer (б/н), prepayment (предоплата), postpayment (постоплата), card, other.',
+    },
+    // ── EXT-LINE-4 (SLAI 2026-06-03 P1): транспортный nested-блок.
+    // Дублирует часть плоских полей выше (order_ref, vehicle.plate, route_*,
+    // permit_no) — оставлены для backwards compat с EXT-LINE-2. Новые
+    // структурированные поля (cargo, escort, permit details, route.leg_kind)
+    // живут только тут.
+    transport: {
+      type: 'object',
+      description: 'Транспортный nested-блок для перевозочных счетов (дублирует плоские поля + расширяет).',
+      properties: {
+        vehicle: {
+          type: 'object',
+          properties: {
+            plate: { type: 'string', description: 'Гос. номер ТС (А777ОО777).' },
+            model: { type: 'string' },
+            trailer: { type: 'string' },
+            axles: { type: 'integer' },
+          },
+        },
+        driver: {
+          type: 'object',
+          description: 'Водитель (doc-level зеркало items[].driver_name + опц. license/phone).',
+          properties: {
+            name: { type: 'string' },
+            license: { type: 'string', description: 'Номер водительского удостоверения' },
+            phone: { type: 'string' },
+          },
+        },
+        route: {
+          type: 'object',
+          properties: {
+            from: { type: 'string' },
+            to: { type: 'string' },
+            distance_km: { type: 'number', description: 'Расстояние только если явно указано в тексте PDF (не вычисляем).' },
+            leg_kind: {
+              type: 'string',
+              enum: ['auto', 'rail', 'sea', 'air', 'customs'],
+              description: 'Тип плеча: auto (авто), rail (ЖД), sea (море), air (авиа), customs (таможня).',
+            },
+          },
+        },
+        trip_date: {
+          type: 'string',
+          description: 'Дата выезда / начала рейса (ISO YYYY-MM-DD). Из «от DD.MM.YYYY», «выезд DD.MM.YYYY».',
+        },
+        permit: {
+          type: 'object',
+          properties: {
+            number: { type: 'string', description: 'Номер спецразрешения (77-2026-12345).' },
+            issued_by: { type: 'string', description: 'Кем выдано (Росавтодор, региональный орган).' },
+            valid_to: { type: 'string', description: 'Действительно до (ISO YYYY-MM-DD).' },
+          },
+        },
+        cargo: {
+          type: 'object',
+          properties: {
+            description: { type: 'string', description: 'Описание груза («трансформатор силовой ТДЦ-400000/500»).' },
+            weight_kg: { type: 'number', description: 'Вес в килограммах. Если в тексте «35 т» → 35000.' },
+            dimensions: {
+              type: 'object',
+              description: 'Габариты в метрах. Если не парсится в struct — оставить null, raw в dimensions_raw.',
+              properties: {
+                length_m: { type: 'number' },
+                width_m: { type: 'number' },
+                height_m: { type: 'number' },
+              },
+            },
+            dimensions_raw: { type: 'string', description: 'Исходная строка габаритов если не распарсилась.' },
+            oversized: { type: 'boolean', description: 'Негабаритный груз (есть упоминание «негабарит»/«крупногабарит»/«тяжеловес»).' },
+          },
+        },
+        escort: {
+          type: 'object',
+          description: 'Сопровождение перевозки (спец-фича негабарита).',
+          properties: {
+            required: { type: 'boolean' },
+            type: { type: 'string', description: 'Тип сопровождения: «ГИБДД-патруль», «машина прикрытия», «лоцман»' },
+            area: { type: 'string', description: 'Зона сопровождения: «московский участок», «весь маршрут»' },
+          },
+        },
+      },
     },
     items: ITEMS_ARRAY,
   },

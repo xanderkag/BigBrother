@@ -53,12 +53,40 @@ const EXTRACTOR_SUPPORTED_FIELDS = {
     { name: 'route_from',    since: '2026-06-03' },
     { name: 'route_to',      since: '2026-06-03' },
     { name: 'permit_no',     since: '2026-06-03' },
+    // EXT-LINE-3 (SLAI 2026-06-04 P0): bank/ogrn/due_date/payment_method
+    // + items[].category enum.
+    { name: 'seller.ogrn',     since: '2026-06-04' },
+    { name: 'buyer.ogrn',      since: '2026-06-04' },
+    { name: 'seller.bik',      since: '2026-06-04' },
+    { name: 'seller.account',  since: '2026-06-04' },
+    { name: 'seller.corr_account', since: '2026-06-04' },
+    { name: 'due_date',        since: '2026-06-04' },
+    { name: 'payment_method',  since: '2026-06-04' },
+    { name: 'items[].category', since: '2026-06-04' },
+    // EXT-LINE-4 (SLAI 2026-06-04 P1): transport.* nested + cargo + escort
+    // + vehicle расширения + permit details + route.leg_kind.
+    { name: 'vehicle.model',     since: '2026-06-04' },
+    { name: 'vehicle.trailer',   since: '2026-06-04' },
+    { name: 'vehicle.axles',     since: '2026-06-04' },
+    { name: 'transport',         since: '2026-06-04' },
+    { name: 'transport.driver',  since: '2026-06-04' },
+    { name: 'transport.route.leg_kind', since: '2026-06-04' },
+    { name: 'transport.route.distance_km', since: '2026-06-04' },
+    { name: 'transport.permit.issued_by',  since: '2026-06-04' },
+    { name: 'transport.permit.valid_to',   since: '2026-06-04' },
+    { name: 'transport.cargo.description', since: '2026-06-04' },
+    { name: 'transport.cargo.weight_kg',   since: '2026-06-04' },
+    { name: 'transport.cargo.dimensions',  since: '2026-06-04' },
+    { name: 'transport.cargo.oversized',   since: '2026-06-04' },
+    { name: 'transport.escort.required',   since: '2026-06-04' },
+    { name: 'transport.escort.type',       since: '2026-06-04' },
+    { name: 'transport.escort.area',       since: '2026-06-04' },
   ] as const,
 };
 
 // adapterVersion — bump'аем при расширении SUPPORTED_FIELDS или сменах
 // поведения, видимых consumer'у. Формат YYYY.MM.DD.
-const EXTRACTOR_ADAPTER_VERSION = '2026.06.03';
+const EXTRACTOR_ADAPTER_VERSION = '2026.06.04';
 
 export async function healthRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
