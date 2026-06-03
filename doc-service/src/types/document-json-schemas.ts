@@ -245,6 +245,33 @@ const INVOICE_SCHEMA = {
       type: 'string',
       description: 'Дата договора (ISO YYYY-MM-DD).',
     },
+    // ── EXT-LINE-2 (SLAI 2026-06-03): транспортные doc-level сигналы
+    // для перевозочных счетов (негабарит/мультимодал). SLAI matcher
+    // использует для автопривязки счёт → заказ/плечо без human-in-loop.
+    // Также задействуют target_entity_hint (см. orchestrator.ts).
+    order_ref: {
+      type: 'string',
+      description: 'Номер заявки/основания перевозки. Шаблон [A-Z]{2,5}-\\d{4}-\\d{3,4}. Из блока «Основание: перевозка ... заявка NEG-2026-001».',
+    },
+    vehicle: {
+      type: 'object',
+      description: 'Транспортное средство если упомянуто в счёте (для счетов за перевозку).',
+      properties: {
+        plate: { type: 'string', description: 'Гос. номер ТС (формат А777ОО777 / К123АВ77).' },
+      },
+    },
+    route_from: {
+      type: 'string',
+      description: 'Город отправления из блока «Маршрут плеча» («г. Москва → г. Челябинск»).',
+    },
+    route_to: {
+      type: 'string',
+      description: 'Город назначения из блока «Маршрут плеча».',
+    },
+    permit_no: {
+      type: 'string',
+      description: 'Номер спецразрешения (для негабаритных перевозок). Из «согласно спецразрешению № 77-2026-12345».',
+    },
     items: ITEMS_ARRAY,
   },
 } as const;

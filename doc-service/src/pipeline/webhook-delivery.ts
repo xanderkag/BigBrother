@@ -26,7 +26,7 @@
  * не блокируется (sweeper подберёт через 30 дней).
  */
 import type { Logger } from 'pino';
-import { deliverWebhook } from '../webhooks/deliver.js';
+import { deliverWebhook, computeTargetEntityHint } from '../webhooks/deliver.js';
 import { jobsRepo, type JobRow } from '../storage/jobs.js';
 import { removeStoredFile } from '../storage/files.js';
 import { redactPii } from './normalize/pii-redact.js';
@@ -121,6 +121,11 @@ export async function deliverFinalizedJobWebhook(
       // F5: массив найденных документов если xlsx/PDF был multi-doc.
       // При single-doc отсутствует (backwards compat).
       documents,
+      // EXT-HINT-1: hint для SLAI matcher что счёт перевозочный (есть хоть
+      // один транспортный сигнал: order_ref/permit_no/vehicle.plate/route).
+      // На редактированном extractedOut, не на raw — чтобы PII-redact не
+      // мог удалить сигнал и оставить hint висящим.
+      target_entity_hint: computeTargetEntityHint(extractedOut),
     },
     log,
     override?.hmacSecret,

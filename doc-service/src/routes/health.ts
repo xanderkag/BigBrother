@@ -45,12 +45,20 @@ const EXTRACTOR_SUPPORTED_FIELDS = {
     { name: 'period_to',     since: '2026-05-29' },
     { name: 'contract_no',   since: '2026-05-29' },
     { name: 'contract_date', since: '2026-05-29' },
+    // EXT-LINE-2 (SLAI 2026-06-03): транспортные сигналы для перевозочных
+    // счетов. Заполняются только если в тексте счёта есть соответствующие
+    // блоки («Основание», «гос. номер», «Маршрут», «Спецразрешение»).
+    { name: 'order_ref',     since: '2026-06-03' },
+    { name: 'vehicle.plate', since: '2026-06-03' },
+    { name: 'route_from',    since: '2026-06-03' },
+    { name: 'route_to',      since: '2026-06-03' },
+    { name: 'permit_no',     since: '2026-06-03' },
   ] as const,
 };
 
 // adapterVersion — bump'аем при расширении SUPPORTED_FIELDS или сменах
 // поведения, видимых consumer'у. Формат YYYY.MM.DD.
-const EXTRACTOR_ADAPTER_VERSION = '2026.05.29';
+const EXTRACTOR_ADAPTER_VERSION = '2026.06.03';
 
 export async function healthRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
@@ -103,6 +111,10 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
       asr: config.asr.enabled,
       byoLlm: config.byoLlmEnabled,
       hybridRouting: config.hybridRouting.enabled,
+      // EXT-HINT-1 (SLAI 2026-06-03): сервис проставляет target_entity_hint в
+      // webhook payload для счетов с транспортными сигналами. Значения сейчас:
+      // 'Transportation'. Если отсутствует — хинт не вычисляется.
+      targetEntityHint: true as const,
     };
   });
 

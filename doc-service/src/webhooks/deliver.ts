@@ -40,7 +40,33 @@ export type WebhookPayload = {
     extracted: Record<string, unknown>;
     field_confidence?: Record<string, number>;
   }>;
+  /**
+   * EXT-HINT-1 (SLAI 2026-06-03): подсказка к целевой сущности на стороне
+   * SLAI matcher. Проставляется парсдоксом если в extracted найден хоть
+   * один транспортный сигнал (order_ref / vehicle.plate / route_from+to /
+   * permit_no). Иначе отсутствует. Текущее значение — 'Transportation'.
+   * Расширяется по мере появления новых use-case'ов.
+   */
+  target_entity_hint?: 'Transportation';
 };
+
+/**
+ * Вычислить target_entity_hint по содержимому extracted. Используется
+ * webhook-delivery: если в счёте найден хоть один транспортный сигнал
+ * (order_ref / vehicle.plate / route_from+route_to / permit_no) — это
+ * перевозочный счёт, проставляем хинт. Иначе undefined.
+ */
+export function computeTargetEntityHint(
+  extracted: Record<string, unknown> | null,
+): 'Transportation' | undefined {
+  if (!extracted) return undefined;
+  if (extracted.order_ref) return 'Transportation';
+  if (extracted.permit_no) return 'Transportation';
+  const v = extracted.vehicle as Record<string, unknown> | undefined;
+  if (v && typeof v.plate === 'string' && v.plate.length > 0) return 'Transportation';
+  if (extracted.route_from && extracted.route_to) return 'Transportation';
+  return undefined;
+}
 
 /**
  * Deliver a webhook with HMAC-SHA256 signature and exponential backoff.

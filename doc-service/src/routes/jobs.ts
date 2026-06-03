@@ -30,7 +30,7 @@ import { combineConfidence } from '../pipeline/quality.js';
 import { projectsRepo } from '../storage/projects.js';
 import { sanitizeMetadata } from '../storage/metadata-sanitizer.js';
 import { SYSTEM_DEFAULT_ORG_ID, SYSTEM_DEFAULT_PROJECT_ID } from '../auth.js';
-import { deliverWebhook } from '../webhooks/deliver.js';
+import { deliverWebhook, computeTargetEntityHint } from '../webhooks/deliver.js';
 import { normalizeSlugForApi } from '../types/slug-normalize.js';
 import {
   getEffectiveScope,
@@ -921,6 +921,7 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
       // Сбрасываем счётчик и временну́ю метку перед запуском,
       // чтобы deliverWebhook начинал с попытки №1.
       await jobsRepo.resetWebhookAttempts(req.params.id);
+      const extractedForPayload = (job.extracted as Record<string, unknown> | null) ?? null;
       const payload = {
         // SLAI Issue #4: обязательный version field в контракте v1.
         version: 'v1' as const,
@@ -930,9 +931,11 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         document_type: normalizeSlugForApi(job.document_type ?? null),
         confidence: job.confidence !== null ? Number(job.confidence) : null,
         ocr_engine: job.ocr_engine ?? null,
-        extracted: (job.extracted as Record<string, unknown> | null) ?? null,
+        extracted: extractedForPayload,
         metadata: stripInlineCredentials((job.metadata as Record<string, unknown> | null) ?? null),
         error: job.error ?? null,
+        // EXT-HINT-1: единая логика хинта что и в основном webhook-delivery.
+        target_entity_hint: computeTargetEntityHint(extractedForPayload),
       };
       // Fire-and-forget: доставка идёт в фоне, ответ клиенту не ждёт.
       void deliverWebhook(req.params.id, job.webhook_url, payload, req.log as never);
