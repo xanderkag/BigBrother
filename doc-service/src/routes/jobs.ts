@@ -31,6 +31,7 @@ import { projectsRepo } from '../storage/projects.js';
 import { sanitizeMetadata } from '../storage/metadata-sanitizer.js';
 import { SYSTEM_DEFAULT_ORG_ID, SYSTEM_DEFAULT_PROJECT_ID } from '../auth.js';
 import { deliverWebhook, computeTargetEntityHint } from '../webhooks/deliver.js';
+import { organizationSettingsRepo } from '../storage/organization-settings.js';
 import { normalizeSlugForApi } from '../types/slug-normalize.js';
 import {
   getEffectiveScope,
@@ -937,8 +938,15 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         // EXT-HINT-1: единая логика хинта что и в основном webhook-delivery.
         target_entity_hint: computeTargetEntityHint(extractedForPayload),
       };
+      // SLAI 2026-06-03 DF-2 fix: подставляем per-org HMAC secret. Без этого
+      // manual redeliver подписывает глобальным config.webhook.hmacSecret и
+      // consumer'ы с per-tenant verify отбрасывают 401.
+      const orgSecret = job.organization_id
+        ? (await organizationSettingsRepo.getDecryptedWebhookSecret(job.organization_id)) ??
+          undefined
+        : undefined;
       // Fire-and-forget: доставка идёт в фоне, ответ клиенту не ждёт.
-      void deliverWebhook(req.params.id, job.webhook_url, payload, req.log as never);
+      void deliverWebhook(req.params.id, job.webhook_url, payload, req.log as never, orgSecret);
       reply.code(202);
       // Возвращаем актуальный снимок job'а (счётчик уже сброшен).
       const refreshed = await jobsRepo.findById(req.params.id);

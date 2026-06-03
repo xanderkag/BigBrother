@@ -33,6 +33,7 @@ import { redactPii } from './normalize/pii-redact.js';
 import { processFieldConfidence } from './normalize/field-confidence.js';
 import { normalizeSlugForApi } from '../types/slug-normalize.js';
 import { stripInlineCredentials } from './llm/inline-credentials.js';
+import { organizationSettingsRepo } from '../storage/organization-settings.js';
 
 /**
  * Доставить webhook для финализированного job'а, применив F2/F4
@@ -102,6 +103,21 @@ export async function deliverFinalizedJobWebhook(
   const metadataOut = shouldRedact ? redactPii(meta) : meta;
 
   const targetUrl = override?.url ?? updated.webhook_url!;
+  // SLAI 2026-06-03 DF-2: для per-job webhook (job.webhook_url set ИЛИ при
+  // manual redeliver) orchestrator не подставляет per-org HMAC secret —
+  // deliverWebhook откатывается на глобальный config.webhook.hmacSecret,
+  // что ломает HMAC verify на стороне consumer'а (его env подписан
+  // per-tenant secret'ом из БД, а не глобальным). Резолвим per-org
+  // secret тут как fallback на override.hmacSecret. Приоритет:
+  //   1. override.hmacSecret (передан выше для profile-flow) — wins.
+  //   2. per-org secret из organization_settings.webhook_hmac_secret.
+  //   3. config.webhook.hmacSecret глобальный (default в deliverWebhook).
+  let resolvedSecret = override?.hmacSecret;
+  if (!resolvedSecret && updated.organization_id) {
+    resolvedSecret =
+      (await organizationSettingsRepo.getDecryptedWebhookSecret(updated.organization_id)) ??
+      undefined;
+  }
   await deliverWebhook(
     jobId,
     targetUrl,
@@ -128,7 +144,7 @@ export async function deliverFinalizedJobWebhook(
       target_entity_hint: computeTargetEntityHint(extractedOut),
     },
     log,
-    override?.hmacSecret,
+    resolvedSecret,
   );
 
   // F27 (SLAI ТЗ): immediate delete оригинала после webhook delivery
