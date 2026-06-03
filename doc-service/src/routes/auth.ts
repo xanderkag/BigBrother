@@ -94,8 +94,10 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
       // Выпускаем фрешный PAT — старые при этом остаются жить
       // (revoke не делаем; user сам может через UI почистить позже).
+      // Имя должно быть UNIQUE per user — берём full ISO timestamp до секунды,
+      // иначе второй login в тот же день валится на UNIQUE(user_id, name).
       const expiresAt = new Date(Date.now() + TOKEN_TTL_DAYS * 86_400_000);
-      const tokenName = `${TOKEN_NAME_PREFIX} ${new Date().toISOString().slice(0, 10)}`;
+      const tokenName = `${TOKEN_NAME_PREFIX} ${new Date().toISOString().replace(/[:.]/g, '-')}`;
       const { plaintext } = await tokensRepo.create({
         user_id: user.id,
         name: tokenName,
