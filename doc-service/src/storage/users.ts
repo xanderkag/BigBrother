@@ -32,6 +32,7 @@ export type UserRow = {
   role: UserRole;
   status: UserStatus;
   api_token_hash: string | null;
+  password_hash: string | null;
   last_seen_at: Date | null;
   created_at: Date;
   updated_at: Date;

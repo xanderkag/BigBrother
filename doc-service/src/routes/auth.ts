@@ -59,6 +59,14 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
               expires_at: { type: 'string', nullable: true },
             },
           },
+          401: {
+            type: 'object',
+            properties: {
+              statusCode: { type: 'integer' },
+              error: { type: 'string' },
+              message: { type: 'string' },
+            },
+          },
         },
       },
     },
