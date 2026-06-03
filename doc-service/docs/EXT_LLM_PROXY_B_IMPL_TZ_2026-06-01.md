@@ -14,6 +14,7 @@
 **Что входит:**
 - `POST /v1/chat/completions` (sync + streaming SSE)
 - Tool-calling passthrough (OpenAI tools → Anthropic native + обратно)
+- **`POST /v1/embeddings`** (forward в OpenAI, добавлено 2026-06-02 по формальному ТЗ SLAI)
 - Auth через тот же PAT (`pdpat_*`)
 - Usage logging per-org (input/output tokens, latency, model, cost-N/A)
 - `GET /v1/usage` (per-org агрегаты для self-stats)
@@ -30,12 +31,15 @@
 ## Зависимости (порядок реализации)
 
 ```
-1. MTI-3 (unify key storage)   ← 2 дня, ОБЯЗАТЕЛЬНО первым
-2. EXT-LLM-PROXY-B             ← 3 дня после MTI-3
+1. MTI-3 (unify key storage)           ← 2 дня, ОБЯЗАТЕЛЬНО первым
+2. EXT-LLM-PROXY-B core (chat+usage)   ← 3 дня после MTI-3
+3. + Embeddings endpoint               ← +1 день (если включаем)
 ```
 
 Без MTI-3 ключ Anthropic тянется из `inference-service/.env`, что не позволяет
 централизованно ротировать. Делать B без MTI-3 — будет переделывать через неделю.
+
+**Итого:** 5-6 рабочих дней одним разработчиком.
 
 ---
 
@@ -103,6 +107,72 @@ SSE chunks → doc-service → consumer (без буферизации, passthro
 After stream close:
   ⑩ INSERT INTO llm_usage_log (org_id, model, prompt_tokens, completion_tokens, latency_ms, status)
 ```
+
+---
+
+## Embeddings endpoint (добавлено 2026-06-02)
+
+### Запрос/ответ — OpenAI-compatible
+
+```http
+POST https://vanga.sls24.ru/v1/embeddings
+Authorization: Bearer pdpat_<tenant-token>
+Content-Type: application/json
+
+{
+  "model": "text-embedding-3-small",  ← или "text-embedding-3-large"
+  "input": ["text1", "text2"],         ← array | string
+  "encoding_format": "float"            ← опц., default
+}
+```
+
+Response (OpenAI v1 standard):
+
+```json
+{
+  "object": "list",
+  "data": [
+    {"object": "embedding", "embedding": [0.123, ...], "index": 0},
+    {"object": "embedding", "embedding": [0.456, ...], "index": 1}
+  ],
+  "model": "text-embedding-3-small",
+  "usage": { "prompt_tokens": 8, "total_tokens": 8 }
+}
+```
+
+### Реализация
+
+- **Backend:** forward в OpenAI `https://api.openai.com/v1/embeddings` (Anthropic
+  embeddings не делает; альтернатива — Voyage AI `voyage-3-large`,
+  опционально по выбору SLAI)
+- **API key:** отдельная строка в `provider_settings` для `openai`
+  (рядом с `anthropic`). Запросы embeddings берут именно её
+- **Streaming:** не применимо для embeddings (single response)
+- **Tools:** не применимо
+- **Usage log:** та же таблица `llm_usage_log`; для embeddings
+  `completion_tokens = 0`, `prompt_tokens` от OpenAI usage
+
+### Файлы
+
+```
+inference-service/src/inference_service/routes/embeddings.py    ← новый
+inference-service/src/inference_service/backends/openai_embeddings.py
+doc-service/src/routes/llm-proxy-embeddings.ts                  ← реюзит auth+usage из chat-route
+doc-service/tests/llm-proxy-embeddings.spec.ts                  ← 5-7 кейсов
+```
+
+### Что НЕ делаем
+
+- ❌ Анти-OpenAI backend для embeddings (Voyage / Cohere / local) — отдельный
+  эпик если решат менять провайдера
+- ❌ Multi-modal embeddings (картинки) — не в B
+- ❌ Custom dimension reduction — OpenAI поддерживает параметр `dimensions`,
+  но forward'им как есть, доп. логики не вводим
+
+### Зависимость
+
+OpenAI API key должен быть в `provider_settings` (после MTI-3). Без ключа
+`/v1/embeddings` → `503 llm_not_configured`.
 
 ---
 
@@ -568,3 +638,7 @@ W1 (день 5):    EXT-LLM-PROXY-B tests + usage endpoint
   Position paper — `EXT_LLM_PROXY_TZ_2026-06-01.md`. Это implementation
   ТЗ под разработку: scope, endpoints, schemas, миграция, tests, AC.
   Размер: MTI-3 (2д) + EXT-LLM-PROXY-B (3д) = неделя.
+- 2026-06-02: получено формальное ТЗ SLAI (`PARSDOCS_REPLY_TO_SLAI_EXT_LLM_PROXY_2026-06-02.md`).
+  Совпадает с B + добавляет `/v1/embeddings` endpoint. Embeddings forward'ятся
+  в OpenAI (Anthropic не делает embeddings). Размер: +1 день = 6 рабочих дней.
+  ETA: W24-25 (после WW-23 пилот-стабилизации).
