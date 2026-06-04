@@ -4,6 +4,8 @@
  * Объединяет 4 нормализатора в один вызов с **явным порядком**:
  *   1. normalizeExtractedFields (F1) — ИНН/госномер в каноническом виде
  *   2. recomputeTotalsFromItems (F7) — пересчёт total_with_vat из items[]
+ *   2b. deriveHeaderTotals (F7b) — канонические header-поля total /
+ *      total_without_vat / vat / vat_rate, если модель их не дала в шапке
  *   3. applyCategoryHints (F6) — keyword-mapper по items[].name
  *   4. enrichItemsWithSlaiCategoryIds (F13 polish) — обогащение items
  *      из lookup-table SLAI nomenclature
@@ -30,7 +32,7 @@
  */
 import type { Logger } from 'pino';
 import { normalizeExtractedFields } from './extracted-fields.js';
-import { recomputeTotalsFromItems } from './totals.js';
+import { recomputeTotalsFromItems, deriveHeaderTotals } from './totals.js';
 import { applyCategoryHints } from './categories.js';
 import { enrichItemsWithSlaiCategoryIds } from './slai-enrichment.js';
 import { slaiCategoriesRepo } from '../../storage/slai-categories.js';
@@ -50,6 +52,12 @@ export async function runPostExtractNormalization(
   // F7: пересчёт total_with_vat если расходится с items[]
   const recomputed = recomputeTotalsFromItems(result);
   if (recomputed && recomputed !== result) result = recomputed;
+
+  // F7b: вывод канонических header-полей (total / total_without_vat / vat /
+  // vat_rate), когда модель положила их под строчными именами или только
+  // в items[]. После F7 — чтобы опираться на уже выверенный total_with_vat.
+  const headered = deriveHeaderTotals(result);
+  if (headered && headered !== result) result = headered;
 
   // F6: категоризация items[].name через keyword-mapper (детерминирован)
   const withCategories = applyCategoryHints(result);
