@@ -1238,7 +1238,7 @@ export async function runDocumentPipeline(
     // Pipeline post-extract нормализации — 4 шага в строгом порядке.
     // F1 ИНН/plate → F7 totals → F6 category keyword → F13 SLAI enrichment.
     // Детали порядка и почему — см. normalize/run.ts header.
-    const normalized = await runPostExtractNormalization(extracted, log);
+    const normalized = await runPostExtractNormalization(extracted, log, rawText);
     if (normalized && normalized !== extracted) {
       extracted = normalized;
     }

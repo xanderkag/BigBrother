@@ -1,7 +1,10 @@
 /**
  * Pipeline post-extract нормализации.
  *
- * Объединяет 4 нормализатора в один вызов с **явным порядком**:
+ * Объединяет нормализаторы в один вызов с **явным порядком**:
+ *   0. recoverPartyInnsFromText (F0) — добить seller/buyer.inn из raw_text
+ *      по меткам сторон, когда модель вернула placeholder/пропуск. До F1,
+ *      чтобы F1 подхватил добитый ИНН в _normalized_fields.
  *   1. normalizeExtractedFields (F1) — ИНН/госномер в каноническом виде
  *   2. recomputeTotalsFromItems (F7) — пересчёт total_with_vat из items[]
  *   2b. deriveHeaderTotals (F7b) — канонические header-поля total /
@@ -31,6 +34,7 @@
  * шаги отрабатывают как обычно.
  */
 import type { Logger } from 'pino';
+import { recoverPartyInnsFromText } from './inn-recovery.js';
 import { normalizeExtractedFields } from './extracted-fields.js';
 import { recomputeTotalsFromItems, deriveHeaderTotals } from './totals.js';
 import { applyCategoryHints } from './categories.js';
@@ -40,10 +44,16 @@ import { slaiCategoriesRepo } from '../../storage/slai-categories.js';
 export async function runPostExtractNormalization(
   extracted: Record<string, unknown> | null,
   log?: Logger,
+  rawText?: string | null,
 ): Promise<Record<string, unknown> | null> {
   if (!extracted) return extracted;
 
   let result: Record<string, unknown> | null = extracted;
+
+  // F0: добить ИНН сторон из raw_text по меткам, если модель их пропустила.
+  // До F1 — чтобы F1 подхватил добитый ИНН в _normalized_fields.
+  const innRecovered = recoverPartyInnsFromText(result, rawText);
+  if (innRecovered && innRecovered !== result) result = innRecovered;
 
   // F1: ИНН/госномер → канонический вид (validation потом проще)
   const normalized = normalizeExtractedFields(result);
