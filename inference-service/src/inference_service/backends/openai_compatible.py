@@ -186,7 +186,7 @@ class OpenAICompatibleBackend(ModelBackend):
             raw = await self._complete_text(prompt, json_mode=True, model_override=model_override)
         data = _parse_json(raw) or {}
         type_value = data.get("type") if isinstance(data.get("type"), str) else None
-        confidence = float(data.get("confidence", 0.0) or 0.0)
+        confidence = _safe_float(data.get("confidence"))
         return ClassifyResponse(type=type_value, confidence=_clamp01(confidence))  # type: ignore[arg-type]
 
     async def extract(
@@ -233,7 +233,7 @@ class OpenAICompatibleBackend(ModelBackend):
         # (phi4 теряет конверт / изобретает invoice_details.* — bench 2026-05-25).
         data = normalize_extract_response(_parse_json(raw) or {})
         extracted = data.get("extracted") if isinstance(data.get("extracted"), dict) else {}
-        confidence = float(data.get("confidence", 0.0) or 0.0)
+        confidence = _safe_float(data.get("confidence"))
         issues = data.get("issues") if isinstance(data.get("issues"), list) else []
         # F2: per-field confidence (см. claude.py для подробностей).
         raw_fc = data.get("field_confidence")
@@ -503,6 +503,21 @@ def _parse_json(text: str) -> dict[str, Any] | None:
         return json.loads(match.group(0))
     except json.JSONDecodeError:
         return None
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    """Coerce model output to float. Models (mistral, qwen) occasionally
+    emit confidence as a nested object/list; never raise, fall back."""
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return default
+    return default
 
 
 def _clamp01(x: float) -> float:
