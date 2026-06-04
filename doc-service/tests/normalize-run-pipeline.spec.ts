@@ -3,8 +3,10 @@
  * порядке и не ломает идемпотентность.
  *
  * Шаги (см. normalize/run.ts):
+ *   0. F0 recoverPartyInnsFromText (ИНН сторон из raw_text по меткам)
  *   1. F1 normalizeExtractedFields (ИНН/plate)
  *   2. F7 recomputeTotalsFromItems
+ *   2b. F7b deriveHeaderTotals (канонические header total/vat)
  *   3. F6 applyCategoryHints
  *   4. F13 enrichItemsWithSlaiCategoryIds (требует БД — skip при ошибке)
  *
@@ -35,6 +37,18 @@ describe('runPostExtractNormalization — комбинирует все шаги
     );
     expect((r as any)._normalized_fields).toBeDefined();
     expect((r as any)._normalized_fields['seller.inn']).toBe('7728168971');
+  });
+
+  it('F0→F1: добитый из raw_text ИНН попадает в _normalized_fields', async () => {
+    const r = await runPostExtractNormalization(
+      { seller: { inn: 'не указан' } }, // модель не нашла
+      mockLogger,
+      'Поставщик: ООО «А», ИНН 7722753969, КПП 997750001', // но в тексте есть
+    );
+    // F0 добил seller.inn, F1 (после него) подхватил его в канонический канал
+    expect((r as any).seller.inn).toBe('7722753969');
+    expect((r as any)._inn_recovered['seller.inn']).toBe('7722753969');
+    expect((r as any)._normalized_fields['seller.inn']).toBe('7722753969');
   });
 
   it('F7: пересчитывает total_with_vat из items', async () => {
