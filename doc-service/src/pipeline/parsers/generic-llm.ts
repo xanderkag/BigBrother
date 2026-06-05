@@ -1,6 +1,7 @@
 import type { DocumentTypeSlug } from '../../types/documents.js';
 import type { LlmClient } from '../llm/types.js';
 import { llmExtract } from './llm-extractor.js';
+import { EXTENDED_SCHEMAS } from '../../types/document-json-schemas.js';
 import type { DocumentParser, ParseResult, ParserOverride } from './types.js';
 
 /**
@@ -35,10 +36,16 @@ export class GenericLlmParser implements DocumentParser {
   }
 
   parse(rawText: string, override?: ParserOverride): Promise<ParseResult> {
+    // EXT-TTN-1 (SLAI 2026-06-04): fallback на EXTENDED_SCHEMAS[slug] если
+    // override не дал схему. Раньше схема была `{}` → LLM получал «extract
+    // whatever» инструкцию → пустой extracted (особенно сильно ударяло по
+    // bill_of_lading / waybill / transport_invoice / transport_request).
+    // Теперь если в EXTENDED_SCHEMAS есть запись по slug — используем её.
+    const fallbackSchema = EXTENDED_SCHEMAS[this.type] ?? {};
     return llmExtract(
       this.llm,
       rawText,
-      override?.llmSchema ?? {},
+      override?.llmSchema ?? fallbackSchema,
       this.type,
       override?.expectedFields ?? [],
       override?.llmPrompt,

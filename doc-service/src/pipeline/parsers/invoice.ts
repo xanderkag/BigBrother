@@ -12,7 +12,12 @@ import {
   scoreCompleteness,
 } from './common.js';
 
-const DEFAULT_REGEX_EXPECTED_FIELDS: readonly string[] = ['number', 'date', 'total'];
+// EXT-TTN-1 (SLAI 2026-06-04): items добавлены в expected — без них regex
+// «достаточно хороший» (0.833) и LLM-fallback не зовётся, items[] остаются
+// пустыми даже когда таблица в счёте есть. items на regex не извлечь —
+// добавление в expected опускает confidence ниже threshold (0.7) и
+// активирует LLM-fallback, который таблицу разберёт.
+const DEFAULT_REGEX_EXPECTED_FIELDS: readonly string[] = ['number', 'date', 'total', 'items'];
 
 /**
  * Phase 1 invoice parser. Strategy:

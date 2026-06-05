@@ -105,6 +105,67 @@ export function normalizeExtractedFields(
     const t = canonCity(tRoute.to);
     if (t) normalizedMap['route.to_canonical'] = t;
   }
+  // EXT-TTN-1 (SLAI 2026-06-04): top-level route.{from,to,from_city,to_city}
+  // для TTN/CMR (там route — top-level объект, не вложен в transport).
+  // Берём первым делом from_city/to_city (если LLM уже выделил), иначе
+  // прогоняем from/to через canonCity.
+  const topRoute = extracted.route as Record<string, unknown> | undefined;
+  if (topRoute) {
+    if (!normalizedMap['route.from_canonical']) {
+      const f =
+        (typeof topRoute.from_city === 'string' && topRoute.from_city.trim()) ||
+        canonCity(topRoute.from);
+      if (f) normalizedMap['route.from_canonical'] = f;
+    }
+    if (!normalizedMap['route.to_canonical']) {
+      const t =
+        (typeof topRoute.to_city === 'string' && topRoute.to_city.trim()) ||
+        canonCity(topRoute.to);
+      if (t) normalizedMap['route.to_canonical'] = t;
+    }
+  }
+  // CMR place_of_loading / place_of_delivery — если route не задан.
+  if (!normalizedMap['route.from_canonical']) {
+    const f = canonCity(extracted.place_of_loading ?? extracted.loading_place);
+    if (f) normalizedMap['route.from_canonical'] = f;
+  }
+  if (!normalizedMap['route.to_canonical']) {
+    const t = canonCity(extracted.place_of_delivery ?? extracted.delivery_place);
+    if (t) normalizedMap['route.to_canonical'] = t;
+  }
+  // BL: port_of_loading / port_of_discharge → route_canonical (порты как «город»).
+  if (!normalizedMap['route.from_canonical']) {
+    const f = canonCity(extracted.port_of_loading);
+    if (f) normalizedMap['route.from_canonical'] = f;
+  }
+  if (!normalizedMap['route.to_canonical']) {
+    const t = canonCity(extracted.port_of_discharge);
+    if (t) normalizedMap['route.to_canonical'] = t;
+  }
+  // BL containers[].number — критичны для matcher.matchToCargoUnit.
+  // Кладём первый контейнер как canonical, остальные через индекс.
+  const containers = extracted.containers;
+  if (Array.isArray(containers)) {
+    containers.forEach((c, i) => {
+      if (c && typeof c === 'object') {
+        const num = (c as Record<string, unknown>).number;
+        if (typeof num === 'string' && num.trim().length > 0) {
+          normalizedMap[`containers.${i}.number`] = num.trim().toUpperCase();
+        }
+        const seal = (c as Record<string, unknown>).seal;
+        if (typeof seal === 'string' && seal.trim().length > 0) {
+          normalizedMap[`containers.${i}.seal`] = seal.trim().toUpperCase();
+        }
+      }
+    });
+  }
+  // TTN seal_number → отдельный normalized.
+  const sealNo = extracted.seal_number;
+  if (typeof sealNo === 'string' && sealNo.trim().length > 0) {
+    normalizedMap['seal_number'] = sealNo.trim().toUpperCase();
+  }
+  // TTN/CMR document number top-level (для matcher.matchToTransfer по cmr.number / bl.number).
+  // У invoice это уже не нужно (SLAI matcher invoice не использует number для плеча).
 
   if (Object.keys(normalizedMap).length === 0) return extracted;
 
