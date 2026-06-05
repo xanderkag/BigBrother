@@ -439,20 +439,213 @@ ingest (upload | file_url)
 
 ---
 
-<!-- BEGIN: автогенерируемая секция custom/ВЭД типов (агент извлекает из миграций) -->
+### Раздел B — Платёжные и учётные документы РФ
 
-### 3.10+ — Остальные типы (ВЭД, складские, договорные)
+#### 3.10. 🟡 `payment_order` — Платёжное поручение
 
-> _Раздел дополняется: точные определения 21 типа извлекаются из
-> `doc-service/migrations/*.sql`. Будут добавлены: `payment_order`,
-> `commercial_invoice`, `packing_list`, `proforma_invoice`, `price_list`,
-> `cert_of_origin`, `eac_conformity_certificate`, `customs_declaration`,
-> `bill_of_lading`, `wire_transfer_application`, `weighing_act`, `UKD`,
-> `transfer_note`, `cash_receipt`, `contract_specification`, `contract`,
-> `contract_addendum`, `power_of_attorney`, `warehouse_receipt`,
-> `warehouse_return`, `material_requisition`._
+- **parser_kind:** `llm_extract`. Форма 0401060, жёсткая структура.
+- **Классификация:** `платёжное/платежное поручение` (w 5.0), `П.П. №` (3.0), `Поступ. в банк плат.` / `Списано со сч. плат.` (3.0). _Bare `БИК\d{9}` убран (false-positive на 1С-шаблонах)._
+- **expected_fields:** `number`, `date`, `amount`, `payer.inn`, `payer.account`, `payee.inn`, `payee.account`, `purpose`
+- **Валидаторы:** `inn_checksum:payer.inn`, `inn_checksum:payee.inn`, `parties_differ:payer.inn,payee.inn`, `kpp_format:payer.kpp`, `kpp_format:payee.kpp`, `money_sanity:amount`, `date_range`
+- **Схема:** `number`, `date`, `date_charged` (дата списания), `amount`, `amount_text` (прописью), `payment_kind` (электронно/телеграфно/почтой), `priority` (1-5); `payer{name,inn,kpp,account(20),bic(9),bank_name,correspondent_account}`, `payee{…те же поля}`; `purpose` (назначение целиком, вкл. текст про НДС).
+- **LLM-промпт (ключевое):** ИНН плательщика и получателя — РАЗНЫЕ, не путать; БИК 9 цифр; р/с 20 цифр; сумму прописью — одной строкой.
 
-<!-- END: автогенерируемая секция -->
+#### 3.11. 🟡 `cash_receipt` — Кассовый чек (ККТ, 54-ФЗ)
+
+- **parser_kind:** `llm_extract`
+- **Классификация (ужесточена — только фискальные признаки):** `кассовый чек` (6.0), `ФН \d{16}` (5.0), `ФД \d` (5.0), `ФПД? \d` (4.0), `54-ФЗ` (3.0). _Убраны общие `КАССА`, `ИТОГ…\d` (ложные на счетах)._
+- **expected_fields:** `date`, `merchant.inn`, `total`, `items`
+- **Валидаторы:** `inn_checksum:merchant.inn`, `money_sanity:total`, `date_range`
+- **Схема:** `fn_number` (ФН), `fd_number` (ФД), `fpd` (фискальный признак), `shift_number`, `receipt_number`, `date`, `time`, `merchant{name,inn,address}`, `operation_kind` (приход/возврат прихода/расход/…), `payment_method`, `total`, `vat_amount`, `vat_rate`, `items[]` (каноническая строка §2.2).
+- **LLM-промпт:** обязательно искать ФН (16 цифр), ФД, ФП — идентификаторы в ОФД; признак расчёта вверху чека.
+
+#### 3.12. 🔴 `UKD` — Корректировочный УПД (УКД)
+
+- **parser_kind:** `llm_extract`. Исправление выставленного УПД (цена/кол-во/возврат). Статус 1 — с НДС, 2 — без.
+- **Классификация:** `УКД` (6.0), `корректировочн… (счет|документ)` (5.0), `универсальн… корректировочн…` (5.0), `к счёт-фактуре № …` (4.0), `(увеличение|уменьшение) стоимости` (3.0)
+- **expected_fields:** `number`, `date`, `status`, `base_doc_number`, `base_doc_date`, `seller_name`, `seller_inn`, `buyer_name`, `buyer_inn`, `currency`, `total_before`, `total_after`, `vat_before`, `vat_after`
+- **Валидаторы:** не заданы (рекомендуется добавить `inn_checksum` для seller/buyer)
+- **Схема (плоская):** перечисленные expected_fields + `correction_kind` (увеличение/уменьшение/null). `status` — integer (1/2).
+
+---
+
+### Раздел C — ВЭД (международная торговля и логистика)
+
+> Общее для ВЭД: страны — ISO 3166-1 alpha-2 (латиницей: `CN`, не «China»);
+> валюта — ISO 4217; коды ТН ВЭД — 10 цифр (РФ/ЕАЭС) / 8 (ЕС). Большинство
+> используют каноническую строку `items[]` (§2.2).
+
+#### 3.13. 🟡 `commercial_invoice` — Commercial Invoice (коммерческий инвойс)
+
+- **parser_kind:** `llm_extract`. Мультиязычный.
+- **Классификация:** `commercial invoice` / `коммерческий инвойс` (5.0), `инвойс №…` (4.0), `INVOICE No…` (3.0), `Incoterms \d{4}` (2.0), `exporter…consignee` (3.0), `country of origin` (0.8 — намеренно ниже, чтобы выигрывал price_list)
+- **expected_fields:** `number`, `date`, `shipper`, `consignee`, `total_value`, `items`
+- **Валидаторы:** `country_code:exporter.country`, `country_code:consignee.country`, `money_sanity:total_amount`, `date_range`
+- **Схема:** `number`, `date`, `currency`, `exchange_rate`, `incoterms`, `place_of_delivery`, `port_of_loading`, `port_of_discharge`; `shipper/consignee/notify_party {name,address,country}`; `total_value`, `total_weight_net`, `total_weight_gross`, `total_packages`; `items[]` (каноническая §2.2, ключевые: `name`, `hs_code`, `country_of_origin`, `qty`, `price`, `weight_net/gross`, `packages`).
+
+#### 3.14. 🟡 `proforma_invoice` — Инвойс-проформа
+
+- **parser_kind:** `llm_extract`. Предварительный инвойс до отгрузки (для предоплаты/согласования); не фискальный.
+- **Классификация:** `proforma invoice` (5.0), `инвойс-проформа` (4.0), `предварительный инвойс` (4.0)
+- **expected_fields:** `number`, `date`, `seller.{name,address,country}`, `buyer.{name,address,country}`, `currency`, `total_amount`, `incoterms`, `payment_terms`, `items`
+- **Валидаторы:** не заданы
+- **Схема (плоская):** `number`, `date`, `seller_name/address/country`, `buyer_name/address/country`, `currency`, `total_amount`, `incoterms` (FOB/CIF/EXW + город), `payment_terms`; `items[]`: `description`, `qty`, `unit_price`, `line_total`.
+
+#### 3.15. 🟡 `packing_list` — Packing List (упаковочный лист)
+
+- **parser_kind:** `llm_extract`. Обычно в комплекте с commercial_invoice.
+- **Классификация:** `packing list` / `упаковочный лист` (5.0), `packing specification` (4.0)
+- **expected_fields:** `number`, `date`, `shipper`, `consignee`, `total_packages`, `items`
+- **Валидаторы:** `weight_nett_le_gross`, `date_range`
+- **Схема:** `number`, `date`, `invoice_reference`; `shipper/consignee {name,address,country}`; `total_packages`, `total_weight_net`, `total_weight_gross`, `total_volume`; `items[]` (§2.2 + `package_type`, `dimensions` L×W×H, `volume` м³).
+
+#### 3.16. 🟡 `bill_of_lading` — Коносамент (B/L)
+
+- **parser_kind:** `llm_extract`. Морская/мультимодальная накладная.
+- **Классификация:** `bill of lading` / `коносамент` / `multimodal transport bill` (5.0), `B/L No…` (4.0), `Master B/L` / `House B/L` (4.0)
+- **expected_fields:** `bl_number`, `date`, `shipper`, `consignee`, `port_of_loading`, `port_of_discharge`, `items`
+- **Валидаторы:** `country_code:shipper.country`, `country_code:consignee.country`, `date_range`
+- **Схема:** `bl_number`, `date`; `shipper/consignee/notify_party {name,address,country}`; `vessel_name`, `voyage_number`, `carrier`, `port_of_loading`, `port_of_discharge`, `place_of_receipt`, `place_of_delivery`, `freight_payable` (prepaid/collect), `freight_amount`, `currency`, `incoterms`; `items[]` (§2.2 + `marks_and_numbers`, `container_number`).
+
+#### 3.17. 🟡 `customs_declaration` — Таможенная декларация (ДТ / ГТД)
+
+- **parser_kind:** `llm_extract`. Форма 0014001, табличная, много граф.
+- **Классификация:** `декларация на товары` / `ГТД` (5.0), `ДТ № \d{8}` (4.0), `грузовая таможенная декларация` (4.0), `ТД-ИК/ЭК\d` (4.0)
+- **expected_fields:** `declaration_number`, `date`, `declarant.inn`, `declaration_type`, `items`
+- **Валидаторы:** `inn_checksum:declarant.inn`, `inn_checksum:sender.inn`, `inn_checksum:recipient.inn`, `money_sanity:total_value`, `money_sanity:customs_value`, `date_range`
+- **Схема (с привязкой к графам ДТ):** `declaration_number` (гр.7), `declaration_type` (гр.1: ЭК/ИМ), `date`; `declarant/sender/recipient {name,inn,country,address}`; `trading_country` (гр.11), `currency` (гр.22), `exchange_rate` (гр.23), `transport_mode` (гр.25), `procedure_code` (гр.37), `total_amount`, `total_weight_net/gross`; `items[]` (§2.2 + `line_no` гр.32, `name` гр.31, `hs_code` гр.33, `country_of_origin` гр.34, `weight_net` гр.38, `weight_gross` гр.35, `invoice_value` гр.42, `customs_value` гр.45, `statistical_value` гр.46).
+- **LLM-промпт:** регномер — пост ФТС/дата/порядковый; ТН ВЭД 10 цифр; виды платежей 1010 (сбор)/2010 (пошлина)/5010 (НДС).
+
+#### 3.18. 🟡 `cert_of_origin` — Сертификат происхождения
+
+- **parser_kind:** `llm_extract`. Формы СТ-1 (СНГ), Form A (GSP), Form E (Китай). Подтверждает страну происхождения для тарифных льгот. _Не путать с `eac_conformity_certificate`._
+- **Классификация:** `сертификат происхождения` / `certificate of origin` (5.0), `form (CT-1|СТ-1|A|E)` (3.0), `country of origin` (1.5)
+- **expected_fields:** `number`, `issue_date`, `form_type`, `exporter.{name,address,country}`, `consignee.{name,address,country}`, `product.{description,hs_code,origin_country}`, `invoice_ref`
+- **Валидаторы:** не заданы
+- **Схема (плоская):** `number`, `issue_date`, `form_type` (CT-1/Form A/Form E), `exporter_name/country`, `consignee_name/country`, `product_description`, `hs_code` (10 цифр), `origin_country` (ISO2), `invoice_ref`.
+
+#### 3.19. 🟡 `eac_conformity_certificate` — Сертификат соответствия ЕАЭС (EAC)
+
+- **parser_kind:** `llm_extract`. ТР ТС / ТР ЕАЭС. Номер вида «N RU Д-CN.РА01.В.54075/24». Покрывает и **декларацию** о соответствии (`doc_kind`).
+- **Классификация:** `сертификат соответствия` (3.0), номер `N RU Д-CN.…` (8.0 — самый сильный сигнал), `технический регламент` (4.0), `ТР ТС` / `ТР ЕАЭС` (5.0), `EAC conformity` (4.0)
+- **expected_fields:** `number`, `issue_date`, `expiry_date`, `manufacturer.{name,address,country}`, `applicant.{name,inn,address}`, `product.{name,tn_ved_code}`, `tech_regulation`, `certification_body.{name,id}`
+- **Валидаторы:** не заданы
+- **Схема (плоская):** `number`, `doc_kind` (certificate/declaration), `issue_date`, `expiry_date`, `applicant_name/inn/address`, `manufacturer_name/country`, `product_description`, `tn_ved_code` (10 цифр), `tech_regulation` (ссылки «ТР ТС 010/2011»), `certification_body`.
+- **LLM-промпт:** заголовок «ДЕКЛАРАЦИЯ О СООТВЕТСТВИИ» → `declaration`, «СЕРТИФИКАТ…» → `certificate`; ИНН заявителя 10 цифр.
+
+#### 3.20. 🟡 `wire_transfer_application` — Заявление на перевод (ВЭД)
+
+- **parser_kind:** `llm_extract`. Валютный перевод по контракту ВЭД (формы ВТБ № 284, Сбер, Альфа). SWIFT/IBAN. _Отличие от `payment_order`: трансграничный._
+- **Классификация:** `заявление на перевод` (5.0), `application for (remittance|transfer)` (3.0), `SWIFT … [A-Z]{4}…` (2.0), `beneficiary customer` (3.0), `sender to receiver information` (2.0), `Currency Code` (1.5), `банк-посредник` (1.5)
+- **expected_fields:** `number`, `date`, `currency`, `amount`, `amount_words`, `sender.{name,inn,account}`, `beneficiary.{name,address,country,iban}`, `beneficiary_bank.{swift,name,address}`, `purpose`, `contract_ref`, `invoice_ref`
+- **Валидаторы:** не заданы
+- **Схема (плоская):** `number`, `date`, `currency`, `amount`, `amount_words`, `sender_name/inn/account`, `beneficiary_name/address/country/iban`, `beneficiary_bank_name/swift` (8/11 симв.), `purpose` (англ.), `contract_ref`, `invoice_ref`.
+
+#### 3.21. 🟡 `weighing_act` — Акт взвешивания контейнера
+
+- **parser_kind:** `llm_extract`. Взвешивание груженого/порожнего контейнера на весах порта (ВМТП/ВСК/FESCO). Доказательство веса для таможни/страховщика.
+- **Классификация:** `акт взвешивания` (5.0), `вес груженого/порожнего контейнера` (3.0), `свидетельство о поверке` (2.0), `(брутто|нетто|тара)…кг` (1.5)
+- **expected_fields:** `number`, `date`, `container.number`, `weight.{gross_kg,tare_kg,net_kg,declared_gross_kg,declared_net_kg}`, `scales.id`, `performer.fio`, `port.name`
+- **Валидаторы:** не заданы (рекомендуется: net ≤ gross)
+- **Схема (плоская):** `number`, `date`, `container_number` (4 буквы + 7 цифр), `scales_id`, `weight_gross_kg`, `weight_tare_kg`, `weight_net_kg`, `declared_gross_kg`, `declared_net_kg`, `performer_fio`, `port_name`. Все веса — числа, кг.
+
+#### 3.22. 🟡 `price_list` — Прайс-лист
+
+- **parser_kind:** `llm_extract`. Reference data (не платёжный).
+- **Классификация:** `прайс-лист` / `price list` (5.0), `прейскурант` (3.0), `(артикул|article|sku)…(цена|price)` (1.5)
+- **expected_fields:** `number`, `date`, `supplier.{name,country}`, `currency`, `valid_from`, `valid_to`, `items`
+- **Валидаторы:** не заданы
+- **Схема:** `number`, `date`, `supplier_name/country`, `currency`, `valid_from`, `valid_to`; `items[]`: `sku`, `name`, `price`, `unit`, `min_qty`.
+- **LLM-промпт:** при > 50 позиций — извлечь первые 50 + `metadata.total_items`.
+
+---
+
+### Раздел D — Договорные документы
+
+> Общее: длинные документы (5-30 стр.); извлекаются **реквизиты, не положения**.
+> Глубокая вложенность вредит качеству (Qwen 32B возвращал `{}`) → схемы у
+> `contract`/`*_specification` намеренно уплощены.
+
+#### 3.23. 🟡 `contract` — Договор
+
+- **parser_kind:** `llm_extract`. Любой вид (поставки/услуг/подряда/аренды/агентский/лицензионный) — различается через `subject_kind`.
+- **Классификация:** `ДОГОВОР №` / `КОНТРАКТ №` (5.0), `Предмет договора/контракта` (5.0), `Договор поставки/оказания услуг/подряда/аренды/купли-продажи` (5.0), `Права и обязанности Сторон` (4.0), `Срок действия договора` (4.0), `Подписи Сторон` (4.0), `настоящий договор о нижеследующем` (4.0)
+- **expected_fields:** `number`, `date`, `party_a.inn`, `party_b.inn`, `subject`, `total_amount`
+- **Валидаторы:** `inn_checksum:party_a.inn`, `inn_checksum:party_b.inn`, `kpp_format:party_a.kpp`, `kpp_format:party_b.kpp`, `parties_differ:party_a.inn,party_b.inn`, `money_sanity:total_amount`, `date_range`
+- **Схема (уплощённая):** `number`, `date`, `title`, `subject_kind` (supply/services/works/rent/purchase/agency/license/other), `subject` (1-2 предложения), `party_a_name/inn/role`, `party_b_name/inn/role`, `currency`, `total_amount`, `payment_terms`, `delivery_terms`, `effective_date`, `expiration_date`.
+- **LLM-промпт:** НЕ пересказывать ответственность/форс-мажор/споры; роли — Поставщик/Покупатель/Заказчик/Исполнитель/Арендодатель/Арендатор.
+
+#### 3.24. 🟡 `contract_addendum` — Дополнительное соглашение
+
+- **parser_kind:** `llm_extract`. Стороны те же, что в родительском договоре. `changes[]` — список модификаций.
+- **Классификация:** `Дополнительное соглашение` / `Доп. соглашение` (5.0), `Соглашение об изменении` / `о расторжении` (4.0), `О внесении изменений в Договор/Контракт` (4.0)
+- **expected_fields:** `number`, `date`, `parent_contract_number`, `parent_contract_date`, `party_a.inn`, `party_b.inn`
+- **Валидаторы:** `inn_checksum:party_a.inn`, `inn_checksum:party_b.inn`, `parties_differ:party_a.inn,party_b.inn`, `date_range`
+- **Схема (вложенная):** `number`, `date`, `title`, `parent_contract_number`, `parent_contract_date`, `addendum_kind` (amendment/termination/extension/price_change/renaming/other); `party_a{role,name,inn,kpp,representative_name}`, `party_b{…}`; `changes[]{clause («п. 3.1»), action (modify/replace/add/remove), old_text, new_text}`; `new_total_amount`, `new_expiration_date`, `effective_date`.
+
+#### 3.25. 🟡 `contract_specification` — Спецификация / Приложение к договору
+
+- **parser_kind:** `llm_extract`. Самое частое приложение — таблица позиций с ценами + ссылка на родительский договор.
+- **Классификация:** `Спецификация № … к Договору/Контракту` (5.0), `Приложение № … к Договору/Контракту` (5.0), `Спецификация № …` (5.0 — standalone), `Приложение к Договору` (4.0), `Спецификация товара` / `Спецификация к Договору` (4.0)
+- **expected_fields:** `number`, `date`, `parent_contract_number`, `parent_contract_date`, `items`, `total_amount`
+- **Валидаторы:** `inn_checksum:party_a.inn`, `inn_checksum:party_b.inn`, `parties_differ:party_a.inn,party_b.inn`, `money_sanity:total_amount`, `positions_sum`, `date_range`
+- **Схема:** `number`, `date`, `parent_contract_number`, `parent_contract_date`; `seller/buyer {name,inn,kpp,address}`; `currency`, `total_amount`, `vat`, `vat_rate`, `delivery_terms`, `payment_terms`; `items[]` (§2.2 + `delivery_term` по позиции).
+
+---
+
+### Раздел E — Складские / внутренние учётные документы
+
+> Все 🔴 experimental, parser_kind `llm_extract`, validators: только `date_range`.
+> Глобальные (видны всем тенантам). Ключевые слова — простые литералы (substring,
+> без весов). LLM-промпт не задан — используется generic-extract по llm_schema.
+
+#### 3.26. 🔴 `transfer_note` — Перемещение товаров (ТОРГ-13)
+
+- **tier:** 🟡 beta (исключение в этом разделе)
+- **Классификация:** `перемещение товаров` / `накладная на перемещение` (6.0), `ТОРГ-13` (5.0), `отправитель…получатель…склад` (3.0), `(склад|места хранения)…(откуда|куда|источник|назначение)` (3.0)
+- **expected_fields:** `number`, `date`, `organization_name`, `organization_inn`, `source_warehouse`, `target_warehouse`, `responsible_fio`, `items`
+- **Схема:** + `items[]`: `name`, `code`, `qty`, `unit`, `price`, `total`. _Есть LLM-промпт (внутреннее перемещение между складами)._
+
+#### 3.27. 🔴 `power_of_attorney` — Доверенность (М-2 / М-2а)
+
+- **Классификация (литералы):** `доверенность`, `м-2`, `доверяю`, `уполномочивает`, `представлять интересы`
+- **expected_fields:** `number`, `date`, `principal`, `representative`, `valid_until`, `authority`
+- **Схема:** `number`, `date`, `valid_until`; `principal{name,inn,kpp,address}` (доверитель); `representative{fio,position,passport}`; `supplier{name}`; `basis` (счёт/договор), `authority`; `positions[]{name,qty,unit}`.
+
+#### 3.28. 🔴 `warehouse_receipt` — Приём-передача ТМЦ на хранение (МХ-1)
+
+- **Классификация (литералы):** `мх-1`, `акт о приёме-передаче`, `на хранение`, `поклажедатель`, `хранитель`
+- **expected_fields:** `number`, `date`, `depositor`, `custodian`, `positions`, `total`
+- **Схема:** `number`, `date`; `depositor{name,inn,kpp}` (поклажедатель); `custodian{name,inn,kpp}` (хранитель); `storage_place`, `storage_term`; `positions[]{name,code,qty,unit,price,total}`; `total`.
+
+#### 3.29. 🔴 `warehouse_return` — Возврат ТМЦ с хранения (МХ-3)
+
+- **Классификация (литералы):** `мх-3`, `акт о возврате`, `с хранения`, `возврат тмц`
+- **expected_fields:** `number`, `date`, `depositor`, `custodian`, `positions`
+- **Схема:** `number`, `date`; `depositor{name,inn,kpp}`, `custodian{name,inn,kpp}`; `base_doc_number` (исходный МХ-1), `base_doc_date`; `positions[]{name,code,qty,unit,price,total}`; `total`.
+
+#### 3.30. 🔴 `material_requisition` — Требование-накладная (М-11)
+
+- **Классификация (литералы):** `м-11`, `требование-накладная`, `требование`, `отпуск материалов`
+- **expected_fields:** `number`, `date`, `sender`, `receiver`, `positions`, `warehouse`
+- **Схема:** `number`, `date`, `organization_name`, `warehouse` (склад-отправитель); `sender{name,responsible_fio}`, `receiver{name,responsible_fio}`; `basis`; `positions[]{name,code,qty,unit,price,total}`.
+
+---
+
+### 3.* Примечания по версионированию определений (важно разработчику)
+
+- Определения типов лежат в БД (`document_types`) и менялись миграциями. Источник
+  истины — **последняя** миграция, тронувшая поле. Ключевые перекрытия:
+  - `payment_order`, `contract`, `contract_addendum` **не** переведены на
+    канонический `items[]` (миграция `…15`) — у них собственные `positions`/
+    плоские схемы.
+  - `commercial_invoice`, `bill_of_lading`: llm_schema из `…15` (канон `items[]`),
+    но llm_prompt переписан в `…26`.
+  - `contract`: и схема, и промпт переписаны в `…26` (уплощены — глубокая
+    вложенность ломала Qwen 32B).
+  - Кириллические `\b` в ключевых словах глобально заменены на `(?:^|\W)` /
+    `(?:\W|$)` миграцией `…26_…boundary_global` (JS-regex `\b` не работает с
+    кириллицей). `UKD` создан позже (`…28`) и сохраняет литеральный `\b`.
 
 ---
 
