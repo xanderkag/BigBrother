@@ -439,8 +439,13 @@ export default function JobDetailPage() {
 
       {/* Main grid: 2-колоночный layout */}
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-px bg-slate-200 lg:grid-cols-[1fr_minmax(420px,40%)]">
-        {/* PDF слева */}
-        <div className="min-h-0 bg-white dark:bg-slate-900">
+        {/* PDF слева.
+            min-w-0 + overflow-hidden обязательны: без них grid-трек `1fr`
+            раздувается под ширину canvas'а страницы, ResizeObserver ловит
+            увеличенную ширину → containerWidth растёт → страница ещё шире →
+            бесконечный «безумный зум». min-w-0 фиксит дефолтный
+            min-width:auto grid-айтема и обрывает петлю. */}
+        <div className="min-h-0 min-w-0 overflow-hidden bg-white dark:bg-slate-900">
           {fileUrl ? (
             <PdfViewer ref={pdfRef} fileUrl={fileUrl} mimeType={job.mime_type} />
           ) : (

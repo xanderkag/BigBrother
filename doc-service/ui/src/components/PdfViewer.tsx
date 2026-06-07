@@ -73,12 +73,20 @@ const PdfViewer = forwardRef<PdfViewerHandle, PdfViewerProps>(function PdfViewer
   );
 
   // ResizeObserver — пересчитываем target width при ресайзе.
+  // Важно: измеряем ТОЛЬКО внешний контейнер (overflow-hidden, w-full),
+  // ширина которого не зависит от ширины отрисованной страницы. Плюс
+  // guard на изменение ≥1px — иначе sub-pixel дрожание гоняет ре-рендеры
+  // и роняет «ResizeObserver loop completed with undelivered notifications».
+  const lastWidthRef = useRef<number>(0);
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const ro = new ResizeObserver(() => {
-      const w = el.clientWidth;
-      if (w > 0) setContainerWidth(w - 32); // padding margin
+      const next = el.clientWidth - 32; // padding margin
+      if (next > 0 && Math.abs(next - lastWidthRef.current) >= 1) {
+        lastWidthRef.current = next;
+        setContainerWidth(next);
+      }
     });
     ro.observe(el);
     return () => ro.disconnect();
