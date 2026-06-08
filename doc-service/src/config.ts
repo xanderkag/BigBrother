@@ -372,6 +372,47 @@ const ConfigSchema = z.object({
   slai: z.object({
     toParsdocsHmacSecret: z.string().optional(),
   }),
+
+  /**
+   * EXT-LLM-GATEWAY (local): doc-service как локальный OpenAI-совместимый
+   * LLM-шлюз для внешних клиентов (клиент №1 — SLAI AI-чат). Это
+   * аутентифицированный passthrough на локальный GPU-бокс (Ollama,
+   * OpenAI-compat) с подменой `model` по карте алиасов. Облачные бэкенды
+   * НЕ используются (правило TAIPIT-канала: corp-данные только on-prem).
+   * См. docs/EXT_LLM_GATEWAY_LOCAL_IMPL_TZ_2026-06-08.md.
+   *
+   * enabled=false (default) → роуты /v1/chat/completions, /v1/models,
+   * /v1/embeddings НЕ регистрируются (фича-флаг, fail-closed).
+   *
+   *   - baseUrl: endpoint GPU Ollama (OpenAI-compat), напр.
+   *     http://10.10.33.10:11434/v1. ВАЖНО: это НЕ config.llm.url —
+   *     тот указывает на inference-service (кастомные /v1/classify,
+   *     /v1/extract). Шлюз идёт ПРЯМО в Ollama, минуя inference-service.
+   *     Если пусто — fallback на config.llm.url (на случай если оба
+   *     указывают на один OpenAI-compat endpoint).
+   *   - defaultAlias: алиас по умолчанию когда клиент не указал model
+   *     или указал неизвестный.
+   *   - models: карта alias→ollama-tag. Публикуем клиенту алиасы (стабильны),
+   *     backend-тег меняем без правок у клиента. Парсится из JSON.
+   *   - timeoutMs: таймаут одного chat/embeddings-вызова к Ollama.
+   */
+  llmGateway: z.object({
+    enabled: z.coerce.boolean().default(false),
+    baseUrl: z.string().optional(),
+    defaultAlias: z.string().default('parsdocs-chat'),
+    models: z
+      .preprocess((v) => {
+        if (!v || v === '') return {};
+        try {
+          const parsed = JSON.parse(v as string);
+          return parsed && typeof parsed === 'object' ? parsed : {};
+        } catch {
+          return {};
+        }
+      }, z.record(z.string()))
+      .default({}),
+    timeoutMs: numberFromEnv(120_000),
+  }),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -472,6 +513,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     },
     slai: {
       toParsdocsHmacSecret: env.SLAI_TO_PARSDOCS_HMAC_SECRET || undefined,
+    },
+    llmGateway: {
+      enabled: env.LLM_GATEWAY_ENABLED,
+      baseUrl: env.LLM_GATEWAY_BASE_URL || undefined,
+      defaultAlias: env.LLM_GATEWAY_DEFAULT_ALIAS,
+      models: env.LLM_GATEWAY_MODELS_JSON,
+      timeoutMs: env.LLM_GATEWAY_TIMEOUT_MS,
     },
   });
 }

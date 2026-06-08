@@ -27,6 +27,7 @@ import { tenantRoutes } from './routes/tenants.js';
 import { referenceListsRoutes } from './routes/reference-lists.js';
 import { resolutionRoutes } from './routes/resolution.js';
 import { authRoutes } from './routes/auth.js';
+import { llmGatewayRoutes } from './routes/llm-gateway.js';
 import { closeDb } from './db.js';
 import { closeQueue } from './queue.js';
 
@@ -309,6 +310,15 @@ async function main() {
   // своим HMAC (X-SLAI-Signature). Поэтому регистрируется БЕЗ префикса
   // (полные paths внутри route файла).
   await app.register(slaiSyncRoutes);
+
+  // EXT-LLM-GATEWAY (local): doc-service как локальный OpenAI-совместимый
+  // LLM-шлюз. Top-level /v1/* (OpenAI-стандарт, БЕЗ /api/v1 — клиентский
+  // OpenAI-SDK бьёт в <base>/v1/chat/completions). Фича-флаг: при
+  // LLM_GATEWAY_ENABLED=false роуты не регистрируются (fail-closed).
+  if (config.llmGateway.enabled) {
+    await app.register(llmGatewayRoutes);
+    app.log.info('LLM gateway enabled — /v1/chat/completions, /v1/models');
+  }
 
   // --- Operator UI mount strategy ---
   //

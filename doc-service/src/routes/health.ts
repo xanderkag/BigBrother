@@ -143,6 +143,17 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
       // webhook payload для счетов с транспортными сигналами. Значения сейчас:
       // 'Transportation'. Если отсутствует — хинт не вычисляется.
       targetEntityHint: true as const,
+      // EXT-LLM-GATEWAY (local, 2026-06-08): doc-service как локальный
+      // OpenAI-совместимый LLM-шлюз. Когда enabled — доступны top-level
+      // /v1/chat/completions и /v1/models (Bearer named-key). `aliases` —
+      // опубликованное меню моделей (наши алиасы, не сырые backend-теги).
+      llmGateway: {
+        enabled: config.llmGateway.enabled,
+        defaultAlias: config.llmGateway.defaultAlias,
+        aliases: Object.keys(config.llmGateway.models),
+        streaming: false as const,
+        embeddings: false as const,
+      },
     };
   });
 
