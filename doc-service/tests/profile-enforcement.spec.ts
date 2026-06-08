@@ -265,6 +265,11 @@ describe('C. deliverFinalizedJobWebhook passes override url/secret to deliverWeb
   beforeAll(() => {
     vi.doMock('../src/webhooks/deliver.js', () => ({
       deliverWebhook: deliverWebhookMock,
+      // webhook-delivery.ts также импортит computeTargetEntityHint (для
+      // target_entity_hint в payload). Эти тесты проверяют только аргументы
+      // deliverWebhook, поэтому хинт можно занулить — главное чтобы экспорт
+      // существовал, иначе ESM-мок падает «No export defined».
+      computeTargetEntityHint: vi.fn(() => null),
     }));
   });
 
