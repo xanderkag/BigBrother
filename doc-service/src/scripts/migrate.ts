@@ -36,6 +36,13 @@ async function runDirection(direction: Direction, count: number | undefined): Pr
     direction,
     count,
     verbose: true,
+    // checkOrder=false: при слиянии разошедшихся веток к нам попадает миграция
+    // со «старым» timestamp (напр. 20260604…), хотя в проде уже накатаны более
+    // поздние (20260608…). Дефолтный guard падает «pending precedes applied» и
+    // ломает one-shot `migrate` → api/worker не стартуют. Нам важно лишь, что
+    // каждая миграция применяется ровно один раз (node-pg-migrate гарантирует
+    // это через таблицу pgmigrations), а не строгий монотонный порядок имён.
+    checkOrder: false,
     log: (msg: string) => process.stdout.write(`${msg}\n`),
   });
   if (applied.length === 0) {
