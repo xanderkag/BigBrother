@@ -81,12 +81,46 @@ const EXTRACTOR_SUPPORTED_FIELDS = {
     { name: 'transport.escort.required',   since: '2026-06-04' },
     { name: 'transport.escort.type',       since: '2026-06-04' },
     { name: 'transport.escort.area',       since: '2026-06-04' },
+    // EXT-TTN-1 (SLAI 2026-06-04 Q-TTN-CMR-BL-SCHEMA P0+P1): расширенные
+    // схемы для ТТН / CMR / B/L. Поля per-type, перечисляем только новые
+    // top-level — полные деревья видны в JSON-schema.
+    // ТТН P0:
+    { name: 'TTN.carrier',          since: '2026-06-04' },
+    { name: 'TTN.driver.fullName',  since: '2026-06-04' },
+    { name: 'TTN.driver.phone',     since: '2026-06-04' },
+    { name: 'TTN.route.from_city',  since: '2026-06-04' },
+    { name: 'TTN.route.to_city',    since: '2026-06-04' },
+    { name: 'TTN.loading_date',     since: '2026-06-04' },
+    { name: 'TTN.unloading_date',   since: '2026-06-04' },
+    { name: 'TTN.seal_number',      since: '2026-06-04' },
+    { name: 'TTN.cargo.weight_kg',  since: '2026-06-04' },
+    { name: 'TTN.cargo.volume_m3',  since: '2026-06-04' },
+    { name: 'TTN.cargo.dangerous_class', since: '2026-06-04' },
+    // CMR P1:
+    { name: 'CMR.consignor',         since: '2026-06-04' },
+    { name: 'CMR.consignee',         since: '2026-06-04' },
+    { name: 'CMR.successive_carrier', since: '2026-06-04' },
+    { name: 'CMR.cargo.marks',       since: '2026-06-04' },
+    { name: 'CMR.cargo.packages',    since: '2026-06-04' },
+    { name: 'CMR.cargo.gross_weight_kg', since: '2026-06-04' },
+    { name: 'CMR.cargo.volume_m3',   since: '2026-06-04' },
+    { name: 'CMR.place_of_loading',  since: '2026-06-04' },
+    { name: 'CMR.place_of_delivery', since: '2026-06-04' },
+    { name: 'CMR.vehicle',           since: '2026-06-04' },
+    { name: 'CMR.issued_at',         since: '2026-06-04' },
+    // B/L P1 (новый тип в EXTENDED_SCHEMAS):
+    { name: 'bill_of_lading.vessel',          since: '2026-06-04' },
+    { name: 'bill_of_lading.port_of_loading', since: '2026-06-04' },
+    { name: 'bill_of_lading.port_of_discharge', since: '2026-06-04' },
+    { name: 'bill_of_lading.containers',      since: '2026-06-04' },
+    { name: 'bill_of_lading.freight_terms',   since: '2026-06-04' },
+    { name: 'bill_of_lading.incoterm',        since: '2026-06-04' },
   ] as const,
 };
 
 // adapterVersion — bump'аем при расширении SUPPORTED_FIELDS или сменах
 // поведения, видимых consumer'у. Формат YYYY.MM.DD.
-const EXTRACTOR_ADAPTER_VERSION = '2026.06.04';
+const EXTRACTOR_ADAPTER_VERSION = '2026.06.05';
 
 export async function healthRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();

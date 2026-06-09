@@ -404,11 +404,18 @@ const INVOICE_SCHEMA = {
 const TTN_SCHEMA = {
   type: 'object',
   properties: {
-    number: { type: 'string' },
+    number: { type: 'string', description: 'Номер ТТН (например МСК-2026/045)' },
     date: { type: 'string', description: DATE_DESCRIPTION },
     shipper: { ...PARTY, description: 'Грузоотправитель' },
     consignee: { ...PARTY, description: 'Грузополучатель' },
     payer: { ...PARTY, description: 'Плательщик (если отличается от отправителя)' },
+    // EXT-TTN-1 (SLAI 2026-06-04 Q-TTN-CMR-BL-SCHEMA P0): perevozchik отдельно
+    // от грузоотправителя — SLAI matcher.matchToTransfer ищет именно carrier.inn
+    // для привязки к плечу (Transfer).
+    carrier: {
+      ...PARTY,
+      description: 'Перевозчик (компания-исполнитель перевозки). Может отличаться от shipper. Critical для matcher.matchToTransfer.',
+    },
     // Был один объект `cargo` — теперь массив items[] (реальная ТТН-1.2 раздел 1
     // содержит таблицу). Сводный cargo оставлен для backward-compat и для случая
     // когда документ описывает один груз одной строкой.
@@ -416,25 +423,65 @@ const TTN_SCHEMA = {
       type: 'object',
       description: 'Сводная характеристика груза (используется когда в ТТН одна позиция или нужен общий итог)',
       properties: {
-        name: { type: 'string' },
+        name: { type: 'string', description: 'Краткое наименование («Кран башенный»)' },
+        description: { type: 'string', description: 'Полное описание груза («Кран башенный, 1 шт»)' },
         quantity: { type: 'number' },
         weight_gross: { type: 'number', description: 'Масса брутто, кг' },
         weight_nett: { type: 'number', description: 'Масса нетто, кг' },
-        places: { type: 'number', description: 'Количество грузовых мест' },
+        weight_kg: { type: 'number', description: 'Унифицированный вес в кг (alias для weight_gross)' },
+        places: { type: 'number', description: 'Количество грузовых мест (паллет/ящиков)' },
+        units_count: { type: 'integer', description: 'Число единиц груза (для штучных позиций)' },
+        places_count: { type: 'integer', description: 'Alias для places' },
+        volume_m3: { type: 'number', description: 'Объём в кубометрах' },
+        dangerous_class: {
+          type: 'string',
+          description: 'Класс опасности ADR (1, 2.1, 3, 6.1, 8 и т.д.). Null если не опасный.',
+        },
       },
     },
     items: ITEMS_ARRAY,
     vehicle: {
       type: 'object',
       properties: {
-        plate: { type: 'string', description: 'Гос. номер ТС (формат А123БВ77)' },
+        plate: { type: 'string', description: 'Гос. номер ТС (формат А123ВС777). Critical для matcher.matchToTransfer.' },
         trailer_plate: { type: 'string', description: 'Номер прицепа' },
-        driver: { type: 'string', description: 'ФИО водителя' },
-        driver_license: { type: 'string', description: 'Номер водительского удостоверения' },
+        model: { type: 'string', description: 'Модель тягача (MAN/Volvo/КАМАЗ ...)' },
       },
     },
-    loading_point: { type: 'string', description: 'Адрес погрузки' },
-    unloading_point: { type: 'string', description: 'Адрес разгрузки' },
+    // EXT-TTN-1 P0: driver как отдельный объект (раньше был просто vehicle.driver:string)
+    driver: {
+      type: 'object',
+      description: 'Водитель — для SLAI auto-matcher.',
+      properties: {
+        fullName: { type: 'string', description: 'ФИО водителя как написано в ТТН («Иванов Иван Иванович»)' },
+        license: { type: 'string', description: 'Номер водительского удостоверения' },
+        phone: { type: 'string', description: 'Телефон водителя (если указан, +7XXXXXXXXXX)' },
+      },
+    },
+    // EXT-TTN-1 P0: structured route — для matcher.matchToTransfer (поиск плеча).
+    route: {
+      type: 'object',
+      description: 'Маршрут перевозки. from_city/to_city — нормализованные имена городов для SLAI matcher.',
+      properties: {
+        from: { type: 'string', description: 'Полный адрес погрузки («Москва, ул. Тверская, 1»)' },
+        to: { type: 'string', description: 'Полный адрес разгрузки («Казань, ул. Баумана, 5»)' },
+        from_city: { type: 'string', description: 'Город отправления нормализованный («Москва»)' },
+        to_city: { type: 'string', description: 'Город назначения нормализованный («Казань»)' },
+      },
+    },
+    // Backwards compat: loading_point/unloading_point оставлены как алиасы.
+    loading_point: { type: 'string', description: 'Alias для route.from (адрес погрузки)' },
+    unloading_point: { type: 'string', description: 'Alias для route.to (адрес разгрузки)' },
+    loading_date: { type: 'string', description: 'Дата погрузки (ISO YYYY-MM-DD). Может отличаться от document_date.' },
+    unloading_date: { type: 'string', description: 'Дата разгрузки (ISO YYYY-MM-DD).' },
+    seal_number: {
+      type: 'string',
+      description: 'Номер пломбы. Critical для matcher.matchToCargoUnit (контейнер/прицеп).',
+    },
+    additional_terms: {
+      type: 'string',
+      description: 'Свободный текст условий внизу ТТН (особые отметки, оговорки).',
+    },
     transport_docs: {
       type: 'array',
       description: 'Связанные документы (CMR, счёт-фактура, путевой лист)',
@@ -446,31 +493,69 @@ const TTN_SCHEMA = {
 const CMR_SCHEMA = {
   type: 'object',
   properties: {
-    number: { type: 'string' },
+    number: { type: 'string', description: 'Номер CMR (например CMR-RU-2026-1234)' },
     date: { type: 'string', description: DATE_DESCRIPTION },
-    sender: { ...PARTY_WITH_COUNTRY, description: 'Отправитель (ячейка 1)' },
-    recipient: { ...PARTY_WITH_COUNTRY, description: 'Получатель (ячейка 2)' },
+    // EXT-TTN-1 (SLAI 2026-06-04): canonical naming consignor/consignee
+    // как в IRU CMR convention (ячейки 1 и 2). Старые sender/recipient
+    // оставлены ниже как алиасы для backwards compat.
+    consignor: { ...PARTY_WITH_COUNTRY, description: 'Отправитель / consignor (ячейка 1)' },
+    consignee: { ...PARTY_WITH_COUNTRY, description: 'Получатель / consignee (ячейка 2)' },
+    sender: { ...PARTY_WITH_COUNTRY, description: 'Alias для consignor (legacy).' },
+    recipient: { ...PARTY_WITH_COUNTRY, description: 'Alias для consignee (legacy).' },
     carrier: {
-      type: 'object',
-      properties: {
-        name: { type: 'string' },
-        address: { type: 'string' },
-      },
-      description: 'Перевозчик (ячейка 16)',
+      ...PARTY,
+      description: 'Перевозчик (ячейка 16). Critical для matcher.matchToTransfer.',
+    },
+    successive_carrier: {
+      ...PARTY,
+      description: 'Последующий перевозчик (ячейка 17), если перевозка multi-leg.',
     },
     cargo: {
       type: 'object',
-      description: 'Сводная характеристика (для разделов 6-12 CMR)',
+      description: 'Характеристика груза (разделы 6-12 CMR)',
       properties: {
-        description: { type: 'string' },
-        packages: { type: 'number', description: 'Количество мест' },
-        weight: { type: 'number', description: 'Вес брутто, кг' },
-        volume: { type: 'number', description: 'Объём, м³' },
+        marks: { type: 'string', description: 'Маркировка (ячейка 6)' },
+        description: { type: 'string', description: 'Описание груза (ячейка 9)' },
+        packages: {
+          type: 'array',
+          description: 'Упаковка (ячейки 7-8): тип + количество. Может быть несколько разнотипных.',
+          items: {
+            type: 'object',
+            properties: {
+              type: { type: 'string', description: 'Тип («паллет», «коробок», «cases»)' },
+              count: { type: 'integer', description: 'Количество мест данного типа' },
+            },
+          },
+        },
+        packages_total: { type: 'integer', description: 'Общее число мест (sum по packages[].count). Alias для legacy.' },
+        weight: { type: 'number', description: 'Вес брутто, кг (legacy alias)' },
+        gross_weight_kg: { type: 'number', description: 'Вес брутто в кг (ячейка 11)' },
+        volume: { type: 'number', description: 'Объём, м³ (legacy alias)' },
+        volume_m3: { type: 'number', description: 'Объём в м³ (ячейка 12)' },
       },
     },
     items: ITEMS_ARRAY,
-    loading_place: { type: 'string', description: 'Место погрузки (ячейка 4)' },
-    delivery_place: { type: 'string', description: 'Место разгрузки (ячейка 3)' },
+    // EXT-TTN-1: structured places — canonical name «place_of_loading / place_of_delivery».
+    place_of_loading: { type: 'string', description: 'Место погрузки (ячейка 4)' },
+    place_of_delivery: { type: 'string', description: 'Место разгрузки (ячейка 3)' },
+    loading_place: { type: 'string', description: 'Alias для place_of_loading (legacy).' },
+    delivery_place: { type: 'string', description: 'Alias для place_of_delivery (legacy).' },
+    vehicle: {
+      type: 'object',
+      description: 'Транспортное средство (ячейка 25).',
+      properties: {
+        plate: { type: 'string', description: 'Гос. номер ТС' },
+        trailer_plate: { type: 'string', description: 'Номер прицепа' },
+      },
+    },
+    issued_at: {
+      type: 'object',
+      description: 'Место и дата выдачи CMR (ячейка 21).',
+      properties: {
+        place: { type: 'string' },
+        date: { type: 'string', description: 'ISO YYYY-MM-DD' },
+      },
+    },
     incoterms: {
       type: 'string',
       description: 'Условия поставки Incoterms (EXW, FCA, CIP, DAP, DDP, FOB, CIF, …)',
@@ -478,6 +563,87 @@ const CMR_SCHEMA = {
     transport_docs: {
       type: 'array',
       description: 'Связанные документы (invoice, packing_list)',
+      items: { type: 'string' },
+    },
+  },
+} as const;
+
+// EXT-TTN-1 (SLAI 2026-06-04 Q-TTN-CMR-BL-SCHEMA P1): новая схема для
+// коносамента (B/L). Multi-container — массив containers[], vessel/voyage
+// для морских перевозок. Critical поля для SLAI matcher:
+//   - bl.number + bl.vessel → найти Transfer (морское плечо)
+//   - containers[].number → найти CargoUnit (контейнер)
+const BL_SCHEMA = {
+  type: 'object',
+  properties: {
+    number: { type: 'string', description: 'Номер коносамента (например MSCUSE12345678).' },
+    date: { type: 'string', description: DATE_DESCRIPTION },
+    shipper: { ...PARTY, description: 'Отправитель (грузоотправитель).' },
+    consignee: { ...PARTY, description: 'Получатель.' },
+    notify_party: {
+      ...PARTY,
+      description: 'Уведомляемая сторона (notify party) — кому сообщить о прибытии груза.',
+    },
+    vessel: {
+      type: 'object',
+      description: 'Морское судно.',
+      properties: {
+        name: { type: 'string', description: 'Название судна («MSC LUCERNE»)' },
+        voyage: { type: 'string', description: 'Номер рейса («VOY-2026-12W»)' },
+        imo: { type: 'string', description: 'IMO-номер судна (если указан)' },
+      },
+    },
+    port_of_loading: { type: 'string', description: 'Порт погрузки (POL, «Shanghai»)' },
+    port_of_discharge: { type: 'string', description: 'Порт выгрузки (POD, «Vladivostok»)' },
+    place_of_receipt: {
+      type: 'string',
+      description: 'Место приёма груза (если отличается от POL, для intermodal — «Shanghai CY»)',
+    },
+    place_of_delivery: {
+      type: 'string',
+      description: 'Место доставки (если отличается от POD, для intermodal — «Moscow»)',
+    },
+    containers: {
+      type: 'array',
+      description: 'Контейнеры. Может быть несколько. Critical для matcher.matchToCargoUnit.',
+      items: {
+        type: 'object',
+        properties: {
+          number: { type: 'string', description: 'Номер контейнера (ISO 6346: 4 буквы + 7 цифр, MSCU1234567)' },
+          seal: { type: 'string', description: 'Номер пломбы (ABC123)' },
+          type: { type: 'string', description: 'Тип контейнера (20DC, 40HC, 40RF, 45HC, ...)' },
+          tare_kg: { type: 'number', description: 'Вес тары в кг' },
+          gross_weight_kg: { type: 'number', description: 'Вес брутто этого контейнера' },
+        },
+      },
+    },
+    cargo: {
+      type: 'object',
+      description: 'Сводная характеристика груза.',
+      properties: {
+        description: { type: 'string', description: 'Описание («Industrial equipment»)' },
+        gross_weight_kg: { type: 'number', description: 'Общий вес брутто, кг' },
+        volume_m3: { type: 'number', description: 'Объём в м³' },
+        packages_count: { type: 'integer', description: 'Общее количество мест' },
+        package_type: { type: 'string', description: 'Тип упаковки («cases», «pallets», «cartons»)' },
+      },
+    },
+    freight_terms: {
+      type: 'string',
+      enum: ['PREPAID', 'COLLECT', 'PAYABLE_AT_DESTINATION'],
+      description: 'Условия фрахта.',
+    },
+    incoterm: {
+      type: 'string',
+      description: 'Incoterm с указанием места («FOB Shanghai», «CIF Vladivostok»)',
+    },
+    booking_number: {
+      type: 'string',
+      description: 'Номер букинга у линии (если указан в B/L).',
+    },
+    transport_docs: {
+      type: 'array',
+      description: 'Связанные документы (commercial invoice, packing list, certificate of origin)',
       items: { type: 'string' },
     },
   },
@@ -911,14 +1077,18 @@ export const EXTENDED_SCHEMAS: Record<string, Record<string, unknown>> = {
   waybill: WAYBILL_SCHEMA,
   transport_invoice: TRANSPORT_INVOICE_SCHEMA,
   transport_request: TRANSPORT_REQUEST_SCHEMA,
+  // EXT-TTN-1 (SLAI 2026-06-04): полноценная схема коносамента для morских
+  // перевозок. Раньше bill_of_lading резолвился через generic-llm с {}
+  // схемой и LLM возвращал гадание.
+  bill_of_lading: BL_SCHEMA,
 };
 
 export const EXPECTED_FIELDS: Record<DocumentType, string[]> = {
   invoice: ['number', 'date', 'seller', 'buyer', 'total', 'items'],
   factInvoice: ['number', 'date', 'seller', 'buyer', 'total', 'vat', 'vat_summary', 'items'],
   UPD: ['number', 'date', 'seller', 'buyer', 'total', 'vat', 'items'],
-  TTN: ['number', 'date', 'shipper', 'consignee', 'cargo', 'vehicle', 'items'],
-  CMR: ['number', 'date', 'sender', 'recipient', 'carrier', 'items'],
+  TTN: ['number', 'date', 'shipper', 'consignee', 'carrier', 'cargo', 'vehicle', 'driver', 'route', 'items'],
+  CMR: ['number', 'date', 'consignor', 'consignee', 'carrier', 'place_of_loading', 'place_of_delivery', 'cargo', 'items'],
   AKT: ['number', 'date', 'party_a', 'party_b', 'total', 'items'],
 };
 
