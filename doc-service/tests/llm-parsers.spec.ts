@@ -64,6 +64,13 @@ describe('LLM-backed parsers — happy path with mock', () => {
         // Phase A v2: items[] — канонический массив строк (раньше parser
         // не требовал его, теперь EXPECTED_FIELDS.TTN включает 'items').
         items: [{ name: 'Кирпичи', quantity: 100 }],
+        // EXT-TTN-1 (SLAI 2026-06-04): carrier/driver/route стали отдельными
+        // top-level полями EXPECTED_FIELDS.TTN (carrier отдельно от shipper,
+        // driver — структурный объект вместо vehicle.driver:string, route —
+        // structured for matcher). Happy-path заполняет их, чтобы missing=[].
+        carrier: { name: 'ООО Перевозчик', inn: '7705556677' },
+        driver: { fullName: 'Иванов И.И.', license: '77 АА 123456', phone: '+79991234567' },
+        route: { from: 'Москва', to: 'Санкт-Петербург' },
       },
       confidence: 0.88,
     });
