@@ -22,6 +22,7 @@ import {
   type ProcessingMode,
   type OutputMode,
 } from '@/queries/organizationSettings';
+import TokenRevealModal from '@/components/TokenRevealModal';
 
 /**
  * Tenants — фундамент multi-tenant: организации, проекты, пользователи.
@@ -755,6 +756,9 @@ function UsersCard({
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<UserRole>('manager');
   const [orgId, setOrgId] = useState('');
+  // Одноразовый показ только что выпущенного токена (в модале, не alert —
+  // alert не копируется на http-origin). null = модал закрыт.
+  const [revealed, setRevealed] = useState<{ token: string; subject: string } | null>(null);
 
   const orgMap = new Map(orgs.map((o) => [o.id, o.name]));
 
@@ -776,23 +780,13 @@ function UsersCard({
     }
   };
 
-  const handleGenerateToken = async (userId: string) => {
+  const handleGenerateToken = async (userId: string, subject: string) => {
     if (!confirm('Сгенерировать новый токен? Старый перестанет работать.')) return;
     try {
       const res = await genToken.mutateAsync(userId);
-      try {
-        await navigator.clipboard.writeText(res.plaintext);
-        alert(
-          `Personal access token создан и скопирован в буфер:\n\n${res.plaintext}\n\n` +
-            'Сохраните его сейчас — после закрытия этого окна вы его НЕ увидите. ' +
-            'В заголовке: Authorization: Bearer <token>.',
-        );
-      } catch {
-        alert(
-          `Personal access token создан:\n\n${res.plaintext}\n\n` +
-            'Скопировать не удалось — выделите вручную и сохраните.',
-        );
-      }
+      // Показываем токен в модале с выделяемым полем + копированием. alert()
+      // на http-origin копировать не даёт и текст не выделяется.
+      setRevealed({ token: res.plaintext, subject });
     } catch (err) {
       alert(err instanceof Error ? err.message : String(err));
     }
@@ -928,7 +922,7 @@ function UsersCard({
                         <button
                           type="button"
                           className="btn-ghost text-xs"
-                          onClick={() => handleGenerateToken(u.id)}
+                          onClick={() => handleGenerateToken(u.id, u.display_name)}
                           disabled={genToken.isPending}
                           title={u.has_token ? 'Перевыпустить токен' : 'Сгенерировать токен'}
                         >
@@ -980,7 +974,7 @@ function UsersCard({
                   <button
                     type="button"
                     className="btn-ghost min-h-[40px] text-xs"
-                    onClick={() => handleGenerateToken(u.id)}
+                    onClick={() => handleGenerateToken(u.id, u.display_name)}
                     disabled={genToken.isPending}
                   >
                     {u.has_token ? '↻ rotate' : '+ token'}
@@ -1000,6 +994,14 @@ function UsersCard({
             ))}
           </ul>
         </>
+      )}
+
+      {revealed && (
+        <TokenRevealModal
+          token={revealed.token}
+          subject={revealed.subject}
+          onClose={() => setRevealed(null)}
+        />
       )}
     </div>
   );
