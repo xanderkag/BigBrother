@@ -49,6 +49,7 @@ const OrgStatus = z.enum(['active', 'archived']);
 const ProjectStatus = z.enum(['active', 'archived']);
 const UserRole = z.enum(['super_admin', 'org_admin', 'manager', 'viewer']);
 const UserStatus = z.enum(['active', 'blocked']);
+const UserKind = z.enum(['human', 'service']);
 const ProjectAccessRole = z.enum(['admin', 'manager', 'viewer']);
 
 const OrganizationApi = z.object({
@@ -146,6 +147,7 @@ const UserApi = z.object({
   organization_id: z.string().uuid().nullable(),
   role: UserRole,
   status: UserStatus,
+  kind: UserKind,
   has_api_token: z.boolean(),
   last_seen_at: z.string().nullable(),
   created_at: z.string(),
@@ -154,6 +156,7 @@ const UserApi = z.object({
 const UserListResponse = z.object({ items: z.array(UserApi) });
 const UserListQuery = z.object({
   organization_id: z.string().uuid().optional(),
+  kind: UserKind.optional(),
 });
 const UserCreate = z.object({
   email: z.string().email().optional(),
@@ -161,8 +164,12 @@ const UserCreate = z.object({
   organization_id: z.string().uuid().nullable().optional(),
   role: UserRole.optional(),
   status: UserStatus.optional(),
+  kind: UserKind.optional().default('human'),
 });
-const UserPatch = UserCreate.partial();
+// PUT не меняет kind (тип аккаунта фиксируется при создании); .partial()
+// сделал бы поле опциональным, но ZodDefault всё равно инжектил бы
+// 'human' в каждый patch — поэтому kind из patch-схемы убираем.
+const UserPatch = UserCreate.omit({ kind: true }).partial();
 const UserIdParam = z.object({ id: z.string().uuid() });
 
 const AccessApi = z.object({
@@ -445,7 +452,7 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
     },
     async (req) => {
       const scope = await getEffectiveScope(req);
-      let rows = await usersRepo.list(req.query.organization_id);
+      let rows = await usersRepo.list(req.query.organization_id, req.query.kind);
       if (scope.kind === 'org') {
         rows = rows.filter((r) => r.organization_id === scope.orgId);
       } else if (scope.kind === 'projects') {

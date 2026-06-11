@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react';
 import {
   useCreateOrg,
   useCreateProject,
+  useCreateSystem,
   useCreateUser,
   useGenerateToken,
   useOrganizations,
   useProjects,
   useRevokeToken,
+  useSystems,
   useUsers,
   type Organization,
   type Project,
@@ -33,6 +35,7 @@ export default function TenantsPage() {
   const orgs = useOrganizations();
   const projects = useProjects();
   const users = useUsers();
+  const systems = useSystems();
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 p-6">
@@ -70,6 +73,12 @@ export default function TenantsPage() {
         orgs={orgs.data?.items ?? []}
         loading={users.isLoading}
         error={users.error}
+      />
+      <SystemsCard
+        systems={systems.data?.items ?? []}
+        orgs={orgs.data?.items ?? []}
+        loading={systems.isLoading}
+        error={systems.error}
       />
     </div>
   );
@@ -984,6 +993,263 @@ function UsersCard({
                       type="button"
                       className="btn-ghost min-h-[40px] text-xs text-rose-600 dark:text-rose-400"
                       onClick={() => handleRevoke(u.id)}
+                      disabled={revoke.isPending}
+                    >
+                      ✕ revoke
+                    </button>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      {revealed && (
+        <TokenRevealModal
+          token={revealed.token}
+          subject={revealed.subject}
+          onClose={() => setRevealed(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// Systems / integrations (service accounts)
+// ============================================================================
+
+function SystemsCard({
+  systems,
+  orgs,
+  loading,
+  error,
+}: {
+  systems: UserEntry[];
+  orgs: Organization[];
+  loading: boolean;
+  error: unknown;
+}) {
+  const [showForm, setShowForm] = useState(false);
+  const create = useCreateSystem();
+  const genToken = useGenerateToken();
+  const revoke = useRevokeToken();
+
+  const [displayName, setDisplayName] = useState('');
+  const [role, setRole] = useState<UserRole>('manager');
+  const [orgId, setOrgId] = useState('');
+  // Одноразовый показ только что выпущенного токена (в модале, не alert).
+  const [revealed, setRevealed] = useState<{ token: string; subject: string } | null>(null);
+
+  const orgMap = new Map(orgs.map((o) => [o.id, o.name]));
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!displayName.trim()) return;
+    try {
+      await create.mutateAsync({
+        display_name: displayName.trim(),
+        role,
+        organization_id: orgId || null,
+      });
+      setDisplayName('');
+      setShowForm(false);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleGenerateToken = async (userId: string, subject: string) => {
+    if (!confirm('Сгенерировать новый токен? Старый перестанет работать.')) return;
+    try {
+      const res = await genToken.mutateAsync(userId);
+      setRevealed({ token: res.plaintext, subject });
+    } catch (err) {
+      alert(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleRevoke = async (userId: string) => {
+    if (!confirm('Отозвать токен системы? Её API-запросы будут отклоняться.')) return;
+    try {
+      await revoke.mutateAsync(userId);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  return (
+    <div className="card overflow-hidden">
+      <div className="card-header">
+        <h2 className="card-title">Системы / интеграции ({systems.length})</h2>
+        <button type="button" className="btn-secondary text-xs" onClick={() => setShowForm((v) => !v)}>
+          {showForm ? 'Отмена' : '+ Создать'}
+        </button>
+      </div>
+
+      <p className="border-b border-slate-200 bg-slate-50/50 px-5 py-3 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-950/30 dark:text-slate-400">
+        Система = внешняя интеграция (SLAI, 1С, Bitrix). Без логина, только
+        API-ключи. Ключ работает и для API документов, и для LLM-шлюза.
+      </p>
+
+      {showForm && (
+        <form
+          onSubmit={submit}
+          className="space-y-3 border-b border-slate-200 bg-slate-50/50 px-5 py-4 dark:border-slate-800 dark:bg-slate-950/30"
+        >
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <label className="form-label">Имя</label>
+              <input
+                type="text"
+                className="form-input"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="SLAI"
+                required
+              />
+            </div>
+            <div>
+              <label className="form-label">Роль</label>
+              <select
+                className="form-select"
+                value={role}
+                onChange={(e) => setRole(e.target.value as UserRole)}
+              >
+                <option value="super_admin">super_admin</option>
+                <option value="admin">admin</option>
+                <option value="manager">manager</option>
+                <option value="viewer">viewer</option>
+              </select>
+            </div>
+            <div>
+              <label className="form-label">Организация (опционально)</label>
+              <select
+                className="form-select"
+                value={orgId}
+                onChange={(e) => setOrgId(e.target.value)}
+              >
+                <option value="">— (без привязки)</option>
+                {orgs.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <button type="submit" className="btn-primary" disabled={create.isPending}>
+            {create.isPending ? 'Создаём…' : 'Создать систему'}
+          </button>
+        </form>
+      )}
+
+      {!!error && <ErrorRow err={error} />}
+      {loading && <LoadingRow />}
+      {!loading && !error && systems.length === 0 && (
+        <EmptyRow text="Систем ещё нет — добавьте первую интеграцию." />
+      )}
+      {systems.length > 0 && (
+        <>
+          {/* Desktop / tablet (≥md): таблица. */}
+          <div className="hidden overflow-x-auto md:block">
+            <table className="min-w-full text-sm">
+              <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-900/40 dark:text-slate-400">
+                <tr>
+                  <Th>Имя</Th>
+                  <Th>Роль</Th>
+                  <Th className="hidden xl:table-cell">Организация</Th>
+                  <Th className="hidden lg:table-cell">Токен</Th>
+                  <Th>Действия</Th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                {systems.map((s) => (
+                  <tr key={s.id} className="hover:bg-slate-50 dark:hover:bg-slate-900/40">
+                    <Td>{s.display_name}</Td>
+                    <Td>
+                      <RoleBadge role={s.role} />
+                    </Td>
+                    <Td className="hidden text-xs text-slate-600 xl:table-cell dark:text-slate-400">
+                      {s.organization_id ? orgMap.get(s.organization_id) ?? s.organization_id.slice(0, 8) : '—'}
+                    </Td>
+                    <Td className="hidden lg:table-cell">
+                      {s.has_token ? (
+                        <span className="badge-emerald">есть</span>
+                      ) : (
+                        <span className="badge-slate">нет</span>
+                      )}
+                      {s.token_last_used_at && (
+                        <div className="mt-0.5 text-[11px] text-slate-400 dark:text-slate-500">
+                          исп. {fmtDate(s.token_last_used_at)}
+                        </div>
+                      )}
+                    </Td>
+                    <Td>
+                      <div className="flex gap-1">
+                        <button
+                          type="button"
+                          className="btn-ghost text-xs"
+                          onClick={() => handleGenerateToken(s.id, s.display_name)}
+                          disabled={genToken.isPending}
+                          title={s.has_token ? 'Перевыпустить токен' : 'Сгенерировать токен'}
+                        >
+                          {s.has_token ? '↻ rotate' : '+ token'}
+                        </button>
+                        {s.has_token && (
+                          <button
+                            type="button"
+                            className="btn-ghost text-xs text-rose-600 dark:text-rose-400"
+                            onClick={() => handleRevoke(s.id)}
+                            disabled={revoke.isPending}
+                            title="Отозвать токен"
+                          >
+                            ✕ revoke
+                          </button>
+                        )}
+                      </div>
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Mobile (<md): карточки. */}
+          <ul className="divide-y divide-slate-200 md:hidden dark:divide-slate-800">
+            {systems.map((s) => (
+              <li key={s.id} className="space-y-2 px-5 py-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="font-medium text-slate-900 dark:text-slate-100">{s.display_name}</div>
+                  </div>
+                  <RoleBadge role={s.role} />
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                  {s.has_token ? (
+                    <span className="badge-emerald">токен есть</span>
+                  ) : (
+                    <span className="badge-slate">нет токена</span>
+                  )}
+                  <span className="text-slate-500 dark:text-slate-400">
+                    {s.organization_id ? orgMap.get(s.organization_id) ?? s.organization_id.slice(0, 8) : 'без орг.'}
+                  </span>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    className="btn-ghost min-h-[40px] text-xs"
+                    onClick={() => handleGenerateToken(s.id, s.display_name)}
+                    disabled={genToken.isPending}
+                  >
+                    {s.has_token ? '↻ rotate' : '+ token'}
+                  </button>
+                  {s.has_token && (
+                    <button
+                      type="button"
+                      className="btn-ghost min-h-[40px] text-xs text-rose-600 dark:text-rose-400"
+                      onClick={() => handleRevoke(s.id)}
                       disabled={revoke.isPending}
                     >
                       ✕ revoke

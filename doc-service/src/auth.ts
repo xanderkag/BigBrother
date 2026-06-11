@@ -75,6 +75,9 @@ async function userToAuth(row: UserRow): Promise<AuthUser> {
     default_project_id: defaultProjectId,
     isSuperAdmin: row.role === 'super_admin',
     row,
+    // service-аккаунт (интеграционная система) — тегируем caller для
+    // gateway usage attribution и аудита. Человек остаётся без caller.
+    ...(row.kind === 'service' ? { caller: row.display_name } : {}),
   };
 }
 

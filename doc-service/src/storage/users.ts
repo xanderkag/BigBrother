@@ -22,6 +22,7 @@ import { db } from '../db.js';
 
 export type UserRole = 'super_admin' | 'org_admin' | 'manager' | 'viewer';
 export type UserStatus = 'active' | 'blocked';
+export type UserKind = 'human' | 'service';
 export type ProjectAccessRole = 'admin' | 'manager' | 'viewer';
 
 export type UserRow = {
@@ -31,6 +32,7 @@ export type UserRow = {
   organization_id: string | null;
   role: UserRole;
   status: UserStatus;
+  kind: UserKind;
   api_token_hash: string | null;
   password_hash: string | null;
   last_seen_at: Date | null;
@@ -53,22 +55,31 @@ export type UserInput = {
   organization_id?: string | null;
   role?: UserRole;
   status?: UserStatus;
+  kind?: UserKind;
 };
 
 class UsersRepo {
-  async list(organizationId?: string): Promise<UserRow[]> {
+  async list(organizationId?: string, kind?: UserKind): Promise<UserRow[]> {
+    // org_admin / manager / viewer привязаны к organization_id.
+    // super_admin'ы (organization_id IS NULL) тоже видны в списке
+    // организации, если запросил super_admin'ом — но фильтруем строго
+    // по членству. UI решает что показывать.
+    // kind (human/service) — опциональный доп-фильтр, композится с org.
+    const conditions: string[] = [];
+    const values: unknown[] = [];
     if (organizationId) {
-      const { rows } = await db.query<UserRow>(
-        // org_admin / manager / viewer привязаны к organization_id.
-        // super_admin'ы (organization_id IS NULL) тоже видны в списке
-        // организации, если запросил super_admin'ом — но фильтруем строго
-        // по членству. UI решает что показывать.
-        `SELECT * FROM users WHERE organization_id = $1 ORDER BY display_name`,
-        [organizationId],
-      );
-      return rows;
+      values.push(organizationId);
+      conditions.push(`organization_id = $${values.length}`);
     }
-    const { rows } = await db.query<UserRow>(`SELECT * FROM users ORDER BY display_name`);
+    if (kind) {
+      values.push(kind);
+      conditions.push(`kind = $${values.length}`);
+    }
+    const where = conditions.length > 0 ? ` WHERE ${conditions.join(' AND ')}` : '';
+    const { rows } = await db.query<UserRow>(
+      `SELECT * FROM users${where} ORDER BY display_name`,
+      values,
+    );
     return rows;
   }
 
@@ -79,8 +90,8 @@ class UsersRepo {
 
   async create(input: UserInput): Promise<UserRow> {
     const { rows } = await db.query<UserRow>(
-      `INSERT INTO users (email, display_name, organization_id, role, status)
-       VALUES ($1, $2, $3, COALESCE($4, 'manager'), COALESCE($5, 'active'))
+      `INSERT INTO users (email, display_name, organization_id, role, status, kind)
+       VALUES ($1, $2, $3, COALESCE($4, 'manager'), COALESCE($5, 'active'), COALESCE($6, 'human'))
        RETURNING *`,
       [
         input.email ?? null,
@@ -88,6 +99,7 @@ class UsersRepo {
         input.organization_id ?? null,
         input.role ?? null,
         input.status ?? null,
+        input.kind ?? null,
       ],
     );
     return rows[0]!;
@@ -324,6 +336,7 @@ class UsersRepo {
       organization_id: row.organization_id,
       role: row.role,
       status: row.status,
+      kind: row.kind,
       has_api_token: !!row.api_token_hash,
       last_seen_at: row.last_seen_at ? row.last_seen_at.toISOString() : null,
       created_at: row.created_at.toISOString(),

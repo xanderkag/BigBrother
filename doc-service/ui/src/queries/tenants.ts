@@ -32,6 +32,7 @@ export interface UserEntry {
   display_name: string;
   email: string | null;
   role: UserRole;
+  kind: 'human' | 'service';
   organization_id: string | null;
   has_token: boolean;
   token_last_used_at: string | null;
@@ -58,8 +59,15 @@ export function useProjects() {
 
 export function useUsers() {
   return useQuery({
-    queryKey: ['users'],
-    queryFn: () => api.get<ListResponse<UserEntry>>('/api/v1/users'),
+    queryKey: ['users', 'human'],
+    queryFn: () => api.get<ListResponse<UserEntry>>('/api/v1/users?kind=human'),
+  });
+}
+
+export function useSystems() {
+  return useQuery({
+    queryKey: ['users', 'service'],
+    queryFn: () => api.get<ListResponse<UserEntry>>('/api/v1/users?kind=service'),
   });
 }
 
@@ -98,6 +106,21 @@ export function useCreateUser() {
       organization_id: string | null;
     }) => api.post<UserEntry>('/api/v1/users', data),
     onSuccess: () => {
+      // ['users'] — префикс: инвалидирует и людей, и системы.
+      qc.invalidateQueries({ queryKey: ['users'] });
+    },
+  });
+}
+
+export function useCreateSystem() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: {
+      display_name: string;
+      role: UserRole;
+      organization_id: string | null;
+    }) => api.post<UserEntry>('/api/v1/users', { ...data, kind: 'service' }),
+    onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['users'] });
     },
   });
@@ -114,6 +137,7 @@ export function useGenerateToken() {
     mutationFn: (userId: string) =>
       api.post<NewTokenResponse>(`/api/v1/users/${encodeURIComponent(userId)}/token`),
     onSuccess: () => {
+      // префикс ['users'] обновляет и людей, и системы.
       qc.invalidateQueries({ queryKey: ['users'] });
     },
   });
