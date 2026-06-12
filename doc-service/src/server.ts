@@ -65,6 +65,29 @@ async function main() {
     reply.header('x-request-id', req.id);
   });
 
+  // Видимость внешних обращений: на onResponse логируем запросы систем-
+  // интеграций (service-аккаунтов) ПОИМЁННО. `req.user` к этому моменту уже
+  // проставлен bearerAuthHook'ом, а `caller` выставляется только для service-
+  // аккаунтов (= display_name системы, напр. "SLAI"). Людей и UI-поллинг сюда
+  // НЕ пускаем (гейт по caller) — чтобы лог внешнего трафика оставался чистым.
+  // Дефолтная "incoming request"-строка анонимна (auth резолвится позже), эта —
+  // именная: `external request by SLAI`.
+  app.addHook('onResponse', async (req, reply) => {
+    const caller = req.user?.caller;
+    if (!caller) return;
+    req.log.info(
+      {
+        caller,
+        role: req.user?.role,
+        method: req.method,
+        url: req.url,
+        status: reply.statusCode,
+        duration_ms: Math.round(reply.elapsedTime),
+      },
+      `external request by ${caller}`,
+    );
+  });
+
   // Make Fastify validate/serialize using zod schemas instead of ajv. Only
   // affects routes that declare zod schemas; routes with raw JSON Schema
   // (e.g., the multipart POST /jobs) keep ajv defaults.
