@@ -12,6 +12,9 @@
  *   3. applyCategoryHints (F6) — keyword-mapper по items[].name
  *   4. enrichItemsWithSlaiCategoryIds (F13 polish) — обогащение items
  *      из lookup-table SLAI nomenclature
+ *   5. buildMatchSignals (PD-CONTRACT-1 §2.1) — канонический FLAT
+ *      `_match_signals` для SLAI matcher. Последним: читает уже
+ *      нормализованные поля (plate/ИНН), кладёт additive namespace.
  *
  * **Почему именно такой порядок:**
  *   - F1 первым потому что validation (которая идёт после нормализации)
@@ -39,12 +42,14 @@ import { normalizeExtractedFields } from './extracted-fields.js';
 import { recomputeTotalsFromItems, deriveHeaderTotals } from './totals.js';
 import { applyCategoryHints } from './categories.js';
 import { enrichItemsWithSlaiCategoryIds } from './slai-enrichment.js';
+import { buildMatchSignals } from './match-signals.js';
 import { slaiCategoriesRepo } from '../../storage/slai-categories.js';
 
 export async function runPostExtractNormalization(
   extracted: Record<string, unknown> | null,
   log?: Logger,
   rawText?: string | null,
+  documentType?: string | null,
 ): Promise<Record<string, unknown> | null> {
   if (!extracted) return extracted;
 
@@ -82,6 +87,14 @@ export async function runPostExtractNormalization(
     if (enriched && enriched !== result) result = enriched;
   } catch (err) {
     if (log) log.warn({ err }, 'SLAI category enrichment skipped (DB error)');
+  }
+
+  // PD-CONTRACT-1 §2.1: канонический FLAT `_match_signals` для SLAI matcher.
+  // Последним — опирается на уже нормализованные plate/ИНН. `_field_confidence`
+  // (если LLM прислала) ещё в extracted → §2.3 confidence наполняется тут же.
+  // Additive: добавляем reserved-ключ, остальной extracted не трогаем.
+  if (result && typeof result === 'object') {
+    result = { ...result, _match_signals: buildMatchSignals(documentType ?? null, result) };
   }
 
   return result;

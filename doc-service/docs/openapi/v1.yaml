@@ -436,6 +436,99 @@ components:
         needs_review`. `_issues` is a **reserved key**; receivers
         should not store it in business tables — it's a UI hint.
 
+        `_match_signals` (additive, since 2026-06-12, PD-CONTRACT-1
+        §2.1): a canonical **flat** projection of cross-type matching
+        keys (container numbers, bl/ttn/cmr numbers, parties, vehicle,
+        dates, totals) so consumers get stable keys without digging
+        into per-type nested fields. Present-only — a key is omitted
+        when the document has no value (never `""`/`[]`/`null`).
+        `schema_version` is always present. See `MatchSignals`. This is
+        a **reserved key** and a v1-compatible addition (existing
+        per-type fields unchanged).
+
+    MatchSignals:
+      type: object
+      description: |
+        Canonical flat match-signals (PD-CONTRACT-1 §2.1). Lives at
+        `extracted._match_signals`. Present-only: keys appear only when
+        the document carries a value. Built declaratively per
+        `document_type` with a generic fallback for unknown types
+        (`src/pipeline/normalize/match-signals.ts`).
+      required: [schema_version]
+      properties:
+        schema_version:
+          type: string
+          enum: ["1.0"]
+          description: Always `"1.0"`.
+        containers:
+          type: array
+          items:
+            type: string
+          description: All ISO-6346 container numbers (4 letters + 7 digits).
+        bl_number:
+          type: string
+        cmr_number:
+          type: string
+        ttn_number:
+          type: string
+        awb_number:
+          type: string
+        declaration_numbers:
+          type: array
+          items:
+            type: string
+        order_refs:
+          type: array
+          items:
+            type: string
+          description: |
+            Order/PO/«Заказ №»/«Order Ref» numbers, as-is. Sourced from
+            real schema fields (`order_ref`, `items[].order_ref`).
+            Absent when no order-reference field exists for the type
+            (not fabricated — see SLAI Q2).
+        vehicle:
+          type: object
+          properties:
+            plate:
+              type: string
+              description: Normalized RU plate (latin→cyrillic) or raw if not normalizable.
+            trailer:
+              type: string
+        parties:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/Party"
+          description: |
+            Canonical roles: `shipper`, `consignee`, `buyer`, `seller`,
+            `carrier`, `forwarder`, `notify_party`, `payer`, `payee`.
+            Each value is a present-only `{name, inn?, kpp?}`.
+        dates:
+          type: object
+          additionalProperties:
+            type: string
+          description: "Canonical dates, e.g. `document`, `shipped_on_board`."
+        totals:
+          type: object
+          properties:
+            amount:
+              type: number
+            currency:
+              type: string
+            vat:
+              type: number
+        _confidence:
+          type: object
+          additionalProperties:
+            type: number
+            minimum: 0
+            maximum: 1
+          description: |
+            §2.3 per-canonical-key confidence, sourced from the
+            underlying source fields' `_field_confidence`. Keyed by
+            canonical signal (`bl_number`, `containers`, `vehicle.plate`,
+            `totals.amount`, `parties.<role>`, `dates.document`). Absent
+            when no field-level confidence was produced.
+
     Party:
       type: object
       description: Counterparty (seller / buyer / shipper / consignee / etc.).
@@ -769,6 +862,26 @@ components:
               price: 23750.00
               total: 118750.00
               vat: 19791.67
+          _match_signals:
+            schema_version: "1.0"
+            parties:
+              seller:
+                name: "ООО Альфа"
+                inn: "7708123456"
+                kpp: "770801001"
+              buyer:
+                name: "ООО Гамма"
+                inn: "5024155123"
+            dates:
+              document: "2026-05-12"
+            totals:
+              amount: 142500.00
+              currency: "RUB"
+              vat: 23750.00
+            _confidence:
+              parties.seller: 1.0
+              parties.buyer: 1.0
+              dates.document: 0.95
         metadata:
           source: "edo"
           counterparty_id: "alpha-123"
