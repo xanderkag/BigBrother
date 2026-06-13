@@ -5,10 +5,8 @@ import {
   useCreateSystem,
   useCreateUser,
   useGenerateToken,
-  useOrganizations,
   useProjects,
   useRevokeToken,
-  useSystems,
   useUsers,
   type Organization,
   type Project,
@@ -27,68 +25,17 @@ import {
 import TokenRevealModal from '@/components/TokenRevealModal';
 
 /**
- * Tenants — фундамент multi-tenant: организации, проекты, пользователи.
- * Доступно admin'у. Per-user role enforcement в API ещё не подключён —
- * super_admin'у видно всё.
+ * Tenants cards — переиспользуемые карточки multi-tenant раздела.
+ * Раньше жили в Tenants.tsx; вынесены сюда, чтобы делить между
+ * /organizations (Организации + Проекты) и /access (Пользователи +
+ * Системы). Логика карточек не менялась — только место.
  */
-export default function TenantsPage() {
-  const orgs = useOrganizations();
-  const projects = useProjects();
-  const users = useUsers();
-  const systems = useSystems();
-
-  return (
-    <div className="mx-auto max-w-6xl space-y-6 p-6">
-      <header>
-        <h1 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">
-          Организации
-        </h1>
-        <p className="text-sm text-slate-500 dark:text-slate-400">
-          Организации, проекты и пользователи. Доступно super_admin&rsquo;у.
-        </p>
-      </header>
-
-      <div className="warning-banner text-sm">
-        <div>
-          Эти таблицы — фундамент multi-tenant платформы. <strong>System</strong>{' '}
-          / <strong>Default</strong> — встроенные дефолты (нельзя удалить). Все
-          существующие job-ы привязаны к ним. Per-user enforcement в API ещё не
-          подключён — super_admin&rsquo;у видно всё.
-        </div>
-      </div>
-
-      <OrgsCard
-        orgs={orgs.data?.items ?? []}
-        loading={orgs.isLoading}
-        error={orgs.error}
-      />
-      <ProjectsCard
-        projects={projects.data?.items ?? []}
-        orgs={orgs.data?.items ?? []}
-        loading={projects.isLoading}
-        error={projects.error}
-      />
-      <UsersCard
-        users={users.data?.items ?? []}
-        orgs={orgs.data?.items ?? []}
-        loading={users.isLoading}
-        error={users.error}
-      />
-      <SystemsCard
-        systems={systems.data?.items ?? []}
-        orgs={orgs.data?.items ?? []}
-        loading={systems.isLoading}
-        error={systems.error}
-      />
-    </div>
-  );
-}
 
 // ============================================================================
 // Organizations
 // ============================================================================
 
-function OrgsCard({
+export function OrgsCard({
   orgs,
   loading,
   error,
@@ -240,7 +187,7 @@ function OrgsCard({
         </>
       )}
 
-      {/* Модалка вместо отдельного роута: страница Tenants уже работает на
+      {/* Модалка вместо отдельного роута: страница уже работает на
           inline-формах/модалках (см. DocumentTypes/Providers), отдельный
           /organizations/:id/profile добавил бы лишнюю навигацию и роутинг
           ради одной формы. */}
@@ -584,7 +531,7 @@ function TypeBadge({ type }: { type: OrgType }) {
 // Projects
 // ============================================================================
 
-function ProjectsCard({
+export function ProjectsCard({
   projects,
   orgs,
   loading,
@@ -745,7 +692,7 @@ function ProjectsCard({
 // Users
 // ============================================================================
 
-function UsersCard({
+export function UsersCard({
   users,
   orgs,
   loading,
@@ -1020,7 +967,7 @@ function UsersCard({
 // Systems / integrations (service accounts)
 // ============================================================================
 
-function SystemsCard({
+export function SystemsCard({
   systems,
   orgs,
   loading,
@@ -1356,3 +1303,6 @@ function fmtDate(s: string): string {
     return s;
   }
 }
+
+// Re-export для страниц, чтобы не дублировать импорт hooks.
+export { useProjects, useUsers };

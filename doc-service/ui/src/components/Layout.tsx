@@ -5,7 +5,6 @@ import { useJobsList } from '@/queries/jobs';
 import { useCurrentUser } from '@/queries/me';
 import { useOrganizations } from '@/queries/tenants';
 import { useDocumentTypes } from '@/queries/documentTypes';
-import { useProviders } from '@/queries/providers';
 import { useReferenceListTypes } from '@/queries/referenceLists';
 import { useReady } from '@/queries/health';
 import { usePermissions, type AccessLevel } from '@/lib/permissions';
@@ -253,10 +252,16 @@ interface NavEntry {
   label: string;
   icon: React.ReactNode;
   count?: number;
-  /** В каком sidebar-блоке отображать — разделяем основной workflow от admin'а. */
+  /** end=true для точного матча роута (/, иначе любой подпуть подсветится). */
   end?: boolean;
   /** F9 — минимальный уровень доступа для показа пункта (нет → виден всем). */
   min?: AccessLevel;
+}
+
+interface NavGroup {
+  /** Заголовок секции (uppercase). null → без заголовка (РАБОТА вверху). */
+  title: string | null;
+  entries: NavEntry[];
 }
 
 function SidebarNav({ collapsed }: { collapsed: boolean }) {
@@ -265,63 +270,74 @@ function SidebarNav({ collapsed }: { collapsed: boolean }) {
   const jobsCnt = useJobsList({ limit: 1 });
   const reviewCnt = useJobsList({ status: 'needs_review', limit: 1 });
   const docTypes = useDocumentTypes();
-  const providers = useProviders();
-  const tenants = useOrganizations();
   const [orgId] = useWorkspaceOrgId();
   const refLists = useReferenceListTypes(orgId);
   const perms = usePermissions();
 
-  // Главные workflow-пункты. Загрузка — write (manager+); остальное видно всем.
-  const main: NavEntry[] = useMemo(
+  // Навигация — 4 логических группы. РАБОТА видна всем (Загрузка — writer+),
+  // ДАННЫЕ / ДОСТУП / НАСТРОЙКИ — только админам. Тест-лаборатория и
+  // Журнал аудита переехали внутрь хаба «Настройки» и теперь тоже под admin.
+  const groups: NavGroup[] = useMemo(
     () => [
-      { to: '/', end: true, label: 'Сводка', icon: <IconDashboard /> },
-      { to: '/jobs', label: 'Журнал работ', icon: <IconFile />, count: jobsCnt.data?.total },
-      { to: '/review', label: 'Очередь ревью', icon: <IconCircle />, count: reviewCnt.data?.total },
-      { to: '/upload', label: 'Загрузка', icon: <IconUpload />, min: 'writer' },
-      { to: '/test-lab', label: 'Тест-лаборатория', icon: <IconBeaker /> },
+      {
+        title: null,
+        entries: [
+          { to: '/', end: true, label: 'Сводка', icon: <IconDashboard /> },
+          { to: '/review', label: 'Очередь ревью', icon: <IconCircle />, count: reviewCnt.data?.total },
+          { to: '/jobs', label: 'Журнал работ', icon: <IconFile />, count: jobsCnt.data?.total },
+          { to: '/upload', label: 'Загрузка', icon: <IconUpload />, min: 'writer' },
+        ],
+      },
+      {
+        title: 'Данные',
+        entries: [
+          { to: '/document-types', label: 'Типы документов', icon: <IconGrid />, count: docTypes.data?.items.length, min: 'admin' },
+          { to: '/reference-lists', label: 'Справочники', icon: <IconList />, count: refLists.data?.length, min: 'admin' },
+        ],
+      },
+      {
+        title: 'Доступ',
+        entries: [
+          { to: '/organizations', label: 'Организации', icon: <IconList />, min: 'admin' },
+          { to: '/access', label: 'Доступ', icon: <IconList />, min: 'admin' },
+        ],
+      },
+      {
+        title: 'Настройки',
+        entries: [
+          { to: '/settings', end: true, label: 'Настройки', icon: <IconGear />, min: 'admin' },
+        ],
+      },
     ],
-    [jobsCnt.data?.total, reviewCnt.data?.total],
-  );
-
-  // Admin / справочники. Журнал аудита — виден всем (решение владельца),
-  // остальное — только админам (разделы конфигурации).
-  const admin: NavEntry[] = useMemo(
-    () => [
-      { to: '/document-types', label: 'Типы документов', icon: <IconGrid />, count: docTypes.data?.items.length, min: 'admin' },
-      { to: '/providers', label: 'Провайдеры', icon: <IconCircle />, count: providers.data?.items.length, min: 'admin' },
-      { to: '/audit-log', label: 'Журнал аудита', icon: <IconList /> },
-      { to: '/tenants', label: 'Организации', icon: <IconList />, count: tenants.data?.items.length, min: 'admin' },
-      { to: '/reference-lists', label: 'Справочники', icon: <IconList />, count: refLists.data?.length, min: 'admin' },
-      { to: '/settings', label: 'Настройки', icon: <IconGear />, min: 'admin' },
-    ],
-    [
-      docTypes.data?.items.length,
-      providers.data?.items.length,
-      tenants.data?.items.length,
-      refLists.data?.length,
-    ],
+    [jobsCnt.data?.total, reviewCnt.data?.total, docTypes.data?.items.length, refLists.data?.length],
   );
 
   // F9 — фильтр по роли. Пока /users/me не загружен (perms.ready=false) —
   // показываем только пункты без ограничения, чтобы не мигнуть админ-меню.
   const canSee = (e: NavEntry) => !e.min || (perms.ready && perms.can(e.min));
-  const mainVisible = main.filter(canSee);
-  const adminVisible = admin.filter(canSee);
+  const visibleGroups = groups
+    .map((g) => ({ ...g, entries: g.entries.filter(canSee) }))
+    .filter((g) => g.entries.length > 0);
 
   return (
     <nav className={`flex-1 overflow-y-auto py-3 ${collapsed ? 'px-1.5' : 'px-2'}`}>
-      <div className="space-y-0.5">
-        {mainVisible.map((e) => (
-          <NavItem key={e.to} entry={e} collapsed={collapsed} />
-        ))}
-      </div>
-      {adminVisible.length > 0 && (
-        <div className="mt-4 space-y-0.5 border-t border-slate-200 pt-3 dark:border-slate-800">
-          {adminVisible.map((e) => (
-            <NavItem key={e.to} entry={e} collapsed={collapsed} />
-          ))}
+      {visibleGroups.map((g, i) => (
+        <div
+          key={g.title ?? '_main'}
+          className={i > 0 ? 'mt-4 border-t border-slate-200 pt-3 dark:border-slate-800' : ''}
+        >
+          {g.title && !collapsed && (
+            <div className="px-2.5 pb-1.5 font-mono text-[10px] uppercase tracking-wider text-slate-400 dark:text-slate-500">
+              {g.title}
+            </div>
+          )}
+          <div className="space-y-0.5">
+            {g.entries.map((e) => (
+              <NavItem key={e.to} entry={e} collapsed={collapsed} />
+            ))}
+          </div>
         </div>
-      )}
+      ))}
     </nav>
   );
 }
@@ -524,13 +540,14 @@ function buildCrumbs(pathname: string): Crumb[] {
     jobs: 'Журнал работ',
     review: 'Очередь ревью',
     upload: 'Загрузка',
-    'test-lab': 'Тест-лаборатория',
     'document-types': 'Типы документов',
-    providers: 'Провайдеры',
-    'audit-log': 'Журнал аудита',
-    tenants: 'Организации',
+    organizations: 'Организации',
+    access: 'Доступ',
     'reference-lists': 'Справочники',
     settings: 'Настройки',
+    providers: 'Провайдеры/модели',
+    audit: 'Журнал аудита',
+    lab: 'Тест-лаборатория',
   };
   return parts.map((p, i) => {
     const isLast = i === parts.length - 1;
@@ -638,14 +655,6 @@ function IconUpload() {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5">
       <path d="M10 2a.75.75 0 0 1 .75.75v9.69l3.22-3.22a.75.75 0 1 1 1.06 1.06l-4.5 4.5a.75.75 0 0 1-1.06 0l-4.5-4.5a.75.75 0 0 1 1.06-1.06l3.22 3.22V2.75A.75.75 0 0 1 10 2ZM3.75 16a.75.75 0 0 0 0 1.5h12.5a.75.75 0 0 0 0-1.5H3.75Z" transform="rotate(180 10 10)" />
-    </svg>
-  );
-}
-
-function IconBeaker() {
-  return (
-    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-3.5 w-3.5">
-      <path d="M8 2.5A.5.5 0 0 1 8.5 2h3a.5.5 0 0 1 0 1H11v3.379l4.146 8.293A1.5 1.5 0 0 1 13.81 17H6.19a1.5 1.5 0 0 1-1.336-2.328L9 6.379V3h-.5a.5.5 0 0 1-.5-.5Z" />
     </svg>
   );
 }

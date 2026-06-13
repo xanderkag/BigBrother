@@ -12,7 +12,9 @@ import DocumentTypesPage from '@/pages/DocumentTypes';
 import ProvidersPage from '@/pages/Providers';
 import AuditLogPage from '@/pages/AuditLog';
 import SettingsPage from '@/pages/Settings';
-import TenantsPage from '@/pages/Tenants';
+import SettingsHub from '@/pages/SettingsHub';
+import OrganizationsPage from '@/pages/Organizations';
+import AccessPage from '@/pages/Access';
 import ReferenceListsPage, { ReferenceListEntriesPage } from '@/pages/ReferenceLists';
 import TestLabPage from '@/pages/TestLab';
 import Layout from '@/components/Layout';
@@ -29,14 +31,20 @@ import Layout from '@/components/Layout';
  *   /upload                 → Upload (bulk drag-drop)
  *   /review                 → ReviewQueue (needs_review с bulk approve)
  *   /document-types         → CRUD типов документов
- *   /providers              → CRUD LLM/OCR провайдеров
- *   /audit-log              → Audit log viewer
- *   /settings               → Settings (snapshot конфига + статус LLM)
- *   /tenants                → Organizations / projects / users (admin)
+ *   /organizations          → Компании + проекты (admin)
+ *   /access                 → Пользователи + системы (admin)
+ *   /settings               → Настройки-хаб с вкладками (admin):
+ *     /settings             → Общие (snapshot конфига + статус LLM)
+ *     /settings/providers   → CRUD LLM/OCR провайдеров
+ *     /settings/audit       → Audit log viewer
+ *     /settings/lab         → Тест-лаборатория (single doc + provider picker)
  *   /reference-lists        → Список типов справочников
  *   /reference-lists/:slug  → Записи конкретного справочника
- *   /test-lab               → Тестовая лаборатория (single doc + provider picker)
  *   /login                  → Login (если нет токена в localStorage)
+ *
+ *   Legacy-редиректы (старые закладки): /tenants → /organizations,
+ *   /providers → /settings/providers, /audit-log → /settings/audit,
+ *   /test-lab → /settings/lab.
  *
  * Всё внутри Layout проверяется через RequireAuth — нет токена →
  * редирект на /login.
@@ -72,31 +80,36 @@ export default function App() {
                   }
                 />
                 <Route
-                  path="providers"
+                  path="organizations"
                   element={
                     <RequireRole level="admin">
-                      <ProvidersPage />
+                      <OrganizationsPage />
                     </RequireRole>
                   }
                 />
-                {/* Журнал аудита — виден всем авторизованным (решение владельца) */}
-                <Route path="audit-log" element={<AuditLogPage />} />
+                <Route
+                  path="access"
+                  element={
+                    <RequireRole level="admin">
+                      <AccessPage />
+                    </RequireRole>
+                  }
+                />
+                {/* Настройки-хаб: вкладки = вложенные роуты для deep-link'а.
+                    Каждая панель — существующая страница без изменений. */}
                 <Route
                   path="settings"
                   element={
                     <RequireRole level="admin">
-                      <SettingsPage />
+                      <SettingsHub />
                     </RequireRole>
                   }
-                />
-                <Route
-                  path="tenants"
-                  element={
-                    <RequireRole level="admin">
-                      <TenantsPage />
-                    </RequireRole>
-                  }
-                />
+                >
+                  <Route index element={<SettingsPage />} />
+                  <Route path="providers" element={<ProvidersPage />} />
+                  <Route path="audit" element={<AuditLogPage />} />
+                  <Route path="lab" element={<TestLabPage />} />
+                </Route>
                 <Route
                   path="reference-lists"
                   element={
@@ -113,8 +126,11 @@ export default function App() {
                     </RequireRole>
                   }
                 />
-                {/* Тест-лаборатория — видна всем; запуск прогона гейтит сама страница */}
-                <Route path="test-lab" element={<TestLabPage />} />
+                {/* Legacy-редиректы — старые закладки не должны 404'ить. */}
+                <Route path="tenants" element={<Navigate to="/organizations" replace />} />
+                <Route path="providers" element={<Navigate to="/settings/providers" replace />} />
+                <Route path="audit-log" element={<Navigate to="/settings/audit" replace />} />
+                <Route path="test-lab" element={<Navigate to="/settings/lab" replace />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
             </Layout>
