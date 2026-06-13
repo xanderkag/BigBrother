@@ -462,11 +462,39 @@ function RecentDocuments({
       ? `${items.length} из ${formatNumber(total)}`
       : `${items.length}`;
 
+  const webhookSummary = useMemo(() => {
+    let delivered = 0;
+    let failed = 0;
+    for (const job of items) {
+      const status = webhookStatus(job);
+      if (status === 'delivered') delivered += 1;
+      else if (status === 'error') failed += 1;
+    }
+    return { delivered, failed };
+  }, [items]);
+
   return (
     <div className="card">
       <div className="card-header">
         <h3 className="card-title">Последние документы</h3>
         <div className="flex items-center gap-3">
+          {items.length > 0 && (
+            <span
+              className="text-xs text-slate-500 dark:text-slate-500"
+              title={`по загруженным ${items.length} докам`}
+            >
+              вебхуки: {webhookSummary.delivered}✓ ·{' '}
+              <span
+                className={
+                  webhookSummary.failed > 0
+                    ? 'text-rose-600 dark:text-rose-400'
+                    : undefined
+                }
+              >
+                {webhookSummary.failed}⚠
+              </span>
+            </span>
+          )}
           <span className="text-xs text-slate-500 dark:text-slate-500">{count}</span>
           <Link
             to="/jobs"
@@ -508,6 +536,7 @@ function RecentDocuments({
                 <th className="px-4 py-2 font-medium">Файл</th>
                 <th className="px-4 py-2 font-medium">Тип</th>
                 <th className="px-4 py-2 font-medium">Статус</th>
+                <th className="px-4 py-2 font-medium">Вебхук</th>
                 <th className="px-4 py-2 font-medium">Увер.</th>
               </tr>
             </thead>
@@ -547,6 +576,9 @@ function RecentDocuments({
                     <StatusBadge status={job.status} />
                   </td>
                   <td className="px-4 py-2">
+                    <WebhookBadge job={job} />
+                  </td>
+                  <td className="px-4 py-2">
                     <ConfidenceBar
                       value={job.confidence !== null ? Number(job.confidence) : null}
                     />
@@ -574,4 +606,46 @@ function StatusBadge({ status }: { status: string }) {
       ? 'badge-sky'
       : 'badge-slate';
   return <span className={`${cls} uppercase`}>{status}</span>;
+}
+
+type WebhookStatus = 'delivered' | 'error' | 'pending' | 'none';
+
+/**
+ * Статус доставки вебхука по полям job. ВАЖНО: profile-routed джобы имеют
+ * webhook_url === null, но всё равно доставляются (webhook_delivered_at /
+ * webhook_attempts проставляются) — поэтому «есть ли вебхук» определяем
+ * по активности доставки, а не по webhook_url.
+ */
+function webhookStatus(job: Job): WebhookStatus {
+  if (job.webhook_delivered_at != null) return 'delivered';
+  if (job.webhook_attempts > 0) return 'error';
+  if (job.webhook_url != null) return 'pending';
+  return 'none';
+}
+
+/** Бейдж доставки вебхука для интеграционного владельца (SLAI). */
+function WebhookBadge({ job }: { job: Job }) {
+  const status = webhookStatus(job);
+  if (status === 'delivered') {
+    return (
+      <span className="badge-emerald" title={formatDateTime(job.webhook_delivered_at!)}>
+        ✓ доставлен
+      </span>
+    );
+  }
+  if (status === 'error') {
+    return (
+      <span className="badge-rose" title={job.webhook_last_error || 'нет деталей'}>
+        ⚠ ошибка
+      </span>
+    );
+  }
+  if (status === 'pending') {
+    return (
+      <span className="badge-amber" title={job.webhook_url || undefined}>
+        ⏳ в очереди
+      </span>
+    );
+  }
+  return <span className="text-slate-400 dark:text-slate-500">—</span>;
 }
