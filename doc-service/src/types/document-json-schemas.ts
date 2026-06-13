@@ -27,6 +27,18 @@ const DATE_DESCRIPTION = 'Дата в формате YYYY-MM-DD';
 const INN_DESCRIPTION = 'ИНН организации (10 цифр) или ИП (12 цифр)';
 const KPP_DESCRIPTION = 'КПП организации (9 цифр)';
 
+// PD-CONTRACT-1 Q2 / §2.1 (SLAI 2026-06-13): order_refs — #1 match-signal
+// после контейнера. Свободный массив ЛЮБЫХ ссылок на заказ/PO, упомянутых
+// в документе. Один и тот же description для всех типов где заказы реальны
+// (invoice / tax_invoice / upd / ttn / cmr / bill_of_lading). Проектор
+// match-signals.ts собирает их в `_match_signals.order_refs`.
+const ORDER_REFS = {
+  type: 'array',
+  description:
+    'Номера заказов/PO, упомянутые в документе («Заказ №», «Order Ref», «Our ref.», PO number, «по заказу №»). Как есть, без трактовки. Пустой массив, если нет.',
+  items: { type: 'string' },
+} as const;
+
 const PARTY = {
   type: 'object',
   properties: {
@@ -283,6 +295,7 @@ const INVOICE_SCHEMA = {
       type: 'string',
       description: 'Номер заявки/основания перевозки. Шаблон [A-Z]{2,5}-\\d{4}-\\d{3,4}. Из блока «Основание: перевозка ... заявка NEG-2026-001».',
     },
+    order_refs: ORDER_REFS,
     vehicle: {
       type: 'object',
       description: 'Транспортное средство если упомянуто в счёте (для счетов за перевозку).',
@@ -487,6 +500,7 @@ const TTN_SCHEMA = {
       description: 'Связанные документы (CMR, счёт-фактура, путевой лист)',
       items: { type: 'string' },
     },
+    order_refs: ORDER_REFS,
   },
 } as const;
 
@@ -565,6 +579,7 @@ const CMR_SCHEMA = {
       description: 'Связанные документы (invoice, packing_list)',
       items: { type: 'string' },
     },
+    order_refs: ORDER_REFS,
   },
 } as const;
 
@@ -646,6 +661,7 @@ const BL_SCHEMA = {
       description: 'Связанные документы (commercial invoice, packing list, certificate of origin)',
       items: { type: 'string' },
     },
+    order_refs: ORDER_REFS,
   },
 } as const;
 

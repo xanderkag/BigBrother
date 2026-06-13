@@ -142,6 +142,27 @@ describe('buildMatchSignals — invoice / tax_invoice', () => {
     expect(s.order_refs).toBeUndefined();
   });
 
+  it('order_refs из нового top-level массива order_refs[]', () => {
+    const s = buildMatchSignals('invoice', {
+      total: 1,
+      order_refs: ['Заказ № 42', 'PO-2026-118', '  ', 'PO-2026-118'],
+    });
+    // trim, present-only, dedupe; пустая строка отброшена
+    expect(s.order_refs).toEqual(['Заказ № 42', 'PO-2026-118']);
+  });
+
+  it('order_refs собираются из top-level + order_number + items[] + positions[] с дедупом', () => {
+    const s = buildMatchSignals('upd', {
+      order_refs: ['PO-1'],
+      order_number: 'PO-2',
+      items: [{ order_ref: 'PO-3' }, { order_ref: ' PO-1 ' }],
+      positions: [{ order_ref: 'PO-4' }],
+    });
+    // PO-1 встречается в top-level и в items (после trim) → схлопывается;
+    // порядок: top-level → order_ref/order_number → items → positions
+    expect(s.order_refs).toEqual(['PO-1', 'PO-2', 'PO-3', 'PO-4']);
+  });
+
   it('totals.vat опускается если vat отсутствует', () => {
     const s = buildMatchSignals('invoice', { total: 100, currency: 'RUB' });
     expect(s.totals).toEqual({ amount: 100, currency: 'RUB' });
@@ -188,6 +209,27 @@ describe('buildMatchSignals — cmr / wire_transfer / generic', () => {
     expect(s.parties?.seller?.inn).toBe('7728168971');
     expect(s.totals).toEqual({ amount: 42, currency: 'RUB' });
     expect(s.dates?.document).toBe('2026-06-03');
+  });
+
+  it('generic fallback тоже поднимает order_refs (любой тип с заказом)', () => {
+    const s = buildMatchSignals('contract', {
+      order_refs: ['Заказ № 7'],
+      items: [{ order_ref: 'PO-99' }],
+    });
+    expect(s.order_refs).toEqual(['Заказ № 7', 'PO-99']);
+  });
+
+  it('ttn/cmr: order_refs из top-level массива', () => {
+    const ttn = buildMatchSignals('TTN', {
+      number: 'T-1',
+      order_refs: ['Order Ref ABC-1'],
+    });
+    expect(ttn.order_refs).toEqual(['Order Ref ABC-1']);
+    const cmr = buildMatchSignals('CMR', {
+      number: 'CMR-1',
+      order_refs: ['Our ref. XYZ-9'],
+    });
+    expect(cmr.order_refs).toEqual(['Our ref. XYZ-9']);
   });
 });
 

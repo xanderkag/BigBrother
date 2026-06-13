@@ -18,9 +18,11 @@
  * outbound snake_case (normalizeSlugForApi) чтобы ключевать таблицу
  * канонически (внутри pipeline слаги ещё исторические — TTN/factInvoice).
  *
- * order_refs: маппим из реально существующих schema-полей (invoice.order_ref,
- * items[].order_ref). Свободного «order/PO» поля в большинстве схем нет —
- * тогда order_refs отсутствует (НЕ выдумываем). См. SLAI Q2.
+ * order_refs (SLAI Q2 — #1 match-signal после контейнера): собираем из нового
+ * top-level `order_refs[]` (модель заполняет по schema-описанию любой
+ * «Заказ №»/«Order Ref»/«Our ref»/PO), плюс legacy `order_ref`/`order_number`
+ * и per-line `items[]`/`positions[].order_ref`. Flatten + dedupe, present-only
+ * (НЕ выдумываем — пустой → ключ отсутствует).
  */
 import { normalizePlate } from './identifiers.js';
 import { normalizeSlugForApi } from '../../types/slug-normalize.js';
@@ -179,10 +181,17 @@ function collectContainers(ex: Extracted): string[] | undefined {
   return uniqStrings(matched);
 }
 
-/** order_refs из doc-level order_ref + per-line items[].order_ref. */
+/**
+ * order_refs из всех источников (PD-CONTRACT-1 Q2): новый top-level
+ * `order_refs[]` (массив строк, который модель заполняет по schema-описанию),
+ * плюс doc-level `order_ref`/`order_number`, плюс per-line
+ * `items[]`/`positions[].order_ref`. Flatten + trim + dedupe, present-only.
+ */
 function collectOrderRefs(ex: Extracted): string[] | undefined {
-  const refs: Array<string | undefined> = [str(ex.order_ref)];
-  for (const it of arr(ex.items) ?? []) {
+  const refs: Array<string | undefined> = [];
+  for (const v of arr(ex.order_refs) ?? []) refs.push(str(v));
+  refs.push(str(ex.order_ref), str(ex.order_number));
+  for (const it of [...(arr(ex.items) ?? []), ...(arr(ex.positions) ?? [])]) {
     const o = obj(it);
     if (o) refs.push(str(o.order_ref));
   }

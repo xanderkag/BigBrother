@@ -121,8 +121,12 @@ describe('runDocumentPipeline — Phase 2 (LLM parsers, NullLlmClient)', () => {
     expect(r.documentType).toBe('TTN');
     expect(r.classificationSource).toBe('keyword');
 
-    // Extraction degrades gracefully: empty result, all expected fields missing.
-    expect(r.extracted).toEqual({});
+    // Extraction degrades gracefully: no domain fields extracted. Normalize
+    // still injects the _match_signals envelope (schema_version marker) for
+    // every typed extraction (PD-CONTRACT-1 §2.1) — strip meta before the check.
+    const { _match_signals, _normalized_fields, _field_confidence, ...domain } =
+      r.extracted as Record<string, unknown>;
+    expect(domain).toEqual({});
     expect(r.parserConfidence).toBe(0);
     expect(r.parserMissing).toContain('shipper');
     expect(r.parserMissing).toContain('cargo');
