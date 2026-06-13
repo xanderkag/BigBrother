@@ -174,7 +174,11 @@ export default function ReviewQueuePage() {
             {
               keys: ['a'],
               handler: () => {
-                if (cursorId) approve.mutate(cursorId);
+                if (cursorId)
+                  approve.mutate(cursorId, {
+                    onSuccess: () =>
+                      setCursor((c) => Math.min(c + 1, orderedItems.length - 1)),
+                  });
               },
             },
           ]

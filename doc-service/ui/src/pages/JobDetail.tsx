@@ -178,7 +178,11 @@ export default function JobDetailPage() {
               keys: ['a'],
               handler: () => {
                 if (job?.status === 'needs_review' && !approve.isPending) {
-                  approve.mutate(job.id);
+                  approve.mutate(job.id, {
+                    onSuccess: () => {
+                      if (neighbors.nextId) goToNeighbor(neighbors.nextId);
+                    },
+                  });
                 }
               },
             },
@@ -370,7 +374,13 @@ export default function JobDetailPage() {
                 type="button"
                 className="btn-success"
                 disabled={approve.isPending}
-                onClick={() => approve.mutate(job.id)}
+                onClick={() =>
+                  approve.mutate(job.id, {
+                    onSuccess: () => {
+                      if (neighbors.nextId) goToNeighbor(neighbors.nextId);
+                    },
+                  })
+                }
               >
                 {approve.isPending ? 'Одобряю…' : 'Одобрить ✓'}
               </button>
