@@ -1,13 +1,16 @@
-import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { useState, useEffect, useMemo } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   useOperationalMetrics,
   type MetricsWindow,
   type MetricsBreakdownRow,
 } from '@/queries/metrics';
+import { useJobsList } from '@/queries/jobs';
 import { formatPercent, formatDateTime, formatNumber } from '@/lib/format';
+import ConfidenceBar from '@/components/ConfidenceBar';
 import TierBadge from '@/components/TierBadge';
 import type { DocumentTypeTier } from '@/queries/documentTypes';
+import type { Job } from '@/lib/types';
 
 /**
  * Dashboard — главная страница UI v2. Показывает операционные метрики
@@ -28,9 +31,19 @@ const WINDOWS: { value: MetricsWindow; label: string }[] = [
   { value: '30d', label: '30 дней' },
 ];
 
+/** Окно → длительность в мс, для вычисления нижней границы ленты документов. */
+const WINDOW_MS: Record<MetricsWindow, number> = {
+  '1h': 60 * 60 * 1000,
+  '24h': 24 * 60 * 60 * 1000,
+  '7d': 7 * 24 * 60 * 60 * 1000,
+  '30d': 30 * 24 * 60 * 60 * 1000,
+};
+
+const FEED_LIMIT = 50;
+
 export default function DashboardPage() {
   const [window, setWindow] = useState<MetricsWindow>(() => {
-    return (localStorage.getItem(WINDOW_KEY) as MetricsWindow) || '7d';
+    return (localStorage.getItem(WINDOW_KEY) as MetricsWindow) || '24h';
   });
 
   const { data, isLoading, error, refetch, isFetching } = useOperationalMetrics(window);
@@ -38,6 +51,15 @@ export default function DashboardPage() {
   useEffect(() => {
     localStorage.setItem(WINDOW_KEY, window);
   }, [window]);
+
+  // Лента «что прошло за период» — реальные документы внутри выбранного
+  // окна, новые сверху. from пересчитываем при смене окна; Date.now() в
+  // браузере достаточно точен для границы выборки.
+  const feedFrom = useMemo(
+    () => new Date(Date.now() - WINDOW_MS[window]).toISOString(),
+    [window],
+  );
+  const feed = useJobsList({ from: feedFrom, limit: FEED_LIMIT });
 
   return (
     <div className="mx-auto max-w-7xl space-y-4 p-6">
@@ -137,6 +159,14 @@ export default function DashboardPage() {
               link={data.totals.failed > 0 ? '/jobs?status=failed' : undefined}
             />
           </div>
+
+          {/* Последние документы — реальная активность за выбранное окно */}
+          <RecentDocuments
+            items={feed.data?.items ?? []}
+            total={feed.data?.total}
+            isLoading={feed.isLoading}
+            error={feed.error}
+          />
 
           {/* Latency + LLM + Confidence */}
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -409,4 +439,139 @@ function fmtMs(ms: number | null | undefined): string {
   if (ms === null || ms === undefined) return '—';
   if (ms < 1000) return `${Math.round(ms)} ms`;
   return `${(ms / 1000).toFixed(1)} s`;
+}
+
+/* ------------------------------------------------------------------ */
+/* Последние документы — лента «что прошло за период»                 */
+/* ------------------------------------------------------------------ */
+
+function RecentDocuments({
+  items,
+  total,
+  isLoading,
+  error,
+}: {
+  items: Job[];
+  total?: number;
+  isLoading: boolean;
+  error: unknown;
+}) {
+  const navigate = useNavigate();
+  const count =
+    total !== undefined && total > items.length
+      ? `${items.length} из ${formatNumber(total)}`
+      : `${items.length}`;
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <h3 className="card-title">Последние документы</h3>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-slate-500 dark:text-slate-500">{count}</span>
+          <Link
+            to="/jobs"
+            className="text-xs text-brand-600 dark:text-brand-400 hover:underline"
+          >
+            Все →
+          </Link>
+        </div>
+      </div>
+
+      {error ? (
+        <div className="card-body">
+          <p className="text-sm text-rose-700 dark:text-rose-300">
+            Ошибка загрузки документов:{' '}
+            {error instanceof Error ? error.message : String(error)}
+          </p>
+        </div>
+      ) : isLoading && items.length === 0 ? (
+        <div className="card-body space-y-2">
+          {[1, 2, 3, 4, 5].map((i) => (
+            <div
+              key={i}
+              className="h-6 animate-pulse rounded bg-slate-100 dark:bg-slate-800/60"
+            />
+          ))}
+        </div>
+      ) : items.length === 0 ? (
+        <div className="card-body">
+          <p className="text-sm text-slate-500 dark:text-slate-400">
+            За период документов нет.
+          </p>
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead className="bg-slate-50 dark:bg-slate-900/40 text-left text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">
+              <tr>
+                <th className="px-4 py-2 font-medium">Время</th>
+                <th className="px-4 py-2 font-medium">Файл</th>
+                <th className="px-4 py-2 font-medium">Тип</th>
+                <th className="px-4 py-2 font-medium">Статус</th>
+                <th className="px-4 py-2 font-medium">Увер.</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+              {items.map((job) => (
+                <tr
+                  key={job.id}
+                  onClick={(e) => {
+                    if (e.defaultPrevented) return;
+                    const target = e.target as HTMLElement;
+                    if (target.closest('a, button')) return;
+                    if (globalThis.getSelection?.()?.toString()) return;
+                    navigate(`/jobs/${job.id}`);
+                  }}
+                  className="cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/50"
+                >
+                  <td className="whitespace-nowrap px-4 py-2 font-mono text-xs text-slate-500 dark:text-slate-400">
+                    {formatDateTime(job.created_at)}
+                  </td>
+                  <td className="px-4 py-2">
+                    <Link
+                      to={`/jobs/${job.id}`}
+                      className="block max-w-[320px] truncate text-slate-900 dark:text-slate-100 hover:text-indigo-600 dark:hover:text-indigo-400"
+                      title={job.file_name}
+                    >
+                      {job.file_name}
+                    </Link>
+                  </td>
+                  <td className="px-4 py-2 text-xs">
+                    {job.document_type ? (
+                      <span className="badge-indigo uppercase">{job.document_type}</span>
+                    ) : (
+                      <span className="text-slate-400 dark:text-slate-500">—</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2">
+                    <StatusBadge status={job.status} />
+                  </td>
+                  <td className="px-4 py-2">
+                    <ConfidenceBar
+                      value={job.confidence !== null ? Number(job.confidence) : null}
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Бейдж статуса — та же маппинг-схема, что в JobsList (визуальная консистентность). */
+function StatusBadge({ status }: { status: string }) {
+  const cls =
+    status === 'done' || status === 'approved'
+      ? 'badge-emerald'
+      : status === 'needs_review'
+      ? 'badge-amber'
+      : status === 'failed'
+      ? 'badge-rose'
+      : status === 'processing' || status === 'pending'
+      ? 'badge-sky'
+      : 'badge-slate';
+  return <span className={`${cls} uppercase`}>{status}</span>;
 }
