@@ -27,6 +27,7 @@
 export const OUTBOUND_SLUG_ALIASES: Record<string, string> = {
   TTN: 'ttn',
   UPD: 'upd',
+  UKD: 'ukd',
   CMR: 'cmr',
   AKT: 'services_act',
   factInvoice: 'tax_invoice',
