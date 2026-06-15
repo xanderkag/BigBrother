@@ -6,92 +6,73 @@
 > в [`doc-service/docs/INTEGRATION_QUEUE.md`](doc-service/docs/INTEGRATION_QUEUE.md).
 > Obsidian-карточка — обзор для человека, не источник истины по задачам.
 >
-> Обновлено: 2026-05-23.
+> Обновлено: 2026-06-15.
 
 ---
 
 ## 🔴 Сейчас / блокеры
 
+Горящих блокеров нет. Прежние P0 закрыты:
+- ✅ **Прод-auth закрыт** — `API_KEY` задан (64 симв.), `ALLOW_NO_AUTH` выключен, запрос без ключа → `401`. (Был 🔴 «любой в корп-сети = super_admin».)
+- ✅ **Деплой fail-closed auth** — выкачен, сервис не стартует с пустым ключом.
+
 | # | Задача | Статус | Примечание |
 |---|---|---|---|
-| **P0-1** | **Деплой `243fe04`** (auth fail-closed + DaData) на прод | ⏳ ждёт прод-`API_KEY` | Код в гите и в bare-репо сервера, **не выкачен**. Новый код намеренно не стартует с пустым ключом. |
-| **P0-2** | **Прод-auth открыт** | 🔴 живёт | `API_KEY` на проде пустой → `bearerAuthHook` пускает любого как super_admin. Закрывается тем же шагом P0-1: поставить ключ в `~/parsdocs/doc-service/.env` (1 SSH-строка) → деплой → проверить 401. |
-| **P0-3** | Уточнить у Павла: **публичен ли `:8085` наружу** | ⬜ вопрос | Определяет реальную срочность P0-2 (если торчит в интернет — критично). |
-
-**Команда для P0 (выполняет владелец, harness блокирует запись прод-секретов из агента):**
-```bash
-ssh kb-docker 'cd parsdocs/doc-service; sed -i "s/^API_KEY=.*/API_KEY=$(openssl rand -hex 32)/" .env; echo DONE'
-```
-После `DONE` → выкатить `243fe04` (pull + build + up; миграции прогонит сервис `migrate`).
+| P0-3 | Уточнить у Павла: **публичен ли `:8085` наружу** | ⬜ вопрос | Уже не критично (auth закрыт), но знать стоит — определяет, нужен ли firewall-ограничитель. |
 
 ---
 
-## 🟡 Дальше (ближайшие недели)
+## 🟡 Приоритеты сейчас (по договорённости 2026-06-15)
 
-| Задача | Зависит от | Примечание |
+1. **Качество + модель** — собрать свой мини-эталон (10–15 реальных RU счетов/УПД/ТТН), прогнать замер на прод-конфиге, **переключить прод-извлечение на чемпиона bench v3 `mistral-small3.1`** (точность 70B при ~14 ГБ). Самый большой рычаг по точности. Переключение = env inference-service + рестарт (нужен прод-SSH = Александр). Даёт первую честную цифру «до/после».
+2. **Скорость — hybrid routing** (готово, за флагом). Чистый текст → быстрый движок (в SLA), скан / низкая OCR-уверенность → vision. Главный рычаг по latency. Включить + завести vision-слот (Qwen-VL).
+3. **SLAI-контракт — доводка** (на их стороне): подтвердить чтение `_match_signals`, прислать эталонные PDF с номерами из их БД (для AC матчера), согласовать регистр `UKD`; подключить отправку оценок (канал готов). См. `parsdocs-ОТВЕТ-PD-CONTRACT-1` + INTEGRATION_QUEUE.
+4. **Петля улучшения — следующий шаг.** Фундамент готов (оценки SLAI + копилка правок операторов). Дальше: первый ручной разбор накопленного → гипотезы; позже опц. отчёт «топ-ошибки по типу/полю».
+
+---
+
+## ✅ Сделано (сессия 2026-06-15)
+
+- **Безопасность прода** — закрыт прежний блокер «прод открыт без ключа».
+- **LLM-шлюз (Vanga) живой** — `/v1/chat/completions` + `/v1/models`, только локальные модели, tool-use подтверждён; SLAI ходит именованным ключом.
+- **Концепт «Системы / интеграции»** — сервисные аккаунты (`kind=service`) + выдача ключей через UI; SLAI заведён как система; лог внешних обращений поимённо (`external request by …`).
+- **Контракт `extracted` для SLAI (PD-CONTRACT-1)** — канонические матч-сигналы `_match_signals` (containers / bl / ttn / cmr / `order_refs` / vehicle / parties / dates / totals + `_confidence` + `schema_version`); ответ-документ; извлечение `order_refs[]`; фикс slug `UKD → ukd`.
+- **Петля улучшения — фундамент** — канал внешних оценок (`job_feedback`: verdict + comment, источник из ключа) + копилка правок операторов (`extraction_corrections`: before→after, по типу/источнику/кто правил).
+- **UI** — перегруппировка навигации (4 логичных блока; split Организации / Доступ; хаб «Настройки» с вкладками); дашборд «за сутки» (лента документов) + здоровье вебхуков; копируемый модал токена (работает на http); «approve & next» в ревью.
+- **Код синхронизирован** — прод + корпоративный GitLab + GitHub.
+- **Bench v3** — чемпион `mistral-small3.1` (точность уровня 70B при цене 24B), рекомендация в прод.
+
+---
+
+## 🧰 Готово, но выключено (за фича-флагом — включение на владельце)
+
+| Возможность | Флаг | Зачем |
 |---|---|---|
-| **DaData live** — ввести ключ в UI (Провайдеры → DaData) + включить тумблер `enrich_enabled` у потребителя | P0-1 | Код готов. Secret-key (очистка адресов) — позже. |
-| **Качество на реальных данных** — собрать свой mini-golden-set (10-15 реальных RU счетов/УПД/ТТН) + прогнать eval на **прод-конфиге (Qwen-VL)** | — | Первая честная цифра точности. Не ждёт SLAI. Разблокирует решение по моделям. |
-| **SLAI разблокировка** — нуднуть Q4 (service-token) + Q5 (ETA пилота) + Q9 (golden dataset) | SLAI | Все три на их стороне. См. INTEGRATION_QUEUE. |
-| **F3 items 1+3** — webhook-receiver + service-token `slai` | Q4/Q5 | 0.5 дня после разблокировки. |
-| ~~**EXT-A** — `/capabilities` + `X-Extractor-Signature`~~ | — | ✅ код+тесты (`808e5cb`), ждёт деплоя. Q10. |
-| ~~**EXT-B** — BYO LLM credentials (`X-LLM-*` headers)~~ | — | ✅ код+тесты (`808e5cb`), ждёт деплоя + `BYO_LLM_ENABLED`. Q11. |
-| ~~**EXT-D** — Pre-upload signed URL (приём файла по URL)~~ | — | ✅ код+тесты (SSRF-safe, fail-closed за `FILE_URL_INGEST_ENABLED`), ждёт деплоя. Q12. |
-| **Bonus** — `docker prune` шаг в deploy.yml | — | 5 мин. Защита от забивания диска build-cache'ем (у SLAI забило 60ГБ, превентивно ставим у себя). |
-| ~~**UI-7** — срезы Dashboard~~ | — | ✅ 2026-05-23 (engine + tier; consumer отложен). В `0807285`, ждёт деплоя с P0-1. |
-| **MTI-3** — unify key storage (UI Providers ключ реально доходит до Anthropic, а не лежит в БД мёртвым) | — | 1-2 дня. **Делать первым** перед MTI-1/2, иначе они бессмысленны. ТЗ — `doc-service/docs/MTI_TZ_2026-05-31.md`. Чинит обнаруженную 2026-05-31 архитектурную путаницу (3 места для одного ключа). |
-| **MTI-2** — model preset bundles (один Anthropic-провайдер = pack моделей sonnet/opus/haiku) | MTI-3 | 2-3 дня (backend+UI). Per-job выбор через `metadata._llm_model` + Test Lab dropdown + опц. auto-routing по типу документа. |
-| **MTI-1** — multi-instance SLAI management UI (страница Consumers + mass-actions + presets + Push to SLAI inbox) | MTI-3 (желательно) | 2-3 недели вместе с миграцией per-org rate-limit/retention. Размораживает CP7 multi-tenant CRUD (триггер: 3+ SLAI-инстансов на горизонте). |
-| **UX-1** — Simple/Advanced toggle в Providers (скрыть 5 из 8 полей под Advanced, дать happy-path) | MTI-3 | 1-2 дня UI. ТЗ — `doc-service/docs/UX_ANALYSIS_2026-05-31.md`. Источник: user-фидбэк 2026-05-31 «зачем 8 полей, легко ошибиться». |
-| **UX-2** — One-click «Сделать основным» wizard (вместо 5 шагов через 3 системы) | UX-1 + MTI-3 | 2 дня UI + ½ дня backend (runtime BACKEND switch без рестарта). |
-| **UX-3** — System Health лента (Dashboard top-bar показывает что работает, что сломано, куда идти чинить) | — | ½ дня UI. Источник: capabilities + health-checks, уже доступны. |
-| **UX-4** — Full UI audit по всем 13 экранам React UI (дубликаты + technical leak + лишние клики + missing states) | UX-1 | 3-4 дня анализ + 1-2 недели implementation. Источник: `doc-service/docs/IDEAS_2026-06-01_DISCUSSION.md`. |
-| **Epic-5** — Local Agent Models bench (Mistral/Llama vs OpenAI для tool-calling) | GPU-сервер 96 ГБ VRAM | SLAI-side эпик. parsdocs может предоставить inference endpoint. После прихода железа. |
-| **Epic-8** — Voice Command Flow (Whisper → агент → tool) | ASR endpoint в .env | parsdocs ASR pipeline готов (`164f83e`); ждёт `ASR_BASE_URL` в `inference-service/.env` + SLAI frontend recording. ~2-3 дня обе стороны. |
-| **EXT-LLM-PROXY-B** — light LLM-gateway (chat completions + streaming + tools passthrough + **embeddings** + usage metering, БЕЗ per-org quotas/RL) | MTI-3 (must) + OpenAI API key для embeddings | **Owner-decision 2026-06-01: B сейчас, C по триггеру (5+ инстансов SLAI или incident).** Формальное ТЗ SLAI получено 2026-06-02 — совпало + добавили `/v1/embeddings`. ETA W24-25 (после WW-23 стабилизации). Implementation ТЗ — `EXT_LLM_PROXY_B_IMPL_TZ_2026-06-01.md`, reply — `PARSDOCS_REPLY_TO_SLAI_EXT_LLM_PROXY_2026-06-02.md`. Размер: MTI-3 (2д) + chat-completions (3д) + embeddings (1д) = ~6 рабочих дней. После: SLAI инстансы переключают `api.anthropic.com` на `vanga.sls24.ru/v1/chat/completions`. |
-| **EXT-LLM-PROXY-C** (отложено по триггеру) | EXT-LLM-PROXY-B + MTI-1 | Расширение B до full gateway (per-org rate-limit + квоты + cost-calc + admin endpoints + webhook'и). Делать при 5+ SLAI-инстансов ИЛИ первом incident'е runaway LLM-расхода. ТЗ — `doc-service/docs/EXT_LLM_PROXY_TZ_2026-06-01.md` §Вариант C. |
+| Hybrid routing (текст/картинка) | `HYBRID_ROUTING_ENABLED` | главный рычаг по latency |
+| Извлечение из картинки | `provider.vision` / `metadata._extract_from_image` | сканы без текст-слоя |
+| Приём документа по ссылке | `FILE_URL_INGEST_ENABLED` | большие файлы без 50MB-лимита |
+| Клиентский ключ модели (BYO LLM) | `BYO_LLM_ENABLED` | consumer на своём LLM |
 
 ---
 
-## 🟢 Находка качества (2026-05-25) — vision решает точность, упёрлись в latency
+## 🔵 Перспектива
 
-Первый бенч на **реальных** документах (9 шт, не синтетика):
-- **phi4-text** (тогдашний дефолт, до bench v3 — позже смещён на mistral-small3.1): exact-match 68.3%, критичные 69% — планки SLAI НЕ проходит. Сканы счёт-фактуры сыпались.
-- **Qwen2.5-VL 32B vision** (на GPU-боксе `10.10.28.10`, извлечение из картинки): exact-match **90%**, критичные **96%**, сканы СФ **100%** — **впервые проходит обе планки SLAI** (exact ≥0.85, critical ≥0.95).
-- **Новый блокер — latency:** vision P50 186с / P95 820с против MVP-SLA 90с (~2-9× мимо).
-
-**План:** (1) **hybrid-routing** — быстрый text/phi4 для чистых text-PDF (в SLA), vision-fallback для сканов/СФ/низкой OCR-уверенности; (2) **достроить extraction-from-image путь** (`image_base64` в `/v1/extract` + мультимодальное сообщение в backend + роутинг в orchestrator — ~1-2 дня, model-agnostic; сейчас vision используется ТОЛЬКО как OCR-фолбэк, не для структурного extract); (3) **latency-оптимизация** (qwen2.5vl:7b, ниже DPI/num_predict, vLLM на сервере 96 ГБ ускорит кратно). Детали — `docs/MODEL_REPORT.md` #26.
-**Оговорка:** тест-доки имели text-layer (digital PDF→картинка), не настоящие растровые сканы — перепроверить на golden-set SLAI (Q9, заблокирован).
-
-## 🔵 Перспектива (под сервер 96 ГБ VRAM — в пути)
-- **Phi-4-multimodal** — пользователь хочет прогнать через неё; в Ollama не заводится (архитектура vision/audio-LoRA), нужен **vLLM на сервере 96 ГБ**. После прихода сервера: поднять на vLLM + прогнать те же 9 доков, сравнить с Qwen2.5-VL #26.
-
-### ASR / речь-в-текст (новая модальность)
-**✅ Приёмный путь построен технически (`164f83e`)** — model-agnostic, config-driven, без ключа: audio (wav/mp3/m4a/ogg, magic-bytes) → inference `POST /v1/transcribe` → конфигурируемый OpenAI-совместимый `/v1/audio/transcriptions` бэкенд (`ASR_BASE_URL`/`ASR_MODEL`) → транскрипт → тот же pipeline. За флагом `ASR_ENABLED` (default off). Серверная модель («простая на сервере») подключается через env, деплой — в другом месте. Тесты: 35 doc + 10 inference. Остаётся: поднять модель + включить флаг + (опц.) doc-типы `voice_message`/`call_transcript`.
-
-**Идея интеграции:** ASR = «OCR для звука». Транскрипт → тот же downstream-пайплайн
-(classify → extract → validate → webhook), без изменений после получения текста.
-
-- **Модели в inference-service** (Python/GPU), новый эндпоинт `/v1/transcribe`, тот же admission-gate что в A1.
-- **doc-service**: ASR как «text-extraction engine» рядом с OCR; роутер выбирает по mime-type; audio magic-bytes (wav/mp3/m4a/ogg).
-- **Стек:** GigaAM v2 (RNNT) + Silero VAD — **MVP**. faster-whisper large-v3 — fallback/сравнение. WhisperX / pyannote.audio — диаризация (несколько спикеров), фаза 2.
-- **152-ФЗ:** все модели **локальные** — ничего в облако, безопаснее облачного SpeechKit.
-- **Открытый скоуп:** какой звук и зачем (звонки логистов / голосовые заявки / встречи) — определяет extract-схему и нужность диаризации.
-
-### Прочее под тот же сервер
-- **vLLM-миграция Qwen-VL** — throughput через continuous batching. Сейчас in-process (GIL-bound). Берём, когда упрёмся в нагрузку.
-- **DaData фаза 2** — очистка/нормализация адресов (ФИАС) через cleaner-API (secret-key уже хранится в `provider_settings.extra`).
+- **Под сервер 96 ГБ VRAM:** vLLM (throughput через continuous batching), прогон Phi-4-multimodal vs Qwen2.5-VL.
+- **Голос → текст (ASR)** — приёмный путь готов (за `ASR_ENABLED`), ждёт модель + `ASR_BASE_URL`. «OCR для звука»: транскрипт → тот же pipeline.
+- **DaData live + фаза 2** — обогащение/нормализация адресов; код готов, ввести ключ в UI.
+- **MTI / UX-беклог** — унификация хранения ключей (MTI-3, делать первым), пресеты моделей (MTI-2), multi-instance SLAI UI (MTI-1); упрощение экрана провайдеров (Simple/Advanced), мастер «сделать основным», полный аудит экранов. Триггеры: 3+ инстансов SLAI / по необходимости.
+- **Петля улучшения v2** — авто-отчёт гипотез по накопленным правкам и оценкам (сейчас разбор руками).
+- **EXT-LLM-PROXY-C** — расширение шлюза до full gateway (per-org rate-limit, квоты, cost-calc) — по триггеру (5+ инстансов SLAI или incident).
 
 ---
 
 ## 🧊 Заморожено (YAGNI до триггера)
 
-- ~~**Per-tenant `provider_settings`**~~ — **РАЗМОРОЖЕНО 2026-05-31** в виде MTI-1 (per-org overrides + multi-instance UI). Триггер: 3+ SLAI-инстансов на горизонте.
-- ~~**Активное подключение новых потребителей**~~ — **РАЗМОРОЖЕНО 2026-05-31** в виде MTI-1. CP7 multi-tenant CRUD идёт в работу.
-
-_Закрыто 2026-05-24: удалён легаси `doc-service/web/` (+ Dockerfile/package.json чистка); UI-6-хвост выровнен под ConfidenceBar; устаревшая запись CP1 в TECH_DEBT исправлена (CP1 давно DB-driven)._
+- Time-series графики на дашборде (нужен часовой rollup).
+- Алёрты на пороги (needs_review > 40% → notify) — нужен механизм нотификаций.
+- Стоимость в ₽/$ (токены × прайс) — вынести прайсы в config.
 
 ---
 
 ## Легенда
-🔴 блокер · 🟡 в работе/ближайшее · 🔵 перспектива · 🧊 заморожено · ⏳ ждёт · ⬜ вопрос наружу
+🔴 блокер · 🟡 приоритет/ближайшее · 🔵 перспектива · 🧰 готово-выключено · ✅ сделано · 🧊 заморожено · ⬜ вопрос наружу
