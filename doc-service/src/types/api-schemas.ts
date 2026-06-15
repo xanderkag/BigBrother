@@ -124,6 +124,53 @@ export const ExtractedPatchBody = z
   .record(z.unknown())
   .describe('Произвольные поля, перезаписывающие текущее extracted целиком');
 
+// --- POST/GET /jobs/:id/feedback (внешний фидбек о качестве извлечения) ---
+
+/**
+ * Вердикт потребителя о качестве извлечения. Старт простой — уровень
+ * документа; field-level детализация идёт в опциональном `fields[]`.
+ */
+export const FeedbackVerdictSchema = z.enum(['correct', 'partial', 'incorrect']);
+
+export const CreateFeedbackBody = z
+  .object({
+    verdict: FeedbackVerdictSchema.describe('Оценка извлечения: correct | partial | incorrect'),
+    comment: z
+      .string()
+      .max(2000)
+      .optional()
+      .describe('Свободный комментарий потребителя (до 2000 символов)'),
+    // Намеренно loose (passthrough) — задел под field-level детализацию.
+    // Не переусложняем схему сейчас; форму нормализуем при анализе.
+    fields: z
+      .array(z.object({ path: z.string() }).passthrough())
+      .optional()
+      .describe('Опц. детализация по полям: [{ path, note?, correct_value? }]'),
+    rated_by: z
+      .string()
+      .max(200)
+      .optional()
+      .describe('Опц. идентификатор конечного пользователя на стороне внешней системы'),
+  })
+  .describe('Внешний фидбек о качестве извлечения по job');
+
+export const Feedback = z
+  .object({
+    id: z.string(),
+    job_id: z.string().uuid(),
+    source_system: z.string().describe('Кто прислал оценку (из авторизованного ключа, не из тела)'),
+    verdict: FeedbackVerdictSchema,
+    comment: z.string().nullable(),
+    fields: z.array(z.record(z.unknown())).nullable(),
+    rated_by: z.string().nullable(),
+    created_at: z.string(),
+  })
+  .describe('Запись внешнего фидбека');
+
+export const ListFeedbackResponse = z.object({
+  items: z.array(Feedback),
+});
+
 // --- GET /jobs (list with filters) ---
 
 export const ListJobsQuery = z.object({

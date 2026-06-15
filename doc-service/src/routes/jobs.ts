@@ -15,14 +15,18 @@ import {
 import { jobsRepo } from '../storage/jobs.js';
 import { docQueue } from '../queue.js';
 import {
+  CreateFeedbackBody,
   CreateJobResponse,
   ErrorResponse,
   ExtractedPatchBody,
+  Feedback,
   Job,
   JobIdParam,
+  ListFeedbackResponse,
   ListJobsQuery,
   ListJobsResponse,
 } from '../types/api-schemas.js';
+import { jobFeedbackRepo, type FeedbackField } from '../storage/job-feedback.js';
 import { bearerAuthHook } from '../auth.js';
 import { validateExtractedWithResolver } from '../pipeline/validation/index.js';
 import { runDocumentPipeline } from '../pipeline/orchestrator.js';
@@ -683,6 +687,97 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
       reply.type('text/plain; charset=utf-8');
       reply.send(job.raw_text);
       return reply;
+    },
+  );
+
+  // POST /jobs/:id/feedback — внешний фидбек о качестве извлечения.
+  //
+  // Потребительская система (клиент №1 — SLAI) присылает вердикт «насколько
+  // хорошо распознан/извлечён документ». Сохраняем как сырьё для ручного
+  // анализа гипотез по улучшению; на сам job не влияет.
+  //
+  // source_system берётся из АУТЕНТИФИЦИРОВАННОГО caller'а, а не из тела —
+  // источник оценки нельзя подделать (тело подконтрольно отправителю).
+  r.post(
+    '/jobs/:id/feedback',
+    {
+      schema: {
+        tags: ['jobs'],
+        summary: 'Прислать внешний фидбек о качестве извлечения',
+        description:
+          'Потребитель (SLAI и др.) оценивает, насколько хорошо извлечён документ: ' +
+          '`verdict` = correct | partial | incorrect, опц. `comment`, опц. `fields[]` ' +
+          '(задел под детализацию по полям), опц. `rated_by`. Источник оценки ' +
+          '(`source_system`) определяется по авторизованному ключу — из тела не берётся. ' +
+          'На сам job (extracted/confidence/status) не влияет; копится как сырьё для ' +
+          'ручного цикла улучшений.',
+        security: [{ bearerAuth: [] }],
+        params: JobIdParam,
+        body: CreateFeedbackBody,
+        response: {
+          201: Feedback,
+          400: ErrorResponse,
+          401: ErrorResponse,
+          404: ErrorResponse,
+        },
+      },
+    },
+    async (req, reply) => {
+      const job = await jobsRepo.findById(req.params.id);
+      if (!job) {
+        reply.code(404);
+        return { error: 'job not found' };
+      }
+      if (!(await requireProjectAccess(req, reply, job.project_id))) return reply;
+
+      // Источник — из аутентифицированной личности, не из тела (анти-спуфинг).
+      // Для named key SLAI caller уже 'SLAI'; service-аккаунт тегируется
+      // display_name; иначе 'unknown'.
+      const sourceSystem =
+        req.user?.caller ?? req.user?.row?.display_name ?? 'unknown';
+
+      const created = await jobFeedbackRepo.create({
+        jobId: job.id,
+        sourceSystem,
+        verdict: req.body.verdict,
+        comment: req.body.comment ?? null,
+        fields: (req.body.fields as FeedbackField[] | undefined) ?? null,
+        ratedBy: req.body.rated_by ?? null,
+      });
+      reply.code(201);
+      return jobFeedbackRepo.toApi(created);
+    },
+  );
+
+  // GET /jobs/:id/feedback — список присланного фидбека по job (для разбора / future UI).
+  r.get(
+    '/jobs/:id/feedback',
+    {
+      schema: {
+        tags: ['jobs'],
+        summary: 'Список внешнего фидбека по job',
+        description:
+          'Возвращает весь присланный потребителями фидбек о качестве извлечения ' +
+          'этого job, новые сверху. Используется для ручного разбора качества и ' +
+          'будущего UI.',
+        security: [{ bearerAuth: [] }],
+        params: JobIdParam,
+        response: {
+          200: ListFeedbackResponse,
+          401: ErrorResponse,
+          404: ErrorResponse,
+        },
+      },
+    },
+    async (req, reply) => {
+      const job = await jobsRepo.findById(req.params.id);
+      if (!job) {
+        reply.code(404);
+        return { error: 'job not found' };
+      }
+      if (!(await requireProjectAccess(req, reply, job.project_id))) return reply;
+      const items = await jobFeedbackRepo.listByJob(job.id);
+      return { items: items.map((f) => jobFeedbackRepo.toApi(f)) };
     },
   );
 
