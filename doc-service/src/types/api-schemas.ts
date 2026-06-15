@@ -171,6 +171,29 @@ export const ListFeedbackResponse = z.object({
   items: z.array(Feedback),
 });
 
+/**
+ * Запись внутреннего леджера ручных правок операторов
+ * (extraction_corrections). Каждое изменённое поле — before→after по
+ * dot-path. Сырьё для петли улучшения; на сам job не влияет.
+ */
+export const ExtractionCorrection = z
+  .object({
+    id: z.string(),
+    job_id: z.string().uuid(),
+    document_type: z.string().nullable(),
+    field_path: z.string(),
+    value_before: z.string().nullable(),
+    value_after: z.string().nullable(),
+    source_system: z.string().nullable(),
+    corrected_by: z.string().nullable(),
+    created_at: z.string(),
+  })
+  .describe('Запись ручной правки оператора (before→after по полю)');
+
+export const ListCorrectionsResponse = z.object({
+  items: z.array(ExtractionCorrection),
+});
+
 // --- GET /jobs (list with filters) ---
 
 export const ListJobsQuery = z.object({

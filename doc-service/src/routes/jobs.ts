@@ -12,7 +12,7 @@ import {
   detectFileType,
   fileStorage,
 } from '../storage/files.js';
-import { jobsRepo } from '../storage/jobs.js';
+import { jobsRepo, type JobRow } from '../storage/jobs.js';
 import { docQueue } from '../queue.js';
 import {
   CreateFeedbackBody,
@@ -22,11 +22,15 @@ import {
   Feedback,
   Job,
   JobIdParam,
+  ListCorrectionsResponse,
   ListFeedbackResponse,
   ListJobsQuery,
   ListJobsResponse,
 } from '../types/api-schemas.js';
 import { jobFeedbackRepo, type FeedbackField } from '../storage/job-feedback.js';
+import { extractionCorrectionsRepo } from '../storage/extraction-corrections.js';
+import { diffExtracted } from '../pipeline/normalize/diff-extracted.js';
+import { usersRepo } from '../storage/users.js';
 import { bearerAuthHook } from '../auth.js';
 import { validateExtractedWithResolver } from '../pipeline/validation/index.js';
 import { runDocumentPipeline } from '../pipeline/orchestrator.js';
@@ -92,6 +96,52 @@ function isValidWebhookUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Operator corrections ledger — фиксирует разницу old extracted → new
+ * extracted, которую внёс оператор через PATCH /jobs/:id/extracted.
+ *
+ * Вызывается fire-and-forget после успешного апдейта. Любая ошибка здесь
+ * не должна влиять на ответ оператору — caller оборачивает в .catch().
+ *
+ *  - document_type: нормализованный outbound-slug (консистентный разбор).
+ *  - source_system: система, которая ИЗНАЧАЛЬНО прислала документ — из
+ *    job.created_by_user_id → display_name того пользователя (одна выборка
+ *    на PATCH), fallback 'unknown'.
+ *  - corrected_by: редактирующий оператор из req.user.
+ */
+async function captureExtractionCorrections(
+  req: FastifyRequest,
+  job: JobRow,
+  newExtracted: Record<string, unknown>,
+): Promise<void> {
+  const diff = diffExtracted(job.extracted, newExtracted);
+  if (diff.length === 0) return;
+
+  // Один lookup origin-системы на PATCH — переиспользуем для всех строк.
+  let sourceSystem = 'unknown';
+  if (job.created_by_user_id) {
+    const origin = await usersRepo.findById(job.created_by_user_id);
+    if (origin?.display_name) sourceSystem = origin.display_name;
+  }
+
+  const correctedBy =
+    req.user?.row?.email ?? req.user?.row?.display_name ?? req.user?.id ?? 'unknown';
+
+  const documentType = normalizeSlugForApi(job.document_type);
+
+  await extractionCorrectionsRepo.createMany(
+    diff.map((d) => ({
+      jobId: job.id,
+      documentType,
+      fieldPath: d.path,
+      valueBefore: d.before,
+      valueAfter: d.after,
+      sourceSystem,
+      correctedBy,
+    })),
+  );
 }
 
 /**
@@ -781,6 +831,41 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // GET /jobs/:id/corrections — леджер ручных правок операторов по job.
+  //
+  // Внутренняя половина петли улучшения: каждая правка extracted через
+  // PATCH разложена на before→after по полям. Для ручного разбора / future UI.
+  r.get(
+    '/jobs/:id/corrections',
+    {
+      schema: {
+        tags: ['jobs'],
+        summary: 'Список ручных правок оператора по job',
+        description:
+          'Возвращает леджер ручных правок (before→after по каждому изменённому полю), ' +
+          'накопленный при редактировании extracted через PATCH /jobs/:id/extracted, ' +
+          'новые сверху. Сырьё для ручного анализа ошибок извлечения и будущего UI.',
+        security: [{ bearerAuth: [] }],
+        params: JobIdParam,
+        response: {
+          200: ListCorrectionsResponse,
+          401: ErrorResponse,
+          404: ErrorResponse,
+        },
+      },
+    },
+    async (req, reply) => {
+      const job = await jobsRepo.findById(req.params.id);
+      if (!job) {
+        reply.code(404);
+        return { error: 'job not found' };
+      }
+      if (!(await requireProjectAccess(req, reply, job.project_id))) return reply;
+      const items = await extractionCorrectionsRepo.listByJob(job.id);
+      return { items: items.map((c) => extractionCorrectionsRepo.toApi(c)) };
+    },
+  );
+
   // GET /jobs/:id/file — отдаёт исходный загруженный документ.
   // Используется UI для preview оригинала рядом с extracted JSON.
   // После retention-чистки (jobs.file_path NULLed) возвращает 410.
@@ -912,6 +997,17 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         reply.code(404);
         return { error: 'job not found' };
       }
+
+      // Operator corrections ledger — фиксируем before→after по каждому
+      // изменённому полю. Самый ценный сигнал для петли улучшения: раньше
+      // правка просто перезаписывала extracted, разница терялась.
+      // НЕ-ФАТАЛЬНО: любой сбой логирования не должен ронять правку
+      // оператора — ответ остаётся ровно как сегодня. Только ручной путь
+      // (PATCH), не reprocess/re-run.
+      void captureExtractionCorrections(req, job, sanitizedBody).catch((err) => {
+        req.log.warn({ err, job_id: job.id }, 'failed to record extraction corrections');
+      });
+
       return jobsRepo.toApi(updated);
     },
   );
