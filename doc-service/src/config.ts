@@ -398,7 +398,24 @@ const ConfigSchema = z.object({
    */
   llmGateway: z.object({
     enabled: z.coerce.boolean().default(false),
+    /**
+     * EXT-LLM-GATEWAY-ANTHROPIC (2026-06-XX): backend selector. По умолчанию
+     * 'openai_compat' — старое поведение (passthrough в Ollama / vLLM /
+     * OpenAI-compat upstream). 'anthropic' — translator OpenAI↔Anthropic
+     * native API на лету (для Asha, где нет локальной GPU и используется
+     * облачный Anthropic ключ).
+     *
+     * Подбирается per-окружение:
+     *   - kb-docker (корп) → openai_compat (локальный Ollama на 10.10.33.10)
+     *   - asha (пилот SLAI) → anthropic (cloud Anthropic key)
+     */
+    backend: z.enum(['openai_compat', 'anthropic']).default('openai_compat'),
     baseUrl: z.string().optional(),
+    /**
+     * Anthropic API key (только для backend='anthropic'). Не используется
+     * для openai_compat (там key в baseUrl или passthrough без auth).
+     */
+    apiKey: z.string().optional(),
     defaultAlias: z.string().default('parsdocs-chat'),
     models: z
       .preprocess((v) => {
@@ -516,7 +533,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     },
     llmGateway: {
       enabled: env.LLM_GATEWAY_ENABLED,
+      backend: env.LLM_GATEWAY_BACKEND,
       baseUrl: env.LLM_GATEWAY_BASE_URL || undefined,
+      apiKey: env.LLM_GATEWAY_API_KEY || env.ANTHROPIC_API_KEY || undefined,
       defaultAlias: env.LLM_GATEWAY_DEFAULT_ALIAS,
       models: env.LLM_GATEWAY_MODELS_JSON,
       timeoutMs: env.LLM_GATEWAY_TIMEOUT_MS,

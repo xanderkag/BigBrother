@@ -7,7 +7,9 @@ import {
   GatewayChatClient,
   extractUsage,
   openAiError,
+  type GatewayUpstreamResult,
 } from '../pipeline/llm/chat-client.js';
+import { AnthropicChatClient } from '../pipeline/llm/anthropic-client.js';
 import { llmGatewayUsageRepo, type GatewayUsageStatus } from '../storage/llm-usage.js';
 
 /**
@@ -64,13 +66,23 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
       );
   });
 
-  // baseUrl шлюза = LLM_GATEWAY_BASE_URL, иначе fallback на config.llm.url
-  // (на случай если оба указывают на один OpenAI-compat endpoint). Клиент
-  // статичен (конфиг фиксируется на boot'е) — собираем один раз.
-  const baseUrl = config.llmGateway.baseUrl || config.llm.url || null;
-  const client = baseUrl
-    ? new GatewayChatClient({ baseUrl, timeoutMs: config.llmGateway.timeoutMs })
-    : null;
+  // EXT-LLM-GATEWAY-ANTHROPIC: выбираем backend по config.llmGateway.backend.
+  //   - openai_compat → старый GatewayChatClient (Ollama/vLLM passthrough)
+  //   - anthropic → AnthropicChatClient с translator OpenAI↔Anthropic
+  // Клиент статичен (конфиг фиксируется на boot'е) — собираем один раз.
+  let client: { chatCompletions(body: unknown): Promise<GatewayUpstreamResult> } | null = null;
+  if (config.llmGateway.backend === 'anthropic') {
+    const apiKey = config.llmGateway.apiKey;
+    const baseUrl = config.llmGateway.baseUrl || 'https://api.anthropic.com';
+    if (apiKey) {
+      client = new AnthropicChatClient({ baseUrl, apiKey, timeoutMs: config.llmGateway.timeoutMs });
+    }
+  } else {
+    const baseUrl = config.llmGateway.baseUrl || config.llm.url || null;
+    if (baseUrl) {
+      client = new GatewayChatClient({ baseUrl, timeoutMs: config.llmGateway.timeoutMs });
+    }
+  }
 
   const models = config.llmGateway.models;
   const defaultAlias = config.llmGateway.defaultAlias;
