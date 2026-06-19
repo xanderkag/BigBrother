@@ -233,6 +233,40 @@ describe('buildMatchSignals — cmr / wire_transfer / generic', () => {
   });
 });
 
+describe('buildMatchSignals — services_act (Акт)', () => {
+  it('маппит party_a→executor, party_b→customer (внутренний slug AKT → services_act)', () => {
+    const s = buildMatchSignals('AKT', {
+      number: 'А-2026-1',
+      date: '2026-06-03',
+      party_a: { name: 'Исполнитель', inn: '7728168971', kpp: '772801001' },
+      party_b: { name: 'Заказчик', inn: '7707083893' },
+      total: 1000,
+      currency: 'RUB',
+    });
+    expect(s.parties?.executor).toEqual({ name: 'Исполнитель', inn: '7728168971', kpp: '772801001' });
+    expect(s.parties?.customer?.inn).toBe('7707083893');
+    // generic seller/buyer не должны появляться у акта
+    expect(s.parties?.seller).toBeUndefined();
+    expect(s.parties?.buyer).toBeUndefined();
+    expect(s.totals).toEqual({ amount: 1000, currency: 'RUB' });
+    expect(s.dates?.document).toBe('2026-06-03');
+  });
+
+  it('confidence для executor/customer из party_a.inn/party_b.inn', () => {
+    const s = buildMatchSignals(
+      'AKT',
+      { party_a: { inn: '7728168971' }, party_b: { inn: '7707083893' } },
+      { 'party_a.inn': 0.9, 'party_b.inn': 0.7 },
+    );
+    expect(s._confidence?.['parties.executor']).toBe(0.9);
+    expect(s._confidence?.['parties.customer']).toBe(0.7);
+  });
+
+  it('пустой акт → только schema_version (present-only)', () => {
+    expect(Object.keys(buildMatchSignals('AKT', {}))).toEqual(['schema_version']);
+  });
+});
+
 describe('buildMatchSignals — §2.3 confidence', () => {
   it('_confidence наполняется из field-confidence для присутствующих сигналов', () => {
     const s = buildMatchSignals(

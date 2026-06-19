@@ -321,6 +321,18 @@ const PROJECTORS: Record<string, Projector> = {
     if (containers) ctx.out.containers = containers;
     setDate(ctx, 'document', ex.date);
   },
+
+  // Акт оказанных услуг (AKT → outbound `services_act`). Схема использует
+  // party_a (Исполнитель) / party_b (Заказчик), поэтому generic fallback
+  // (seller/buyer) их не подхватывает. Проецируем под канонические для SLAI
+  // роли: executor (исполнитель) + customer (заказчик). Доп. fallback на
+  // прямые executor/customer на случай иной модели.
+  services_act: (ctx) => {
+    const { ex } = ctx;
+    setParty(ctx, 'executor', ex.party_a ?? ex.executor);
+    setParty(ctx, 'customer', ex.party_b ?? ex.customer);
+    setDate(ctx, 'document', ex.date);
+  },
 };
 
 // invoice-семейство шарит проектор.
@@ -347,6 +359,8 @@ const CONFIDENCE_SOURCES: Record<string, readonly string[]> = {
   'parties.shipper': ['shipper.inn'],
   'parties.consignee': ['consignee.inn'],
   'parties.carrier': ['carrier.inn'],
+  'parties.executor': ['party_a.inn'],
+  'parties.customer': ['party_b.inn'],
   'dates.document': ['date'],
 };
 
