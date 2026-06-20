@@ -48,6 +48,52 @@
 
 ## Active Questions
 
+### Q-CLASS-MATRIX. Расширение classifier'а под roadmap SLAI (P0/P1/P2 матрица типов перевозок × документов)
+
+- **Status:** OPEN (To: SLAI_DEV)
+- **Asked:** 2026-06-XX (SLAI PM, classifier roadmap message)
+- **From:** SLAI_DEV → PARSDOCS_DEV
+- **Связано:** EXT-CLASS-1/2/3 в ROADMAP.md.
+
+**Что прислал SLAI:** roadmap классификатора на 3 квартала с типами:
+P0 (waybill / TN / special_permit), P1 (BL / AWB / CIM / SMGS / manifest),
+P2 (commercial_invoice ВЭД / packing_list / cert_of_origin / phyto / vet).
+
+**Что у нас уже зарегистрировано** (из 26 active document types на
+vanga.sls24.ru): `waybill`, `bill_of_lading` (BL_SCHEMA полная от
+2026-06-04), `commercial_invoice`, `packing_list`, `cert_of_origin`,
+`transport_request`. Реально не хватает: `TN`, `special_permit`, `AWB`,
+`CIM`, `СМГС`, `manifest`, `phytosanitary_certificate`,
+`veterinary_certificate`.
+
+**Что ждём от SLAI:**
+
+1. **§(a):** ack по ETA EXT-CLASS-1/2/3 (1.5-2.5д + 3д + 1.5д = ~7 рабочих
+   дней, после WW-23 пилот-стабилизации).
+2. **§(b):** beta-доступ не делаем — добавляем в main без флагов.
+3. **§(c) КРИТИЧНО:** `transport_request` (заявка от заказчика к
+   экспедитору) vs `booking_request` (экспедитор → перевозчик плеча) —
+   разделять или мерджить? У них в БД разные сущности, наш голос —
+   разделить. Жду подтверждение.
+4. **§(d) КРИТИЧНО:** TN (форма 2013) vs TTN — отдельно держать или
+   мерджить с TTN? У SLAI разные сущности по нормативке. Жду решение.
+5. Полная матрица «тип перевозки × документы» — обещали прислать
+   отдельным файлом. Поможет приоритизации P1/P2 (AWB vs CIM vs phyto
+   что важнее).
+6. **Образцы для калибровки** когда дойдём до P1/P2:
+   - 1-2 PDF waybill (если classifier на их хитах падает в unknown/ttn)
+   - 1 PDF commercial_invoice / packing_list / cert_of_origin (если
+     текущие schemas промахиваются на ВЭД-полях)
+   - 3-5 PDF AWB и CIM/SMGS перед EXT-CLASS-2/3
+
+**Case-конвенция (вопрос §(d) случай букв):** уже решено outbound в нашем
+коде через `OUTBOUND_SLUG_ALIASES`: `TTN→ttn`, `UPD→upd`, `UKD→ukd`,
+`CMR→cmr`, `AKT→services_act`, `factInvoice→tax_invoice`. В webhook
+payload приходит только lowercase snake_case. Если видят uppercase —
+протекает в обход нормализации, нужен `job_id` для диагностики.
+
+---
+
 ### Q-NEG-1. Второй sandbox-тенант для negabarit-стенда
 
 - **Status:** RESOLVED 2026-06-01
