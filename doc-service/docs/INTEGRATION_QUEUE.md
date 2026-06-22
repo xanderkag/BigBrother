@@ -48,6 +48,27 @@
 
 ## Active Questions
 
+### Q-EXT-CLASS. Новые типы документов (очередь, после пилота)
+
+- **Status:** `OPEN` (To: CLAUDE)
+- **Asked:** 2026-06-21
+- **From:** PARSDOCS_DEV
+- **To:** CLAUDE / SLAI_DEV
+- **Что нужно:** Расширение каталога типов под ВЭД/логистику. Делать **по очереди**, **после стабилизации пилота WW-23**. Подробные определения эпиков — в ROADMAP § Перспектива.
+- **Что сделать когда дойдёт очередь:** каждый тип = 1 seed-миграция (рецепт отработан на 30/30); согласовать со SLAI, нужны ли эти типы в их матчере и какие поля они читают.
+
+#### Очередь
+- **EXT-CLASS-1** (~2 д): `special_permit` (Росавтодор), `booking_request` (клон `transport_request`, `requestor.kind=forwarder`), тюнинг классификатора `waybill`.
+- **EXT-CLASS-2** (~3 д): AWB (Air Waybill), `manifest`, `phytosanitary_certificate`, `veterinary_certificate`, тюнинг `commercial_invoice` под ВЭД.
+- **EXT-CLASS-3** (~1.5 д): CIM + СМГС (международные ж/д).
+
+#### Интеграционные заметки (актуальное на 2026-06-21)
+- **Каталог типов закрыт 30/30** — добавлены 4 складских (`power_of_attorney`/М-2, `warehouse_receipt`/МХ-1, `warehouse_return`/МХ-3, `material_requisition`/М-11), миграция `20260621000001`, задеплоено + проверено вживую.
+- **Дефолт-модель извлечения = `phi4`** (бенч 2026-06-18: 91% против mistral 48%; фикс мис-ярлыков сторон ТТН/CMR). Все типы на `parser_kind=llm_extract`.
+- **Акт-lockstep с SLAI ЗАКРЫТ с обеих сторон** — projector `services_act` в `_match_signals` (party_a→`executor`, party_b→`customer`); SLAI читает `executor`+`customer` по ИНН.
+
+---
+
 ### Q-NEG-1. Второй sandbox-тенант для negabarit-стенда
 
 - **Status:** RESOLVED 2026-06-01
@@ -283,3 +304,4 @@ A-record), no-redirect, mid-stream byte-ceiling, опц. allowlist
 | 2026-05-29 вечер | SLAI FOLLOWUP закрыл все 4: Q4 webhook secret ETA 2026-05-30, Q5 пилот WW-23 (2026-06-02), Q9 golden dataset 2026-06-02..04, AC9 (separate org / 7d retention / 60 req/min). Заведён Q13 (AC9). Создан `SLAI_SECRETS_INBOX.md` (envelope-encrypted channel) с блоками S1/S2 + `doc-service/test-fixtures/slai-golden/` (PR-канал для PDF). /capabilities supportedLineFields переведён на `{name, since}` формат по их рекомендации. |
 | 2026-05-26 | Q12 (EXT-D) реализовано: `file_url`-ingest в `POST /jobs` с SSRF-защитой (`src/pipeline/ingest/url-fetch.ts` — scheme/private-IP/redirect/byte-cap guards), флаг `FILE_URL_INGEST_ENABLED`, error_codes `FILE_URL_*`, тесты `tests/file-url-ingest.spec.ts` (27). Не задеплоено. Webhook v1 не тронут. |
 | 2026-05-26 | Нудж SLAI по Q4/Q5/Q9 (все OPEN >7 дней) подготовлен — `doc-service/docs/PARSDOCS_NUDGE_SLAI_2026-05-26.md` (лид: EXT-A/B/D реализованы, 26 типов, vision проходит гейты 96%/90%; оговорки про digital-PDF и latency 186с). Статусы Q4/Q5/Q9 без изменений — ждём ответ. |
+| 2026-06-21 | Интеграционные заметки обновлены: Акт-lockstep ЗАКРЫТ с обеих сторон (projector `services_act`, executor/customer по ИНН), дефолт-модель `phi4`, каталог типов 30/30 (+4 складских, миграция `20260621000001`). Заведён `Q-EXT-CLASS` (OPEN, To: CLAUDE) — очередь новых типов EXT-CLASS-1/2/3 после пилота WW-23. |
