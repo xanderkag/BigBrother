@@ -48,6 +48,69 @@
 
 ## Active Questions
 
+### Q-PERMIT-1. special_permit (Росавтодор) — extraction-схема для негабарит-перевозок
+
+- **Status:** ANSWERED (To: SLAI_DEV) — детальная схема ниже, ждём 1-2
+  реальных PDF для калибровки после встречи с клиентом.
+- **Asked:** 2026-06-XX (SLAI PM, classifier roadmap follow-up)
+- **From:** SLAI_DEV → PARSDOCS_DEV
+- **Связано:** EXT-CLASS-1 в ROADMAP.md.
+
+**Контекст:** SLAI просит поднять `special_permit` с классификации до
+полноценной extraction-схемы (P0 для первого негабарит-авто РФ клиента).
+Без авто-полей фишка «приложил → распозналось» на ключевом документе не
+работает.
+
+**Поля (с маппингом на наши существующие):**
+
+| SLAI поле | Наш путь | Статус |
+|-----------|----------|--------|
+| `permit_number` | `transport.permit.number` (уже в TTN/invoice) | ✅ переиспользуем |
+| `permit_valid_from` | НОВОЕ — добавить в `transport.permit.valid_from` | ❌ дельта |
+| `permit_valid_until` | `transport.permit.valid_to` | ✅ |
+| `issuing_authority` | `transport.permit.issued_by` (есть Росавтодор/Ространснадзор/ЦОДД enum) | ✅ |
+| `vehicle_plate` (тягач) | `vehicle.plate` | ✅ |
+| `vehicle_plate` (трал) | `vehicle.trailer_plate` | ✅ |
+| `route.from`, `route.to` | `transport.route.from`, `transport.route.to` | ✅ |
+| `route.waypoints[]` | НОВОЕ — массив именованных точек | ❌ дельта |
+| `cargo_dimensions.length_cm/width_cm/height_cm` | `transport.cargo.dimensions.{length_m, width_m, height_m}` (у нас метры) — добавим unit alias или вернём оба | ⚠️ unit |
+| `cargo.total_weight_kg` | `transport.cargo.weight_kg` | ✅ |
+| `cargo.axle_loads_kg[]` | НОВОЕ — массив нагрузок по осям | ❌ дельта |
+| `cargo.axles_count` | `vehicle.axles` | ✅ |
+| `escort_required` | `transport.escort.required` | ✅ |
+| `escort_type` enum {ГИБДД, прикрытие, пилот-авто, нет} | `transport.escort.type` (был string, добавим enum) | ⚠️ enum |
+| `restrictions` | НОВОЕ — `transport.permit.restrictions` text | ❌ дельта |
+
+**Покрытие:** 11 из 14 полей уже работают через переиспользование. Дельта:
+4 новых поля (`valid_from`, `waypoints[]`, `axle_loads_kg[]`, `restrictions`)
++ 2 тюнинга (`dimensions` cm-alias, `escort_type` enum).
+
+**Ответы на вопросы SLAI:**
+
+**(a) ETA:** **2-2.5 дня** одним разработчиком (входит в EXT-CLASS-1 в
+ROADMAP). Большую часть — за счёт переиспользования. Старт после
+стабилизации WW-23 пилота.
+
+**(b) Vision-режим на сканах/печатях:** у нас 3-engine OCR pipeline
+(`pdf-text` → `tesseract` → `vision-llm`) с автоматическим cascade'ом.
+Vision-LLM (Qwen-VL / Anthropic Sonnet) **специально подбирается под
+сканы и штампы Росавтодора**. По нашему bench v3 — точность полей 98.3%
+на vision-path. **Минимально-надёжный набор P0 если что-то промахивается:**
+`permit_number`, `permit_valid_until`, `vehicle_plate` — критичные для
+матчера. Остальные — добиваются human-in-loop в SLAI карточке.
+
+**(c) Маршрут — минимум:** для start'а возьмём `route.from` + `route.to`
++ `route.waypoints[]` (массив строк именованных точек как они написаны
+в PDF). Парсинг полного маршрута со всеми участками — тюним по
+калибровке на реальных образцах (Q-CLASS-MATRIX §6 — ждём 1-2 PDF).
+
+**Что нужно от SLAI:**
+- 1-2 реальных разрешения Росавтодора (с замазанным PII, формулировки
+  блоков «Маршрут», «Габариты», «Нагрузки по осям», «Сопровождение»,
+  «Особые условия» оставить живыми) — после их встречи с клиентом.
+
+---
+
 ### Q-CLASS-MATRIX. Расширение classifier'а под roadmap SLAI (P0/P1/P2 матрица типов перевозок × документов)
 
 - **Status:** OPEN (To: SLAI_DEV)
