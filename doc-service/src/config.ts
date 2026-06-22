@@ -429,6 +429,37 @@ const ConfigSchema = z.object({
       }, z.record(z.string()))
       .default({}),
     timeoutMs: numberFromEnv(120_000),
+    /**
+     * EXT-LLM-GATEWAY-EMBEDDINGS (SLAI 2026-06-XX): отдельный provider
+     * для /v1/embeddings, не зависит от chat backend. Anthropic embeddings
+     * не делает, поэтому даже на Asha (chat = anthropic) embeddings идут
+     * через OpenAI.
+     *
+     * SLAI Help-RAG требует text-embedding-3-small (1536 dim) — на ней
+     * у них pgvector help_chunk-индекс построен.
+     *
+     * enabled=false по умолчанию (фича-флаг). Активируется когда есть
+     * OPENAI_API_KEY и хотя бы один алиас в EMBEDDINGS_MODELS_JSON.
+     */
+    embeddings: z.object({
+      enabled: z.coerce.boolean().default(false),
+      provider: z.enum(['openai']).default('openai'),
+      baseUrl: z.string().default('https://api.openai.com/v1'),
+      apiKey: z.string().optional(),
+      defaultAlias: z.string().default('parsdocs-embeddings'),
+      models: z
+        .preprocess((v) => {
+          if (!v || v === '') return {};
+          try {
+            const parsed = JSON.parse(v as string);
+            return parsed && typeof parsed === 'object' ? parsed : {};
+          } catch {
+            return {};
+          }
+        }, z.record(z.string()))
+        .default({}),
+      timeoutMs: numberFromEnv(60_000),
+    }),
   }),
 });
 
@@ -539,6 +570,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       defaultAlias: env.LLM_GATEWAY_DEFAULT_ALIAS,
       models: env.LLM_GATEWAY_MODELS_JSON,
       timeoutMs: env.LLM_GATEWAY_TIMEOUT_MS,
+      embeddings: {
+        enabled: env.LLM_GATEWAY_EMBEDDINGS_ENABLED,
+        provider: env.LLM_GATEWAY_EMBEDDINGS_PROVIDER,
+        baseUrl: env.LLM_GATEWAY_EMBEDDINGS_BASE_URL,
+        apiKey: env.LLM_GATEWAY_EMBEDDINGS_API_KEY || env.OPENAI_API_KEY || undefined,
+        defaultAlias: env.LLM_GATEWAY_EMBEDDINGS_DEFAULT_ALIAS,
+        models: env.LLM_GATEWAY_EMBEDDINGS_MODELS_JSON,
+        timeoutMs: env.LLM_GATEWAY_EMBEDDINGS_TIMEOUT_MS,
+      },
     },
   });
 }

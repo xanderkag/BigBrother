@@ -10,6 +10,7 @@ import {
   type GatewayUpstreamResult,
 } from '../pipeline/llm/chat-client.js';
 import { AnthropicChatClient } from '../pipeline/llm/anthropic-client.js';
+import { OpenAiEmbeddingsClient } from '../pipeline/llm/openai-embeddings-client.js';
 import { llmGatewayUsageRepo, type GatewayUsageStatus } from '../storage/llm-usage.js';
 
 /**
@@ -101,17 +102,46 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
     return null; // карта пуста / дефолт не настроен — misconfig
   }
 
+  // EXT-LLM-GATEWAY-EMBEDDINGS: отдельный клиент под /v1/embeddings.
+  // Не зависит от chat backend — Anthropic не делает embeddings, поэтому
+  // даже на Asha (chat=anthropic) embeddings идут через OpenAI.
+  const embCfg = config.llmGateway.embeddings;
+  const embModels = embCfg.models;
+  const embDefaultAlias = embCfg.defaultAlias;
+  const embClient =
+    embCfg.enabled && embCfg.apiKey
+      ? new OpenAiEmbeddingsClient({
+          baseUrl: embCfg.baseUrl,
+          apiKey: embCfg.apiKey,
+          timeoutMs: embCfg.timeoutMs,
+        })
+      : null;
+  function resolveEmbeddingsModel(requested?: string): { alias: string; model: string } | null {
+    if (requested && Object.prototype.hasOwnProperty.call(embModels, requested)) {
+      return { alias: requested, model: embModels[requested]! };
+    }
+    const fallback = embModels[embDefaultAlias];
+    if (fallback) return { alias: embDefaultAlias, model: fallback };
+    return null;
+  }
+
   // GET /v1/models — публикуем НАШИ алиасы (не сырые ollama-теги).
   r.get(
     '/v1/models',
     { schema: { tags: ['llm-gateway'], summary: 'List published model aliases' } },
     async () => {
-      const ids = Object.keys(models);
-      const list = ids.length > 0 ? ids : [defaultAlias];
-      return {
-        object: 'list',
-        data: list.map((id) => ({ id, object: 'model', owned_by: 'parsdocs' })),
-      };
+      const chatIds = Object.keys(models);
+      const chatList = chatIds.length > 0 ? chatIds : [defaultAlias];
+      const data: Array<{ id: string; object: 'model'; owned_by: 'parsdocs' }> = chatList.map(
+        (id) => ({ id, object: 'model', owned_by: 'parsdocs' }),
+      );
+      // EXT-LLM-GATEWAY-EMBEDDINGS: добавляем embeddings-алиасы если включены.
+      if (embClient) {
+        for (const id of Object.keys(embModels)) {
+          data.push({ id, object: 'model', owned_by: 'parsdocs' });
+        }
+      }
+      return { object: 'list', data };
     },
   );
 
@@ -189,6 +219,98 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
       }
 
       // Эхо-поле model → опубликованный алиас (не сырой ollama-tag).
+      const out = result.body;
+      if (out && typeof out === 'object') {
+        (out as Record<string, unknown>).model = resolved.alias;
+      }
+      return reply.code(200).send(out);
+    },
+  );
+
+  // EXT-LLM-GATEWAY-EMBEDDINGS (SLAI 2026-06-XX): POST /v1/embeddings.
+  // Шлюз к OpenAI text-embedding-3-* для SLAI Help-RAG (pgvector-индекс
+  // на 1536 dim, text-embedding-3-small). Anthropic embeddings не делает —
+  // даже когда chat backend = anthropic, embeddings идут через OpenAI.
+  // Provider/key/models задаются ОТДЕЛЬНЫМИ env (LLM_GATEWAY_EMBEDDINGS_*).
+  const EmbeddingsRequest = z
+    .object({
+      model: z.string().optional(),
+      input: z.union([z.string(), z.array(z.string())]),
+      encoding_format: z.enum(['float', 'base64']).optional(),
+      dimensions: z.number().optional(),
+      user: z.string().optional(),
+    })
+    .passthrough();
+
+  r.post(
+    '/v1/embeddings',
+    {
+      schema: {
+        tags: ['llm-gateway'],
+        summary: 'OpenAI-compatible embeddings (forward to OpenAI)',
+        body: EmbeddingsRequest,
+      },
+    },
+    async (req, reply) => {
+      if (!embClient) {
+        return reply
+          .code(503)
+          .send(
+            openAiError(
+              'Embeddings gateway is not configured (set LLM_GATEWAY_EMBEDDINGS_ENABLED=true + OPENAI_API_KEY + LLM_GATEWAY_EMBEDDINGS_MODELS_JSON).',
+              'server_error',
+              'embeddings_unconfigured',
+            ),
+          );
+      }
+
+      const body = req.body;
+      const resolved = resolveEmbeddingsModel(body.model);
+      if (!resolved) {
+        return reply
+          .code(500)
+          .send(
+            openAiError(
+              'No embeddings alias is configured (LLM_GATEWAY_EMBEDDINGS_MODELS_JSON).',
+              'server_error',
+              'no_model_configured',
+            ),
+          );
+      }
+
+      const caller = req.user?.caller ?? null;
+      const upstreamBody = { ...body, model: resolved.model };
+
+      const startedAt = Date.now();
+      const result = await embClient.embeddings(upstreamBody);
+      const latencyMs = Date.now() - startedAt;
+
+      const usage = extractUsage(result.body);
+      const status: GatewayUsageStatus = result.ok
+        ? 'success'
+        : result.errorCode === 'timeout'
+          ? 'timeout'
+          : 'error';
+      try {
+        await llmGatewayUsageRepo.record({
+          caller,
+          alias: resolved.alias,
+          model: resolved.model,
+          promptTokens: usage.prompt_tokens ?? null,
+          completionTokens: null, // embeddings нет completion-токенов
+          latencyMs,
+          status,
+          errorCode: result.errorCode ?? null,
+        });
+      } catch (err) {
+        req.log.warn({ err }, 'llm-gateway: embeddings usage record failed (non-fatal)');
+      }
+
+      if (!result.ok) {
+        return reply.code(result.status).send(result.body);
+      }
+
+      // Эхо model → алиас (не сырой openai-tag).
       const out = result.body;
       if (out && typeof out === 'object') {
         (out as Record<string, unknown>).model = resolved.alias;
