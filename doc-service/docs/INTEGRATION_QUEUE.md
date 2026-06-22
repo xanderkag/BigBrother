@@ -50,8 +50,28 @@
 
 ### Q-PERMIT-1. special_permit (Росавтодор) — extraction-схема для негабарит-перевозок
 
-- **Status:** ANSWERED (To: SLAI_DEV) — детальная схема ниже, ждём 1-2
-  реальных PDF для калибровки после встречи с клиентом.
+- **Status:** SPEC FROZEN — SLAI подтвердил все 3 уточнения 2026-06-XX,
+  ждём 1-2 реальных PDF после встречи их с клиентом, потом impl в W24.
+- **Action plan (когда стартуем EXT-CLASS-1):**
+  1. Добавить новый slug `special_permit` в DB + EXTENDED_SCHEMAS со
+     своим SPECIAL_PERMIT_SCHEMA (top-level, не вложен в transport.*).
+  2. Расширить TRANSPORT-схему: `permit.valid_from`, `permit.restrictions`,
+     `route.waypoints[]` (массив строк как в PDF), `cargo.axle_loads_kg[]`,
+     `cargo.dimensions.{length_cm,width_cm,height_cm}` КАК ДУБЛИКАТ к
+     метрам (cm обязательны — SLAI код-путь читает именно `*Cm`-поля
+     `CargoUnit.lengthCm/widthCm/heightCm`).
+  3. **escort.type ENUM из SLAI 1:1** (kebab-case, не snake!):
+     `'gibdd' | 'cover-vehicle' | 'pilot-driver' | 'none'`. Поле у них
+     `transfer.customFields.escortType`. Перекодировка не нужна.
+  4. P0-минимум для матчера (если что-то нестабильно): `permit_number` +
+     `permit_valid_until` + `vehicle.plate` (тягач). Остальное human-
+     in-loop.
+  5. `_normalized_fields` для permit: `permit.number` (uppercase+trim),
+     `vehicle.plate` (canonical РФ-номер) — критичны для SLAI
+     `matcher.phase='permit'` (новая фаза, по аналогии с cmr/declaration).
+  6. Vision-llm path обязателен (сканы/печати Росавтодора).
+  7. Калибровка regex/LLM-prompts на 1-2 реальных PDF после встречи.
+- **Asked:** 2026-06-XX (SLAI PM, classifier roadmap follow-up)
 - **Asked:** 2026-06-XX (SLAI PM, classifier roadmap follow-up)
 - **From:** SLAI_DEV → PARSDOCS_DEV
 - **Связано:** EXT-CLASS-1 в ROADMAP.md.
