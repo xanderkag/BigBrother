@@ -11,6 +11,7 @@ import {
 } from '../pipeline/llm/chat-client.js';
 import { AnthropicChatClient } from '../pipeline/llm/anthropic-client.js';
 import { OpenAiEmbeddingsClient } from '../pipeline/llm/openai-embeddings-client.js';
+import { providerSettingsRepo } from '../storage/provider-settings.js';
 import { llmGatewayUsageRepo, type GatewayUsageStatus } from '../storage/llm-usage.js';
 
 /**
@@ -70,19 +71,66 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
   // EXT-LLM-GATEWAY-ANTHROPIC: выбираем backend по config.llmGateway.backend.
   //   - openai_compat → старый GatewayChatClient (Ollama/vLLM passthrough)
   //   - anthropic → AnthropicChatClient с translator OpenAI↔Anthropic
-  // Клиент статичен (конфиг фиксируется на boot'е) — собираем один раз.
-  let client: { chatCompletions(body: unknown): Promise<GatewayUpstreamResult> } | null = null;
-  if (config.llmGateway.backend === 'anthropic') {
-    const apiKey = config.llmGateway.apiKey;
-    const baseUrl = config.llmGateway.baseUrl || 'https://api.anthropic.com';
-    if (apiKey) {
-      client = new AnthropicChatClient({ baseUrl, apiKey, timeoutMs: config.llmGateway.timeoutMs });
+  //
+  // EXT-LLM-GATEWAY-KEY-FROM-DB (2026-06-XX): если env-ключ пуст — ленива
+  // ходим в provider_settings (kind='llm', is_default=true, is_active=true)
+  // и берём оттуда. Так user вводит Anthropic-ключ один раз через UI
+  // Providers, и он работает И для extraction (/jobs), И для gateway
+  // (/v1/chat/completions). С 60-секундным кэшом чтобы не дёргать БД на
+  // каждом hit'е.
+  type ChatClientLike = {
+    chatCompletions(body: unknown): Promise<GatewayUpstreamResult>;
+  };
+  const KEY_CACHE_MS = 60_000;
+  let cachedClient: ChatClientLike | null = null;
+  let cachedKey: string | null = null;
+  let cachedAt = 0;
+
+  async function getClient(): Promise<ChatClientLike | null> {
+    const now = Date.now();
+    if (cachedClient && now - cachedAt < KEY_CACHE_MS) return cachedClient;
+
+    if (config.llmGateway.backend === 'anthropic') {
+      const baseUrl = config.llmGateway.baseUrl || 'https://api.anthropic.com';
+      let apiKey: string | undefined = config.llmGateway.apiKey;
+      // env пуст → fallback на provider_settings(is_default=true LLM)
+      if (!apiKey) {
+        try {
+          const provider = await providerSettingsRepo.findDefault('llm');
+          if (provider?.api_key) apiKey = provider.api_key;
+        } catch {
+          /* fail-soft — БД недоступна → клиент null → 503 */
+        }
+      }
+      if (!apiKey) {
+        cachedClient = null;
+        cachedKey = null;
+        cachedAt = now;
+        return null;
+      }
+      if (apiKey !== cachedKey) {
+        cachedClient = new AnthropicChatClient({
+          baseUrl,
+          apiKey,
+          timeoutMs: config.llmGateway.timeoutMs,
+        });
+        cachedKey = apiKey;
+      }
+      cachedAt = now;
+      return cachedClient;
     }
-  } else {
+
+    // openai_compat: baseUrl-only passthrough, ключ не нужен здесь
     const baseUrl = config.llmGateway.baseUrl || config.llm.url || null;
-    if (baseUrl) {
-      client = new GatewayChatClient({ baseUrl, timeoutMs: config.llmGateway.timeoutMs });
+    if (baseUrl && (!cachedClient || cachedKey !== baseUrl)) {
+      cachedClient = new GatewayChatClient({
+        baseUrl,
+        timeoutMs: config.llmGateway.timeoutMs,
+      });
+      cachedKey = baseUrl;
     }
+    cachedAt = now;
+    return cachedClient;
   }
 
   const models = config.llmGateway.models;
@@ -108,14 +156,42 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
   const embCfg = config.llmGateway.embeddings;
   const embModels = embCfg.models;
   const embDefaultAlias = embCfg.defaultAlias;
-  const embClient =
-    embCfg.enabled && embCfg.apiKey
-      ? new OpenAiEmbeddingsClient({
-          baseUrl: embCfg.baseUrl,
-          apiKey: embCfg.apiKey,
-          timeoutMs: embCfg.timeoutMs,
-        })
-      : null;
+  // EXT-LLM-GATEWAY-KEY-FROM-DB: embeddings ключ тоже с fallback на UI.
+  // Берём из provider_settings.findById('openai') если env OPENAI_API_KEY
+  // пуст. Активация: embCfg.enabled=true + есть ключ (env ИЛИ UI).
+  let cachedEmbClient: OpenAiEmbeddingsClient | null = null;
+  let cachedEmbKey: string | null = null;
+  let cachedEmbAt = 0;
+  async function getEmbClient(): Promise<OpenAiEmbeddingsClient | null> {
+    if (!embCfg.enabled) return null;
+    const now = Date.now();
+    if (cachedEmbClient && now - cachedEmbAt < KEY_CACHE_MS) return cachedEmbClient;
+    let apiKey: string | undefined = embCfg.apiKey;
+    if (!apiKey) {
+      try {
+        const provider = await providerSettingsRepo.findById('openai');
+        if (provider?.api_key && provider.is_active) apiKey = provider.api_key;
+      } catch {
+        /* fail-soft */
+      }
+    }
+    if (!apiKey) {
+      cachedEmbClient = null;
+      cachedEmbKey = null;
+      cachedEmbAt = now;
+      return null;
+    }
+    if (apiKey !== cachedEmbKey) {
+      cachedEmbClient = new OpenAiEmbeddingsClient({
+        baseUrl: embCfg.baseUrl,
+        apiKey,
+        timeoutMs: embCfg.timeoutMs,
+      });
+      cachedEmbKey = apiKey;
+    }
+    cachedEmbAt = now;
+    return cachedEmbClient;
+  }
   function resolveEmbeddingsModel(requested?: string): { alias: string; model: string } | null {
     if (requested && Object.prototype.hasOwnProperty.call(embModels, requested)) {
       return { alias: requested, model: embModels[requested]! };
@@ -136,7 +212,10 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
         (id) => ({ id, object: 'model', owned_by: 'parsdocs' }),
       );
       // EXT-LLM-GATEWAY-EMBEDDINGS: добавляем embeddings-алиасы если включены.
-      if (embClient) {
+      // /v1/models — синхронный список; если embeddings включены конфигом,
+      // публикуем алиасы независимо от валидности ключа (фактический ключ
+      // резолвится lazy на /v1/embeddings hit'е).
+      if (embCfg.enabled) {
         for (const id of Object.keys(embModels)) {
           data.push({ id, object: 'model', owned_by: 'parsdocs' });
         }
@@ -156,12 +235,13 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
       },
     },
     async (req, reply) => {
+      const client = await getClient();
       if (!client) {
         return reply
           .code(503)
           .send(
             openAiError(
-              'LLM gateway backend is not configured (LLM_GATEWAY_BASE_URL).',
+              'LLM gateway backend is not configured. Set ANTHROPIC_API_KEY in env OR add Anthropic provider in UI Providers (is_default=true).',
               'server_error',
               'gateway_unconfigured',
             ),
@@ -252,12 +332,13 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
       },
     },
     async (req, reply) => {
+      const embClient = await getEmbClient();
       if (!embClient) {
         return reply
           .code(503)
           .send(
             openAiError(
-              'Embeddings gateway is not configured (set LLM_GATEWAY_EMBEDDINGS_ENABLED=true + OPENAI_API_KEY + LLM_GATEWAY_EMBEDDINGS_MODELS_JSON).',
+              'Embeddings gateway is not configured. Set LLM_GATEWAY_EMBEDDINGS_ENABLED=true + OPENAI_API_KEY in env OR add OpenAI provider (id="openai", is_active=true) in UI Providers.',
               'server_error',
               'embeddings_unconfigured',
             ),
