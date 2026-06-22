@@ -39,6 +39,21 @@ const ORDER_REFS = {
   items: { type: 'string' },
 } as const;
 
+// SLAI Q15 (2026-06-22): doc-level контейнеры для перевозочных типов
+// (TTN/CMR/Акт), чтобы документ привязывался по грузовой единице. Форма как
+// у BL_SCHEMA.containers (минимальная: number). Проектор match-signals.ts
+// собирает их в `_match_signals.containers` через collectContainers().
+const CONTAINERS = {
+  type: 'array',
+  description: 'Номер(а) контейнера ISO 6346, если перевозка контейнерная',
+  items: {
+    type: 'object',
+    properties: {
+      number: { type: 'string', description: 'Номер контейнера ISO 6346' },
+    },
+  },
+} as const;
+
 const PARTY = {
   type: 'object',
   properties: {
@@ -501,6 +516,7 @@ const TTN_SCHEMA = {
       items: { type: 'string' },
     },
     order_refs: ORDER_REFS,
+    containers: CONTAINERS,
   },
 } as const;
 
@@ -580,6 +596,7 @@ const CMR_SCHEMA = {
       items: { type: 'string' },
     },
     order_refs: ORDER_REFS,
+    containers: CONTAINERS,
   },
 } as const;
 
@@ -1071,6 +1088,8 @@ const AKT_SCHEMA = {
     items: { ...ITEMS_ARRAY, description: 'Перечень оказанных услуг / работ' },
     parent_contract_number: { type: 'string', description: 'Номер договора-основания' },
     parent_contract_date: { type: 'string', description: 'Дата договора-основания' },
+    order_refs: ORDER_REFS,
+    containers: CONTAINERS,
   },
 } as const;
 

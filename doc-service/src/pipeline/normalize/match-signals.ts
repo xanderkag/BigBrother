@@ -269,6 +269,8 @@ const PROJECTORS: Record<string, Projector> = {
     setParty(ctx, 'consignee', ex.consignee ?? ex.recipient);
     setParty(ctx, 'carrier', ex.carrier);
     setDate(ctx, 'document', ex.date);
+    const containers = collectContainers(ex);
+    if (containers) ctx.out.containers = containers;
   },
 
   invoice: (ctx) => {
@@ -332,6 +334,8 @@ const PROJECTORS: Record<string, Projector> = {
     setParty(ctx, 'executor', ex.party_a ?? ex.executor);
     setParty(ctx, 'customer', ex.party_b ?? ex.customer);
     setDate(ctx, 'document', ex.date);
+    const containers = collectContainers(ex);
+    if (containers) ctx.out.containers = containers;
   },
 };
 

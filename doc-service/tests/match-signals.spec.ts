@@ -185,6 +185,15 @@ describe('buildMatchSignals — cmr / wire_transfer / generic', () => {
     expect(s.parties?.carrier?.inn).toBe('7707083893');
   });
 
+  it('cmr: containers из doc-level containers[].number и items[].container_no (SLAI Q15)', () => {
+    const s = buildMatchSignals('CMR', {
+      number: 'CMR-1',
+      containers: [{ number: 'MSCU1234567' }],
+      items: [{ container_no: 'TCLU7654321' }],
+    });
+    expect(s.containers).toEqual(['MSCU1234567', 'TCLU7654321']);
+  });
+
   it('wire_transfer_application: payer/payee + amount/currency', () => {
     const s = buildMatchSignals('wire_transfer_application', {
       date: '2026-06-03',
@@ -260,6 +269,23 @@ describe('buildMatchSignals — services_act (Акт)', () => {
     );
     expect(s._confidence?.['parties.executor']).toBe(0.9);
     expect(s._confidence?.['parties.customer']).toBe(0.7);
+  });
+
+  it('containers из doc-level containers[].number и items[].container_no (SLAI Q15)', () => {
+    const s = buildMatchSignals('AKT', {
+      number: 'А-1',
+      containers: [{ number: 'MSCU1234567' }],
+      items: [{ container_no: 'TCLU7654321' }],
+    });
+    expect(s.containers).toEqual(['MSCU1234567', 'TCLU7654321']);
+  });
+
+  it('order_refs собирается из ex.order_refs (SLAI Q15)', () => {
+    const s = buildMatchSignals('AKT', {
+      number: 'А-1',
+      order_refs: ['Заказ № 42', 'PO-2026-118'],
+    });
+    expect(s.order_refs).toEqual(['Заказ № 42', 'PO-2026-118']);
   });
 
   it('пустой акт → только schema_version (present-only)', () => {
