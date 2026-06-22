@@ -164,6 +164,13 @@ export class MultiPassLlmParser implements DocumentParser {
 
       // Сортируем результаты по индексу куска — порядок строк документа важен
       results.sort((a, b) => a.chunkIdx - b.chunkIdx);
+      // Дедуп при склейке: соседние/перекрывающиеся куски и OCR, повторяющий
+      // табличный блок на каждой странице, заставляют модель ре-эмитить одни
+      // и те же строки в нескольких кусках (прод-кейс: 9 позиций × 3 = 27).
+      // Ключ — нормализованная подпись содержимого (code|name|qty|price);
+      // первое вхождение побеждает, порядок сохранён.
+      const seen = new Set<string>();
+      let duplicatesDropped = 0;
       for (const r of results) {
         chunksProcessed++;
         if ('error' in r) {
@@ -171,7 +178,20 @@ export class MultiPassLlmParser implements DocumentParser {
           issues.push(`multipass_chunk_failed:${r.chunkIdx}: ${r.error.slice(0, 200)}`);
           continue;
         }
-        allItems = allItems.concat(r.items);
+        for (const item of r.items) {
+          const key = itemDedupKey(item);
+          if (key !== null) {
+            if (seen.has(key)) {
+              duplicatesDropped++;
+              continue;
+            }
+            seen.add(key);
+          }
+          allItems.push(item);
+        }
+      }
+      if (duplicatesDropped > 0) {
+        issues.push(`multipass_items_deduped:${duplicatesDropped}`);
       }
 
       // Cap общий объём + нормализуем line_no
@@ -243,6 +263,35 @@ function stringifyErr(err: unknown): string {
   if (err instanceof Error) return err.message;
   if (typeof err === 'string') return err;
   return JSON.stringify(err);
+}
+
+/**
+ * Подпись позиции для дедупа при склейке кусков Pass 2. Берём наиболее
+ * устойчивые идентифицирующие поля (артикул, наименование, кол-во, цена/сумма)
+ * под разными именами (рус/eng варианты схем), нормализуем регистр/пробелы.
+ *
+ * Возвращает null если позиция не объект или из неё нечего извлечь — такие
+ * элементы дедупу не подвергаются (нельзя надёжно сравнить — лучше оставить).
+ */
+function itemDedupKey(item: unknown): string | null {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+  const obj = item as Record<string, unknown>;
+  const pick = (...keys: string[]): string => {
+    for (const k of keys) {
+      const v = obj[k];
+      if (v !== undefined && v !== null && v !== '') {
+        return String(v).trim().toLowerCase().replace(/\s+/g, ' ');
+      }
+    }
+    return '';
+  };
+  const code = pick('code', 'article', 'artikul', 'артикул', 'код', 'sku');
+  const name = pick('name', 'title', 'description', 'наименование', 'товар', 'product');
+  const qty = pick('quantity', 'qty', 'count', 'кол_во', 'количество');
+  const price = pick('price', 'unit_price', 'цена', 'total', 'sum', 'amount', 'сумма');
+  const parts = [code, name, qty, price].filter((p) => p !== '');
+  if (parts.length === 0) return null;
+  return parts.join('|');
 }
 
 /**
