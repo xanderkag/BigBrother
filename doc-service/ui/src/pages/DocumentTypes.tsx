@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   useDocumentTypes,
   useCreateDocumentType,
@@ -17,6 +17,7 @@ import {
 import JsonField from '@/components/JsonField';
 import StringListField from '@/components/StringListField';
 import TierBadge from '@/components/TierBadge';
+import ExtractionCatalog from '@/components/ExtractionCatalog';
 
 /**
  * Document types CRUD-страница. Список + modal-форма для create/edit.
@@ -38,6 +39,7 @@ export default function DocumentTypesPage() {
   const { data: orgsData } = useOrganizations();
   const { data: me } = useCurrentUser();
   const [editing, setEditing] = useState<DocumentTypeEntry | null>(null);
+  const [catalog, setCatalog] = useState<DocumentTypeEntry | null>(null);
   const [showInactive, setShowInactive] = useState(false);
   const [scope, setScope] = useState<string>('all'); // all | global | <org_id>
 
@@ -207,13 +209,23 @@ export default function DocumentTypesPage() {
                     )}
                   </td>
                   <td className="px-4 py-2 text-right">
-                    <button
-                      type="button"
-                      className="btn-ghost"
-                      onClick={() => setEditing(t)}
-                    >
-                      Изменить
-                    </button>
+                    <div className="flex items-center justify-end gap-1">
+                      <button
+                        type="button"
+                        className="btn-ghost"
+                        onClick={() => setCatalog(t)}
+                        title="Поля, которые система извлекает из этого типа"
+                      >
+                        Что извлекаем
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-ghost"
+                        onClick={() => setEditing(t)}
+                      >
+                        Изменить
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -253,13 +265,22 @@ export default function DocumentTypesPage() {
                       {t.slug}
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    className="btn-ghost min-h-[40px] shrink-0 text-sm"
-                    onClick={() => setEditing(t)}
-                  >
-                    Изменить
-                  </button>
+                  <div className="flex shrink-0 flex-col items-end gap-1">
+                    <button
+                      type="button"
+                      className="btn-ghost min-h-[40px] text-sm"
+                      onClick={() => setCatalog(t)}
+                    >
+                      Что извлекаем
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-ghost min-h-[40px] text-sm"
+                      onClick={() => setEditing(t)}
+                    >
+                      Изменить
+                    </button>
+                  </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-1.5 text-xs">
                   {t.is_active ? (
@@ -305,6 +326,62 @@ export default function DocumentTypesPage() {
           onClose={() => setEditing(null)}
         />
       )}
+
+      {catalog && (
+        <ExtractionCatalogModal type={catalog} onClose={() => setCatalog(null)} />
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* «Что извлекаем» — read-only modal                                  */
+/* ------------------------------------------------------------------ */
+
+function ExtractionCatalogModal({
+  type,
+  onClose,
+}: {
+  type: DocumentTypeEntry;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-30 flex items-center justify-center bg-slate-900/40 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="card flex max-h-[90vh] w-full max-w-2xl flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="card-header">
+          <div className="min-w-0">
+            <h3 className="card-title truncate">
+              {type.display_name}{' '}
+              <span className="font-mono text-xs font-normal text-slate-500 dark:text-slate-400">
+                {type.slug}
+              </span>
+            </h3>
+            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+              Поля, которые система извлекает из этого типа
+            </p>
+          </div>
+          <button type="button" className="btn-ghost" onClick={onClose} aria-label="Закрыть">
+            ✕
+          </button>
+        </div>
+        <div className="flex-1 overflow-auto">
+          <ExtractionCatalog slug={type.slug} />
+        </div>
+      </div>
     </div>
   );
 }
