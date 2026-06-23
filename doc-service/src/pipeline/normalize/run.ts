@@ -38,6 +38,7 @@
  */
 import type { Logger } from 'pino';
 import { recoverPartyInnsFromText } from './inn-recovery.js';
+import { recoverContainersFromText } from './container-recovery.js';
 import { normalizeExtractedFields } from './extracted-fields.js';
 import { recomputeTotalsFromItems, deriveHeaderTotals } from './totals.js';
 import { applyCategoryHints } from './categories.js';
@@ -59,6 +60,13 @@ export async function runPostExtractNormalization(
   // До F1 — чтобы F1 подхватил добитый ИНН в _normalized_fields.
   const innRecovered = recoverPartyInnsFromText(result, rawText);
   if (innRecovered && innRecovered !== result) result = innRecovered;
+
+  // F0c (SLAI Q15): добить номер контейнера (ISO 6346) из raw_text по метке
+  // «контейнер», если модель его пропустила. phi4 на крупных схемах (CMR)
+  // отбрасывает хвостовой `containers` даже при явном «Контейнер: …» в тексте —
+  // строгий формат надёжнее достаётся regex'ом, чем LLM.
+  const contRecovered = recoverContainersFromText(result, rawText);
+  if (contRecovered && contRecovered !== result) result = contRecovered;
 
   // F1: ИНН/госномер → канонический вид (validation потом проще)
   const normalized = normalizeExtractedFields(result);
