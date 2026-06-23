@@ -398,7 +398,24 @@ const ConfigSchema = z.object({
    */
   llmGateway: z.object({
     enabled: z.coerce.boolean().default(false),
+    /**
+     * EXT-LLM-GATEWAY-ANTHROPIC (2026-06-XX): backend selector. По умолчанию
+     * 'openai_compat' — старое поведение (passthrough в Ollama / vLLM /
+     * OpenAI-compat upstream). 'anthropic' — translator OpenAI↔Anthropic
+     * native API на лету (для Asha, где нет локальной GPU и используется
+     * облачный Anthropic ключ).
+     *
+     * Подбирается per-окружение:
+     *   - kb-docker (корп) → openai_compat (локальный Ollama на 10.10.33.10)
+     *   - asha (пилот SLAI) → anthropic (cloud Anthropic key)
+     */
+    backend: z.enum(['openai_compat', 'anthropic']).default('openai_compat'),
     baseUrl: z.string().optional(),
+    /**
+     * Anthropic API key (только для backend='anthropic'). Не используется
+     * для openai_compat (там key в baseUrl или passthrough без auth).
+     */
+    apiKey: z.string().optional(),
     defaultAlias: z.string().default('parsdocs-chat'),
     models: z
       .preprocess((v) => {
@@ -412,6 +429,53 @@ const ConfigSchema = z.object({
       }, z.record(z.string()))
       .default({}),
     timeoutMs: numberFromEnv(120_000),
+    /**
+     * EXT-LLM-GATEWAY-EMBEDDINGS (SLAI 2026-06-XX): отдельный provider
+     * для /v1/embeddings, не зависит от chat backend. Anthropic embeddings
+     * не делает, поэтому даже на Asha (chat = anthropic) embeddings идут
+     * через OpenAI.
+     *
+     * SLAI Help-RAG требует text-embedding-3-small (1536 dim) — на ней
+     * у них pgvector help_chunk-индекс построен.
+     *
+     * enabled=false по умолчанию (фича-флаг). Активируется когда есть
+     * OPENAI_API_KEY и хотя бы один алиас в EMBEDDINGS_MODELS_JSON.
+     */
+    embeddings: z.object({
+      enabled: z.coerce.boolean().default(false),
+      provider: z.enum(['openai']).default('openai'),
+      baseUrl: z.string().default('https://api.openai.com/v1'),
+      apiKey: z.string().optional(),
+      defaultAlias: z.string().default('parsdocs-embeddings'),
+      models: z
+        .preprocess((v) => {
+          if (!v || v === '') return {};
+          try {
+            const parsed = JSON.parse(v as string);
+            return parsed && typeof parsed === 'object' ? parsed : {};
+          } catch {
+            return {};
+          }
+        }, z.record(z.string()))
+        .default({}),
+      timeoutMs: numberFromEnv(60_000),
+    }),
+    /**
+     * EXT-LLM-GATEWAY-DADATA (SLAI 2026-06-XX): третий внешний канал.
+     * DaData — geo-доступен из РФ, никакого outbound-прокси (в отличие
+     * от Anthropic/OpenAI). Тонкий passthrough к suggestions.dadata.ru.
+     * SLAI шлёт свой PAT, мы подставляем DADATA_API_KEY.
+     *
+     * Ключ берётся: env > provider_settings.kind='dadata' (через UI
+     * Providers — у нас kind='dadata' уже зарегистрирован, используется
+     * в enrichment pipeline).
+     */
+    dadata: z.object({
+      enabled: z.coerce.boolean().default(false),
+      baseUrl: z.string().default('https://suggestions.dadata.ru'),
+      apiKey: z.string().optional(),
+      timeoutMs: numberFromEnv(15_000),
+    }),
   }),
 });
 
@@ -516,10 +580,27 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     },
     llmGateway: {
       enabled: env.LLM_GATEWAY_ENABLED,
+      backend: env.LLM_GATEWAY_BACKEND,
       baseUrl: env.LLM_GATEWAY_BASE_URL || undefined,
+      apiKey: env.LLM_GATEWAY_API_KEY || env.ANTHROPIC_API_KEY || undefined,
       defaultAlias: env.LLM_GATEWAY_DEFAULT_ALIAS,
       models: env.LLM_GATEWAY_MODELS_JSON,
       timeoutMs: env.LLM_GATEWAY_TIMEOUT_MS,
+      embeddings: {
+        enabled: env.LLM_GATEWAY_EMBEDDINGS_ENABLED,
+        provider: env.LLM_GATEWAY_EMBEDDINGS_PROVIDER,
+        baseUrl: env.LLM_GATEWAY_EMBEDDINGS_BASE_URL,
+        apiKey: env.LLM_GATEWAY_EMBEDDINGS_API_KEY || env.OPENAI_API_KEY || undefined,
+        defaultAlias: env.LLM_GATEWAY_EMBEDDINGS_DEFAULT_ALIAS,
+        models: env.LLM_GATEWAY_EMBEDDINGS_MODELS_JSON,
+        timeoutMs: env.LLM_GATEWAY_EMBEDDINGS_TIMEOUT_MS,
+      },
+      dadata: {
+        enabled: env.LLM_GATEWAY_DADATA_ENABLED,
+        baseUrl: env.LLM_GATEWAY_DADATA_BASE_URL,
+        apiKey: env.LLM_GATEWAY_DADATA_API_KEY || env.DADATA_API_KEY || undefined,
+        timeoutMs: env.LLM_GATEWAY_DADATA_TIMEOUT_MS,
+      },
     },
   });
 }

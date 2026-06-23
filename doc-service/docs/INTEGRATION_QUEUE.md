@@ -54,11 +54,11 @@
 - **Asked:** 2026-06-21
 - **From:** PARSDOCS_DEV
 - **To:** CLAUDE / SLAI_DEV
-- **Что нужно:** Расширение каталога типов под ВЭД/логистику. Делать **по очереди**, **после стабилизации пилота WW-23**. Подробные определения эпиков — в ROADMAP § Перспектива.
+- **Что нужно:** Расширение каталога типов под ВЭД/логистику. Делать **по очереди**, **после стабилизации пилота WW-23**. Подробные определения эпиков — в ROADMAP § Перспектива. Детальные spec-блоки по конкретным типам — ниже (Q-PERMIT-1, Q-CLASS-MATRIX).
 - **Что сделать когда дойдёт очередь:** каждый тип = 1 seed-миграция (рецепт отработан на 30/30); согласовать со SLAI, нужны ли эти типы в их матчере и какие поля они читают.
 
 #### Очередь
-- **EXT-CLASS-1** (~2 д): `special_permit` (Росавтодор), `booking_request` (клон `transport_request`, `requestor.kind=forwarder`), тюнинг классификатора `waybill`.
+- **EXT-CLASS-1** (~2 д): `special_permit` (Росавтодор) — см. Q-PERMIT-1, `booking_request` (клон `transport_request`, `requestor.kind=forwarder`), тюнинг классификатора `waybill`.
 - **EXT-CLASS-2** (~3 д): AWB (Air Waybill), `manifest`, `phytosanitary_certificate`, `veterinary_certificate`, тюнинг `commercial_invoice` под ВЭД.
 - **EXT-CLASS-3** (~1.5 д): CIM + СМГС (международные ж/д).
 
@@ -66,6 +66,165 @@
 - **Каталог типов закрыт 30/30** — добавлены 4 складских (`power_of_attorney`/М-2, `warehouse_receipt`/МХ-1, `warehouse_return`/МХ-3, `material_requisition`/М-11), миграция `20260621000001`, задеплоено + проверено вживую.
 - **Дефолт-модель извлечения = `phi4`** (бенч 2026-06-18: 91% против mistral 48%; фикс мис-ярлыков сторон ТТН/CMR). Все типы на `parser_kind=llm_extract`.
 - **Акт-lockstep с SLAI ЗАКРЫТ с обеих сторон** — projector `services_act` в `_match_signals` (party_a→`executor`, party_b→`customer`); SLAI читает `executor`+`customer` по ИНН.
+
+---
+
+### Q-DADATA-1. DaData passthrough в LLM-gateway (третий внешний канал)
+
+- **Status:** `ANSWERED` (spec OK; код влит в `main` merge 2026-06-23, **не задеплоен**) — ждём cutover SLAI после WW-23 демо (в пакете с активацией chat/embeddings)
+- **Asked:** 2026-06-XX (SLAI PM, follow-up к LLM-gateway)
+- **From:** SLAI_DEV
+- **To:** PARSDOCS_DEV
+- **Связано:** EXT-LLM-GATEWAY-DADATA в ROADMAP.md.
+
+**Что просят:** добавить в наш gateway `POST /v1/dadata/findById/party`
+(+ опц. `/v1/dadata/suggest/party`) как тонкий passthrough к
+`suggestions.dadata.ru/suggestions/api/4_1/rs/findById/party`. SLAI шлёт
+только их PAT, мы подставляем `Authorization: Token <DADATA_API_KEY>`.
+По той же схеме что chat/embeddings — централизация ключей у parsdocs.
+
+**ETA:** ~1-2 часа (тонкий passthrough, DaData geo-доступен с Asha, нет
+проблемы Anthropic/OpenAI с outbound-блоком).
+
+**Контракт:**
+- Headers от SLAI: `Authorization: Bearer pdpat_<тот же что для /jobs>`
+- Body: DaData-native verbatim (`{"query":"<ИНН>", "type"?, "count"?, ...}`)
+- Response: DaData-native verbatim (`{"suggestions":[{value, data:{inn,kpp,ogrn,okved,name,address,management,state,...}}]}`)
+- Ключ: env `DADATA_API_KEY` ИЛИ `provider_settings.kind='dadata'` (как у Anthropic/OpenAI fallback)
+- Usage-log в `llm_gateway_usage` с alias `dadata-findById`/`dadata-suggest`
+
+**Статус кода:** DaData-passthrough влит в `main` этим merge (github→main, 2026-06-23) вместе с Anthropic-бэкендом шлюза и `/v1/embeddings`. **На прод не выкачено** — деплой и cutover отдельным шагом.
+
+**Действие после демо:** активировать в пакете с chat/embeddings для единого cutover'а.
+
+---
+
+### Q-PERMIT-1. special_permit (Росавтодор) — extraction-схема для негабарит-перевозок
+
+- **Status:** `ANSWERED` (spec frozen) — SLAI подтвердил все 3 уточнения 2026-06-XX,
+  ждём 1-2 реальных PDF после встречи их с клиентом, потом impl в W24.
+- **Asked:** 2026-06-XX (SLAI PM, classifier roadmap follow-up)
+- **From:** SLAI_DEV
+- **To:** PARSDOCS_DEV
+- **Связано:** EXT-CLASS-1 в ROADMAP.md / Q-EXT-CLASS.
+- **Action plan (когда стартуем EXT-CLASS-1):**
+  1. Добавить новый slug `special_permit` в DB + EXTENDED_SCHEMAS со
+     своим SPECIAL_PERMIT_SCHEMA (top-level, не вложен в transport.*).
+  2. Расширить TRANSPORT-схему: `permit.valid_from`, `permit.restrictions`,
+     `route.waypoints[]` (массив строк как в PDF), `cargo.axle_loads_kg[]`,
+     `cargo.dimensions.{length_cm,width_cm,height_cm}` КАК ДУБЛИКАТ к
+     метрам (cm обязательны — SLAI код-путь читает именно `*Cm`-поля
+     `CargoUnit.lengthCm/widthCm/heightCm`).
+  3. **escort.type ENUM из SLAI 1:1** (kebab-case, не snake!):
+     `'gibdd' | 'cover-vehicle' | 'pilot-driver' | 'none'`. Поле у них
+     `transfer.customFields.escortType`. Перекодировка не нужна.
+  4. P0-минимум для матчера (если что-то нестабильно): `permit_number` +
+     `permit_valid_until` + `vehicle.plate` (тягач). Остальное human-
+     in-loop.
+  5. `_normalized_fields` для permit: `permit.number` (uppercase+trim),
+     `vehicle.plate` (canonical РФ-номер) — критичны для SLAI
+     `matcher.phase='permit'` (новая фаза, по аналогии с cmr/declaration).
+  6. Vision-llm path обязателен (сканы/печати Росавтодора).
+  7. Калибровка regex/LLM-prompts на 1-2 реальных PDF после встречи.
+
+**Контекст:** SLAI просит поднять `special_permit` с классификации до
+полноценной extraction-схемы (P0 для первого негабарит-авто РФ клиента).
+Без авто-полей фишка «приложил → распозналось» на ключевом документе не
+работает.
+
+**Поля (с маппингом на наши существующие):**
+
+| SLAI поле | Наш путь | Статус |
+|-----------|----------|--------|
+| `permit_number` | `transport.permit.number` (уже в TTN/invoice) | ✅ переиспользуем |
+| `permit_valid_from` | НОВОЕ — добавить в `transport.permit.valid_from` | ❌ дельта |
+| `permit_valid_until` | `transport.permit.valid_to` | ✅ |
+| `issuing_authority` | `transport.permit.issued_by` (есть Росавтодор/Ространснадзор/ЦОДД enum) | ✅ |
+| `vehicle_plate` (тягач) | `vehicle.plate` | ✅ |
+| `vehicle_plate` (трал) | `vehicle.trailer_plate` | ✅ |
+| `route.from`, `route.to` | `transport.route.from`, `transport.route.to` | ✅ |
+| `route.waypoints[]` | НОВОЕ — массив именованных точек | ❌ дельта |
+| `cargo_dimensions.length_cm/width_cm/height_cm` | `transport.cargo.dimensions.{length_m, width_m, height_m}` (у нас метры) — добавим unit alias или вернём оба | ⚠️ unit |
+| `cargo.total_weight_kg` | `transport.cargo.weight_kg` | ✅ |
+| `cargo.axle_loads_kg[]` | НОВОЕ — массив нагрузок по осям | ❌ дельта |
+| `cargo.axles_count` | `vehicle.axles` | ✅ |
+| `escort_required` | `transport.escort.required` | ✅ |
+| `escort_type` enum {ГИБДД, прикрытие, пилот-авто, нет} | `transport.escort.type` (был string, добавим enum) | ⚠️ enum |
+| `restrictions` | НОВОЕ — `transport.permit.restrictions` text | ❌ дельта |
+
+**Покрытие:** 11 из 14 полей уже работают через переиспользование. Дельта:
+4 новых поля (`valid_from`, `waypoints[]`, `axle_loads_kg[]`, `restrictions`)
++ 2 тюнинга (`dimensions` cm-alias, `escort_type` enum).
+
+**Ответы на вопросы SLAI:**
+
+**(a) ETA:** **2-2.5 дня** одним разработчиком (входит в EXT-CLASS-1 в
+ROADMAP). Большую часть — за счёт переиспользования. Старт после
+стабилизации WW-23 пилота.
+
+**(b) Vision-режим на сканах/печатях:** у нас 3-engine OCR pipeline
+(`pdf-text` → `tesseract` → `vision-llm`) с автоматическим cascade'ом.
+Vision-LLM (Qwen-VL / Anthropic Sonnet) **специально подбирается под
+сканы и штампы Росавтодора**. По нашему bench v3 — точность полей 98.3%
+на vision-path. **Минимально-надёжный набор P0 если что-то промахивается:**
+`permit_number`, `permit_valid_until`, `vehicle_plate` — критичные для
+матчера. Остальные — добиваются human-in-loop в SLAI карточке.
+
+**(c) Маршрут — минимум:** для start'а возьмём `route.from` + `route.to`
++ `route.waypoints[]` (массив строк именованных точек как они написаны
+в PDF). Парсинг полного маршрута со всеми участками — тюним по
+калибровке на реальных образцах (Q-CLASS-MATRIX §6 — ждём 1-2 PDF).
+
+**Что нужно от SLAI:**
+- 1-2 реальных разрешения Росавтодора (с замазанным PII, формулировки
+  блоков «Маршрут», «Габариты», «Нагрузки по осям», «Сопровождение»,
+  «Особые условия» оставить живыми) — после их встречи с клиентом.
+
+---
+
+### Q-CLASS-MATRIX. Расширение classifier'а под roadmap SLAI (P0/P1/P2 матрица типов перевозок × документов)
+
+- **Status:** OPEN (To: SLAI_DEV)
+- **Asked:** 2026-06-XX (SLAI PM, classifier roadmap message)
+- **From:** SLAI_DEV → PARSDOCS_DEV
+- **Связано:** EXT-CLASS-1/2/3 в ROADMAP.md.
+
+**Что прислал SLAI:** roadmap классификатора на 3 квартала с типами:
+P0 (waybill / TN / special_permit), P1 (BL / AWB / CIM / SMGS / manifest),
+P2 (commercial_invoice ВЭД / packing_list / cert_of_origin / phyto / vet).
+
+**Что у нас уже зарегистрировано** (из 26 active document types на
+vanga.sls24.ru): `waybill`, `bill_of_lading` (BL_SCHEMA полная от
+2026-06-04), `commercial_invoice`, `packing_list`, `cert_of_origin`,
+`transport_request`. Реально не хватает: `TN`, `special_permit`, `AWB`,
+`CIM`, `СМГС`, `manifest`, `phytosanitary_certificate`,
+`veterinary_certificate`.
+
+**Что ждём от SLAI:**
+
+1. **§(a):** ack по ETA EXT-CLASS-1/2/3 (1.5-2.5д + 3д + 1.5д = ~7 рабочих
+   дней, после WW-23 пилот-стабилизации).
+2. **§(b):** beta-доступ не делаем — добавляем в main без флагов.
+3. **§(c) КРИТИЧНО:** `transport_request` (заявка от заказчика к
+   экспедитору) vs `booking_request` (экспедитор → перевозчик плеча) —
+   разделять или мерджить? У них в БД разные сущности, наш голос —
+   разделить. Жду подтверждение.
+4. **§(d) КРИТИЧНО:** TN (форма 2013) vs TTN — отдельно держать или
+   мерджить с TTN? У SLAI разные сущности по нормативке. Жду решение.
+5. Полная матрица «тип перевозки × документы» — обещали прислать
+   отдельным файлом. Поможет приоритизации P1/P2 (AWB vs CIM vs phyto
+   что важнее).
+6. **Образцы для калибровки** когда дойдём до P1/P2:
+   - 1-2 PDF waybill (если classifier на их хитах падает в unknown/ttn)
+   - 1 PDF commercial_invoice / packing_list / cert_of_origin (если
+     текущие schemas промахиваются на ВЭД-полях)
+   - 3-5 PDF AWB и CIM/SMGS перед EXT-CLASS-2/3
+
+**Case-конвенция (вопрос §(d) случай букв):** уже решено outbound в нашем
+коде через `OUTBOUND_SLUG_ALIASES`: `TTN→ttn`, `UPD→upd`, `UKD→ukd`,
+`CMR→cmr`, `AKT→services_act`, `factInvoice→tax_invoice`. В webhook
+payload приходит только lowercase snake_case. Если видят uppercase —
+протекает в обход нормализации, нужен `job_id` для диагностики.
 
 ---
 
@@ -305,3 +464,4 @@ A-record), no-redirect, mid-stream byte-ceiling, опц. allowlist
 | 2026-05-26 | Q12 (EXT-D) реализовано: `file_url`-ingest в `POST /jobs` с SSRF-защитой (`src/pipeline/ingest/url-fetch.ts` — scheme/private-IP/redirect/byte-cap guards), флаг `FILE_URL_INGEST_ENABLED`, error_codes `FILE_URL_*`, тесты `tests/file-url-ingest.spec.ts` (27). Не задеплоено. Webhook v1 не тронут. |
 | 2026-05-26 | Нудж SLAI по Q4/Q5/Q9 (все OPEN >7 дней) подготовлен — `doc-service/docs/PARSDOCS_NUDGE_SLAI_2026-05-26.md` (лид: EXT-A/B/D реализованы, 26 типов, vision проходит гейты 96%/90%; оговорки про digital-PDF и latency 186с). Статусы Q4/Q5/Q9 без изменений — ждём ответ. |
 | 2026-06-21 | Интеграционные заметки обновлены: Акт-lockstep ЗАКРЫТ с обеих сторон (projector `services_act`, executor/customer по ИНН), дефолт-модель `phi4`, каталог типов 30/30 (+4 складских, миграция `20260621000001`). Заведён `Q-EXT-CLASS` (OPEN, To: CLAUDE) — очередь новых типов EXT-CLASS-1/2/3 после пилота WW-23. |
+| 2026-06-23 | Merge github/main→main (сборка LLM-gateway): сведены конфликты, сохранены оба набора Q-блоков — июньский `Q-EXT-CLASS` (HEAD) + github-овые `Q-DADATA-1`, `Q-PERMIT-1`, `Q-CLASS-MATRIX`. Q-DADATA-1 и Q-PERMIT-1 приведены к `ANSWERED`, дубль строки `Asked` в Q-PERMIT-1 убран. Код gateway-фич (Anthropic-бэкенд, `/v1/embeddings`, DaData-passthrough, providers-fallback) влит в `main`; на прод НЕ задеплоено. |

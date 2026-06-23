@@ -56,6 +56,8 @@
 | Приём документа по ссылке | `FILE_URL_INGEST_ENABLED` | большие файлы без 50MB-лимита |
 | Клиентский ключ модели (BYO LLM) | `BYO_LLM_ENABLED` | consumer на своём LLM |
 
+> **LLM-шлюз: код влит в `main`** (merge github→main, 2026-06-23): Anthropic-бэкенд шлюза (OpenAI↔Anthropic translator), `/v1/embeddings` через OpenAI, DaData-passthrough (`/v1/dadata/findById/party`), providers-fallback, фикс-миграция BL. **Не задеплоено** — деплой и cutover SLAI отдельным шагом после WW-23 демо. См. INTEGRATION_QUEUE Q-DADATA-1 и § Перспектива.
+
 ---
 
 ## 🔵 Перспектива
@@ -69,6 +71,7 @@
 - **DaData live + фаза 2** — обогащение/нормализация адресов; код готов, ввести ключ в UI.
 - **Петля улучшения v2** — авто-отчёт гипотез по накопленным правкам и оценкам (сейчас разбор руками).
 - **EXT-LLM-PROXY-C** — расширение шлюза до full gateway (per-org rate-limit, квоты, cost-calc) — по триггеру (5+ инстансов SLAI или incident).
+- **EXT-LLM-GATEWAY-DADATA** — passthrough `POST /v1/dadata/findById/party` (+опц. `/suggest/party`) к suggestions.dadata.ru с нашим `DADATA_API_KEY` (env или `provider_settings kind='dadata'`). Тонкий passthrough, native DaData-shape в обе стороны, usage-log per-PAT, auth `Authorization: Token <key>` (не Bearer). **Код влит в `main`**; ждёт активации в пакете с cutover SLAI на наш gateway после WW-23 демо. См. INTEGRATION_QUEUE Q-DADATA-1.
 
 > **Гигиена гита:** свести github-зеркало с `origin` (github/main опережает на 2 коммита, но на старой базе — целиком вливать НЕЛЬЗЯ, откатит июньскую работу; только точечно). Содержательный док EXT-CLASS уже учтён выше. `anthropic-client.ts` (Anthropic-backend шлюза для staging-хоста Asha, OpenAI↔Anthropic translator) — оценить отдельно.
 

@@ -25,6 +25,8 @@ const { cfg } = vi.hoisted(() => ({
     llm: { url: undefined as string | undefined, apiKey: undefined, timeoutMs: 60000 },
     llmGateway: {
       enabled: true,
+      backend: 'openai_compat' as 'openai_compat' | 'anthropic',
+      apiKey: undefined as string | undefined,
       baseUrl: 'http://gpu:11434/v1' as string | undefined,
       defaultAlias: 'parsdocs-chat',
       models: {
@@ -32,6 +34,24 @@ const { cfg } = vi.hoisted(() => ({
         'parsdocs-vision': 'qwen2.5vl:72b',
       } as Record<string, string>,
       timeoutMs: 120000,
+      // EXT-LLM-GATEWAY-EMBEDDINGS/DADATA: оба фича-флага выключены —
+      // роут регистрируется, но /v1/embeddings и /v1/dadata fail-closed.
+      // Поля повторяют дефолты схемы config.ts (llmGateway.embeddings|dadata).
+      embeddings: {
+        enabled: false,
+        provider: 'openai' as const,
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: undefined as string | undefined,
+        defaultAlias: 'parsdocs-embeddings',
+        models: {} as Record<string, string>,
+        timeoutMs: 60000,
+      },
+      dadata: {
+        enabled: false,
+        baseUrl: 'https://suggestions.dadata.ru',
+        apiKey: undefined as string | undefined,
+        timeoutMs: 15000,
+      },
     },
   },
 }));

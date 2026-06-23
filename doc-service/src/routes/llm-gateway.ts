@@ -7,7 +7,12 @@ import {
   GatewayChatClient,
   extractUsage,
   openAiError,
+  type GatewayUpstreamResult,
 } from '../pipeline/llm/chat-client.js';
+import { AnthropicChatClient } from '../pipeline/llm/anthropic-client.js';
+import { OpenAiEmbeddingsClient } from '../pipeline/llm/openai-embeddings-client.js';
+import { DaDataClient } from '../pipeline/llm/dadata-client.js';
+import { providerSettingsRepo } from '../storage/provider-settings.js';
 import { llmGatewayUsageRepo, type GatewayUsageStatus } from '../storage/llm-usage.js';
 
 /**
@@ -64,13 +69,70 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
       );
   });
 
-  // baseUrl шлюза = LLM_GATEWAY_BASE_URL, иначе fallback на config.llm.url
-  // (на случай если оба указывают на один OpenAI-compat endpoint). Клиент
-  // статичен (конфиг фиксируется на boot'е) — собираем один раз.
-  const baseUrl = config.llmGateway.baseUrl || config.llm.url || null;
-  const client = baseUrl
-    ? new GatewayChatClient({ baseUrl, timeoutMs: config.llmGateway.timeoutMs })
-    : null;
+  // EXT-LLM-GATEWAY-ANTHROPIC: выбираем backend по config.llmGateway.backend.
+  //   - openai_compat → старый GatewayChatClient (Ollama/vLLM passthrough)
+  //   - anthropic → AnthropicChatClient с translator OpenAI↔Anthropic
+  //
+  // EXT-LLM-GATEWAY-KEY-FROM-DB (2026-06-XX): если env-ключ пуст — ленива
+  // ходим в provider_settings (kind='llm', is_default=true, is_active=true)
+  // и берём оттуда. Так user вводит Anthropic-ключ один раз через UI
+  // Providers, и он работает И для extraction (/jobs), И для gateway
+  // (/v1/chat/completions). С 60-секундным кэшом чтобы не дёргать БД на
+  // каждом hit'е.
+  type ChatClientLike = {
+    chatCompletions(body: unknown): Promise<GatewayUpstreamResult>;
+  };
+  const KEY_CACHE_MS = 60_000;
+  let cachedClient: ChatClientLike | null = null;
+  let cachedKey: string | null = null;
+  let cachedAt = 0;
+
+  async function getClient(): Promise<ChatClientLike | null> {
+    const now = Date.now();
+    if (cachedClient && now - cachedAt < KEY_CACHE_MS) return cachedClient;
+
+    if (config.llmGateway.backend === 'anthropic') {
+      const baseUrl = config.llmGateway.baseUrl || 'https://api.anthropic.com';
+      let apiKey: string | undefined = config.llmGateway.apiKey;
+      // env пуст → fallback на provider_settings(is_default=true LLM)
+      if (!apiKey) {
+        try {
+          const provider = await providerSettingsRepo.findDefault('llm');
+          if (provider?.api_key) apiKey = provider.api_key;
+        } catch {
+          /* fail-soft — БД недоступна → клиент null → 503 */
+        }
+      }
+      if (!apiKey) {
+        cachedClient = null;
+        cachedKey = null;
+        cachedAt = now;
+        return null;
+      }
+      if (apiKey !== cachedKey) {
+        cachedClient = new AnthropicChatClient({
+          baseUrl,
+          apiKey,
+          timeoutMs: config.llmGateway.timeoutMs,
+        });
+        cachedKey = apiKey;
+      }
+      cachedAt = now;
+      return cachedClient;
+    }
+
+    // openai_compat: baseUrl-only passthrough, ключ не нужен здесь
+    const baseUrl = config.llmGateway.baseUrl || config.llm.url || null;
+    if (baseUrl && (!cachedClient || cachedKey !== baseUrl)) {
+      cachedClient = new GatewayChatClient({
+        baseUrl,
+        timeoutMs: config.llmGateway.timeoutMs,
+      });
+      cachedKey = baseUrl;
+    }
+    cachedAt = now;
+    return cachedClient;
+  }
 
   const models = config.llmGateway.models;
   const defaultAlias = config.llmGateway.defaultAlias;
@@ -89,17 +151,116 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
     return null; // карта пуста / дефолт не настроен — misconfig
   }
 
+  // EXT-LLM-GATEWAY-EMBEDDINGS: отдельный клиент под /v1/embeddings.
+  // Не зависит от chat backend — Anthropic не делает embeddings, поэтому
+  // даже на Asha (chat=anthropic) embeddings идут через OpenAI.
+  const embCfg = config.llmGateway.embeddings;
+  const embModels = embCfg.models;
+  const embDefaultAlias = embCfg.defaultAlias;
+  // EXT-LLM-GATEWAY-KEY-FROM-DB: embeddings ключ тоже с fallback на UI.
+  // Берём из provider_settings.findById('openai') если env OPENAI_API_KEY
+  // пуст. Активация: embCfg.enabled=true + есть ключ (env ИЛИ UI).
+  let cachedEmbClient: OpenAiEmbeddingsClient | null = null;
+  let cachedEmbKey: string | null = null;
+  let cachedEmbAt = 0;
+  async function getEmbClient(): Promise<OpenAiEmbeddingsClient | null> {
+    if (!embCfg.enabled) return null;
+    const now = Date.now();
+    if (cachedEmbClient && now - cachedEmbAt < KEY_CACHE_MS) return cachedEmbClient;
+    let apiKey: string | undefined = embCfg.apiKey;
+    if (!apiKey) {
+      try {
+        const provider = await providerSettingsRepo.findById('openai');
+        if (provider?.api_key && provider.is_active) apiKey = provider.api_key;
+      } catch {
+        /* fail-soft */
+      }
+    }
+    if (!apiKey) {
+      cachedEmbClient = null;
+      cachedEmbKey = null;
+      cachedEmbAt = now;
+      return null;
+    }
+    if (apiKey !== cachedEmbKey) {
+      cachedEmbClient = new OpenAiEmbeddingsClient({
+        baseUrl: embCfg.baseUrl,
+        apiKey,
+        timeoutMs: embCfg.timeoutMs,
+      });
+      cachedEmbKey = apiKey;
+    }
+    cachedEmbAt = now;
+    return cachedEmbClient;
+  }
+  function resolveEmbeddingsModel(requested?: string): { alias: string; model: string } | null {
+    if (requested && Object.prototype.hasOwnProperty.call(embModels, requested)) {
+      return { alias: requested, model: embModels[requested]! };
+    }
+    const fallback = embModels[embDefaultAlias];
+    if (fallback) return { alias: embDefaultAlias, model: fallback };
+    return null;
+  }
+
+  // EXT-LLM-GATEWAY-DADATA: тонкий passthrough к suggestions.dadata.ru.
+  // Geo-доступен с Asha — никаких outbound-прокси (в отличие от Anthropic/
+  // OpenAI). Key fallback env > provider_settings(kind='dadata') — у нас
+  // уже зарегистрирован в Providers как enrichment provider.
+  const dadataCfg = config.llmGateway.dadata;
+  let cachedDadataClient: DaDataClient | null = null;
+  let cachedDadataKey: string | null = null;
+  let cachedDadataAt = 0;
+  async function getDadataClient(): Promise<DaDataClient | null> {
+    if (!dadataCfg.enabled) return null;
+    const now = Date.now();
+    if (cachedDadataClient && now - cachedDadataAt < KEY_CACHE_MS) return cachedDadataClient;
+    let apiKey: string | undefined = dadataCfg.apiKey;
+    if (!apiKey) {
+      try {
+        const provider = await providerSettingsRepo.findDefault('dadata');
+        if (provider?.api_key) apiKey = provider.api_key;
+      } catch {
+        /* fail-soft */
+      }
+    }
+    if (!apiKey) {
+      cachedDadataClient = null;
+      cachedDadataKey = null;
+      cachedDadataAt = now;
+      return null;
+    }
+    if (apiKey !== cachedDadataKey) {
+      cachedDadataClient = new DaDataClient({
+        baseUrl: dadataCfg.baseUrl,
+        apiKey,
+        timeoutMs: dadataCfg.timeoutMs,
+      });
+      cachedDadataKey = apiKey;
+    }
+    cachedDadataAt = now;
+    return cachedDadataClient;
+  }
+
   // GET /v1/models — публикуем НАШИ алиасы (не сырые ollama-теги).
   r.get(
     '/v1/models',
     { schema: { tags: ['llm-gateway'], summary: 'List published model aliases' } },
     async () => {
-      const ids = Object.keys(models);
-      const list = ids.length > 0 ? ids : [defaultAlias];
-      return {
-        object: 'list',
-        data: list.map((id) => ({ id, object: 'model', owned_by: 'parsdocs' })),
-      };
+      const chatIds = Object.keys(models);
+      const chatList = chatIds.length > 0 ? chatIds : [defaultAlias];
+      const data: Array<{ id: string; object: 'model'; owned_by: 'parsdocs' }> = chatList.map(
+        (id) => ({ id, object: 'model', owned_by: 'parsdocs' }),
+      );
+      // EXT-LLM-GATEWAY-EMBEDDINGS: добавляем embeddings-алиасы если включены.
+      // /v1/models — синхронный список; если embeddings включены конфигом,
+      // публикуем алиасы независимо от валидности ключа (фактический ключ
+      // резолвится lazy на /v1/embeddings hit'е).
+      if (embCfg.enabled) {
+        for (const id of Object.keys(embModels)) {
+          data.push({ id, object: 'model', owned_by: 'parsdocs' });
+        }
+      }
+      return { object: 'list', data };
     },
   );
 
@@ -114,12 +275,13 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
       },
     },
     async (req, reply) => {
+      const client = await getClient();
       if (!client) {
         return reply
           .code(503)
           .send(
             openAiError(
-              'LLM gateway backend is not configured (LLM_GATEWAY_BASE_URL).',
+              'LLM gateway backend is not configured. Set ANTHROPIC_API_KEY in env OR add Anthropic provider in UI Providers (is_default=true).',
               'server_error',
               'gateway_unconfigured',
             ),
@@ -183,5 +345,184 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
       }
       return reply.code(200).send(out);
     },
+  );
+
+  // EXT-LLM-GATEWAY-EMBEDDINGS (SLAI 2026-06-XX): POST /v1/embeddings.
+  // Шлюз к OpenAI text-embedding-3-* для SLAI Help-RAG (pgvector-индекс
+  // на 1536 dim, text-embedding-3-small). Anthropic embeddings не делает —
+  // даже когда chat backend = anthropic, embeddings идут через OpenAI.
+  // Provider/key/models задаются ОТДЕЛЬНЫМИ env (LLM_GATEWAY_EMBEDDINGS_*).
+  const EmbeddingsRequest = z
+    .object({
+      model: z.string().optional(),
+      input: z.union([z.string(), z.array(z.string())]),
+      encoding_format: z.enum(['float', 'base64']).optional(),
+      dimensions: z.number().optional(),
+      user: z.string().optional(),
+    })
+    .passthrough();
+
+  r.post(
+    '/v1/embeddings',
+    {
+      schema: {
+        tags: ['llm-gateway'],
+        summary: 'OpenAI-compatible embeddings (forward to OpenAI)',
+        body: EmbeddingsRequest,
+      },
+    },
+    async (req, reply) => {
+      const embClient = await getEmbClient();
+      if (!embClient) {
+        return reply
+          .code(503)
+          .send(
+            openAiError(
+              'Embeddings gateway is not configured. Set LLM_GATEWAY_EMBEDDINGS_ENABLED=true + OPENAI_API_KEY in env OR add OpenAI provider (id="openai", is_active=true) in UI Providers.',
+              'server_error',
+              'embeddings_unconfigured',
+            ),
+          );
+      }
+
+      const body = req.body;
+      const resolved = resolveEmbeddingsModel(body.model);
+      if (!resolved) {
+        return reply
+          .code(500)
+          .send(
+            openAiError(
+              'No embeddings alias is configured (LLM_GATEWAY_EMBEDDINGS_MODELS_JSON).',
+              'server_error',
+              'no_model_configured',
+            ),
+          );
+      }
+
+      const caller = req.user?.caller ?? null;
+      const upstreamBody = { ...body, model: resolved.model };
+
+      const startedAt = Date.now();
+      const result = await embClient.embeddings(upstreamBody);
+      const latencyMs = Date.now() - startedAt;
+
+      const usage = extractUsage(result.body);
+      const status: GatewayUsageStatus = result.ok
+        ? 'success'
+        : result.errorCode === 'timeout'
+          ? 'timeout'
+          : 'error';
+      try {
+        await llmGatewayUsageRepo.record({
+          caller,
+          alias: resolved.alias,
+          model: resolved.model,
+          promptTokens: usage.prompt_tokens ?? null,
+          completionTokens: null, // embeddings нет completion-токенов
+          latencyMs,
+          status,
+          errorCode: result.errorCode ?? null,
+        });
+      } catch (err) {
+        req.log.warn({ err }, 'llm-gateway: embeddings usage record failed (non-fatal)');
+      }
+
+      if (!result.ok) {
+        return reply.code(result.status).send(result.body);
+      }
+
+      // Эхо model → алиас (не сырой openai-tag).
+      const out = result.body;
+      if (out && typeof out === 'object') {
+        (out as Record<string, unknown>).model = resolved.alias;
+      }
+      return reply.code(200).send(out);
+    },
+  );
+
+  // EXT-LLM-GATEWAY-DADATA (SLAI 2026-06-XX): тонкий passthrough к
+  // suggestions.dadata.ru. Body и response — DaData-native verbatim
+  // (мы НЕ переводим в OpenAI shape — клиент уже парсит DaData-формат).
+  // Поэтому валидация мягкая: только наличие query (для findById обязательно).
+  const DaDataRequest = z
+    .object({
+      query: z.string().min(1),
+      count: z.number().optional(),
+      type: z.string().optional(),
+      branch_type: z.string().optional(),
+    })
+    .passthrough();
+
+  async function handleDadata(
+    req: { body: unknown; user?: { caller?: string | null } },
+    reply: { code(n: number): { send(body: unknown): unknown } },
+    operation: 'findById' | 'suggest',
+  ): Promise<unknown> {
+    const client = await getDadataClient();
+    if (!client) {
+      return reply.code(503).send(
+        openAiError(
+          'DaData gateway is not configured. Set LLM_GATEWAY_DADATA_ENABLED=true + DADATA_API_KEY in env OR add DaData provider (kind=dadata, is_default=true) in UI Providers.',
+          'server_error',
+          'dadata_unconfigured',
+        ),
+      );
+    }
+    const body = req.body;
+    const caller = req.user?.caller ?? null;
+    const startedAt = Date.now();
+    const result =
+      operation === 'findById'
+        ? await client.findByIdParty(body)
+        : await client.suggestParty(body);
+    const latencyMs = Date.now() - startedAt;
+    const status: GatewayUsageStatus = result.ok
+      ? 'success'
+      : result.errorCode === 'timeout'
+        ? 'timeout'
+        : 'error';
+    try {
+      await llmGatewayUsageRepo.record({
+        caller,
+        alias: `dadata-${operation}`,
+        model: 'dadata',
+        promptTokens: null,
+        completionTokens: null,
+        latencyMs,
+        status,
+        errorCode: result.errorCode ?? null,
+      });
+    } catch (err) {
+      (req as { log?: { warn(o: unknown, m: string): void } }).log?.warn(
+        { err },
+        'llm-gateway: dadata usage record failed (non-fatal)',
+      );
+    }
+    if (!result.ok) return reply.code(result.status).send(result.body);
+    return reply.code(200).send(result.body);
+  }
+
+  r.post(
+    '/v1/dadata/findById/party',
+    {
+      schema: {
+        tags: ['llm-gateway'],
+        summary: 'DaData findById party (passthrough by ИНН/ОГРН)',
+        body: DaDataRequest,
+      },
+    },
+    async (req, reply) => handleDadata(req as never, reply as never, 'findById'),
+  );
+
+  r.post(
+    '/v1/dadata/suggest/party',
+    {
+      schema: {
+        tags: ['llm-gateway'],
+        summary: 'DaData suggest party (typeahead, passthrough)',
+        body: DaDataRequest,
+      },
+    },
+    async (req, reply) => handleDadata(req as never, reply as never, 'suggest'),
   );
 }
