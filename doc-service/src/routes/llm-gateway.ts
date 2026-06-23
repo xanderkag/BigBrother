@@ -277,11 +277,18 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const client = await getClient();
       if (!client) {
+        // Сообщение зависит от backend: для anthropic не хватает ключа, для
+        // openai_compat — upstream baseUrl. Раньше текст всегда ссылался на
+        // ANTHROPIC_API_KEY, что путало в openai_compat-режиме.
+        const hint =
+          config.llmGateway.backend === 'anthropic'
+            ? 'Set ANTHROPIC_API_KEY in env OR add an Anthropic provider in UI Providers (is_default=true).'
+            : 'Set LLM_GATEWAY_BASE_URL (or LLM_INFERENCE_URL) to an OpenAI-compatible upstream.';
         return reply
           .code(503)
           .send(
             openAiError(
-              'LLM gateway backend is not configured. Set ANTHROPIC_API_KEY in env OR add Anthropic provider in UI Providers (is_default=true).',
+              `LLM gateway backend is not configured. ${hint}`,
               'server_error',
               'gateway_unconfigured',
             ),
