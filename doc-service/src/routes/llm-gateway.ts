@@ -11,6 +11,7 @@ import {
 } from '../pipeline/llm/chat-client.js';
 import { AnthropicChatClient } from '../pipeline/llm/anthropic-client.js';
 import { OpenAiEmbeddingsClient } from '../pipeline/llm/openai-embeddings-client.js';
+import { DaDataClient } from '../pipeline/llm/dadata-client.js';
 import { providerSettingsRepo } from '../storage/provider-settings.js';
 import { llmGatewayUsageRepo, type GatewayUsageStatus } from '../storage/llm-usage.js';
 
@@ -199,6 +200,45 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
     const fallback = embModels[embDefaultAlias];
     if (fallback) return { alias: embDefaultAlias, model: fallback };
     return null;
+  }
+
+  // EXT-LLM-GATEWAY-DADATA: тонкий passthrough к suggestions.dadata.ru.
+  // Geo-доступен с Asha — никаких outbound-прокси (в отличие от Anthropic/
+  // OpenAI). Key fallback env > provider_settings(kind='dadata') — у нас
+  // уже зарегистрирован в Providers как enrichment provider.
+  const dadataCfg = config.llmGateway.dadata;
+  let cachedDadataClient: DaDataClient | null = null;
+  let cachedDadataKey: string | null = null;
+  let cachedDadataAt = 0;
+  async function getDadataClient(): Promise<DaDataClient | null> {
+    if (!dadataCfg.enabled) return null;
+    const now = Date.now();
+    if (cachedDadataClient && now - cachedDadataAt < KEY_CACHE_MS) return cachedDadataClient;
+    let apiKey: string | undefined = dadataCfg.apiKey;
+    if (!apiKey) {
+      try {
+        const provider = await providerSettingsRepo.findDefault('dadata');
+        if (provider?.api_key) apiKey = provider.api_key;
+      } catch {
+        /* fail-soft */
+      }
+    }
+    if (!apiKey) {
+      cachedDadataClient = null;
+      cachedDadataKey = null;
+      cachedDadataAt = now;
+      return null;
+    }
+    if (apiKey !== cachedDadataKey) {
+      cachedDadataClient = new DaDataClient({
+        baseUrl: dadataCfg.baseUrl,
+        apiKey,
+        timeoutMs: dadataCfg.timeoutMs,
+      });
+      cachedDadataKey = apiKey;
+    }
+    cachedDadataAt = now;
+    return cachedDadataClient;
   }
 
   // GET /v1/models — публикуем НАШИ алиасы (не сырые ollama-теги).
@@ -398,5 +438,91 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
       }
       return reply.code(200).send(out);
     },
+  );
+
+  // EXT-LLM-GATEWAY-DADATA (SLAI 2026-06-XX): тонкий passthrough к
+  // suggestions.dadata.ru. Body и response — DaData-native verbatim
+  // (мы НЕ переводим в OpenAI shape — клиент уже парсит DaData-формат).
+  // Поэтому валидация мягкая: только наличие query (для findById обязательно).
+  const DaDataRequest = z
+    .object({
+      query: z.string().min(1),
+      count: z.number().optional(),
+      type: z.string().optional(),
+      branch_type: z.string().optional(),
+    })
+    .passthrough();
+
+  async function handleDadata(
+    req: { body: unknown; user?: { caller?: string | null } },
+    reply: { code(n: number): { send(body: unknown): unknown } },
+    operation: 'findById' | 'suggest',
+  ): Promise<unknown> {
+    const client = await getDadataClient();
+    if (!client) {
+      return reply.code(503).send(
+        openAiError(
+          'DaData gateway is not configured. Set LLM_GATEWAY_DADATA_ENABLED=true + DADATA_API_KEY in env OR add DaData provider (kind=dadata, is_default=true) in UI Providers.',
+          'server_error',
+          'dadata_unconfigured',
+        ),
+      );
+    }
+    const body = req.body;
+    const caller = req.user?.caller ?? null;
+    const startedAt = Date.now();
+    const result =
+      operation === 'findById'
+        ? await client.findByIdParty(body)
+        : await client.suggestParty(body);
+    const latencyMs = Date.now() - startedAt;
+    const status: GatewayUsageStatus = result.ok
+      ? 'success'
+      : result.errorCode === 'timeout'
+        ? 'timeout'
+        : 'error';
+    try {
+      await llmGatewayUsageRepo.record({
+        caller,
+        alias: `dadata-${operation}`,
+        model: 'dadata',
+        promptTokens: null,
+        completionTokens: null,
+        latencyMs,
+        status,
+        errorCode: result.errorCode ?? null,
+      });
+    } catch (err) {
+      (req as { log?: { warn(o: unknown, m: string): void } }).log?.warn(
+        { err },
+        'llm-gateway: dadata usage record failed (non-fatal)',
+      );
+    }
+    if (!result.ok) return reply.code(result.status).send(result.body);
+    return reply.code(200).send(result.body);
+  }
+
+  r.post(
+    '/v1/dadata/findById/party',
+    {
+      schema: {
+        tags: ['llm-gateway'],
+        summary: 'DaData findById party (passthrough by ИНН/ОГРН)',
+        body: DaDataRequest,
+      },
+    },
+    async (req, reply) => handleDadata(req as never, reply as never, 'findById'),
+  );
+
+  r.post(
+    '/v1/dadata/suggest/party',
+    {
+      schema: {
+        tags: ['llm-gateway'],
+        summary: 'DaData suggest party (typeahead, passthrough)',
+        body: DaDataRequest,
+      },
+    },
+    async (req, reply) => handleDadata(req as never, reply as never, 'suggest'),
   );
 }

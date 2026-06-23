@@ -460,6 +460,22 @@ const ConfigSchema = z.object({
         .default({}),
       timeoutMs: numberFromEnv(60_000),
     }),
+    /**
+     * EXT-LLM-GATEWAY-DADATA (SLAI 2026-06-XX): третий внешний канал.
+     * DaData — geo-доступен из РФ, никакого outbound-прокси (в отличие
+     * от Anthropic/OpenAI). Тонкий passthrough к suggestions.dadata.ru.
+     * SLAI шлёт свой PAT, мы подставляем DADATA_API_KEY.
+     *
+     * Ключ берётся: env > provider_settings.kind='dadata' (через UI
+     * Providers — у нас kind='dadata' уже зарегистрирован, используется
+     * в enrichment pipeline).
+     */
+    dadata: z.object({
+      enabled: z.coerce.boolean().default(false),
+      baseUrl: z.string().default('https://suggestions.dadata.ru'),
+      apiKey: z.string().optional(),
+      timeoutMs: numberFromEnv(15_000),
+    }),
   }),
 });
 
@@ -578,6 +594,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         defaultAlias: env.LLM_GATEWAY_EMBEDDINGS_DEFAULT_ALIAS,
         models: env.LLM_GATEWAY_EMBEDDINGS_MODELS_JSON,
         timeoutMs: env.LLM_GATEWAY_EMBEDDINGS_TIMEOUT_MS,
+      },
+      dadata: {
+        enabled: env.LLM_GATEWAY_DADATA_ENABLED,
+        baseUrl: env.LLM_GATEWAY_DADATA_BASE_URL,
+        apiKey: env.LLM_GATEWAY_DADATA_API_KEY || env.DADATA_API_KEY || undefined,
+        timeoutMs: env.LLM_GATEWAY_DADATA_TIMEOUT_MS,
       },
     },
   });
