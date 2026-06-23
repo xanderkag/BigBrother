@@ -45,13 +45,30 @@ const ORDER_REFS = {
 // собирает их в `_match_signals.containers` через collectContainers().
 const CONTAINERS = {
   type: 'array',
-  description: 'Номер(а) контейнера ISO 6346, если перевозка контейнерная',
+  description:
+    'Номера контейнеров (ISO 6346: 4 буквы + 7 цифр, напр. MSCU1234567). ' +
+    'ОБЯЗАТЕЛЬНО извлекай КАЖДЫЙ номер контейнера, упомянутый в документе — ' +
+    'в строке «Контейнер: …», в графе тары/груза или в тексте про перевозку. ' +
+    'По одному объекту на контейнер. Если контейнеров нет — опусти поле.',
   items: {
     type: 'object',
     properties: {
-      number: { type: 'string', description: 'Номер контейнера ISO 6346' },
+      number: { type: 'string', description: 'Номер контейнера, формат ISO 6346 (напр. MSCU1234567)' },
     },
   },
+} as const;
+
+// SLAI Q15 (2026-06-23): doc-level СКАЛЯРНЫЙ алиас контейнера. phi4 надёжнее
+// заполняет плоскую строку, чем массив объектов CONTAINERS — а в перевозочных
+// типах (ТТН/CMR/Акт) контейнер обычно один. collectContainers() читает и
+// `containers[].number`, и этот top-level `container_number` (дедуп общий через
+// uniqStrings), поэтому оба поля безопасно держать рядом.
+const CONTAINER_NUMBER = {
+  type: 'string',
+  description:
+    'Номер контейнера (ISO 6346: 4 буквы + 7 цифр, напр. MSCU1234567), если в документе ' +
+    'упомянут ОДИН контейнер — извлеки из «Контейнер: …» / текста про перевозку груза. ' +
+    'Если контейнеров несколько — заполни массив containers[]. Нет контейнера — опусти поле.',
 } as const;
 
 const PARTY = {
@@ -517,6 +534,7 @@ const TTN_SCHEMA = {
     },
     order_refs: ORDER_REFS,
     containers: CONTAINERS,
+    container_number: CONTAINER_NUMBER,
   },
 } as const;
 
@@ -597,6 +615,7 @@ const CMR_SCHEMA = {
     },
     order_refs: ORDER_REFS,
     containers: CONTAINERS,
+    container_number: CONTAINER_NUMBER,
   },
 } as const;
 
@@ -1090,6 +1109,7 @@ const AKT_SCHEMA = {
     parent_contract_date: { type: 'string', description: 'Дата договора-основания' },
     order_refs: ORDER_REFS,
     containers: CONTAINERS,
+    container_number: CONTAINER_NUMBER,
   },
 } as const;
 

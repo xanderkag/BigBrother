@@ -194,6 +194,14 @@ describe('buildMatchSignals — cmr / wire_transfer / generic', () => {
     expect(s.containers).toEqual(['MSCU1234567', 'TCLU7654321']);
   });
 
+  it('cmr: containers из doc-level скаляра container_number (SLAI Q15)', () => {
+    const s = buildMatchSignals('CMR', {
+      number: 'CMR-1',
+      container_number: 'TCLU7654321',
+    });
+    expect(s.containers).toEqual(['TCLU7654321']);
+  });
+
   it('wire_transfer_application: payer/payee + amount/currency', () => {
     const s = buildMatchSignals('wire_transfer_application', {
       date: '2026-06-03',
