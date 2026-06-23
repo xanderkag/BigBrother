@@ -6,7 +6,7 @@
 > в [`doc-service/docs/INTEGRATION_QUEUE.md`](doc-service/docs/INTEGRATION_QUEUE.md).
 > Obsidian-карточка — обзор для человека, не источник истины по задачам.
 >
-> Обновлено: 2026-06-21.
+> Обновлено: 2026-06-23.
 
 ---
 
@@ -34,7 +34,8 @@
 
 ## ✅ Сделано
 
-- **Список типов закрыт 30/30** — добавлены 4 складских (`power_of_attorney`/М-2, `warehouse_receipt`/МХ-1, `warehouse_return`/МХ-3, `material_requisition`/М-11), миграция `20260621000001`; задеплоено + проверено вживую (распознаются без hint + извлекаются).
+- **Каталог типов: создание новых типов закрыто (38 активных в проде).** Сначала 4 складских (`power_of_attorney`/М-2, `warehouse_receipt`/МХ-1, `warehouse_return`/МХ-3, `material_requisition`/М-11), миграция `20260621000001`. Затем все 8 EXT-CLASS-типов созданы + задеплоены на прод (миграции `20260621000002/3/4`): `special_permit`, `booking_request`, `awb`, `manifest`, `phytosanitary_certificate`, `veterinary_certificate`, `cim`, `smgs`. Все распознаются без hint + извлекаются. **Эпики EXT-CLASS-1/2/3 в части СОЗДАНИЯ типов выполнены.**
+- **Merge github→main + деплой на прод (2026-06-23, `6532be5`)** — сборка LLM-gateway влита в `main` и выкачена на прод (api/worker пересобраны, BL-миграция применена). Код gateway-фич (Anthropic-бэкенд шлюза, `/v1/embeddings` через OpenAI, DaData-passthrough, providers-fallback) на проде, но эндпоинты спят за фича-флагами (см. блок ниже).
 - **Дефолт извлечения переключён mistral → `phi4`** — бенч точности 2026-06-18: phi4 91% против mistral 48% на 4 типах (mistral мис-ярлычил стороны ТТН/CMR). УПД переведён с регекса на полный ИИ — **все типы теперь на `parser_kind=llm_extract`**.
 - **Акт-lockstep с SLAI ЗАКРЫТ с обеих сторон** — projector `services_act` в `_match_signals` (party_a→`executor`, party_b→`customer`); SLAI читает `executor`+`customer` по ИНН.
 - **Контракт `_match_signals` для SLAI** — канонические сигналы (containers / bl / ttn / cmr / `order_refs` / vehicle / parties / dates / totals + `_confidence` + `schema_version`); задеплоен. Стороны ТТН/CMR больше не пустые (фикс mistral-мис-ярлыков).
@@ -56,24 +57,22 @@
 | Приём документа по ссылке | `FILE_URL_INGEST_ENABLED` | большие файлы без 50MB-лимита |
 | Клиентский ключ модели (BYO LLM) | `BYO_LLM_ENABLED` | consumer на своём LLM |
 
-> **LLM-шлюз: код влит в `main`** (merge github→main, 2026-06-23): Anthropic-бэкенд шлюза (OpenAI↔Anthropic translator), `/v1/embeddings` через OpenAI, DaData-passthrough (`/v1/dadata/findById/party`), providers-fallback, фикс-миграция BL. **Не задеплоено** — деплой и cutover SLAI отдельным шагом после WW-23 демо. См. INTEGRATION_QUEUE Q-DADATA-1 и § Перспектива.
+> **LLM-шлюз: задеплоен на прод 2026-06-23** (merge github→main `6532be5`, api/worker пересобраны): Anthropic-бэкенд шлюза (OpenAI↔Anthropic translator), `/v1/embeddings` через OpenAI, DaData-passthrough (`/v1/dadata/findById/party`), providers-fallback, фикс-миграция BL. **Эндпоинты спят за фича-флагами** (`embeddings`/`dadata` `enabled=false`, `backend=openai_compat`) — `/v1/embeddings` и `/v1/dadata` отдают `503` fail-closed. Ждёт включения флагов + cutover SLAI после WW-23 демо. См. INTEGRATION_QUEUE Q-DADATA-1 и § Перспектива.
 
 ---
 
 ## 🔵 Перспектива
 
-- **EXT-CLASS — новые типы (по очереди, после стабилизации пилота WW-23):**
-  - **EXT-CLASS-1** (~2 д): `special_permit` (Росавтодор), `booking_request` (клон `transport_request`, `requestor.kind=forwarder`), тюнинг классификатора `waybill`.
-  - **EXT-CLASS-2** (~3 д): AWB (Air Waybill), `manifest`, `phytosanitary_certificate`, `veterinary_certificate`, тюнинг `commercial_invoice` под ВЭД.
-  - **EXT-CLASS-3** (~1.5 д): CIM + СМГС (международные ж/д).
+- **EXT-CLASS — доводка типов под ВЭД/логистику (создание типов сделано, см. ✅ Сделано; осталась настройка существующих, ждёт реальных PDF от SLAI):**
+  - **Тюнинг классификатора `waybill`** — чтобы не падал в unknown/ttn на реальных хитах (ждёт 1-2 PDF, Q-CLASS-MATRIX §6).
+  - **Тюнинг `commercial_invoice` под ВЭД** — incoterms / hs_code / country_of_origin / customs_value (ждёт PDF с ВЭД-полями).
+  - **Расширенная extraction-схема `special_permit` (Q-PERMIT-1)** — slug создан, расширяем поля: `valid_from` / `waypoints[]` / `axle_loads_kg[]` / `restrictions` + escort enum. Ждёт 1-2 реальных PDF Росавтодора (W24).
 - **Под сервер 96 ГБ VRAM (в пути):** vLLM-миграция Qwen-VL, Phi-4-multimodal; Epic-5 (агент-модели); латентность vision (#3).
 - **Голос → текст (ASR)** — приёмный путь готов (за `ASR_ENABLED`), ждёт модель + `ASR_BASE_URL`. «OCR для звука»: транскрипт → тот же pipeline.
 - **DaData live + фаза 2** — обогащение/нормализация адресов; код готов, ввести ключ в UI.
 - **Петля улучшения v2** — авто-отчёт гипотез по накопленным правкам и оценкам (сейчас разбор руками).
 - **EXT-LLM-PROXY-C** — расширение шлюза до full gateway (per-org rate-limit, квоты, cost-calc) — по триггеру (5+ инстансов SLAI или incident).
-- **EXT-LLM-GATEWAY-DADATA** — passthrough `POST /v1/dadata/findById/party` (+опц. `/suggest/party`) к suggestions.dadata.ru с нашим `DADATA_API_KEY` (env или `provider_settings kind='dadata'`). Тонкий passthrough, native DaData-shape в обе стороны, usage-log per-PAT, auth `Authorization: Token <key>` (не Bearer). **Код влит в `main`**; ждёт активации в пакете с cutover SLAI на наш gateway после WW-23 демо. См. INTEGRATION_QUEUE Q-DADATA-1.
-
-> **Гигиена гита:** свести github-зеркало с `origin` (github/main опережает на 2 коммита, но на старой базе — целиком вливать НЕЛЬЗЯ, откатит июньскую работу; только точечно). Содержательный док EXT-CLASS уже учтён выше. `anthropic-client.ts` (Anthropic-backend шлюза для staging-хоста Asha, OpenAI↔Anthropic translator) — оценить отдельно.
+- **EXT-LLM-GATEWAY-DADATA** — passthrough `POST /v1/dadata/findById/party` (+опц. `/suggest/party`) к suggestions.dadata.ru с нашим `DADATA_API_KEY` (env или `provider_settings kind='dadata'`). Тонкий passthrough, native DaData-shape в обе стороны, usage-log per-PAT, auth `Authorization: Token <key>` (не Bearer). **Задеплоен на прод 2026-06-23, эндпоинт спит за флагом `dadata` (`enabled=false` → `503`)**; ждёт включения флага в пакете с cutover SLAI на наш gateway после WW-23 демо. См. INTEGRATION_QUEUE Q-DADATA-1.
 
 ---
 
