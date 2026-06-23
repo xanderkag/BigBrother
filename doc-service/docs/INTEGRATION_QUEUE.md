@@ -48,6 +48,34 @@
 
 ## Active Questions
 
+### Q-DADATA-1. DaData passthrough в LLM-gateway (третий внешний канал)
+
+- **Status:** SPEC OK — ждём cutover SLAI после демо (в пакете с активацией chat/embeddings)
+- **Asked:** 2026-06-XX (SLAI PM, follow-up к LLM-gateway)
+- **From:** SLAI_DEV → PARSDOCS_DEV
+- **Связано:** EXT-LLM-GATEWAY-DADATA в ROADMAP.md.
+
+**Что просят:** добавить в наш gateway `POST /v1/dadata/findById/party`
+(+ опц. `/v1/dadata/suggest/party`) как тонкий passthrough к
+`suggestions.dadata.ru/suggestions/api/4_1/rs/findById/party`. SLAI шлёт
+только их PAT, мы подставляем `Authorization: Token <DADATA_API_KEY>`.
+По той же схеме что chat/embeddings — централизация ключей у parsdocs.
+
+**ETA:** ~1-2 часа (тонкий passthrough, DaData geo-доступен с Asha, нет
+проблемы Anthropic/OpenAI с outbound-блоком).
+
+**Контракт:**
+- Headers от SLAI: `Authorization: Bearer pdpat_<тот же что для /jobs>`
+- Body: DaData-native verbatim (`{"query":"<ИНН>", "type"?, "count"?, ...}`)
+- Response: DaData-native verbatim (`{"suggestions":[{value, data:{inn,kpp,ogrn,okved,name,address,management,state,...}}]}`)
+- Ключ: env `DADATA_API_KEY` ИЛИ `provider_settings.kind='dadata'` (как у Anthropic/OpenAI fallback)
+- Usage-log в `llm_gateway_usage` с alias `dadata-findById`/`dadata-suggest`
+
+**Действие после демо:** реализовать в пакете с активацией chat/embeddings
+для единого cutover'а.
+
+---
+
 ### Q-PERMIT-1. special_permit (Росавтодор) — extraction-схема для негабарит-перевозок
 
 - **Status:** SPEC FROZEN — SLAI подтвердил все 3 уточнения 2026-06-XX,
