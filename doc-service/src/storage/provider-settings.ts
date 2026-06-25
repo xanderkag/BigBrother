@@ -31,7 +31,7 @@ import { encryptSecret, decryptSecret } from './secrets.js';
  * в HTTP-Authorization уже в открытом виде.
  */
 
-export type ProviderKind = 'llm' | 'ocr' | 'dadata';
+export type ProviderKind = 'llm' | 'ocr' | 'dadata' | 'yandex_maps';
 
 /**
  * Дополнительный секрет в `extra`. Для kind='dadata' это `secret_key`

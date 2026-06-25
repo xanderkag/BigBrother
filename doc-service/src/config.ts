@@ -476,6 +476,21 @@ const ConfigSchema = z.object({
       apiKey: z.string().optional(),
       timeoutMs: numberFromEnv(15_000),
     }),
+    /**
+     * INTEGRATION_HUB yandex_maps (Ф1): четвёртый внешний канал. Яндекс.Карты —
+     * geo-доступен из РФ без outbound-прокси (как DaData). Тонкий passthrough:
+     *   - геокодер  → https://geocode-maps.yandex.ru (GET /1.x/?apikey&geocode)
+     *   - маршрут   → https://api.routing.yandex.net (GET /v2/distancematrix)
+     * Auth — `apikey` в query (НЕ Bearer). Ключ берётся: env > provider_settings
+     * .kind='yandex_maps' (через UI Providers). Коннектор спит за enabled=false.
+     */
+    yandexMaps: z.object({
+      enabled: z.coerce.boolean().default(false),
+      geocoderBaseUrl: z.string().default('https://geocode-maps.yandex.ru'),
+      routerBaseUrl: z.string().default('https://api.routing.yandex.net'),
+      apiKey: z.string().optional(),
+      timeoutMs: numberFromEnv(15_000),
+    }),
   }),
 });
 
@@ -600,6 +615,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         baseUrl: env.LLM_GATEWAY_DADATA_BASE_URL,
         apiKey: env.LLM_GATEWAY_DADATA_API_KEY || env.DADATA_API_KEY || undefined,
         timeoutMs: env.LLM_GATEWAY_DADATA_TIMEOUT_MS,
+      },
+      yandexMaps: {
+        enabled: env.LLM_GATEWAY_YANDEX_ENABLED,
+        geocoderBaseUrl: env.LLM_GATEWAY_YANDEX_GEOCODER_BASE_URL,
+        routerBaseUrl: env.LLM_GATEWAY_YANDEX_ROUTER_BASE_URL,
+        apiKey: env.LLM_GATEWAY_YANDEX_API_KEY || env.YANDEX_MAPS_API_KEY || undefined,
+        timeoutMs: env.LLM_GATEWAY_YANDEX_TIMEOUT_MS,
       },
     },
   });

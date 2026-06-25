@@ -12,6 +12,7 @@ import {
 import { AnthropicChatClient } from '../pipeline/llm/anthropic-client.js';
 import { OpenAiEmbeddingsClient } from '../pipeline/llm/openai-embeddings-client.js';
 import { DaDataClient } from '../pipeline/llm/dadata-client.js';
+import { YandexMapsClient } from '../pipeline/llm/yandex-maps-client.js';
 import { providerSettingsRepo } from '../storage/provider-settings.js';
 import { llmGatewayUsageRepo, type GatewayUsageStatus } from '../storage/llm-usage.js';
 
@@ -239,6 +240,46 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
     }
     cachedDadataAt = now;
     return cachedDadataClient;
+  }
+
+  // INTEGRATION_HUB yandex_maps (Ф1): тонкий passthrough к Яндекс.Картам
+  // (геокодер + маршрут/расстояние). Geo-доступен из РФ без outbound-прокси,
+  // как DaData. Key fallback env > provider_settings(kind='yandex_maps').
+  // Спит за флагом yandexMaps.enabled (fail-closed) — без ключа 503.
+  const yandexCfg = config.llmGateway.yandexMaps;
+  let cachedYandexClient: YandexMapsClient | null = null;
+  let cachedYandexKey: string | null = null;
+  let cachedYandexAt = 0;
+  async function getYandexMapsClient(): Promise<YandexMapsClient | null> {
+    if (!yandexCfg.enabled) return null;
+    const now = Date.now();
+    if (cachedYandexClient && now - cachedYandexAt < KEY_CACHE_MS) return cachedYandexClient;
+    let apiKey: string | undefined = yandexCfg.apiKey;
+    if (!apiKey) {
+      try {
+        const provider = await providerSettingsRepo.findDefault('yandex_maps');
+        if (provider?.api_key) apiKey = provider.api_key;
+      } catch {
+        /* fail-soft */
+      }
+    }
+    if (!apiKey) {
+      cachedYandexClient = null;
+      cachedYandexKey = null;
+      cachedYandexAt = now;
+      return null;
+    }
+    if (apiKey !== cachedYandexKey) {
+      cachedYandexClient = new YandexMapsClient({
+        geocoderBaseUrl: yandexCfg.geocoderBaseUrl,
+        routerBaseUrl: yandexCfg.routerBaseUrl,
+        apiKey,
+        timeoutMs: yandexCfg.timeoutMs,
+      });
+      cachedYandexKey = apiKey;
+    }
+    cachedYandexAt = now;
+    return cachedYandexClient;
   }
 
   // GET /v1/models — публикуем НАШИ алиасы (не сырые ollama-теги).
@@ -534,5 +575,106 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
       },
     },
     async (req, reply) => handleDadata(req as never, reply as never, 'suggest'),
+  );
+
+  // INTEGRATION_HUB yandex_maps (Ф1): тонкий passthrough к Яндекс.Картам.
+  // Тело — native query-параметры Яндекса (мы прокидываем их в query как есть,
+  // подставляя только apikey). Ответ — Яндекс-native verbatim. Auth Яндекса —
+  // apikey в query (НЕ Bearer). Усечённая валидация: только обязательный
+  // ключевой параметр на эндпоинт (geocode / origins+destinations).
+  const GeocodeRequest = z
+    .object({
+      geocode: z.string().min(1),
+    })
+    .passthrough();
+
+  const RouteRequest = z
+    .object({
+      origins: z.string().min(1),
+      destinations: z.string().min(1),
+    })
+    .passthrough();
+
+  /** Native-параметры тела → Record<string,string> для query (числа/строки). */
+  function toQueryParams(body: unknown): Record<string, string> {
+    const out: Record<string, string> = {};
+    if (body && typeof body === 'object') {
+      for (const [k, v] of Object.entries(body as Record<string, unknown>)) {
+        if (typeof v === 'string') out[k] = v;
+        else if (typeof v === 'number' || typeof v === 'boolean') out[k] = String(v);
+      }
+    }
+    return out;
+  }
+
+  async function handleYandexMaps(
+    req: { body: unknown; user?: { caller?: string | null }; log?: { warn(o: unknown, m: string): void } },
+    reply: { code(n: number): { send(body: unknown): unknown } },
+    operation: 'geocode' | 'route',
+  ): Promise<unknown> {
+    const client = await getYandexMapsClient();
+    if (!client) {
+      return reply.code(503).send(
+        openAiError(
+          'Yandex Maps gateway is not configured. Set LLM_GATEWAY_YANDEX_ENABLED=true + YANDEX_MAPS_API_KEY in env OR add a Yandex Maps provider (kind=yandex_maps, is_default=true) in UI Providers.',
+          'server_error',
+          'yandex_unconfigured',
+        ),
+      );
+    }
+    const params = toQueryParams(req.body);
+    const caller = req.user?.caller ?? null;
+    const startedAt = Date.now();
+    const result =
+      operation === 'geocode' ? await client.geocode(params) : await client.route(params);
+    const latencyMs = Date.now() - startedAt;
+    const status: GatewayUsageStatus = result.ok
+      ? 'success'
+      : result.errorCode === 'timeout'
+        ? 'timeout'
+        : 'error';
+    try {
+      await llmGatewayUsageRepo.record({
+        caller,
+        alias: `yandex_maps-${operation}`,
+        model: 'yandex_maps',
+        promptTokens: null,
+        completionTokens: null,
+        latencyMs,
+        status,
+        errorCode: result.errorCode ?? null,
+        connector: 'yandex_maps',
+        units: 1,
+        unitKind: operation === 'geocode' ? 'geocodes' : 'routes',
+      });
+    } catch (err) {
+      req.log?.warn({ err }, 'llm-gateway: yandex_maps usage record failed (non-fatal)');
+    }
+    if (!result.ok) return reply.code(result.status).send(result.body);
+    return reply.code(200).send(result.body);
+  }
+
+  r.post(
+    '/v1/maps/geocode',
+    {
+      schema: {
+        tags: ['llm-gateway'],
+        summary: 'Yandex geocoder (passthrough; apikey in query)',
+        body: GeocodeRequest,
+      },
+    },
+    async (req, reply) => handleYandexMaps(req as never, reply as never, 'geocode'),
+  );
+
+  r.post(
+    '/v1/maps/route',
+    {
+      schema: {
+        tags: ['llm-gateway'],
+        summary: 'Yandex distance matrix / route (passthrough; apikey in query)',
+        body: RouteRequest,
+      },
+    },
+    async (req, reply) => handleYandexMaps(req as never, reply as never, 'route'),
   );
 }

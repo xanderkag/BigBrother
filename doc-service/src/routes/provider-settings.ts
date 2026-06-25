@@ -28,7 +28,7 @@ import { config } from '../config.js';
  * (а ещё там есть `before/after` без секрета).
  */
 
-const Kind = z.enum(['llm', 'ocr', 'dadata']);
+const Kind = z.enum(['llm', 'ocr', 'dadata', 'yandex_maps']);
 
 const IdParam = z.object({
   id: z.string().min(1).max(64).regex(/^[a-z0-9][a-z0-9_-]*$/, {
