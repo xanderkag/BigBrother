@@ -15,6 +15,7 @@ import { DaDataClient } from '../pipeline/llm/dadata-client.js';
 import { YandexMapsClient } from '../pipeline/llm/yandex-maps-client.js';
 import { providerSettingsRepo } from '../storage/provider-settings.js';
 import { llmGatewayUsageRepo, type GatewayUsageStatus } from '../storage/llm-usage.js';
+import { checkConsumerQuota } from '../storage/gateway-connectors.js';
 
 /**
  * EXT-LLM-GATEWAY (local): doc-service как локальный OpenAI-совместимый
@@ -282,6 +283,47 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
     return cachedYandexClient;
   }
 
+  /**
+   * INTEGRATION_HUB (Ф1): enforcement суточной квоты потребителя на коннектор.
+   * Строго за флагом config.llmGateway.quotaEnabled (default false) + fail-open.
+   *
+   * Возвращает true если запрос НАДО ЗАБЛОКИРОВАТЬ (и уже отправлен 429 в
+   * OpenAI-error форме); false — пропускаем дальше в upstream.
+   *
+   * Fail-open (НИКОГДА не валим живой шлюз из-за enforcement):
+   *   - флаг quotaEnabled выключен                  → пропуск (проверку даже не зовём);
+   *   - caller неизвестен (root-key, caller=null)   → пропуск (некого энфорсить);
+   *   - нет cap/budget (checkConsumerQuota allowed)  → пропуск;
+   *   - любая ошибка проверки (БД упала и т.п.)      → пропуск (catch → false).
+   * Блокируем (429) ТОЛЬКО при явном !allowed от checkConsumerQuota
+   * (quota_exceeded / connector_disabled / consumer_disabled).
+   */
+  async function enforceQuota(
+    req: { user?: { caller?: string | null }; log?: { warn(o: unknown, m: string): void } },
+    reply: { code(n: number): { send(body: unknown): unknown } },
+    connector: string,
+  ): Promise<boolean> {
+    if (!config.llmGateway.quotaEnabled) return false;
+    const caller = req.user?.caller ?? null;
+    if (!caller) return false; // root-key / без caller — нечего/некого энфорсить
+    try {
+      const q = await checkConsumerQuota(caller, connector);
+      if (q.allowed) return false;
+      reply.code(429).send(
+        openAiError(
+          `Дневной лимит потребителя «${caller}» по коннектору «${connector}» исчерпан (${q.reason ?? 'quota_exceeded'}). Обратитесь к администратору хаба.`,
+          'rate_limit_error',
+          'quota_exceeded',
+        ),
+      );
+      return true;
+    } catch (err) {
+      // fail-open: сбой проверки квоты не должен блокировать живой трафик.
+      req.log?.warn({ err, connector, caller }, 'llm-gateway: quota check failed (fail-open)');
+      return false;
+    }
+  }
+
   // GET /v1/models — публикуем НАШИ алиасы (не сырые ollama-теги).
   r.get(
     '/v1/models',
@@ -351,6 +393,11 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const caller = req.user?.caller ?? null;
+
+      // INTEGRATION_HUB (Ф1): квота потребителя на коннектор 'llm'. Flag-gated +
+      // fail-open — при выключенном флаге не вызывается вовсе.
+      if (await enforceQuota(req, reply, 'llm')) return reply;
+
       // Тело в upstream: подменяем model на backend-tag и снимаем stream
       // (MVP — всегда единый JSON-ответ).
       const { stream: _stream, ...rest } = body;
@@ -448,6 +495,10 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const caller = req.user?.caller ?? null;
+
+      // INTEGRATION_HUB (Ф1): embeddings метерятся на тот же коннектор 'llm'.
+      if (await enforceQuota(req, reply, 'llm')) return reply;
+
       const upstreamBody = { ...body, model: resolved.model };
 
       const startedAt = Date.now();
@@ -502,7 +553,11 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
     .passthrough();
 
   async function handleDadata(
-    req: { body: unknown; user?: { caller?: string | null } },
+    req: {
+      body: unknown;
+      user?: { caller?: string | null };
+      log: { warn(o: unknown, m: string): void };
+    },
     reply: { code(n: number): { send(body: unknown): unknown } },
     operation: 'findById' | 'suggest',
   ): Promise<unknown> {
@@ -516,6 +571,8 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
         ),
       );
     }
+    // INTEGRATION_HUB (Ф1): квота на коннектор 'dadata'. Flag-gated + fail-open.
+    if (await enforceQuota(req, reply, 'dadata')) return reply;
     const body = req.body;
     const caller = req.user?.caller ?? null;
     const startedAt = Date.now();
@@ -622,6 +679,8 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
         ),
       );
     }
+    // INTEGRATION_HUB (Ф1): квота на коннектор 'yandex_maps'. Flag-gated + fail-open.
+    if (await enforceQuota(req, reply, 'yandex_maps')) return reply;
     const params = toQueryParams(req.body);
     const caller = req.user?.caller ?? null;
     const startedAt = Date.now();

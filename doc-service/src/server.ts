@@ -28,6 +28,7 @@ import { referenceListsRoutes } from './routes/reference-lists.js';
 import { resolutionRoutes } from './routes/resolution.js';
 import { authRoutes } from './routes/auth.js';
 import { llmGatewayRoutes } from './routes/llm-gateway.js';
+import { gatewayAdminRoutes } from './routes/gateway-admin.js';
 import { closeDb } from './db.js';
 import { closeQueue } from './queue.js';
 
@@ -160,6 +161,7 @@ async function main() {
         { name: 'settings', description: 'Снимок настроек и статус LLM-провайдеров' },
         { name: 'reference-lists', description: 'Справочники для привязки документов (cargo units, nomenclature, …)' },
         { name: 'resolution', description: 'Результаты привязки документа к бизнес-сущностям: confirm / reject / re-resolve' },
+        { name: 'gateway', description: 'Интеграционный хаб: коннекторы, бюджеты потребителей, сводка usage' },
         { name: 'health', description: 'Liveness/readiness пробники' },
       ],
     },
@@ -326,6 +328,8 @@ async function main() {
   await app.register(operationalMetricsRoutes, { prefix: '/api/v1' });
   await app.register(referenceListsRoutes, { prefix: '/api/v1' });
   await app.register(resolutionRoutes, { prefix: '/api/v1' });
+  // INTEGRATION_HUB (Ф1): admin CRUD коннекторов/бюджетов + usage-сводка.
+  await app.register(gatewayAdminRoutes, { prefix: '/api/v1' });
   // UX-AUTH: публичный (без bearerAuthHook) login by email+password.
   await app.register(authRoutes, { prefix: '/api/v1' });
 

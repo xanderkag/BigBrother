@@ -25,6 +25,7 @@ const { cfg } = vi.hoisted(() => ({
     llm: { url: undefined as string | undefined, apiKey: undefined, timeoutMs: 60000 },
     llmGateway: {
       enabled: true,
+      quotaEnabled: false,
       backend: 'openai_compat' as 'openai_compat' | 'anthropic',
       apiKey: undefined as string | undefined,
       baseUrl: 'http://gpu:11434/v1' as string | undefined,

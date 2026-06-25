@@ -399,6 +399,19 @@ const ConfigSchema = z.object({
   llmGateway: z.object({
     enabled: z.coerce.boolean().default(false),
     /**
+     * INTEGRATION_HUB (Ф1): enforcement суточных квот потребителей в шлюзе.
+     * Перед upstream-вызовом каждого коннектора (llm/dadata/yandex_maps) шлюз
+     * зовёт checkConsumerQuota(caller, connector) и при !allowed отдаёт 429.
+     *
+     * default false (fail-closed по поведению, но fail-OPEN по трафику):
+     * пока флаг выключен, проверка квот ВООБЩЕ не вызывается — живой LLM-чат
+     * работает в точности как раньше. Включать только после того как owner
+     * выставил cap/budget. Даже при включённом флаге enforcement fail-open:
+     * нет cap/budget ИЛИ ошибка проверки → запрос ПРОПУСКАЕТСЯ (никогда не
+     * блокируем из-за сбоя). См. src/routes/llm-gateway.ts.
+     */
+    quotaEnabled: z.coerce.boolean().default(false),
+    /**
      * EXT-LLM-GATEWAY-ANTHROPIC (2026-06-XX): backend selector. По умолчанию
      * 'openai_compat' — старое поведение (passthrough в Ollama / vLLM /
      * OpenAI-compat upstream). 'anthropic' — translator OpenAI↔Anthropic
@@ -595,6 +608,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     },
     llmGateway: {
       enabled: env.LLM_GATEWAY_ENABLED,
+      quotaEnabled: env.LLM_GATEWAY_QUOTA_ENABLED,
       backend: env.LLM_GATEWAY_BACKEND,
       baseUrl: env.LLM_GATEWAY_BASE_URL || undefined,
       apiKey: env.LLM_GATEWAY_API_KEY || env.ANTHROPIC_API_KEY || undefined,
