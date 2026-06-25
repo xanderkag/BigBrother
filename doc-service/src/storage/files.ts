@@ -111,6 +111,10 @@ function guessExt(mime: string): string {
       return '.xlsm';
     case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
       return '.docx';
+    // 2026-06-25: XML — электронные документы (ЭД), таможенные декларации.
+    case 'application/xml':
+    case 'text/xml':
+      return '.xml';
     default: return '';
   }
 }
@@ -383,6 +387,13 @@ export const ACCEPTED_DOCUMENT_MIMES: ReadonlySet<string> = new Set([
   // .doc (legacy binary, не OOXML) НЕ поддерживается — для него
   // клиент конвертирует в .docx или PDF.
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  // 2026-06-25: XML — электронные документы (ЭД), таможенные декларации.
+  // Парсятся fast-xml-parser через XmlEngine в src/pipeline/ocr/xml.ts.
+  // Уплощаются в текст (path/element: value), дальше тот же downstream-
+  // пайплайн. file-type не детектит generic XML (текстовый формат, как MP3
+  // с ID3), поэтому detectFileType фоллбэчит на sniffXmlSignature ниже.
+  'application/xml',
+  'text/xml',
   // ASR (voice/audio) — «OCR for audio». Аудио транскрибируется в текст
   // ASR-движком, после чего идёт тот же downstream-пайплайн. Принимается
   // ТОЛЬКО когда ASR_ENABLED=true (route гейтит); набор MIME — см.
@@ -422,10 +433,13 @@ export async function detectFileType(absolutePath: string): Promise<DetectedFile
     }
     return { ext: result.ext, mime: result.mime };
   }
-  // Fallback for audio signatures `file-type` misses (notably MP3 with a
-  // leading ID3 tag → file-type returns undefined). Magic-bytes only; we
-  // never trust the client Content-Type.
-  return sniffAudioSignature(absolutePath);
+  // Fallback for signatures `file-type` misses. Magic-bytes only; we never
+  // trust the client Content-Type.
+  //   - audio: MP3 with a leading ID3 tag → file-type returns undefined.
+  //   - XML: generic XML is a text format file-type doesn't classify.
+  const audio = await sniffAudioSignature(absolutePath);
+  if (audio) return audio;
+  return sniffXmlSignature(absolutePath);
 }
 
 /**
@@ -484,6 +498,72 @@ export async function sniffAudioSignature(
       // M4A is the audio-only profile; keep its dedicated mime so the router
       // treats it as audio even when the brand is a generic mp4 container.
       return { ext: 'm4a', mime: brand.startsWith('M4A') ? 'audio/x-m4a' : 'audio/mp4' };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Minimal magic-bytes sniffer for XML — электронные документы (ЭД), таможенные
+ * декларации. Generic XML is a text format `file-type` doesn't classify, so we
+ * fall back to a leading-bytes check (magic-bytes only; never trust the client
+ * Content-Type). Skips a UTF-8 BOM and leading whitespace, then accepts:
+ *   - "<?xml" declaration  → application/xml
+ *   - a leading "<" tag    → application/xml (XML without a prolog)
+ * A leading "<" that opens an HTML doctype/tag is NOT accepted — we only sniff
+ * generic XML here, not HTML.
+ */
+export async function sniffXmlSignature(
+  absolutePath: string,
+): Promise<DetectedFileType | undefined> {
+  let head: Buffer;
+  try {
+    const fh = await open(absolutePath, 'r');
+    try {
+      const buf = Buffer.alloc(64);
+      const { bytesRead } = await fh.read(buf, 0, 64, 0);
+      head = buf.subarray(0, bytesRead);
+    } finally {
+      await fh.close();
+    }
+  } catch {
+    return undefined;
+  }
+  if (head.length < 1) return undefined;
+
+  // Skip a UTF-8 BOM (EF BB BF) if present.
+  let start = 0;
+  if (head.length >= 3 && head[0] === 0xef && head[1] === 0xbb && head[2] === 0xbf) {
+    start = 3;
+  }
+  // Skip leading ASCII whitespace.
+  while (start < head.length) {
+    const b = head[start]!;
+    if (b === 0x20 || b === 0x09 || b === 0x0a || b === 0x0d) start += 1;
+    else break;
+  }
+  if (start >= head.length) return undefined;
+
+  const rest = head.subarray(start).toString('latin1');
+  // "<?xml" XML declaration.
+  if (rest.startsWith('<?xml')) {
+    return { ext: 'xml', mime: 'application/xml' };
+  }
+  // Leading "<" tag but NOT HTML (doctype/html/comment) — accept as XML.
+  if (rest.startsWith('<')) {
+    const lower = rest.toLowerCase();
+    if (lower.startsWith('<!doctype html') || lower.startsWith('<html') || lower.startsWith('<!--')) {
+      return undefined;
+    }
+    // Must look like a tag start: "<" followed by a name char (letter/_/:).
+    const c = rest.charCodeAt(1);
+    const isNameStart =
+      (c >= 0x41 && c <= 0x5a) || // A-Z
+      (c >= 0x61 && c <= 0x7a) || // a-z
+      c === 0x5f || // _
+      c === 0x3a; // :
+    if (isNameStart) {
+      return { ext: 'xml', mime: 'application/xml' };
     }
   }
   return undefined;

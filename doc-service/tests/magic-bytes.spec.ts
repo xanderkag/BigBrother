@@ -46,6 +46,11 @@ describe('ACCEPTED_DOCUMENT_MIMES', () => {
     expect(ACCEPTED_DOCUMENT_MIMES.has('image/webp')).toBe(true);
   });
 
+  it('includes XML (электронные документы / ЭД, таможенные декларации)', () => {
+    expect(ACCEPTED_DOCUMENT_MIMES.has('application/xml')).toBe(true);
+    expect(ACCEPTED_DOCUMENT_MIMES.has('text/xml')).toBe(true);
+  });
+
   it('excludes things we cannot OCR', () => {
     expect(ACCEPTED_DOCUMENT_MIMES.has('text/plain')).toBe(false);
     expect(ACCEPTED_DOCUMENT_MIMES.has('application/zip')).toBe(false);
@@ -119,6 +124,46 @@ describe('detectFileType', () => {
     const path = await writeBytes('notes.txt', Buffer.from('hello world\n', 'utf-8'));
     const r = await detectFileType(path);
     expect(r).toBeUndefined();
+  });
+
+  it('detects XML with a <?xml declaration', async () => {
+    const path = await writeBytes(
+      'decl.xml',
+      Buffer.from('<?xml version="1.0" encoding="UTF-8"?>\n<Doc><A>1</A></Doc>', 'utf-8'),
+    );
+    const r = await detectFileType(path);
+    expect(r?.mime).toBe('application/xml');
+    expect(r?.ext).toBe('xml');
+    expect(ACCEPTED_DOCUMENT_MIMES.has(r!.mime)).toBe(true);
+  });
+
+  it('detects XML without a prolog (leading < tag)', async () => {
+    const path = await writeBytes(
+      'noprolog.xml',
+      Buffer.from('<Declaration><Goods/></Declaration>', 'utf-8'),
+    );
+    const r = await detectFileType(path);
+    expect(r?.mime).toBe('application/xml');
+  });
+
+  it('detects XML behind a UTF-8 BOM and leading whitespace', async () => {
+    const bom = Buffer.from([0xef, 0xbb, 0xbf]);
+    const body = Buffer.from('\n  <?xml version="1.0"?><Doc/>', 'utf-8');
+    const path = await writeBytes('bom.xml', Buffer.concat([bom, body]));
+    const r = await detectFileType(path);
+    expect(r?.mime).toBe('application/xml');
+  });
+
+  it('does NOT sniff HTML as XML', async () => {
+    const html = await writeBytes(
+      'page.html',
+      Buffer.from('<!DOCTYPE html><html><body>hi</body></html>', 'utf-8'),
+    );
+    const r = await detectFileType(html);
+    // Either undefined or some html mime — must NOT be application/xml, and
+    // must not be in the accepted document set.
+    expect(r?.mime).not.toBe('application/xml');
+    if (r) expect(ACCEPTED_DOCUMENT_MIMES.has(r.mime)).toBe(false);
   });
 
   it('returns undefined for empty / unrecognizable bytes', async () => {
