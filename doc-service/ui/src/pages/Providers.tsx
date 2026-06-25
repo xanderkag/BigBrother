@@ -55,6 +55,7 @@ export default function ProvidersPage() {
             <option value="llm">LLM</option>
             <option value="ocr">OCR</option>
             <option value="dadata">DaData</option>
+            <option value="yandex_maps">Яндекс.Карты</option>
           </select>
           <button
             type="button"
@@ -439,6 +440,7 @@ function ProviderEditor({
               <option value="llm">LLM</option>
               <option value="ocr">OCR</option>
               <option value="dadata">DaData (ЕГРЮЛ-обогащение)</option>
+              <option value="yandex_maps">Яндекс.Карты (геокодер)</option>
             </select>
           </div>
 

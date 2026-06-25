@@ -19,7 +19,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 
-export type ProviderKind = 'llm' | 'ocr' | 'dadata';
+export type ProviderKind = 'llm' | 'ocr' | 'dadata' | 'yandex_maps';
 
 export interface ProviderEntry {
   id: string;

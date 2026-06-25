@@ -10,6 +10,7 @@ import UploadPage from '@/pages/Upload';
 import ReviewQueuePage from '@/pages/ReviewQueue';
 import DocumentTypesPage from '@/pages/DocumentTypes';
 import ProvidersPage from '@/pages/Providers';
+import IntegrationsPage from '@/pages/Integrations';
 import AuditLogPage from '@/pages/AuditLog';
 import SettingsPage from '@/pages/Settings';
 import SettingsHub from '@/pages/SettingsHub';
@@ -107,6 +108,7 @@ export default function App() {
                 >
                   <Route index element={<SettingsPage />} />
                   <Route path="providers" element={<ProvidersPage />} />
+                  <Route path="integrations" element={<IntegrationsPage />} />
                   <Route path="audit" element={<AuditLogPage />} />
                   <Route path="lab" element={<TestLabPage />} />
                 </Route>

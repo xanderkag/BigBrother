@@ -546,6 +546,7 @@ function buildCrumbs(pathname: string): Crumb[] {
     'reference-lists': 'Справочники',
     settings: 'Настройки',
     providers: 'Провайдеры/модели',
+    integrations: 'Интеграции',
     audit: 'Журнал аудита',
     lab: 'Тест-лаборатория',
   };
