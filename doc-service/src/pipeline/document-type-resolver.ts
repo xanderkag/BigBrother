@@ -20,7 +20,7 @@ import {
   type DocumentTypeRow,
   type DocumentTypeTier,
 } from '../storage/document-types.js';
-import { DOCUMENT_JSON_SCHEMAS, EXPECTED_FIELDS } from '../types/document-json-schemas.js';
+import { DOCUMENT_JSON_SCHEMAS, EXTENDED_SCHEMAS, EXPECTED_FIELDS } from '../types/document-json-schemas.js';
 import type { DocumentTypeSlug } from '../types/documents.js';
 import type { ResolutionConfig } from '../resolution/types.js';
 
@@ -248,8 +248,13 @@ export function resolveConfigFromRow(
   // `??` и подсовываем пустые дефолты. Custom-type без row в БД =
   // ничего не парсим (вряд ли осмысленный кейс, но не падаем).
   const schemas = DOCUMENT_JSON_SCHEMAS as Record<string, Record<string, unknown> | undefined>;
+  const extSchemas = EXTENDED_SCHEMAS as Record<string, Record<string, unknown> | undefined>;
   const fields = EXPECTED_FIELDS as Record<string, string[] | undefined>;
-  const fallbackSchema = schemas[slug] ?? {};
+  // Fallback-схема для типа без своей DB-llm_schema: сначала классические
+  // DOCUMENT_JSON_SCHEMAS (invoice/TTN/CMR/AKT), затем EXTENDED_SCHEMAS
+  // (bill_of_lading/waybill/transport_* и др. — иначе они резолвились в {} и
+  // LLM получал «extract whatever» → пустой extracted).
+  const fallbackSchema = schemas[slug] ?? extSchemas[slug] ?? {};
   const fallbackFields = fields[slug] ?? [];
 
   if (!row) {
