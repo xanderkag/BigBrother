@@ -64,6 +64,53 @@ describe('KeywordClassifier — DB keywords path', () => {
     expect(r.matched?.toLowerCase()).toContain('commercial invoice');
   });
 
+  it('счёт ВРАЗРЯДКУ «С Ч Е Т №» + SWIFT-блок → invoice, не wire_transfer (Q-INVOICE-1)', async () => {
+    // Реальный кейс с прода: транспортный счёт с банковскими блоками (SWIFT для
+    // RUB/EUR/USD) уезжал в wire_transfer_application (платёжку без позиций),
+    // потому что заголовок «С Ч Е Т» вразрядку, а старый invoice-ключ его не ловил.
+    vi.spyOn(documentTypesRepo, 'listActiveForOrg').mockResolvedValue([
+      row({
+        slug: 'invoice',
+        classification_keywords: [
+          '(?:^|\\W)сч[её]т\\s+(?:№|no|#)',
+          '(?:^|\\W)с\\s*ч\\s*[её]\\s*т\\s*(?:№|no|n°|nº|#|на\\s+оплату)',
+        ],
+        classification_keyword_weights: [5, 6],
+      }),
+      row({
+        slug: 'wire_transfer_application',
+        classification_keywords: ['\\bSWIFT\\b.{0,40}\\b[A-Z]{4}[A-Z]{2}[A-Z0-9]{2,5}\\b'],
+        classification_keyword_weights: [2],
+      }),
+    ]);
+
+    const r = await new KeywordClassifier().classify(
+      'ООО «КрафтТранс»\nС Ч Е Т № 260525/015/2 от 27.05.2026\nЗаказчик: ...\n' +
+        'Для оплаты в RUB: Счёт 40702..., SWIFT: RZBMRUMM',
+    );
+    expect(r.type).toBe('invoice');
+  });
+
+  it('настоящая платёжка («заявление на перевод») остаётся wire_transfer (не задета фиксом)', async () => {
+    vi.spyOn(documentTypesRepo, 'listActiveForOrg').mockResolvedValue([
+      row({
+        slug: 'invoice',
+        classification_keywords: ['(?:^|\\W)с\\s*ч\\s*[её]\\s*т\\s*(?:№|no|n°|nº|#|на\\s+оплату)'],
+        classification_keyword_weights: [6],
+      }),
+      row({
+        slug: 'wire_transfer_application',
+        classification_keywords: ['заявление\\s+на\\s+перевод'],
+        classification_keyword_weights: [5],
+      }),
+    ]);
+
+    const r = await new KeywordClassifier().classify(
+      'ЗАЯВЛЕНИЕ НА ПЕРЕВОД № 7 от 01.06.2026\nПлательщик: ...\nBeneficiary: ...',
+    );
+    expect(r.type).toBe('wire_transfer_application');
+  });
+
   it('hardcoded fallback фурычит если БД пустая (свежий dev-стенд)', async () => {
     vi.spyOn(documentTypesRepo, 'listActiveForOrg').mockResolvedValue([]);
 
