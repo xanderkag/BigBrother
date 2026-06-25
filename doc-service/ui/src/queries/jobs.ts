@@ -191,14 +191,31 @@ export function useApproveJob() {
   });
 }
 
+/**
+ * Перепрогон документа (POST /jobs/:id/reprocess). OCR не повторяется —
+ * используется сохранённый текст.
+ *
+ * reclassify=false (по умолчанию) → тип/хинт сохраняются, классификатор
+ *   не перезапускается (обычный «Перепрогнать»).
+ * reclassify=true (`?reclassify=true`) → тип/хинт игнорируются,
+ *   классификатор отрабатывает с нуля («Определить тип заново» —
+ *   чинит мисклассификацию без перезаливки файла).
+ */
 export function useReprocessJob() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (jobId: string): Promise<Job> => {
-      const raw = await api.post<ApiJob>(`/api/v1/jobs/${jobId}/reprocess`);
+    mutationFn: async (
+      arg: string | { jobId: string; reclassify?: boolean },
+    ): Promise<Job> => {
+      const jobId = typeof arg === 'string' ? arg : arg.jobId;
+      const reclassify = typeof arg === 'string' ? false : !!arg.reclassify;
+      const raw = await api.post<ApiJob>(
+        `/api/v1/jobs/${jobId}/reprocess${reclassify ? '?reclassify=true' : ''}`,
+      );
       return normalizeJob(raw);
     },
-    onSuccess: (_, jobId) => {
+    onSuccess: (_, arg) => {
+      const jobId = typeof arg === 'string' ? arg : arg.jobId;
       // Forced refetch — статус сейчас pending/processing
       qc.invalidateQueries({ queryKey: jobsKeys.detail(jobId) });
     },

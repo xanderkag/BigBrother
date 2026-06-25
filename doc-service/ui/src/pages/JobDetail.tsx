@@ -111,6 +111,9 @@ export default function JobDetailPage() {
   const { data: docTypes } = useDocumentTypes();
   const approve = useApproveJob();
   const reprocess = useReprocessJob();
+  // Отдельный инстанс той же мутации — чтобы лоадер/ошибка reclassify не
+  // смешивались с обычным «Перепрогнать».
+  const reclassify = useReprocessJob();
   // F9 — viewer работает в read-only: одобрение/перепрогон/правка скрыты,
   // выгрузка JSON и просмотр остаются.
   const { isWriter } = usePermissions();
@@ -118,6 +121,7 @@ export default function JobDetailPage() {
   const [activeDoc, setActiveDoc] = useState(0);
   // F10/F11 — подтверждение reprocess + просмотр сырого текста.
   const [confirmReprocess, setConfirmReprocess] = useState(false);
+  const [confirmReclassify, setConfirmReclassify] = useState(false);
   const [rawTextOpen, setRawTextOpen] = useState(false);
   const [downloadError, setDownloadError] = useState<string | null>(null);
   // F5 — шпаргалка по клавишам + императивное управление PDF с клавиатуры.
@@ -164,7 +168,13 @@ export default function JobDetailPage() {
 
   // F5 — горячие клавиши. Отключаем, пока открыт модал/редактор/справка
   // (у них свой Esc и свой фокус). Мутирующие (`a`,`e`) — только writer'у.
-  const hotkeysEnabled = !(editorOpen || rawTextOpen || confirmReprocess || helpOpen);
+  const hotkeysEnabled = !(
+    editorOpen ||
+    rawTextOpen ||
+    confirmReprocess ||
+    confirmReclassify ||
+    helpOpen
+  );
   useHotkeys(
     [
       { keys: ['j', 'ArrowDown'], handler: () => goToNeighbor(neighbors.nextId) },
@@ -416,8 +426,20 @@ export default function JobDetailPage() {
                 className="btn-secondary"
                 disabled={reprocess.isPending}
                 onClick={() => setConfirmReprocess(true)}
+                title="Заново разобрать по текущему типу (OCR и тип не меняются)"
               >
                 {reprocess.isPending ? 'Перепрогон…' : 'Перепрогнать'}
+              </button>
+            )}
+            {isWriter && (
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={reclassify.isPending}
+                onClick={() => setConfirmReclassify(true)}
+                title="Тип определится заново (для исправленной мисклассификации)"
+              >
+                {reclassify.isPending ? 'Классификация…' : 'Определить тип заново'}
               </button>
             )}
             <button
@@ -574,6 +596,30 @@ export default function JobDetailPage() {
         onCancel={() => setConfirmReprocess(false)}
         onConfirm={() =>
           reprocess.mutate(job.id, { onSuccess: () => setConfirmReprocess(false) })
+        }
+      />
+
+      <ConfirmDialog
+        open={confirmReclassify}
+        title="Определить тип заново?"
+        description={
+          <>
+            Классификатор отработает с нуля: текущий тип и подсказка будут
+            проигнорированы, тип определится заново (для исправленной
+            мисклассификации). OCR не повторяется — используется сохранённый
+            текст. Текущие извлечённые данные будут перезаписаны.
+          </>
+        }
+        objectName={job.file_name ?? job.id}
+        confirmLabel="Определить тип заново"
+        busy={reclassify.isPending}
+        error={reclassify.isError ? (reclassify.error as Error)?.message : null}
+        onCancel={() => setConfirmReclassify(false)}
+        onConfirm={() =>
+          reclassify.mutate(
+            { jobId: job.id, reclassify: true },
+            { onSuccess: () => setConfirmReclassify(false) },
+          )
         }
       />
 
