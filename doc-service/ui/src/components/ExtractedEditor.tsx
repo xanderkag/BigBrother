@@ -6,6 +6,7 @@ import {
   type FieldSpec,
   parseSchemaFields,
   mergeSchemaWithValue,
+  itemFieldsFromArray,
   setByPath,
 } from '@/lib/schema-fields';
 import { confidenceBorderClass, HUMAN_VERIFIED } from '@/lib/confidence';
@@ -470,10 +471,13 @@ function FieldNode({
     );
   }
 
-  // array-objects — редактируемая таблица позиций.
+  // array-objects — редактируемая таблица позиций. Колонки берём из схемы
+  // (itemFields); если схема не дала свойств элемента, а данные есть —
+  // выводим колонки из фактических строк, чтобы таблица не осталась пустой.
   if (spec.kind === 'array-objects') {
     const arr = Array.isArray(value) ? value : [];
-    const cols = spec.itemFields ?? [];
+    const schemaCols = spec.itemFields ?? [];
+    const cols = schemaCols.length > 0 ? schemaCols : itemFieldsFromArray(arr);
     const addRow = () => {
       const row: Record<string, unknown> = {};
       for (const c of cols) row[c.key] = emptyFor(c.kind);

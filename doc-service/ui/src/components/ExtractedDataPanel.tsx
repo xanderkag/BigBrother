@@ -8,6 +8,7 @@ import {
 import ConfidenceBar from './ConfidenceBar';
 import { confidenceValueClass } from '@/lib/confidence';
 import { issueFieldKeys, fieldAnchorId } from '@/lib/issue-fields';
+import { labelFor } from '@/lib/schema-fields';
 
 /**
  * Панель Extracted data с двумя вьюхами: Форма и JSON.
@@ -264,9 +265,9 @@ function FormView({
 
       {/* Flags */}
       {Object.keys(flags).length > 0 && (
-        <Section title="Flags">
+        <Section title="Признаки">
           {Object.entries(flags).map(([k, v]) => (
-            <Field key={k} label={k} value={v ? <span className="badge-emerald">да</span> : '—'} />
+            <Field key={k} label={labelFor(k)} value={v ? <span className="badge-emerald">да</span> : '—'} />
           ))}
         </Section>
       )}
@@ -462,7 +463,7 @@ function MiscFields({
   return (
     <Section title="Прочее">
       {entries.map(([k, v]) => (
-        <Field key={k} label={k} value={v} conf={fieldConfidence?.[k]} />
+        <Field key={k} label={labelFor(k)} value={v} conf={fieldConfidence?.[k]} />
       ))}
     </Section>
   );

@@ -132,6 +132,16 @@ export default function JobDetailPage() {
     return m;
   }, [docTypes]);
 
+  // Человеческое название/описание типа — чтобы в шапке вместо сырого slug
+  // (wire_transfer_application) стояла понятная подпись + «что это».
+  const typeInfoBySlug = useMemo(() => {
+    const m = new Map<string, { display_name: string; description?: string | null }>();
+    for (const t of docTypes?.items ?? []) {
+      m.set(t.slug, { display_name: t.display_name, description: t.description });
+    }
+    return m;
+  }, [docTypes]);
+
   // Cleanup blob URL — react-pdf держит ссылку, поэтому освобождаем
   // только при unmount страницы (не при ре-фетче).
   useEffect(() => {
@@ -341,9 +351,24 @@ export default function JobDetailPage() {
               </h1>
               <StatusBadge status={job.status} />
               {job.document_type && (
-                <span className="badge-indigo">{job.document_type}</span>
+                <span
+                  className="badge-indigo"
+                  title={
+                    typeInfoBySlug.get(job.document_type)?.description ||
+                    job.document_type
+                  }
+                >
+                  {typeInfoBySlug.get(job.document_type)?.display_name ??
+                    job.document_type}
+                </span>
               )}
             </div>
+            {job.document_type &&
+              typeInfoBySlug.get(job.document_type)?.description && (
+                <p className="mt-1 max-w-2xl text-xs text-slate-500 dark:text-slate-400">
+                  {typeInfoBySlug.get(job.document_type)?.description}
+                </p>
+              )}
             <div className="mt-1 flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400 dark:text-slate-500">
               <span className="font-mono">{shortId(job.id)}</span>
               <span>{formatFileSize(job.file_size)}</span>

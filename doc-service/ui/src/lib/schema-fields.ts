@@ -60,23 +60,76 @@ export const VOLATILE_KEYS = [
 
 const isVolatile = (k: string) => k.startsWith('_');
 
-/** Частые ключи → человекочитаемая подпись (RU). Fallback — humanize. */
-const LABELS: Record<string, string> = {
+/**
+ * Курируемая карта «ключ поля → короткая русская подпись». Покрывает
+ * реальные ключи статических схем (../src/types/document-json-schemas.ts) и
+ * DB-driven схем (wire_transfer_application и т.п.). Для ключей вне карты —
+ * fallback `humanizeKey` (snake_case → «Sentence case»), чтобы пользователь
+ * НИКОГДА не видел сырой `snake_case` с подчёркиваниями.
+ */
+export const FIELD_LABELS: Record<string, string> = {
+  /* --- общие / шапка --- */
   number: 'Номер',
   doc_number: 'Номер',
   date: 'Дата',
+  amount: 'Сумма',
+  amount_words: 'Сумма прописью',
+  currency: 'Валюта',
+  exchange_rate: 'Курс',
+  purpose: 'Назначение платежа',
+  payment_terms: 'Условия оплаты',
+  payment_method: 'Способ оплаты',
+  due_date: 'Срок оплаты',
+  invoice_ref: 'Ссылка на счёт',
+  contract_ref: 'Договор',
+  contract_no: 'Номер договора',
+  contract_date: 'Дата договора',
+  parent_contract_number: 'Номер договора',
+  parent_contract_date: 'Дата договора',
+  period_from: 'Период с',
+  period_to: 'Период по',
+  notes: 'Примечание',
+  additional_terms: 'Доп. условия',
+  incoterms: 'Incoterms',
+  incoterm: 'Incoterms',
+
+  /* --- стороны --- */
   seller: 'Продавец',
   buyer: 'Покупатель',
   shipper: 'Грузоотправитель',
   consignee: 'Грузополучатель',
+  consignor: 'Грузоотправитель',
   supplier: 'Поставщик',
   customer: 'Покупатель',
   carrier: 'Перевозчик',
+  successive_carrier: 'Последующий перевозчик',
+  forwarder: 'Экспедитор',
+  payer: 'Плательщик',
+  client: 'Заказчик',
+  organization: 'Организация',
+  notify_party: 'Уведомляемая сторона',
   sender: 'Отправитель',
   recipient: 'Получатель',
+  beneficiary: 'Получатель',
   party_a: 'Сторона А',
   party_b: 'Сторона Б',
+
+  /* --- платёжные / банковские (wire_transfer_application и др.) --- */
+  sender_name: 'Отправитель',
+  sender_inn: 'ИНН отправителя',
+  sender_account: 'Счёт отправителя',
+  beneficiary_name: 'Получатель',
+  beneficiary_account: 'Счёт получателя',
+  beneficiary_iban: 'IBAN получателя',
+  beneficiary_address: 'Адрес получателя',
+  beneficiary_country: 'Страна получателя',
+  beneficiary_bank_name: 'Банк получателя',
+  beneficiary_bank_swift: 'SWIFT банка получателя',
+
+  /* --- реквизиты организации --- */
   name: 'Наименование',
+  name_full: 'Полное наименование',
+  name_short: 'Краткое наименование',
   inn: 'ИНН',
   kpp: 'КПП',
   ogrn: 'ОГРН',
@@ -85,24 +138,75 @@ const LABELS: Record<string, string> = {
   bank_name: 'Банк',
   bik: 'БИК',
   bic: 'БИК',
+  swift: 'SWIFT',
+  iban: 'IBAN',
   account: 'Счёт',
   corr_account: 'Корр. счёт',
   correspondent_account: 'Корр. счёт',
   phone: 'Телефон',
+  email: 'E-mail',
+
+  /* --- география / груз --- */
   country: 'Страна',
   country_of_origin: 'Страна происхождения',
-  currency: 'Валюта',
-  exchange_rate: 'Курс',
+  city: 'Город',
+  route: 'Маршрут',
+  route_from: 'Откуда',
+  route_to: 'Куда',
+  loading_point: 'Место погрузки',
+  unloading_point: 'Место разгрузки',
+  loading_place: 'Место погрузки',
+  delivery_place: 'Место доставки',
+  place_of_loading: 'Место погрузки',
+  place_of_delivery: 'Место доставки',
+  loading_date: 'Дата погрузки',
+  unloading_date: 'Дата разгрузки',
+  port_of_loading: 'Порт погрузки',
+  port_of_discharge: 'Порт выгрузки',
+  place_of_receipt: 'Место приёма',
+  cargo: 'Груз',
+  cargo_description: 'Описание груза',
+  cargo_summary: 'Сводка по грузу',
+  cargo_weight: 'Масса груза',
+  declared_value: 'Заявленная стоимость',
+  seal_number: 'Номер пломбы',
+  containers: 'Контейнеры',
+  container_number: 'Номер контейнера',
+  vessel: 'Судно',
+  driver: 'Водитель',
+  vehicle: 'Транспорт',
+  trailer: 'Прицеп',
+  plate: 'Гос. номер',
+  trailer_plate: 'Номер прицепа',
+  model: 'Модель',
+  vin: 'VIN',
+  fio: 'ФИО',
+  full_name: 'ФИО',
+  fullName: 'ФИО',
+  license: 'Вод. удостоверение',
+  passport: 'Паспорт',
+
+  /* --- суммы / НДС --- */
   vat: 'НДС',
   vat_rate: 'Ставка НДС',
   vat_amount: 'Сумма НДС',
+  vat_included: 'НДС включён',
   total: 'Итого',
   total_with_vat: 'Итого с НДС',
   total_without_vat: 'Итого без НДС',
+  amount_with_vat: 'Сумма с НДС',
+  rate: 'Ставка',
+  base: 'База',
+  vat_summary: 'Разбивка НДС',
+  service_cost: 'Стоимость услуг',
+  distance_km: 'Расстояние, км',
+
+  /* --- позиции --- */
   items: 'Позиции',
   positions: 'Позиции',
-  vat_summary: 'Разбивка НДС',
   qty: 'Кол-во',
+  qty_per_package: 'Кол-во в упаковке',
+  packages: 'Упаковок',
   unit: 'Ед. изм.',
   price: 'Цена',
   code: 'Код',
@@ -111,21 +215,48 @@ const LABELS: Record<string, string> = {
   line_no: '№ строки',
   weight_net: 'Вес нетто',
   weight_gross: 'Вес брутто',
-  notes: 'Примечание',
-  incoterms: 'Incoterms',
+  weight_nett: 'Вес нетто',
+  weight_kg: 'Вес, кг',
+  gross_weight_kg: 'Вес брутто, кг',
+  volume_m3: 'Объём, м³',
+  order_ref: 'Заказ',
+  order_refs: 'Заказы',
+
+  /* --- флаги --- */
   is_export: 'Экспорт',
   is_advance: 'Аванс',
   vat_agent: 'Налоговый агент',
   usn: 'УСН',
+  flags: 'Признаки',
 };
 
-/** key → подпись: словарь, иначе из snake_case → «Первое слово остальные». */
-export function labelFor(key: string): string {
-  if (LABELS[key]) return LABELS[key];
-  const words = key.replace(/^_+/, '').split(/[_\s]+/).filter(Boolean);
+/**
+ * Гуманизатор ключа — чистая функция (юнит-тестируемая). Превращает
+ * `snake_case` / `camelCase` в «Sentence case»:
+ *   beneficiary_bank_swift → «Beneficiary bank swift»
+ * Ведущие `_` и лишние разделители отбрасываются. camelCase разбивается по
+ * границе регистра. Аббревиатуры в нижнем регистре по слову — намеренно
+ * (короткая подпись, а не калька оригинала).
+ */
+export function humanizeKey(key: string): string {
+  const words = key
+    .replace(/^_+/, '')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[_\s]+/)
+    .filter(Boolean);
   if (words.length === 0) return key;
-  const joined = words.join(' ');
+  const joined = words.join(' ').toLowerCase();
   return joined.charAt(0).toUpperCase() + joined.slice(1);
+}
+
+/**
+ * Многоуровневый резолвинг подписи поля (для любой вложенности):
+ *   1) курируемая карта FIELD_LABELS (короткая русская подпись);
+ *   2) иначе — humanizeKey(key) как fallback.
+ * Сырой `snake_case` наружу не попадает никогда.
+ */
+export function labelFor(key: string): string {
+  return FIELD_LABELS[key] ?? humanizeKey(key);
 }
 
 const isDateKey = (key: string, node?: SchemaNode): boolean =>
@@ -194,6 +325,30 @@ export function kindFromValue(key: string, value: unknown): FieldKind {
   return 'string';
 }
 
+/**
+ * Поля одного элемента массива по фактическим данным — объединение ключей
+ * всех элементов (служебные `_*` отброшены). Используется как value-driven
+ * источник колонок таблицы позиций и как fallback, когда схема объявила
+ * массив объектов, но не дала `properties`.
+ */
+export function itemFieldsFromArray(value: unknown): FieldSpec[] {
+  if (!Array.isArray(value)) return [];
+  const keys = new Set<string>();
+  for (const el of value) {
+    if (el && typeof el === 'object' && !Array.isArray(el)) {
+      for (const k of Object.keys(el as Record<string, unknown>)) {
+        if (!isVolatile(k)) keys.add(k);
+      }
+    }
+  }
+  return [...keys].map((k) => {
+    const sample = (value.find(
+      (el) => el && typeof el === 'object' && (el as Record<string, unknown>)[k] !== undefined,
+    ) as Record<string, unknown> | undefined)?.[k];
+    return specFromValue(k, sample);
+  });
+}
+
 function specFromValue(key: string, value: unknown): FieldSpec {
   const kind = kindFromValue(key, value);
   const spec: FieldSpec = { key, label: labelFor(key), kind };
@@ -203,21 +358,7 @@ function specFromValue(key: string, value: unknown): FieldSpec {
       .map(([k, v]) => specFromValue(k, v));
   }
   if (kind === 'array-objects' && Array.isArray(value)) {
-    // Поля элемента = объединение ключей всех элементов.
-    const keys = new Set<string>();
-    for (const el of value) {
-      if (el && typeof el === 'object' && !Array.isArray(el)) {
-        for (const k of Object.keys(el as Record<string, unknown>)) {
-          if (!isVolatile(k)) keys.add(k);
-        }
-      }
-    }
-    spec.itemFields = [...keys].map((k) => {
-      const sample = (value.find(
-        (el) => el && typeof el === 'object' && (el as Record<string, unknown>)[k] !== undefined,
-      ) as Record<string, unknown> | undefined)?.[k];
-      return specFromValue(k, sample);
-    });
+    spec.itemFields = itemFieldsFromArray(value);
   }
   return spec;
 }
@@ -244,14 +385,28 @@ export function mergeSchemaWithValue(
   extracted: Record<string, unknown> | null | undefined,
 ): FieldSpec[] {
   if (schemaFields.length === 0) return fieldsFromValue(extracted);
+  const obj = extracted && typeof extracted === 'object' ? extracted : undefined;
+  // Сверяем форму поля схемы с фактическими данными: если схема объявила
+  // массив (строк или без свойств элемента), а пришёл массив объектов —
+  // показываем таблицу позиций по фактическим колонкам, а не textarea.
+  const reconciled = schemaFields.map((f) => {
+    const v = obj?.[f.key];
+    const isArrayOfObjects =
+      Array.isArray(v) &&
+      v.some((x) => x && typeof x === 'object' && !Array.isArray(x));
+    if (isArrayOfObjects && (f.kind === 'array-strings' || (f.kind === 'array-objects' && (f.itemFields?.length ?? 0) === 0))) {
+      return { ...f, kind: 'array-objects' as FieldKind, itemFields: itemFieldsFromArray(v) };
+    }
+    return f;
+  });
   const known = new Set(schemaFields.map((f) => f.key));
   const extras: FieldSpec[] = [];
-  if (extracted && typeof extracted === 'object') {
-    for (const [k, v] of Object.entries(extracted)) {
+  if (obj) {
+    for (const [k, v] of Object.entries(obj)) {
       if (!isVolatile(k) && !known.has(k)) extras.push(specFromValue(k, v));
     }
   }
-  return [...schemaFields, ...extras];
+  return [...reconciled, ...extras];
 }
 
 /* ----------------------------- path utils ------------------------------ */
