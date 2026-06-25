@@ -111,6 +111,46 @@ describe('KeywordClassifier — DB keywords path', () => {
     expect(r.type).toBe('wire_transfer_application');
   });
 
+  it('ДЕКЛАРАЦИЯ НА ТОВАРЫ с «на основании доверенности» → customs_declaration, не PoA (Q-GTD-1)', async () => {
+    // ГТД: декларант действует «на основании доверенности» → раньше PoA (голый
+    // `доверенность` w6) бил декларацию (w5). Теперь декларация w8 + PoA анкер на заголовок.
+    vi.spyOn(documentTypesRepo, 'listActiveForOrg').mockResolvedValue([
+      row({
+        slug: 'customs_declaration',
+        classification_keywords: ['(?:^|\\W)декларация\\s+на\\s+товары(?:\\W|$)', '(?:^|\\W)ГТД(?:\\W|$)'],
+        classification_keyword_weights: [8, 5],
+      }),
+      row({
+        slug: 'power_of_attorney',
+        classification_keywords: ['(?:^|\\n)\\s*доверенность', 'м-2', 'уполномочивает'],
+        classification_keyword_weights: [6, 5, 3],
+      }),
+    ]);
+    const r = await new KeywordClassifier().classify(
+      'ДЕКЛАРАЦИЯ НА ТОВАРЫ\n2 Отправитель: NINGBO EAST-WEST\n14 Декларант: ООО «Ист-Вест» на основании доверенности №16',
+    );
+    expect(r.type).toBe('customs_declaration');
+  });
+
+  it('реальная ДОВЕРЕННОСТЬ (заголовок строки) остаётся power_of_attorney', async () => {
+    vi.spyOn(documentTypesRepo, 'listActiveForOrg').mockResolvedValue([
+      row({
+        slug: 'power_of_attorney',
+        classification_keywords: ['(?:^|\\n)\\s*доверенность', 'уполномочивает'],
+        classification_keyword_weights: [6, 3],
+      }),
+      row({
+        slug: 'customs_declaration',
+        classification_keywords: ['(?:^|\\W)декларация\\s+на\\s+товары(?:\\W|$)'],
+        classification_keyword_weights: [8],
+      }),
+    ]);
+    const r = await new KeywordClassifier().classify(
+      'ДОВЕРЕННОСТЬ № 5 от 01.06.2026\nООО «Ромашка» уполномочивает Иванова И.И. представлять интересы',
+    );
+    expect(r.type).toBe('power_of_attorney');
+  });
+
   it('hardcoded fallback фурычит если БД пустая (свежий dev-стенд)', async () => {
     vi.spyOn(documentTypesRepo, 'listActiveForOrg').mockResolvedValue([]);
 
