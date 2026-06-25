@@ -1197,7 +1197,14 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
 
       // Прогоняем тот же pipeline что и в воркере, но без OCR-фазы.
       // hint — текущий documentType (или document_hint, если type ещё не определён).
-      const hint = job.document_type ?? job.document_hint ?? undefined;
+      // ?reclassify=true — «определить тип заново»: игнорируем сохранённый тип и
+      // хинт, чтобы классификатор отработал с нуля (чинит мисклассы без перезаливки
+      // файла; обычный reprocess держит тип и сам мискласс не исправит).
+      const reclassify =
+        (req.query as Record<string, unknown> | undefined)?.reclassify === 'true';
+      const hint = reclassify
+        ? undefined
+        : (job.document_type ?? job.document_hint ?? undefined);
       // F20: per-job prompt_override из metadata. Используется для повторного
       // прогона с другим LLM-промптом без правки document_type.llm_prompt.
       const meta = (job.metadata as Record<string, unknown> | null) ?? {};
