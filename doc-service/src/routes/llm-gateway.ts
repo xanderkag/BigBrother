@@ -498,6 +498,9 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
         latencyMs,
         status,
         errorCode: result.errorCode ?? null,
+        connector: 'dadata',
+        units: 1,
+        unitKind: 'calls',
       });
     } catch (err) {
       (req as { log?: { warn(o: unknown, m: string): void } }).log?.warn(
