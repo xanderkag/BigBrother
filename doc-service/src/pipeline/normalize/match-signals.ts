@@ -29,8 +29,6 @@ import { normalizeSlugForApi } from '../../types/slug-normalize.js';
 
 export const MATCH_SIGNALS_SCHEMA_VERSION = '1.0';
 
-const ISO6346_RE = /^[A-Z]{4}\d{7}$/;
-
 interface Party {
   name?: string;
   inn?: string;
@@ -173,11 +171,17 @@ function collectContainers(ex: Extracted): string[] | undefined {
   }
   const top = str(ex.container_number) ?? str(obj(ex.container)?.number);
   if (top) nums.push(top);
-  // Нормализуем к upper для ISO-6346 проверки, но в выход кладём как есть
-  // (после .trim()) если совпало с маской.
-  const matched = nums
-    .map((n) => (n ? n.replace(/\s/g, '').toUpperCase() : undefined))
-    .filter((n): n is string => !!n && ISO6346_RE.test(n));
+  // Извлекаем ISO-6346 как ПОДСТРОКУ, а не требуем совпадения всей строки:
+  // модель часто приклеивает к номеру тип/размер контейнера
+  // («MRKU1234567 40HC», «MRKU123456745G1») — целиком такое маску не проходит,
+  // но валидный ISO внутри есть. `[A-Z]{4}\s?\d{7}` допускает один пробел между
+  // префиксом и цифрами (OCR «MRKU 1234567»), пробел убираем из результата;
+  // `{4}` подряд букв не даёт склеить соседние поля в ложный контейнер.
+  const matched = nums.flatMap((n) => {
+    if (!n) return [];
+    const hits = n.toUpperCase().match(/[A-Z]{4}\s?\d{7}/g) ?? [];
+    return hits.map((h) => h.replace(/\s/g, ''));
+  });
   return uniqStrings(matched);
 }
 

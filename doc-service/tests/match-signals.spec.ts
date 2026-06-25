@@ -75,6 +75,19 @@ describe('buildMatchSignals — bill_of_lading', () => {
     expect(s.bl_number).toBe('BL-LEGACY-1');
     expect(s.containers).toEqual(['MSCU1234567']);
   });
+
+  it('контейнер с приклеенным типом/размером → вытаскиваем ISO-подстроку (B/L реальный кейс)', () => {
+    const s = buildMatchSignals('bill_of_lading', {
+      number: 'BL-1',
+      containers: [
+        { number: 'MRKU1234567 40HC' }, // ISO + размер через пробел
+        { number: 'GESU765432145G1' }, // ISO + тип без пробела
+        { number: 'TCLU 7654321' }, // OCR-пробел внутри префикса
+        { number: 'AB CD1234567' }, // склейки НЕТ — {4} подряд букв не набирается
+      ],
+    });
+    expect(s.containers).toEqual(['MRKU1234567', 'GESU7654321', 'TCLU7654321']);
+  });
 });
 
 describe('buildMatchSignals — ttn', () => {
