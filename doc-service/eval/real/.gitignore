@@ -5,3 +5,5 @@ golden-set*.json
 qwenvl-real-*.json
 jobmap.json
 _extract.txt
+# cached OCR/extracted text of real documents — confidential, keep local
+_textcache/

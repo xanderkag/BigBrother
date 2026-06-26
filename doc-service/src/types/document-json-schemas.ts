@@ -143,6 +143,19 @@ const ITEM_PROPERTIES = {
   total_with_vat: { type: 'number', description: 'Стоимость с НДС' },
   currency: { type: 'string', description: 'Валюта строки, если отличается от шапки. ISO 4217 (RUB, USD, EUR, CNY)' },
   notes: { type: 'string', description: 'Произвольные комментарии в строке' },
+  // ── Фискальные коды строки (счёт-фактура / УКД / УПД, форма ФНС-2026) ──────
+  // Машино-стабильные коды для детерминированного матчинга единиц и таможни +
+  // обязательная с 2026 прослеживаемость. Опциональны — модель заполняет если есть.
+  okei_code: {
+    type: 'string',
+    description: 'Код единицы измерения по ОКЕИ (напр. "796" = шт). Машино-стабильный id единицы для сопоставления номенклатуры в ERP.',
+  },
+  excise_amount: { type: 'number', description: 'Сумма акциза по строке («в т.ч. сумма акциза»). Для подакцизных товаров; иначе опустить.' },
+  traceability_reg_number: {
+    type: 'string',
+    description: 'Рег. номер партии прослеживаемости (графа 11 счёта-фактуры) / номер ДТ. Ключ таможенного и заказного сопоставления.',
+  },
+  product_type_code: { type: 'string', description: 'Код вида товара (графа 1а счёта-фактуры, ЕАЭС). Отличается от hs_code.' },
   // ── Транспортные атрибуты строки (фрахт-счета SLAI, 2026-05-20) ──────────
   // В счетах перевозчиков каждая строка items[] — это отдельный рейс. Атрибуты
   // рейса обычно зашиты прямо в текст name, например:
@@ -299,6 +312,26 @@ const INVOICE_SCHEMA = {
     vat_rate: { type: 'number', description: 'Основная ставка НДС в процентах (20, 10, 0)' },
     vat_summary: VAT_SUMMARY,
     flags: FLAGS,
+    // ── EXT-PAY (extraction-gap audit 2026-06-26): платёжно-сверочный блок.
+    // payee/payment_purpose — ключи банковской автосверки (получатель платежа
+    // часто ≠ seller на агентских/маркетплейс-счетах). Остальное — реальная
+    // сумма к оплате и контроль ошибок OCR в цифрах.
+    payee: {
+      ...PARTY_BANK,
+      description:
+        'Получатель платежа (банковский) — из блока «Получатель / Банк получателя». ' +
+        'На агентских и маркетплейс-счетах деньги идут сюда, а не на seller. Главный ключ банковской сверки.',
+    },
+    payment_purpose: {
+      type: 'string',
+      description: 'Назначение платежа — точная строка из «Назначение платежа», которую банк отразит в платёжном поручении (ключ автосверки).',
+    },
+    amount_due: { type: 'number', description: 'Сумма к оплате (ИТОГО К ОПЛАТЕ) — может отличаться от total при учёте доставки/предоплаты.' },
+    vat_included_amount: { type: 'number', description: 'Сумма НДС, включённого в total («в том числе НДС»), когда НДС не выделен отдельной строкой.' },
+    shipping_amount: { type: 'number', description: 'Стоимость доставки отдельной строкой («Услуги по доставке»).' },
+    prepayment_amount: { type: 'number', description: 'Внесённая предоплата/аванс — уменьшает сумму к оплате.' },
+    amount_in_words: { type: 'string', description: 'Итоговая сумма прописью — кросс-проверка числового total (ловит ошибки OCR в цифрах).' },
+    line_count: { type: 'integer', description: 'Заявленное число позиций («Всего наименований N») — проверка полноты items[].' },
     payment_terms: { type: 'string', description: 'Условия оплаты (например "до 15.12.2025")' },
     // ── EXT-LINE (SLAI 2026-05-29): document-level header-fallback. SLAI
     // использует когда у конкретной строки нет своих сигналов («счёт за май →
@@ -532,6 +565,11 @@ const TTN_SCHEMA = {
       description: 'Связанные документы (CMR, счёт-фактура, путевой лист)',
       items: { type: 'string' },
     },
+    // ── extraction-gap audit 2026-06-26: расчёт перевозки + путевой лист.
+    cost_of_carriage: { type: 'number', description: 'Стоимость перевозки (раздел расчётов 1-Т), руб. — для сверки фрахта.' },
+    total_in_words: { type: 'string', description: 'Итоговая сумма прописью — контроль ошибок OCR.' },
+    distance_km: { type: 'number', description: 'Расстояние перевозки в км, если явно указано (не вычисляем).' },
+    trip_ticket_number: { type: 'string', description: 'Номер путевого листа, связывающего ТТН с рейсом/ТС.' },
     order_refs: ORDER_REFS,
     containers: CONTAINERS,
     container_number: CONTAINER_NUMBER,
@@ -613,6 +651,17 @@ const CMR_SCHEMA = {
       description: 'Связанные документы (invoice, packing_list)',
       items: { type: 'string' },
     },
+    // ── extraction-gap audit 2026-06-26: приёмка груза (ячейка 24) —
+    // отличает «доставлен» от «в пути» для SLAI matcher.
+    goods_received: {
+      type: 'object',
+      description: 'Приёмка груза получателем (ячейка 24 CMR): факт и дата выдачи.',
+      properties: {
+        date: { type: 'string', description: 'Дата приёмки груза (ISO YYYY-MM-DD).' },
+        place: { type: 'string', description: 'Место приёмки.' },
+        signed_by: { type: 'string', description: 'Кто принял (ФИО/должность), если указано.' },
+      },
+    },
     order_refs: ORDER_REFS,
     containers: CONTAINERS,
     container_number: CONTAINER_NUMBER,
@@ -692,6 +741,18 @@ const BL_SCHEMA = {
       type: 'string',
       description: 'Номер букинга у линии (если указан в B/L).',
     },
+    // ── extraction-gap audit 2026-06-26: дата экспорта + перевозчик + реквизиты выпуска.
+    // shipped_on_board питает канонический match-signal dates.shipped_on_board (PD-CONTRACT-1).
+    shipped_on_board: {
+      type: 'string',
+      description: 'Дата «Shipped on board» (ISO YYYY-MM-DD) — фактическая погрузка на судно. Дата экспорта и ключ для L/C.',
+    },
+    carrier: { type: 'string', description: 'Перевозчик / морская линия (MAERSK, MSC, COSCO). Не экспедитор.' },
+    place_of_issue: { type: 'string', description: 'Место выдачи коносамента.' },
+    date_of_issue: { type: 'string', description: 'Дата выдачи коносамента (ISO YYYY-MM-DD), если отличается от date.' },
+    number_of_original_bls: { type: 'integer', description: 'Количество оригиналов B/L (обычно 3).' },
+    bl_type: { type: 'string', description: 'Тип: Master / House / Sea Waybill.' },
+    scac_code: { type: 'string', description: 'SCAC-код перевозчика (4 буквы), если указан.' },
     transport_docs: {
       type: 'array',
       description: 'Связанные документы (commercial invoice, packing list, certificate of origin)',
@@ -1102,6 +1163,11 @@ const AKT_SCHEMA = {
     vat_rate: { type: 'number' },
     vat_summary: VAT_SUMMARY,
     flags: FLAGS,
+    // ── extraction-gap audit 2026-06-26: контент акта + триггер закрытия/оплаты.
+    total_in_words: { type: 'string', description: 'Итоговая сумма прописью — контроль ошибок OCR.' },
+    service_description: { type: 'string', description: 'Описание оказанных услуг/работ (основной контент акта, если нет таблицы позиций).' },
+    no_claims_flag: { type: 'boolean', description: '«Претензий по объёму/качеству/срокам не имеет» — триггер закрытия акта и оплаты.' },
+    place_of_compilation: { type: 'string', description: 'Место составления акта (город).' },
     period_from: { type: 'string', description: 'Период оказания услуг с (YYYY-MM-DD)' },
     period_to: { type: 'string', description: 'Период оказания услуг по (YYYY-MM-DD)' },
     items: { ...ITEMS_ARRAY, description: 'Перечень оказанных услуг / работ' },
