@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
+import { randomBytes } from 'node:crypto';
 import { organizationsRepo } from '../storage/organizations.js';
 import { organizationSettingsRepo } from '../storage/organization-settings.js';
 import { projectsRepo } from '../storage/projects.js';
@@ -14,6 +15,8 @@ import {
   requireOrgAccess,
   getEffectiveScope,
 } from '../authz.js';
+import { withTransaction } from '../db.js';
+import { encryptSecret } from '../storage/secrets.js';
 
 /**
  * Multi-tenant API: organizations / projects / users / access.
@@ -866,6 +869,163 @@ export async function tenantRoutes(app: FastifyInstance): Promise<void> {
       await tokensRepo.revoke(req.params.id);
       reply.code(204);
       return null;
+    },
+  );
+
+  // --- Provision instance (wizard: org + project + user + PAT + settings) ---
+
+  const ProvisionInstanceBody = z.object({
+    name: z.string().min(1).max(255),
+    type: OrgType.default('external_company'),
+    webhook_url: z.string().url().nullable().optional(),
+    expires_in_days: z.number().int().positive().nullable().optional(),
+    llm_budget: z.number().int().positive().nullable().optional(),
+    dadata_budget: z.number().int().positive().nullable().optional(),
+  });
+
+  const ProvisionInstanceResult = z.object({
+    organization_id: z.string(),
+    user_id: z.string(),
+    project_id: z.string(),
+    plaintext_token: z.string(),
+    webhook_secret: z.string().nullable(),
+  });
+
+  r.post(
+    '/admin/provision-instance',
+    {
+      schema: {
+        tags: ['tenants'],
+        summary: 'Wizard: создать org + бота + PAT + settings за один запрос (super_admin)',
+        description:
+          'Атомарно создаёт организацию, default-проект, service-бота, выдаёт PAT и настраивает webhook. ' +
+          'Возвращает plaintext_token и webhook_secret — показываются только один раз. ' +
+          'Только super_admin.',
+        security: [{ bearerAuth: [] }],
+        body: ProvisionInstanceBody,
+        response: {
+          201: ProvisionInstanceResult,
+          409: ErrorResponse,
+          401: ErrorResponse,
+          403: ErrorResponse,
+        },
+      },
+    },
+    async (req, reply) => {
+      if (!requireSuperAdmin(req, reply)) return reply;
+
+      const {
+        name,
+        type,
+        webhook_url,
+        expires_in_days,
+        llm_budget,
+        dadata_budget,
+      } = req.body;
+
+      // Idempotency guard
+      const existing = await organizationsRepo.list();
+      if (existing.some((o) => o.name === name)) {
+        reply.code(409);
+        return { error: `organization "${name}" already exists` };
+      }
+
+      const tokenName = name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-|-$/g, '') + '-bot';
+
+      const expiresAt =
+        expires_in_days != null
+          ? new Date(Date.now() + expires_in_days * 86_400_000)
+          : null;
+
+      const result = await withTransaction(async (client) => {
+        // Organization
+        const orgRes = await client.query<{ id: string }>(
+          `INSERT INTO organizations (name, type, status) VALUES ($1, $2, 'active') RETURNING id`,
+          [name, type],
+        );
+        const orgId = orgRes.rows[0]!.id;
+
+        // Default project
+        await client.query(
+          `INSERT INTO projects (organization_id, name, status, description) VALUES ($1, 'default', 'active', $2)`,
+          [orgId, `Default project for ${name}.`],
+        );
+
+        // Service bot
+        const userRes = await client.query<{ id: string }>(
+          `INSERT INTO users (display_name, role, organization_id, status) VALUES ($1, 'org_admin', $2, 'active') RETURNING id`,
+          [tokenName, orgId],
+        );
+        const userId = userRes.rows[0]!.id;
+
+        // Project access grant
+        const projRes = await client.query<{ id: string }>(
+          `SELECT id FROM projects WHERE organization_id = $1 AND name = 'default' LIMIT 1`,
+          [orgId],
+        );
+        const projectId = projRes.rows[0]!.id;
+        await client.query(
+          `INSERT INTO user_project_access (user_id, organization_id, project_id, role)
+           VALUES ($1, $2, $3, 'admin') ON CONFLICT (user_id, project_id) DO NOTHING`,
+          [userId, orgId, projectId],
+        );
+
+        // PAT
+        const plaintext = `pdpat_${randomBytes(32).toString('base64url')}`;
+        const { createHash } = await import('node:crypto');
+        const hash = createHash('sha256').update(plaintext).digest('hex');
+        await client.query(
+          `INSERT INTO personal_access_tokens (user_id, name, token_hash, expires_at) VALUES ($1, $2, $3, $4)`,
+          [userId, tokenName, hash, expiresAt],
+        );
+
+        // Organization settings + optional HMAC secret
+        let hmacPlaintext: string | null = null;
+        if (webhook_url) {
+          hmacPlaintext = randomBytes(32).toString('hex');
+          const hmacEncrypted = encryptSecret(hmacPlaintext);
+          await client.query(
+            `INSERT INTO organization_settings (organization_id, mode, output, webhook_url, webhook_hmac_secret)
+             VALUES ($1, 'extract', 'webhook', $2, $3)`,
+            [orgId, webhook_url, hmacEncrypted],
+          );
+        } else {
+          await client.query(
+            `INSERT INTO organization_settings (organization_id, mode, output) VALUES ($1, 'extract', 'pull')`,
+            [orgId],
+          );
+        }
+
+        // Optional gateway budgets
+        if (llm_budget != null) {
+          await client.query(
+            `INSERT INTO gateway_consumer_budgets (consumer, connector, daily_budget, enabled)
+             VALUES ($1, 'llm', $2, true) ON CONFLICT (consumer, connector) DO UPDATE SET daily_budget = $2`,
+            [tokenName, llm_budget],
+          );
+        }
+        if (dadata_budget != null) {
+          await client.query(
+            `INSERT INTO gateway_consumer_budgets (consumer, connector, daily_budget, enabled)
+             VALUES ($1, 'dadata', $2, true) ON CONFLICT (consumer, connector) DO UPDATE SET daily_budget = $2`,
+            [tokenName, dadata_budget],
+          );
+        }
+
+        return { orgId, userId, projectId, plaintext, webhookSecret: hmacPlaintext };
+      });
+
+      reply.code(201);
+      return {
+        organization_id: result.orgId,
+        user_id: result.userId,
+        project_id: result.projectId,
+        plaintext_token: result.plaintext,
+        webhook_secret: result.webhookSecret,
+      };
     },
   );
 
