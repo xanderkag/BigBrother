@@ -1,467 +1,424 @@
-# Document Processing Platform — parsdocs (`docs-parse`)
-
-Универсальный сервис обработки транспортных, бухгалтерских и юридических документов: счёт, УПД, счёт-фактура, ТТН, CMR, акт, платёжка, commercial invoice, packing list, B/L, ГТД, кассовый чек, **договор, спецификация, допсоглашение**, ВЭД- и складские формы — **~30 типов документов** (6 production + расширенный пакет beta + типы «по запросу»), плюс возможность завести свой через админ-UI без программиста. На входе — PDF/JPG/PNG/BMP/TIFF/XLSX/DOCX, на выходе — структурированный JSON с реквизитами, суммами, контрагентами, позициями таблиц, готовый для загрузки в 1С / ERP / CRM.
-
-> Полный актуальный каталог типов со статусами зрелости — раздел [«Поддерживаемые типы документов»](#поддерживаемые-типы-документов) ниже. Клиентский разрез — [`doc-service/docs/CLIENT_DOCS_SOURCE.md`](doc-service/docs/CLIENT_DOCS_SOURCE.md); полный технический разбор по полям — [`doc-service/docs/PARSING_SPEC.md`](doc-service/docs/PARSING_SPEC.md).
-
-> **Корпоративный репозиторий (canonical):** `https://git.taipit.ru/airesearch/docs-parse`
-> **Owner:** Ляпустин А.Ю. (`klgaigpt3@gmail.com`).
-> **GitHub-зеркало:** `xanderkag/BigBrother` — параллельная отгрузка для backup'а и публичной демонстрации, **canonical всё равно TAIPIT GitLab**.
-
-> **Статус:** AI-инициатива ТАЙПИТ. Phase 1 (счёт, УПД, СФ) — regex с LLM-fallback, Phase 2 (ТТН, CMR, АКТ) — через LLM; дополнительно заведён расширенный пакет ВЭД/договорных/складских типов. Идёт **пилот с SLAI** на хосте Asha (`vanga.sls24.ru`), параллельно — калибровка на реальных документах. Открытые задачи — в [ROADMAP.md](ROADMAP.md), детали по типам — в [`doc-service/docs/PARSING_SPEC.md`](doc-service/docs/PARSING_SPEC.md).
-
-## Безопасность и регламент
-
-- **LLM-режим:** для документов с реальными корп.данными разрешён **только локальный backend** (`BACKEND=openai_compat` через Ollama / vLLM / llama.cpp / LM Studio). Cloud-backend'ы (`claude`, `openai`) **запас и dev-режим**: годятся для синтетических документов и отладки промптов, но **не для прод-данных** — корп. данные не уходят в публичные облака LLM. Это требование ТАЙПИТ; смотри [SKILL правило #5].
-- **Секреты:** `.env` никогда не коммитим. В репо только `.env.example` без значений. См. `doc-service/.env.example` и `inference-service/.env.example`.
-- **Bearer-токены:** каждый пользователь получает свой personal access token (`pdpat_…`). Cred'ы на хосте — только через `.env` или secrets-manager песочницы. Master-ключ шифрования секретов (`SECRETS_ENCRYPTION_KEY`) разный на dev / staging / prod.
-- **Yandex Vision (`yandex` engine):** **выключен по умолчанию.** При активном engine изображение уходит в Yandex Cloud — для ТТН/CMR с ПДн это 152-ФЗ риск. Per-job opt-out пока не реализован (см. `TECH_DEBT.md` пункт I8). До его реализации в проде с ПДн — `YANDEX_VISION_API_KEY=` пустой.
-- **Корп. БД 1С / Bitrix24:** прямых SQL-подключений нет. Интеграции только через штатные API + явное согласование с владельцем системы.
-
----
-
-## Что внутри
-
-Платформа состоит из **двух независимых микросервисов** на общей Docker-сети:
-
-```
-┌────────────────────────────────────────────────────────────────────┐
-│                      Клиент (1С / ERP / Telegram-бот)              │
-│                                                                    │
-│   POST /api/v1/jobs (multipart) → { job_id }                       │
-│   GET  /api/v1/jobs/:id        → { extracted, validation_issues } │
-│   PATCH /api/v1/jobs/:id/extracted   ← правка человеком            │
-│   webhook  ← подписан HMAC-SHA256                                  │
-└─────────────────────────────┬──────────────────────────────────────┘
-                              │ HTTPS, Bearer-токен
-                              ▼
-┌────────────────────────────────────────────────────────────────────┐
-│  doc-service           Node.js + Fastify + BullMQ + PostgreSQL     │
-│  ─────────────────────────────────────────────────────────────     │
-│  1. Принимает файл, кладёт в очередь                               │
-│  2. Воркер тянет из очереди, гонит OCR-цепочку:                    │
-│        pdf-parse → tesseract → vision-llm → yandex (по падению)    │
-│  3. Классифицирует (keyword / LLM)                                 │
-│  4. Парсит по типу документа: regex (Phase 1) или LLM (Phase 2)    │
-│  5. Доменная валидация: ИНН/КПП checksum, госномер, vat-консистент │
-│  6. Сохраняет в Postgres, доставляет webhook                       │
-└─────────────────────────────┬──────────────────────────────────────┘
-                              │ HTTP, опционально Bearer
-                              ▼
-┌────────────────────────────────────────────────────────────────────┐
-│  inference-service     Python + FastAPI + Qwen-VL (или stub)       │
-│  ─────────────────────────────────────────────────────────────     │
-│  POST /v1/classify     — определить тип документа по тексту        │
-│  POST /v1/extract      — извлечь поля по JSON-схеме                │
-│  POST /v1/vision-ocr   — OCR сложного скана через VLM              │
-│  POST /v1/verify       — нормализация и проверка извлечённого      │
-│                                                                    │
-│  Backend выбирается env'ом: stub (по умолчанию) или qwen (с GPU).  │
-└────────────────────────────────────────────────────────────────────┘
-```
-
-Сервисы спроектированы быть **независимыми**: doc-service работает и без inference-service (теряются Phase 2 парсеры и vision-llm OCR-ступень, но Phase 1 на чистом regex продолжает работать). inference-service может обслуживать любые другие сервисы — контракт ручек доменный, не привязан к doc-service.
-
-## Структура репозитория
-
-```
-Сканы документов/
-├── README.md                         ← этот файл
-├── TECH_DEBT.md                      ← всё, что не сделано + что сделано в этой итерации
-├── docker-compose.doc-platform.yml   ← master compose, поднимает оба стека сразу
-├── doc-service/                      ← Node.js сервис
-│   ├── README.md                     ← детальный гайд по doc-service
-│   ├── Dockerfile, docker-compose.yml
-│   ├── migrations/001_init.sql       ← схема jobs
-│   ├── src/                          ← бэкенд, см. ниже
-│   ├── web/                          ← Operator UI: HTML + Tailwind + Alpine
-│   └── tests/                        ← unit + integration
-└── inference-service/                ← Python сервис
-    ├── README.md                     ← гайд по inference-service
-    ├── Dockerfile, docker-compose.yml
-    ├── pyproject.toml, requirements.txt
-    ├── src/inference_service/        ← FastAPI app + backends + prompts
-    └── tests/
-```
-
-### doc-service/src/
-
-```
-src/
-├── server.ts            ← Fastify + Swagger + zod validators
-├── worker.ts            ← BullMQ worker: тянет из очереди, вызывает orchestrator
-├── config.ts            ← env через zod, единый источник конфига
-├── auth.ts              ← Bearer-токен hook (constant-time compare)
-├── db.ts, queue.ts      ← Postgres pool, Redis connection
-├── routes/
-│   ├── jobs.ts          ← POST/GET/PATCH/LIST jobs
-│   └── health.ts        ← /health (live), /ready (Postgres+Redis+storage)
-├── pipeline/
-│   ├── orchestrator.ts  ← сквозной сценарий: OCR → классификация → парсер → валидация
-│   ├── router.ts, quality.ts
-│   ├── ocr/             ← 4 движка за общим интерфейсом OcrEngine
-│   ├── classifier/      ← keyword + интерфейс под LLM
-│   ├── llm/             ← HTTP-клиент к inference-service
-│   ├── parsers/         ← invoice/UPD (regex+LLM), TTN/CMR/AKT (LLM-only)
-│   └── validation/      ← ИНН/КПП checksum, vat-консистентность, и т.п.
-├── storage/
-│   ├── files.ts         ← LocalFs за интерфейсом FileStorage
-│   └── jobs.ts          ← репо поверх pg
-├── webhooks/deliver.ts  ← HMAC-подписанный POST с экспоненциальным backoff
-├── workers/
-│   ├── pending-job-sweeper.ts  ← re-enqueue зависших pending jobs (C1)
-│   └── file-cleanup.ts         ← TTL чистка uploaded файлов (C4)
-├── types/
-│   ├── documents.ts     ← zod-схемы invoice/TTN/CMR/AKT
-│   ├── api-schemas.ts   ← zod-схемы request/response API
-│   └── document-json-schemas.ts  ← JSON Schema для LLM /extract
-└── scripts/
-    ├── migrate.ts       ← применение SQL-миграций
-    └── smoke.ts         ← CLI: PDF/JPG → JSON отчёт без БД и очереди
-```
-
-### inference-service/src/inference_service/
-
-```
-inference_service/
-├── main.py              ← FastAPI app + lifespan
-├── config.py            ← pydantic-settings
-├── auth.py              ← Bearer-token middleware
-├── deps.py              ← DI: get_backend() singleton
-├── schemas.py           ← Pydantic request/response
-├── routes/              ← classify, extract, vision-ocr, verify
-├── backends/
-│   ├── base.py          ← ABC: ModelBackend
-│   ├── stub.py          ← детерминированный (для CI и dev)
-│   └── qwen_vl.py       ← Qwen2.5-VL через transformers (GPU)
-└── prompts/             ← шаблоны промптов по задачам
-```
-
----
-
-## Quick Start
-
-### Полный стек одной командой
-
-```bash
-docker network create ai-platform     # один раз
-docker compose -f docker-compose.doc-platform.yml up -d --build
-```
-
-После старта:
-
-| Сервис | URL | Что |
-|---|---|---|
-| **Operator UI** | **`http://localhost:3000/`** | загрузка документов, статусы, корректировка extracted |
-| doc-service API | `http://localhost:3000/api/v1` | основной REST API |
-| doc-service Swagger UI | `http://localhost:3000/docs` | интерактивная документация |
-| doc-service OpenAPI JSON | `http://localhost:3000/docs/json` | для кодогенерации клиентов |
-| doc-service health | `http://localhost:3000/ready` | пробник: Postgres + Redis + storage |
-| doc-service metrics | `http://localhost:3000/metrics` | Prometheus scrape (Node runtime + кастомные счётчики) |
-| inference-service API | `http://localhost:8000` | LLM-инференс |
-| inference-service Swagger | `http://localhost:8000/docs` | авто из FastAPI |
-| inference-service ReDoc | `http://localhost:8000/redoc` | альтернативный UI |
-| inference-service metrics | `http://localhost:8000/metrics` | Prometheus scrape (Python runtime + HTTP histograms) |
-
-В `doc-service/.env` прописать связь:
-
-```
-LLM_INFERENCE_URL=http://inference:8000
-```
-
-Без этой строки `vision-llm` ступень OCR-цепочки выпадает и Phase 2 парсеры (ТТН/CMR/АКТ) деградируют до `needs_review`.
-
-### С локальной open-source моделью (Ollama)
-
-Если нет облачного API-ключа или хочется экономии — поднимаем Ollama рядом со стеком:
-
-```bash
-docker network create ai-platform     # один раз
-docker compose -f docker-compose.doc-platform.yml -f docker-compose.local-models.yml up -d
-```
-
-По умолчанию подтянется `qwen2.5vl:7b` (~6 GB). Поменять модель — переменная окружения `OLLAMA_PULL` (например `llama3.2-vision:11b`). Затем в `inference-service/.env`:
-
-```
-BACKEND=openai_compat
-OPENAI_BASE_URL=http://ollama:11434/v1
-OPENAI_MODEL=qwen2.5vl:7b
-```
-
-Полное сравнение моделей, требования к VRAM/CPU и рекомендации по сценариям (dev / prod GPU / air-gapped / самое дешёвое) — [inference-service/MODELS.md](inference-service/MODELS.md).
-
-### Только doc-service (без LLM)
-
-Если нет GPU и Phase 2 не нужен прямо сейчас:
-
-```bash
-cd doc-service
-cp .env.example .env
-docker compose up --build
-```
-
-Phase 1 (счёт, УПД) полностью работает на regex.
-
-### Локальная разработка без Docker
-
-```bash
-# doc-service
-cd doc-service
-npm install
-npm run dev:api      # API server with hot reload
-npm run dev:worker   # BullMQ worker (в другом терминале)
-npm run smoke -- ./test-invoice.pdf  # быстрый прогон документа без БД/очереди
-npm test
-
-# inference-service
-cd inference-service
-python -m venv .venv
-.venv\Scripts\Activate.ps1     # PowerShell (Windows)
-pip install -e ".[dev]"
-uvicorn inference_service.main:app --host 0.0.0.0 --port 8000 --app-dir src
-pytest
-```
-
-Требования: Node 22+, Python 3.11+, `tesseract-ocr` и `poppler-utils` в PATH (для smoke без Docker).
-
----
-
-## Operator UI
-
-`http://localhost:3000/` — встроенный веб-интерфейс для операторов. Логин по API-токену (тот же `API_KEY` что в env), хранится в localStorage браузера. После логина:
-
-- Список задач с фильтрами по статусу и типу документа, auto-refresh для in-flight (pending/processing).
-- Drag-and-drop загрузка документов с опциональными полями (`document_hint`, `webhook_url`, `metadata`).
-- Детальная страница задачи: статус, confidence-bar, `validation_issues`, JSON-viewer для `extracted`, RAW OCR text (collapsed), ручная правка `extracted` с PATCH (валидация перезапускается автоматически).
-- Dark mode (auto-detect + manual toggle + remember в localStorage).
-- Responsive layout (нормально работает на ноутах и широких мониторах).
-
-**Стек:** чистый HTML + Tailwind v3 (Play CDN) + Alpine.js, без build-шага. Файлы в `doc-service/web/`. Расширять под новые экраны — без vite/webpack возни.
-
----
-
-## API в двух словах
-
-### Загрузка документа
-
-```http
-POST /api/v1/jobs
-Authorization: Bearer <API_KEY>
-Content-Type: multipart/form-data
-
-file=<binary>
-webhook_url=https://example.com/hook   (опционально)
-document_hint=invoice                   (опционально, пропускает классификатор)
-metadata={"my_id":"X-123"}              (опционально, ≤ 64 KB)
-```
-
-→ `202 { job_id, status: "pending" }`. Обработка асинхронная.
-
-### Получение результата
-
-```http
-GET /api/v1/jobs/:id
-Authorization: Bearer <API_KEY>
-```
-
-→ полный объект:
-
-```json
-{
-  "job_id": "...",
-  "status": "done | needs_review | failed",
-  "document_type": "invoice | factInvoice | UPD | TTN | CMR | AKT | … (≈30 типов, см. каталог выше)",
-  "confidence": 0.87,
-  "ocr_engine": "pdf-text | tesseract | vision-llm | yandex",
-  "raw_text": "распознанный текст",
-  "extracted": {
-    "number": "123",
-    "date": "2026-01-15",
-    "seller": { "name": "...", "inn": "...", "kpp": "..." },
-    "buyer":  { ... },
-    "total": 27500,
-    "vat": 4583.33,
-    "vat_rate": 20,
-    "positions": [ ... ]
-  },
-  "validation_issues": [
-    "ИНН 7712345678: контрольная сумма не сходится",
-    "НДС 5000 не сходится с total×rate/(100+rate) ≈ 4583.33"
-  ],
-  "metadata": { "my_id": "X-123" },
-  "error": null,
-  "created_at": "...",
-  "finished_at": "..."
-}
-```
-
-### Корректировка после оператора
-
-```http
-PATCH /api/v1/jobs/:id/extracted
-Authorization: Bearer <API_KEY>
-Content-Type: application/json
-
-{ "поля": "новые значения" }
-```
-
-→ `extracted` перезаписывается, валидация перезапускается, статус → `done` (если issues пропали).
-
-### Webhook доставки
-
-Если при создании job'а указан `webhook_url`, после завершения обработки на этот URL придёт `POST` с body = тем же JSON, что и `GET /jobs/:id`. Заголовки:
-
-- `X-DocService-Signature: sha256=<hex>` — HMAC-SHA256 от тела с секретом `WEBHOOK_HMAC_SECRET`
-- `X-DocService-Job-Id: <uuid>`
-- `X-DocService-Attempt: <n>` — номер попытки (с 1)
-
-Доставка ретраится с экспоненциальным backoff'ом до `WEBHOOK_MAX_ATTEMPTS` раз. На 4xx (кроме 408/429) — выходит сразу.
-
-Полное описание со схемами всех ручек — на `http://localhost:3000/docs` (Swagger UI).
-
----
-
-## OCR pipeline
-
-```
-                ┌───────────────┐
-PDF ──────────► │   pdf-parse   │ confidence ≥ 0.90 → done
-                └──────┬────────┘
-                       ↓ иначе
-                ┌───────────────┐
-скан/картинка ► │   tesseract   │ confidence ≥ 0.75 → done
-                └──────┬────────┘
-                       ↓ иначе (если LLM_INFERENCE_URL задан)
-                ┌────────────────────┐
-                │  vision-llm (Qwen) │ confidence ≥ 0.75 → done
-                └──────┬─────────────┘
-                       ↓ иначе (если YANDEX_VISION_API_KEY задан)
-                ┌───────────────────┐
-                │  yandex.vision    │ всегда принимаем результат
-                └───────────────────┘
-```
-
-Принципы:
-- **Сначала бесплатное и приватное, потом платное и в облако.** pdf-parse не делает сетевых вызовов, tesseract работает локально, vision-llm идёт в собственный inference-service на ваших мощностях, и только Yandex кладёт картинку в чужое облако.
-- **Движки за общим интерфейсом.** Можно добавить пятый, отключить любой через env, поменять порядок.
-- **Per-job опт-аут от Yandex** для документов с ПДн — в долге (см. [TECH_DEBT.md](TECH_DEBT.md) пункт I8). До его реализации — держать `YANDEX_VISION_API_KEY` пустым в проде, обрабатывающем такие документы.
-
-## Поддерживаемые типы документов
-
-Сейчас в реестре **~30 типов**, разбитых по уровню зрелости. Клиентский разрез
-и формулировки — в [`doc-service/docs/CLIENT_DOCS_SOURCE.md`](doc-service/docs/CLIENT_DOCS_SOURCE.md);
-полный разбор по полям/валидаторам — в [`doc-service/docs/PARSING_SPEC.md`](doc-service/docs/PARSING_SPEC.md).
-
-**🟢 Production (6)** — типизированы (Zod) + валидаторы, заявляем точность:
-счёт на оплату, счёт-фактура, УПД, ТТН, CMR, акт оказанных услуг.
-
-**🔵 Beta (~15)** — в проде, дорабатываются по реальным данным: платёжное
-поручение, кассовый чек, commercial invoice, proforma invoice, packing list,
-коносамент (B/L), таможенная декларация (ДТ/ГТД), сертификат происхождения,
-сертификат соответствия ЕАЭС, заявление на перевод (ВЭД), акт взвешивания,
-прайс-лист, договор, допсоглашение, спецификация к договору, перемещение
-товаров (ТОРГ-13).
-
-**🧪 По запросу / experimental (~8)** — заведены, качество не замерено:
-заявка на перевозку, транспортная накладная (форма 2013), путевой лист,
-корректировочный УПД (УКД), доверенность (М-2), приём/возврат ТМЦ (МХ-1/МХ-3),
-требование-накладная (М-11).
-
-➕ **Пользовательские типы** — клиент заводит свой тип под свою схему полей
-через админ-UI, без программиста.
-
-### Подход к парсингу
-
-| Подход | Типы | Примечание |
-|---|---|---|
-| regex + LLM-fallback | счёт, счёт-фактура, УПД | Phase 1, дёшево и быстро |
-| LLM `/extract` по JSON Schema | ТТН, CMR, АКТ и все beta/experimental | Phase 2+, требует inference-service |
-| vision-llm | сканы / счёт-фактуры | fallback при низком качестве текста |
-
-Без `LLM_INFERENCE_URL` LLM-парсеры возвращают пустой `extracted` и
-`status: needs_review` — это honest fallback, не падение.
-
-## Доменная валидация
-
-После парсинга запускается проверка реалистичности данных. Не падает — пишет issues:
-
-| Поле | Что проверяется |
+# parsdocs — корпоративный стенд ТАЙПИТ
+
+**parsdocs** — платформа автоматического извлечения структурированных данных из
+транспортных, бухгалтерских, юридических и ВЭД-документов. На входе —
+PDF / JPG / PNG / TIFF / XLSX / DOCX / XML, на выходе — структурированный JSON
+(реквизиты, суммы, контрагенты, позиции таблиц, кросс-документные ключи связывания),
+готовый для загрузки в 1С / ERP / CRM или для автосопоставления документов в одну
+поставку.
+
+> **Этот README описывает развёрнутый корпоративный стенд ТАЙПИТ** — что на нём
+> работает, как устроено, что извлекается, как интегрировано, и ретроспективу
+> разработки. Документ актуализирован **2026-06-29** по факту (живой прод
+> `10.10.13.10` + код), а не по более ранним докам.
+
+| | |
 |---|---|
-| `seller.inn`, `buyer.inn`, `shipper.inn` и т.п. | **Контрольная сумма** по приказу ФНС, не просто 10/12 цифр |
-| `seller.kpp` | Формат NNNNCCNNN (9 символов) |
-| `vehicle.plate` | Только 12 разрешённых ГИБДД букв (АВЕКМНОРСТУХ), формат А123ВВ77 |
-| `sender.country` (CMR) | ISO 3166 alpha-2 |
-| `date` | Календарно валидна, после 2010, не более 30 дней в будущем |
-| `total`, `vat` | ≥ 0, конечны, < 1 трлн |
-| `vat` vs `total`×`vat_rate`/(100+rate) | Допуск 0.5% или 1 руб |
-| `∑positions[].total` vs `total` | Допуск 1% или 1 руб |
-| `seller.inn` vs `buyer.inn` | Не должны совпадать |
-| ТТН: `cargo.weight_nett` vs `weight_gross` | Нетто не больше брутто |
-
-Любой `validation_issue` → автоматически `status: needs_review`, чтобы человек подтвердил. Корректировка через `PATCH /extracted` перезапускает валидацию — поправил типо в ИНН, issue ушёл, статус снова `done`.
-
-## Безопасность
-
-- **API защищён Bearer-токеном** (`API_KEY`). Пустой = dev-режим, любой проходит.
-- **Webhook подписывается HMAC-SHA256.** Получатель верифицирует тело + заголовок.
-- **Constant-time compare** для токена — защита от timing-атаки.
-- **Сравнение секретов на сервере**, не клиенте. На стороне клиента просто `Authorization: Bearer ...`.
-- **Inference-service** имеет свой независимый `API_KEY`, обычно не открывается наружу.
-
-Ограничения по умолчанию:
-- `MAX_UPLOAD_MB=50` (размер файла)
-- `MAX_METADATA_BYTES=65536` (64 KB на JSON-метаданные)
-- `WORKER_CONCURRENCY=1` (параллельных задач на воркер; tesseract single-threaded)
-
-В TECH_DEBT'е лежат: rate-limiting (I5), idempotency-key (I1), file-magic-bytes валидация (B5).
+| **Canonical-репозиторий** | `https://git.taipit.ru/airesearch/docs-parse` (GitLab, ТАЙПИТ) |
+| **Зеркала** | `kb-docker` (прод-деплой), `github.com/xanderkag/BigBrother` (backup) |
+| **Owner** | Ляпустин А.Ю. |
+| **Статус** | в проде, идёт пилот с партнёром **SLAI** (отдельный стенд Asha) + калибровка на реальных документах |
+| **Текущий HEAD на проде** | `83e48fb` (2026-06-29) |
+| **Размер работы** | 2026-05-08 → 2026-06-29 (~7.5 недель), 371 коммит, 72 миграции, 38 типов документов |
 
 ---
 
-## Where to look next
+## 1. Что это и зачем
 
-| Хочу узнать о... | Куда смотреть |
+Бизнесу нужно превращать поток первичных документов (счета, накладные, ГТД,
+коносаменты, акты, договоры…) в структурированные данные без ручного ввода.
+parsdocs делает это сквозным конвейером **OCR → классификация → извлечение по
+схеме → доменная валидация → доставка результата**, с двумя принципиальными
+свойствами:
+
+1. **Платформа, а не хардкод.** Новый тип документа заводится одной seed-миграцией
+   (схема полей + ключевые слова классификатора + валидаторы + промпт) или через
+   админ-UI — без правок кода и передеплоя логики. Каталог вырос 6 → 12 → 15 → 30
+   → **38 типов** этим путём.
+2. **Корпоративная приватность по умолчанию.** Извлечение реальных корп-данных идёт
+   **только через локальные LLM** (Ollama на своём GPU-узле). Облачные модели
+   (Claude/OpenAI) заведены, но выключены — корп-данные не уходят в публичные
+   облака (требование 152-ФЗ / ТАЙПИТ).
+
+---
+
+## 2. Топология стенда
+
+```
+            Браузер оператора / клиентская система (1С, ERP, SLAI)
+                              │ HTTPS, Bearer-PAT
+                              ▼
+       parsedocs.taipit.ru  ──► корп-nginx (TLS, DB Support) ──► 10.10.13.10:8085
+                              │
+   ┌──────────────────────────┴───────────────────────────────────────────┐
+   │  ХОСТ 10.10.13.10  (alias kb-docker) — rootless Docker, проект parsdocs│
+   │                                                                        │
+   │   api (Fastify+UI) :8085→3000   worker (BullMQ)   inference (FastAPI)  │
+   │   postgres:16  redis:7   migrate (one-shot)   [ollama — leftover]      │
+   └──────────────────────────┬─────────────────────────────────────────────┘
+                              │ HTTP, модель выбирается через provider_settings
+                              ▼
+        ХОСТ 10.10.33.10 — GPU-узел, Ollama (:11434), ~22 модели (phi4, 32B/70B/72B…)
+```
+
+### 2.1 Хосты
+
+| Хост | Роль | Что на нём |
+|---|---|---|
+| **10.10.13.10** (`kb-docker`) | корп-прод приложения | doc-service (api+worker), inference-service, Postgres, Redis. Все контейнеры приложения здесь. |
+| **10.10.33.10** | GPU-узел инференса | Ollama (:11434), ~22 модели. Сюда уходят LLM-вызовы. **Отдельный узел от прод-приложения** (важно для ретроспективы — см. L5). |
+| Asha (`vanga.sls24.ru`, Selectel) | стенд пилота SLAI | независимый деплой того же кода; **не часть корп-стенда**. |
+
+### 2.2 Сервисы на проде (docker compose, проект `parsdocs`)
+
+| Сервис | Контейнер | Образ | Роль |
+|---|---|---|---|
+| `api` | parsdocs-api-1 | doc-service:latest | Fastify REST + Operator UI (`:8085→3000`) |
+| `worker` | parsdocs-worker-1 | doc-service:latest | BullMQ-воркер + фоновые sweeper'ы |
+| `inference` | parsdocs-inference-1 | inference-service:latest | FastAPI-шлюз к Ollama на GPU-узле (`:8000`) |
+| `postgres` | parsdocs-postgres-1 | postgres:16-alpine | БД приложения (`:5432`, внутр.) |
+| `redis` | parsdocs-redis-1 | redis:7-alpine | очередь BullMQ (`:6379`, внутр., AOF) |
+| `migrate` | parsdocs-migrate-1 | doc-service:latest | одноразовый прогон миграций при каждом `up` |
+
+Версии: **Node 22.23.1**, **Python 3.11.15**, **PostgreSQL 16.13**, Redis 7.
+Домен `parsedocs.taipit.ru` терминируется корп-nginx'ом (TLS, `client_max_body_size 50m`,
+`proxy_read_timeout 600s`, WS-headers) — управляется DB Support, вне этого репозитория.
+
+### 2.3 Деплой («один общий main»)
+
+Три remote'а сходятся в единый `main`: `origin` (GitLab, canonical), `github`
+(зеркало/backup), `kb-docker` (bare-репо прода). Деплой ручной и предсказуемый:
+
+```bash
+# с рабочей машины:
+git push kb-docker main          # + origin + github (один общий main)
+# на проде:
+cd ~/parsdocs && git pull
+docker compose -f docker-compose.doc-platform.yml up -d --build migrate   # миграции в образе
+docker compose -f docker-compose.doc-platform.yml up -d --build api worker # код
+```
+
+Миграции (`node-pg-migrate`, **forward-only**, 72 шт.) едут внутри образа и
+применяются одноразовым сервисом `migrate` до старта api/worker. DB-driven вещи
+(типы документов, провайдеры) меняются миграцией без передеплоя кода — для них
+достаточно `migrate` + рестарт.
+
+---
+
+## 3. Как устроено извлечение (конвейер)
+
+`POST /api/v1/jobs` (multipart) → очередь → воркер → сквозной сценарий
+(`orchestrator.ts`). Две чистые функции (`runOcrChain`, `runDocumentPipeline`)
+переиспользуются в smoke-CLI и тестах без БД.
+
+```
+ingest → OCR-цепочка → классификация → извлечение по схеме →
+нормализация → доменная валидация → калибровка confidence → доставка
+```
+
+**1. Ingest** (`routes/jobs.ts`): magic-byte sniff (детектированный MIME важнее
+заявленного), Idempotency-Key, SHA-256 дедуп (24 ч в рамках орг), санитайзинг
+метаданных от секретов, мультитенант-scope. Опционально: `file_url` (server-side
+загрузка по ссылке, SSRF-guard), BYO-LLM-ключ через заголовки `X-LLM-*`,
+`redact_pii`. Возвращает `202 {job_id, status}`.
+
+**2. OCR-цепочка** (`pipeline/ocr/`): движки за общим интерфейсом, первый
+прошедший порог уверенности побеждает; ошибки движка не валят цепочку.
+
+| Движок | Назначение | Порог |
+|---|---|---|
+| `xlsx` / `docx` / `xml` | таблицы/документы по MIME (SheetJS / mammoth / fast-xml-parser) | 0.5 |
+| `pdf-text` | текстовый слой PDF (pdf-parse) | 0.90 |
+| `tesseract` | сканы и картинки (rus+eng), одна растеризация на цепочку | 0.75 |
+| `vision-llm` | OCR сложного скана через VLM (inference `/v1/vision-ocr`) | 0.75 |
+| `yandex` | Yandex Vision — **выключен на проде** (152-ФЗ) | — |
+
+Принцип: *сначала бесплатное и приватное, потом платное и в облако*. Распределение
+на проде (142 дока): pdf-text 63, tesseract 56, xlsx 10, docx 8, vision-llm 4 —
+текстовый слой и tesseract доминируют, vision срабатывает редко.
+
+**3. Классификация** (`classifier/keywords.ts`): по первым 4000 символам, две
+стадии — DB-правила (`classification_keywords[]` + веса, с tenant-изоляцией), при
+пустом результате — хардкод-fallback. **Title-boost ×1.5** для совпадений в первых
+500 символах (заголовок важнее упоминания в теле). `document_hint` минует
+классификатор.
+
+**4. Извлечение** (`document-type-resolver.ts` → `parsers/`): резолвер собирает
+конфиг типа (схема, промпт, валидаторы, пороги). **Источник схемы:** DB
+`llm_schema` важнее кода; 6 стабильных типов используют код-схемы
+(`document-json-schemas.ts`), остальные 31 — jsonb в БД. **На проде все 38 типов
+работают через `llm_extract`** (LLM-first); regex-парсеры остались в коде как
+быстрый путь/fallback, но в проде не активны. Длинные документы (>15 КБ) идут через
+`MultiPassLlmParser` (шапка отдельно, `items[]` чанками по ~12 КБ, до 10 проходов,
+дедуп строк).
+
+**5. Нормализация** (`normalize/run.ts`, строгий порядок): восстановление ИНН из
+текста (только если проходит контрольную сумму), восстановление контейнеров
+(ISO-6346 регексом из raw_text), канонизация ИНН/госномера, пересчёт итогов из
+`items[]`, категории строк, и последним — `_match_signals` (см. §5).
+
+**6. Доменная валидация** (`validation/`): проверки-инварианты вида `name:path`,
+которые **не падают, а пишут issues** в `extracted._issues[]`. Контрольная сумма
+ИНН (веса ФНС, 10/12 цифр), формат КПП, госномер ГИБДД, ISO-страна, диапазон дат,
+`vat ≈ total×rate/(100+rate)`, `∑позиций ≈ total`, продавец ≠ покупатель, нетто ≤
+брутто, плюс построчные проверки `items[]`. Любой issue → автоматически
+`needs_review`; правка оператором через `PATCH` перезапускает валидацию.
+
+**7. Confidence и статус**: геометрическое среднее OCR- и parser-уверенности;
+порог `needs_review` (per-type → per-org → env-дефолт 0.6); жёсткие провалы
+(битый ИНН) форсят review независимо от OCR. Пер-полевая калибровка
+(`processFieldConfidence`): ИНН с верной чек-суммой → ≥0.95, с битой → ×0.5.
+
+**8. Доставка**: webhook (см. §5) или pull через `GET /jobs/:id`.
+
+---
+
+## 4. Что извлекаем: каталог типов и модели
+
+### 4.1 Каталог — 38 типов (живой прод)
+
+Все 38 активны и глобальны, `parser_kind=llm_extract`. Новый тип = одна миграция.
+
+**🟢 Production / stable (6)** — типизированы, с валидаторами, заявляем точность:
+счёт на оплату (`invoice`), счёт-фактура (`factInvoice`/`tax_invoice`), УПД (`UPD`),
+транспортная накладная (`TTN`), CMR, акт оказанных услуг (`AKT`).
+
+**🔵 Beta (16)** — в проде, калибруются на реальных данных: коносамент (B/L),
+кассовый чек, сертификат происхождения, commercial invoice, договор,
+допсоглашение, спецификация к договору, **таможенная декларация (ГТД)**, сертификат
+соответствия ЕАЭС, packing list, платёжное поручение, прайс-лист, инвойс-проформа,
+перемещение товаров (ТОРГ-13), акт взвешивания, заявление на перевод (ВЭД).
+
+**🧪 Experimental (16)** — заведены, качество замеряется: УКД, авианакладная (AWB),
+заявка-бронь, ЦИМ, грузовой манифест, требование-накладная (М-11), фитосан- и
+ветсертификаты, доверенность (М-2), СМГС, спецразрешение, транспортная накладная
+(2013), заявка на перевозку, приём/возврат ТМЦ (МХ-1/МХ-3), путевой лист.
+
+Самая богатая схема — ГТД (28 полей верхнего уровня), затем УКД (22),
+транспортная накладная (20). Глубина проверок: stable-типы несут 6–8 валидаторов,
+experimental — обычно 1 (`date_range`).
+
+### 4.2 Модель
+
+**Дефолт извлечения — Phi-4 14B (Microsoft), локально** (подтверждено
+`provider_settings.is_default`). Путь: doc-service → inference-service (`:8000`) →
+Ollama на GPU-узле, модель `phi4` (~9 ГБ). Vision-OCR-ступень использует
+мультимодальные модели (Mistral Small 3.1 / MiniCPM-V). Облачные Claude/OpenAI
+заведены, но **выключены**.
+
+В реестре `provider_settings` зарегистрировано 15 LLM-провайдеров (phi4 — дефолт;
+активны также qwen3:32b, RuadaptQwen2.5-32B, qwen2.5:72b, gemma3:27b, T-Pro-32B,
+mistral-small3.1, minicpm-v, stub) — переключение дефолта = смена флага в БД.
+
+### 4.3 Бенчмарк точности (golden-set, текстовый слой)
+
+Коммитнутый лидерборд Bench v3 (`MODEL_REPORT.md` #29–34, 9 реальных доков,
+GPU-узел 96 ГБ; «поля» = точное совпадение, «итоги» = арифметика сумм):
+
+| Модель | Поля | Итоги | с/файл | VRAM |
+|---|---|---|---|---|
+| **Phi-4 14B** (дефолт) | **88.3%** | 71.4% | 4–32 | ~9 ГБ |
+| Mistral Small 3.1 24B | 98.3% | 100% | 3–26 | ~14 ГБ |
+| Llama 3.3 70B | 98.3% | 100% | 11–89 | ~43 ГБ |
+| Qwen2.5 72B | 98.3% | 100% | 11–119 | — |
+| DeepSeek-R1 70B | 96.7% | 85.7% | 10–88 | ~43 ГБ |
+| Gemma 3 27B | 96.7% | 85.7% | 4–40 | ~17 ГБ |
+
+> Вывод бенча: 24B+ заметно точнее phi4, потолок 98.3% берут 24B/70B/72B. phi4
+> остаётся дефолтом «потому что помещается» на прод-GPU (см. урок L5). Сравнение
+> phi4 vs 32B (qwen3 / Ruadapt) — **предварительно** (прогон 2026-06-26, 32B
+> впереди; ещё не сведено в `MODEL_REPORT.md`).
+
+---
+
+## 5. Интеграции
+
+### 5.1 Исходящий webhook (TAIPIT → потребитель/SLAI), контракт `v1`
+
+После обработки на `webhook_url` уходит `POST` с телом = JSON задачи. Поля:
+`version:"v1"` (обязательно), `job_id`, `status`, `document_type` (snake_case),
+`confidence`, `ocr_engine`, `extracted`, `metadata`, `error`, `_field_confidence`
+(калиброванный), `documents[]` (только для мультидок), `target_entity_hint`.
+
+- **Подпись HMAC-SHA256** по точному телу; заголовки в трёх семействах для
+  совместимости (`x-extractor-signature` / `x-parsdocs-signature` /
+  `x-docservice-signature`) + `x-parsdocs-version: v1`. Секрет: per-job → per-org →
+  глобальный.
+- **Ретраи** до 5 раз с экспоненциальным backoff; 4xx (кроме 408/429) — стоп;
+  фоновый `webhook-sweeper` дотягивает застрявшие.
+- **Эволюция контракта additive**: новые поля — обратносовместимо; rename/remove —
+  новая версия с параллельным прогоном.
+
+### 5.2 `_match_signals` — канонический ключ сопоставления для SLAI
+
+Внутри `extracted` добавляется плоская кросс-типовая проекция (`schema_version
+"1.0"`, present-only), чтобы матчер SLAI не лазил по вложенным полям каждого типа:
+`containers[]` (ISO-6346 подстрокой), `bl_number`/`cmr_number`/`ttn_number`/
+`awb_number`, `declaration_numbers[]`, `order_refs[]`, `vehicle{plate,trailer}`,
+`parties{role→{name,inn,kpp}}`, `dates{}`, `totals{amount,currency,vat}`,
+`_confidence{}`. Проекторы для 10 типов + общий fallback. Именно сюда попадает
+`container_number` ГТД/коносамента, физически сшивая поставку.
+
+### 5.3 Каналы улучшения
+
+- `job_feedback` — вердикт внешнего потребителя (correct/partial/incorrect),
+  `source_system` берётся из аутентифицированного caller (анти-спуфинг).
+- `extraction_corrections` — журнал правок оператора (before→after) при `PATCH`.
+- Входящая синхронизация номенклатуры SLAI (`/integrations/slai/sync/*`) —
+  timing-safe HMAC, fail-closed, идемпотентность по `event_id` (спит без ключа).
+
+### 5.4 Интеграционный хаб (Vanga как control-plane внешних API)
+
+Vanga — не только разбор документов, но и **единая точка подключения, контроля,
+мониторинга и учёта внешних API** для нескольких внутренних потребителей
+(cost-attribution: `потребитель × коннектор × units × время`).
+
+- **Шлюз `/v1/*`** (флаг `LLM_GATEWAY_ENABLED=true` на проде): `/v1/chat/completions`
+  и `/v1/models` — **LIVE** (passthrough к локальной Ollama, алиасы `parsdocs-chat`/
+  `parsdocs-large`); `/v1/embeddings`, `/v1/dadata/*`, `/v1/maps/*` — **спят (503)**
+  до ввода ключей.
+- **Реестр коннекторов** (`gateway_connectors`: llm/dadata/yandex_maps), **бюджеты**
+  потребителей, **метеринг** (`llm_gateway_usage`: caller/connector/units/unit_kind),
+  **квоты** (`enforceQuota`, за флагом, fail-open), **admin-CRUD** + UI «Интеграции».
+- Статус: каркас построен end-to-end и в проде; коннекторы DaData/Яндекс.Карты спят
+  до реальных ключей. Метеринг уже копит реальный трафик (caller `slai`).
+
+---
+
+## 6. Безопасность и соответствие
+
+- **Аутентификация** — Bearer personal access tokens (`pdpat_…`), constant-time
+  сравнение. Пустой ключ = dev-режим (на проде закрыт, см. урок L6).
+- **Мультитенант** — orgs/projects/users, `getEffectiveScope` на каждом запросе,
+  NOT NULL scope на задачах, ролевые гарды. Два потребителя не видят документы друг
+  друга.
+- **Секреты at rest** — AES-256-GCM envelope (`storage/secrets.ts`), ротация
+  мастер-ключа без перешифровки руками. В git только `.env.example`.
+- **Локальный LLM для корп-данных** — облачные backend'ы выключены (152-ФЗ).
+- **Yandex Vision выключен** на проде (картинка ушла бы в чужое облако).
+- **Прямых SQL к 1С/Bitrix24 нет** — только штатные API по согласованию.
+- **Fail-closed для всего нового** — file_url, BYO-LLM, hybrid routing, gateway-
+  коннекторы по умолчанию OFF → явный код ошибки.
+
+---
+
+## 7. Эксплуатация
+
+- **Деплой** — см. §2.3. Образ doc-service общий для migrate/api/worker.
+- **Миграции** — 72 forward-only, дам-ран ROLLBACK'ом перед накатом
+  (`sed 's/^COMMIT;/ROLLBACK;/' | psql -v ON_ERROR_STOP=1`).
+- **Фоновые воркеры** — pending-job-sweeper (перезапуск зависших), file-cleanup
+  (TTL загруженных файлов), audit-log-sweeper, webhook-sweeper.
+- **Здоровье** — `/health` (live), `/ready` (Postgres+Redis+storage), `/metrics`
+  (Prometheus). Operator UI на `/`.
+- **Персистентность** — именованные volume'ы (`parsdocs_pgdata` и др.), переживают
+  `compose down`.
+- **Операционный долг** (честно): на проде остался запущенный локальный `ollama`-
+  контейнер (не в активном пути), порты `:8000`/`:11434` опубликованы наружу
+  (кандидаты на ужесточение), `/version` отдаёт `unknown` (build-args не
+  прокидываются при ручном деплое), есть `.env.bak.*` в рабочем дереве.
+
+---
+
+## 8. Ретроспектива
+
+### 8.1 Хронология
+
+| Период | Веха |
 |---|---|
-| детали API-контракта | `http://localhost:3000/docs` (Swagger UI) |
-| что не доделано | [TECH_DEBT.md](TECH_DEBT.md) |
-| как устроен doc-service | [doc-service/README.md](doc-service/README.md) |
-| как устроен inference-service | [inference-service/README.md](inference-service/README.md) |
-| как поднять Qwen на GPU | [inference-service/README.md](inference-service/README.md) → раздел про GPU |
-| как добавить новый тип документа | `doc-service/src/types/documents.ts` (схема) → `parsers/` (новый класс) → `validation/index.ts` (правила) |
-| как поменять модель LLM | `inference-service/src/inference_service/backends/` — новый backend, дальше переключение через `BACKEND` env |
-| как сменить хранилище на S3/MinIO | `doc-service/src/storage/files.ts` — реализовать `S3FileStorage` за интерфейсом `FileStorage`, переключить в orchestrator. Зацепка в TECH_DEBT A2. |
+| **08–10 мая** | Scaffold: doc-service (Fastify+BullMQ+Postgres+tesseract) + inference-service (FastAPI). nginx+TLS для `parsedocs.taipit.ru` поднял коллега. |
+| **11 мая** | Операционный фундамент: structured logs, sweeper'ы, первый Operator UI (HTML+Tailwind+Alpine, без сборки). Idempotency-Key, magic-bytes, `/metrics`, фреймворк миграций. |
+| **11–14 мая** | **Пивот «платформа-как-продукт»**: реестр типов в БД, реестр валидаторов, per-type пороги, админ-CRUD, runtime читает конфиг из БД, универсальный OpenAI-compat backend, шифрование секретов. Каталог 6→12→15. Мультитенант с ролями. |
+| **15–20 мая** | Канонический `items[]`, MultiPassLlmParser, построчные валидаторы, fuzzy-матчинг (pg_trgm). +4 складских типа → 30. Brutalist UI v2, ИНН/plate-нормализаторы, пер-полевой confidence, PII-redaction. |
+| **16 мая – июнь** | **Пилот SLAI (стенд Asha)**: ТЗ v1 → транспортные типы, банк-реквизиты, входящая синхронизация номенклатуры (timing-safe HMAC), мультидок. `_match_signals`-контракт. Каналы feedback/corrections. |
+| **1–2 июня** | **Bench v3** на 96-ГБ GPU-узле: phi4 88.3%, Mistral-24B/Llama-70B/Qwen-72B = 98.3%. |
+| **8–23 июня** | **Локальный LLM-шлюз Vanga** для SLAI; Anthropic-backend (переводчик OpenAI↔Anthropic), `/v1/embeddings`, DaData-passthrough. Слияние github→main, деплой; новые ручки спят за флагами. |
+| **21–22 июня** | Классификатор-каталог → **38 типов** (склад + ВЭД-классы: спецразрешение, AWB, манифест, сертификаты, ЦИМ/СМГС). |
+| **25 июня** | **Интеграционный хаб**: реестр коннекторов + бюджеты + метеринг + Яндекс.Карты-коннектор + admin-CRUD + UI. |
+| **25–29 июня** | **Аудит пробелов на реальном батче**: фикс мисклассификаций (ГТД→доверенность, B/L→только позиции), XML-приём; добор полей по 10 типам; промпт-тюнинг подтверждённых недоборов; кросс-документные ключи по итогам **чтения реальных коносамента и ГТД**. |
+
+### 8.2 Ключевые решения (и почему)
+
+| Решение | Почему |
+|---|---|
+| **Один общий `main` на 3 remote'а** | не плодить расхождение между публичным форком и корп-линией; деплой = push в kb-docker. |
+| **Аддитивные jsonb-миграции, ничего не удаляем** | сохранить webhook-контракт v1, никогда не ломать SLAI и не терять отгруженное поле; forward-only + дам-ран. |
+| **Локальный phi4 для корп-данных, облако запрещено** | 152-ФЗ и конфиденциальность; корп-шлюз к внешним LLM ещё в разработке. |
+| **Типы через миграцию, а не код** | новый тип за ~5 минут без передеплоя логики; вся обработка через generic-резолвер. |
+| **Мультитенант с первого дня** | подключать внешних потребителей (SLAI / отделы) без переделок; изоляция по построению. |
+| **Fail-closed для всего нового** | ничего опасного не включается по умолчанию (особенно после near-miss с auth, см. L6). |
+
+### 8.3 Уроки (включая то, что НЕ сработало)
+
+- **L1. phi4 (14B) роняет хвостовые поля на больших схемах.** Сделали это
+  проектным ограничением: добавляем только нужные ключи (ГТД — `container_number`/
+  `seller`/`total_duties`/…), а для нагруженных ключей — **скаляр-алиас + регекс-
+  fallback из raw_text** (контейнер ISO-6346). На модель в одиночку нельзя
+  полагаться для несущего ключа.
+- **L2. Проверять ФАКТ в прод-БД, а не файлы миграций.** «Регресс графы 47 ГТД»
+  заподозрили по чтению миграций — прямой запрос прода **опроверг**: поля были на
+  месте (миграция 0608 применилась аддитивно). Аддитивную jsonb-историю нельзя
+  читать статически.
+- **L3. Промпт-тюнинг сильнее правки схемы.** Пять недоборов (`payee`, BL `carrier`/
+  `shipped_on_board`, УКД КПП, contract_no) диагностировали так: метка поля в
+  тексте **есть**, поле в схеме **есть**, а промпт его не перечислял. Фикс — только
+  дописать промпт. Правильная схема необходима, но недостаточна — модели надо
+  *сказать*, что искать.
+- **L4. Чтение реального документа вскрывает структуру, которую не угадать.**
+  Реальный FESCO-коносамент + ГТД (с ДТС-1) показали: **три разных контрагента**
+  (контрактный продавец ДТС-1 ≠ экспортёр графы 2), контейнер графы 31 = ключ-связка
+  поставки, перевозчик — в подписи «on behalf of the Ocean Carrier». Зеркальный
+  урок: два неопознанных дока оказались **не договорами** (нулевые контракт-маркеры)
+  — заводить схему вслепую нельзя, нужен реальный обезличенный образец.
+- **L5. Победитель бенча ≠ модель в проде.** 24B/32B/70B точнее phi4, но прод-GPU и
+  доступ к нему — ограничитель: бенч-узел (96 ГБ) ≠ прод-инференс, переключение
+  требует прод-доступа. Размещение модели и ops-доступ решают раскатку, а не только
+  цифра точности.
+- **L6. Что не сработало (честно):**
+  - vision-модели не считают `total` (≈20% на арифметике) → vision только для
+    сканов без текстового слоя, не как замена текстового конвейера;
+  - mistral путал стороны ТТН/CMR (shipper/consignee) → дефолт переключили на phi4
+    (не потому что phi4 лучший, а потому что mistral хуже на этих типах);
+  - одношотовый LLM падал на длинном tesseract-выводе (>20k) → MultiPassLlmParser;
+  - разрядка заголовка («С Ч Е Т») ломала классификатор;
+  - **прод какое-то время стоял без auth** (`ALLOW_NO_AUTH`, пустой ключ = супер-
+    админ на всю корп-сеть) — поймали и закрыли 64-символьным ключом + fail-closed;
+  - парадокс кэша промптов: hit 62–83%, а месячная стоимость всё равно росла —
+    длинный промпт дороже даже при кэше.
+
+### 8.4 Текущее состояние и что дальше
+
+**Закрыто:** auth (fail-closed), каталог (38 типов, все на full-LLM), дефолт
+mistral→phi4, `_match_signals`-контракт, LLM-шлюз (за флагами), интеграционный хаб
+(коннекторы спят до ключей), добор полей + промпт-тюнинг + кросс-документные ключи.
+
+**Открыто / дальше:**
+- честный замер точности текущего прод-конфига на 10–15-доковом RU-мини-golden-set
+  (главный рычаг);
+- средний тир добора (рёбра матчера: ссылка СФ на отгрузку/комиссионера, приёмка/
+  выдача на CMR/ТН);
+- **заблокировано (нужны обезличенные образцы):** класс претензий/писем/договоров
+  (EXT-CORRESPONDENCE);
+- спящие за флагами фичи к включению: hybrid text/vision routing (рычаг latency),
+  vision-extract, file-URL ingest, BYO-LLM, gateway-коннекторы (DaData/Яндекс).
 
 ---
 
-## Что было сделано в текущей итерации
+## Приложение — где что лежит
 
-Кратко по дням, для будущих контрибьюторов и для себя через месяц:
+| Тема | Файл / источник |
+|---|---|
+| Конвейер | `doc-service/src/pipeline/orchestrator.ts`, `ocr/`, `classifier/`, `parsers/`, `normalize/`, `validation/` |
+| Схемы типов | `doc-service/src/types/document-json-schemas.ts` + `document_types.llm_schema` (БД) |
+| Match-signals | `doc-service/src/pipeline/normalize/match-signals.ts` |
+| Webhook | `doc-service/src/pipeline/webhook-delivery.ts`, `src/webhooks/deliver.ts` |
+| Интеграционный хаб | `doc-service/src/routes/llm-gateway.ts`, `gateway-admin.ts`, `storage/gateway-connectors.ts` |
+| Контракт со SLAI | `doc-service/docs/CONTRACT_TECH_APPENDIX.md`, `INTEGRATION_HUB_VISION.md` |
+| Спека по типам | `doc-service/docs/PARSING_SPEC.md` (местами отстаёт от прода — сверять с БД) |
+| Бенч моделей | `docs/MODEL_REPORT.md` (#29–34 — актуальная база) |
+| Задачи / долг | `ROADMAP.md`, `TECH_DEBT.md`, `TECH_DEBT_ARCHIVE.md` |
+| API-контракт | `http://<host>:8085/docs` (Swagger) |
 
-1. **Scaffold doc-service** — Fastify + BullMQ + Postgres + tesseract в Docker, OCR-конвейер с интерфейсом `OcrEngine`, заглушка под LLM-инференс, парсеры invoice/УПД на regex.
-2. **Scaffold inference-service** — FastAPI + четыре доменных ручки. Stub-backend для dev, Qwen-VL backend для прода.
-3. **End-to-end pipeline + smoke runner** — `runDocumentPipeline` как чистая функция, CLI `npm run smoke -- file.pdf`, интеграционный тест на полный путь.
-4. **Phase 2 парсеры через LLM** — ТТН/CMR/АКТ делегируют в `inference-service /v1/extract` по JSON Schema.
-5. **LLM-fallback для Phase 1** — invoice/UPD сначала regex, при низкой уверенности — LLM, берётся лучший результат.
-6. **Bearer auth** на `/api/v1/*`, /health и /ready остаются публичными.
-7. **Swagger / OpenAPI** через `@fastify/swagger` + `fastify-type-provider-zod`. Один источник правды (zod) для валидации, типов и доков.
-8. **Master docker-compose** — оба сервиса одной командой через `include:` на общем external network.
-9. **Архитектурное ревью + tech debt**, плюс шесть быстрых правок: WORKER_CONCURRENCY, metadata cap, sanitize Unicode, Yandex PII warning, reject 0-byte uploads, валидация webhook_url.
-10. **Доменная валидация** — ИНН/КПП checksum, госномер ТС, согласованность НДС с total, диапазон дат, ISO-страна, разделение продавец/покупатель. Issues отдаются клиенту в `validation_issues[]`, автоматический `needs_review` при наличии проблем, перепроверка после ручной правки.
-11. **Усиленный `/ready` пробник** — Postgres + Redis + storage writable.
-
-## Что НЕ сделано (важное)
-
-Полный список с оценками часов — в [TECH_DEBT.md](TECH_DEBT.md). Самое критичное перед боевым запуском:
-
-- **C1**: outbox/poller для зависших pending jobs (Redis моргнул → job висит).
-- **C3**: нормальная система миграций (сейчас только idempotent INIT-скрипт).
-- **C4**: TTL на загруженные файлы (диск кончится).
-- **I1**: idempotency-key для ретраев клиента.
-- **I4**: метрики `/metrics` для observability.
-- **I6**: реальный вызов Yandex Vision API для проверки контракта.
-- **I8**: per-job opt-out от Yandex для документов с ПДн.
-
-Для пилотного запуска на 1-2 интеграторов критично закрыть **C1, C4, I8**. Остальное — по мере роста нагрузки.
-
-## License & ownership
-
-Внутренний скаффолд. Лицензия — proprietary. Контакты для доработки и интеграции — у владельца репозитория.
+> **Точность фактов:** README сверён с живым продом 2026-06-29. Если документы в
+> `doc-service/docs/*` или `STATUS.md` расходятся с этим файлом — источником истины
+> является прод-БД (`document_types`, `provider_settings`, `pgmigrations`).
