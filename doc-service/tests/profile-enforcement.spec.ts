@@ -258,6 +258,37 @@ describe('C. output routing — URL/secret precedence (pure decision)', () => {
   });
 });
 
+// ── D. redeliver-webhook — org-level webhook_url fallback ────────────────────
+// Прод-job'ы льют в SLAI через org-вебхук (organization_settings.webhook_url),
+// не per-job. Manual redeliver резолвит целевой URL: 1) job.webhook_url;
+// 2) fallback на org webhook_url. Нет ни того ни другого → 400.
+// Воспроизводит ветвление из routes/jobs.ts redeliver-handler.
+describe('D. redeliver-webhook URL resolution (org fallback)', () => {
+  function resolveRedeliverTarget(
+    job: { webhook_url: string | null },
+    orgWebhookUrl: string | null,
+  ): { targetUrl: string | null; status: 200 | 400 } {
+    let targetUrl = job.webhook_url;
+    if (!targetUrl && orgWebhookUrl) targetUrl = orgWebhookUrl;
+    return { targetUrl, status: targetUrl ? 200 : 400 };
+  }
+
+  it('per-job webhook_url wins over org webhook_url', () => {
+    const r = resolveRedeliverTarget({ webhook_url: 'https://job/hook' }, 'https://org/hook');
+    expect(r).toEqual({ targetUrl: 'https://job/hook', status: 200 });
+  });
+
+  it('falls back to org webhook_url when per-job absent', () => {
+    const r = resolveRedeliverTarget({ webhook_url: null }, 'https://org/hook');
+    expect(r).toEqual({ targetUrl: 'https://org/hook', status: 200 });
+  });
+
+  it('neither per-job nor org url → 400 (keeps existing guard)', () => {
+    const r = resolveRedeliverTarget({ webhook_url: null }, null);
+    expect(r).toEqual({ targetUrl: null, status: 400 });
+  });
+});
+
 // ── C (delivery wiring): override URL/secret reach deliverWebhook ───────────
 describe('C. deliverFinalizedJobWebhook passes override url/secret to deliverWebhook', () => {
   const deliverWebhookMock = vi.fn(async () => undefined);
@@ -266,10 +297,12 @@ describe('C. deliverFinalizedJobWebhook passes override url/secret to deliverWeb
     vi.doMock('../src/webhooks/deliver.js', () => ({
       deliverWebhook: deliverWebhookMock,
       // webhook-delivery.ts также импортит computeTargetEntityHint (для
-      // target_entity_hint в payload). Эти тесты проверяют только аргументы
-      // deliverWebhook, поэтому хинт можно занулить — главное чтобы экспорт
-      // существовал, иначе ESM-мок падает «No export defined».
+      // target_entity_hint в payload) и WEBHOOK_SCHEMA_VERSION (drift-маркер
+      // в payload). Эти тесты проверяют только аргументы deliverWebhook,
+      // поэтому хинт можно занулить — главное чтобы экспорты существовали,
+      // иначе ESM-мок падает «No export defined».
       computeTargetEntityHint: vi.fn(() => null),
+      WEBHOOK_SCHEMA_VERSION: '1.0',
     }));
   });
 

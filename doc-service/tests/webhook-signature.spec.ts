@@ -46,6 +46,7 @@ function ok() {
 function payload(over: Partial<WebhookPayload> = {}): WebhookPayload {
   return {
     version: 'v1',
+    schema_version: '1.0',
     job_id: 'job-123',
     status: 'completed',
     document_type: 'invoice',
@@ -111,5 +112,21 @@ describe('deliverWebhook — EXT-A signature aliases', () => {
     expect(headers['x-extractor-attempt']).toBe(headers['x-parsdocs-attempt']);
     expect(headers['x-extractor-attempt']).toBe(headers['x-docservice-attempt']);
     expect(headers['x-extractor-job-id']).toBe(headers['x-docservice-job-id']);
+  });
+});
+
+describe('webhook payload — top-level schema_version drift marker (SLAI)', () => {
+  it('доставленный body несёт schema_version: "1.0" и version: "v1" не тронут', async () => {
+    const { WEBHOOK_SCHEMA_VERSION } = await import('../src/webhooks/deliver.js');
+    expect(WEBHOOK_SCHEMA_VERSION).toBe('1.0');
+
+    await deliverWebhook('job-sv', 'https://consumer.test/hook', payload({ job_id: 'job-sv' }), log);
+
+    const body = requestMock.mock.calls[0]![1].body as string;
+    const sent = JSON.parse(body) as Record<string, unknown>;
+    // Drift-маркер — top-level sibling к version, не внутри extracted.
+    expect(sent.schema_version).toBe('1.0');
+    // Envelope-версия контракта осталась v1 (НЕ бампается вместе со schema_version).
+    expect(sent.version).toBe('v1');
   });
 });

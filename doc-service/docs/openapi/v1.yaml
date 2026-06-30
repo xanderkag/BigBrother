@@ -246,6 +246,7 @@ components:
         receivers MUST treat both the same way.
       required:
         - version
+        - schema_version
         - job_id
         - status
         - document_type
@@ -259,8 +260,18 @@ components:
           type: string
           enum: [v1]
           description: |
-            Contract version. Always `"v1"` today. Receivers SHOULD
-            reject unknown values with HTTP 400.
+            Contract version (envelope). Always `"v1"` today. Receivers
+            SHOULD reject unknown values with HTTP 400. NOT bumped when
+            only the `extracted` field-set drifts — see `schema_version`.
+        schema_version:
+          type: string
+          description: |
+            Drift marker for the `extracted` field-set, independent of the
+            envelope `version`. Semver `MAJOR.MINOR` string, currently
+            `"1.0"`. Bumped when fields inside `extracted` are added/changed;
+            `version` stays `"v1"`. Distinct from
+            `extracted._match_signals.schema_version` (which scopes only the
+            match-signals projection).
         job_id:
           type: string
           format: uuid
@@ -842,6 +853,7 @@ components:
       summary: "Standard invoice, auto-routed (`status: done`)."
       value:
         version: v1
+        schema_version: "1.0"
         job_id: 1e7a2c44-8b9c-4f5d-b3a1-7e6f2c4d9a01
         status: done
         document_type: invoice
@@ -900,6 +912,7 @@ components:
       summary: Invoice flagged for review — VAT-consistency issue.
       value:
         version: v1
+        schema_version: "1.0"
         job_id: 2c81f5a2-3d4b-49a6-9c2e-5e0a3f1b8d44
         status: needs_review
         document_type: invoice
@@ -923,6 +936,7 @@ components:
       summary: Three-document PDF (invoice + ТТН + АКТ) on three pages.
       value:
         version: v1
+        schema_version: "1.0"
         job_id: 3df9e711-9a04-4ab9-8d6e-1f0b2c5d8e93
         status: done
         document_type: invoice
@@ -965,6 +979,7 @@ components:
       summary: Password-protected PDF — unrecoverable.
       value:
         version: v1
+        schema_version: "1.0"
         job_id: 4e72a118-bfa2-4d11-9c3a-2a5b6c0e7d12
         status: failed
         document_type: null

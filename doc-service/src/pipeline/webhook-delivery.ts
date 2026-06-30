@@ -26,7 +26,11 @@
  * не блокируется (sweeper подберёт через 30 дней).
  */
 import type { Logger } from 'pino';
-import { deliverWebhook, computeTargetEntityHint } from '../webhooks/deliver.js';
+import {
+  deliverWebhook,
+  computeTargetEntityHint,
+  WEBHOOK_SCHEMA_VERSION,
+} from '../webhooks/deliver.js';
 import { jobsRepo, type JobRow } from '../storage/jobs.js';
 import { removeStoredFile } from '../storage/files.js';
 import { redactPii } from './normalize/pii-redact.js';
@@ -124,6 +128,7 @@ export async function deliverFinalizedJobWebhook(
     {
       // 2026-05-18 (SLAI Issue #4): обязательное поле контракта v1.
       version: 'v1',
+      schema_version: WEBHOOK_SCHEMA_VERSION,
       job_id: updated.id,
       status: updated.status,
       // 2026-05-18 (SLAI Issue #3): нормализация slug → lowercase snake_case.

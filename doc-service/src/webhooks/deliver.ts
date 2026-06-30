@@ -6,6 +6,16 @@ import { jobsRepo } from '../storage/jobs.js';
 import { webhookAttemptsTotal } from '../metrics.js';
 import type { Logger } from 'pino';
 
+/**
+ * Версия СХЕМЫ полей (extracted field-set), отдельная от версии контракта
+ * envelope'а (`version: 'v1'`). SLAI просил drift-маркер: envelope остаётся
+ * v1, а этот маркер бампается когда меняется набор/семантика полей внутри
+ * `extracted`. Конвенция — semver-строка "MAJOR.MINOR".
+ * НЕ путать с `extracted._match_signals.schema_version` (тот скоупит
+ * проекцию match-сигналов, не общий контракт).
+ */
+export const WEBHOOK_SCHEMA_VERSION = '1.0';
+
 export type WebhookPayload = {
   /**
    * Версия контракта вебхука. Введена 2026-05-18 после SLAI EOD-отчёта
@@ -16,6 +26,11 @@ export type WebhookPayload = {
    * бампаем до 'v2', SLAI-сторона решает что делать со старыми.
    */
   version: 'v1';
+  /**
+   * Drift-маркер набора полей `extracted`. См. WEBHOOK_SCHEMA_VERSION.
+   * Top-level, sibling к `version` — SLAI читает его отдельно от envelope.
+   */
+  schema_version: string;
   job_id: string;
   status: string;
   document_type: string | null;

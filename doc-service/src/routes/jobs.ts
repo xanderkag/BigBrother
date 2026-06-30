@@ -38,7 +38,11 @@ import { combineConfidence } from '../pipeline/quality.js';
 import { projectsRepo } from '../storage/projects.js';
 import { sanitizeMetadata } from '../storage/metadata-sanitizer.js';
 import { SYSTEM_DEFAULT_ORG_ID, SYSTEM_DEFAULT_PROJECT_ID } from '../auth.js';
-import { deliverWebhook, computeTargetEntityHint } from '../webhooks/deliver.js';
+import {
+  deliverWebhook,
+  computeTargetEntityHint,
+  WEBHOOK_SCHEMA_VERSION,
+} from '../webhooks/deliver.js';
 import { organizationSettingsRepo } from '../storage/organization-settings.js';
 import { normalizeSlugForApi } from '../types/slug-normalize.js';
 import {
@@ -1091,7 +1095,22 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         return { error: 'job not found' };
       }
       if (!(await requireProjectWrite(req, reply, job.project_id))) return reply;
-      if (!job.webhook_url) {
+      // Резолвим целевой URL по той же precedence что и основной delivery-path
+      // (orchestrator): 1) explicit per-job webhook_url; 2) fallback на org-level
+      // organization_settings.webhook_url. Прод-job'ы льют в SLAI через org-вебхук,
+      // не per-job — без этого fallback'а их нельзя переотправить.
+      let targetUrl = job.webhook_url;
+      let orgSecret: string | undefined;
+      if (job.organization_id) {
+        orgSecret =
+          (await organizationSettingsRepo.getDecryptedWebhookSecret(job.organization_id)) ??
+          undefined;
+        if (!targetUrl) {
+          const profile = await organizationSettingsRepo.get(job.organization_id);
+          if (profile.webhook_url) targetUrl = profile.webhook_url;
+        }
+      }
+      if (!targetUrl) {
         reply.code(400);
         return { error: 'job has no webhook_url configured' };
       }
@@ -1117,6 +1136,7 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
       const payload = {
         // SLAI Issue #4: обязательный version field в контракте v1.
         version: 'v1' as const,
+        schema_version: WEBHOOK_SCHEMA_VERSION,
         job_id: job.id,
         status: job.status,
         // SLAI Issue #3: outbound slug normalize (TTN→ttn, etc.).
@@ -1129,15 +1149,11 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         // EXT-HINT-1: единая логика хинта что и в основном webhook-delivery.
         target_entity_hint: computeTargetEntityHint(extractedForPayload),
       };
-      // SLAI 2026-06-03 DF-2 fix: подставляем per-org HMAC secret. Без этого
-      // manual redeliver подписывает глобальным config.webhook.hmacSecret и
-      // consumer'ы с per-tenant verify отбрасывают 401.
-      const orgSecret = job.organization_id
-        ? (await organizationSettingsRepo.getDecryptedWebhookSecret(job.organization_id)) ??
-          undefined
-        : undefined;
+      // SLAI 2026-06-03 DF-2 fix: подписываем per-org HMAC secret (резолвлен
+      // выше). Без этого manual redeliver подписывает глобальным
+      // config.webhook.hmacSecret и consumer'ы с per-tenant verify отбрасывают 401.
       // Fire-and-forget: доставка идёт в фоне, ответ клиенту не ждёт.
-      void deliverWebhook(req.params.id, job.webhook_url, payload, req.log as never, orgSecret);
+      void deliverWebhook(req.params.id, targetUrl, payload, req.log as never, orgSecret);
       reply.code(202);
       // Возвращаем актуальный снимок job'а (счётчик уже сброшен).
       const refreshed = await jobsRepo.findById(req.params.id);

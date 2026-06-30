@@ -1,7 +1,11 @@
 import type { Logger } from 'pino';
 import { config } from '../config.js';
 import { jobsRepo as defaultJobsRepo, type JobRow } from '../storage/jobs.js';
-import { deliverWebhook, type WebhookPayload } from '../webhooks/deliver.js';
+import {
+  deliverWebhook,
+  WEBHOOK_SCHEMA_VERSION,
+  type WebhookPayload,
+} from '../webhooks/deliver.js';
 import { normalizeSlugForApi } from '../types/slug-normalize.js';
 
 /**
@@ -77,6 +81,7 @@ export function startWebhookSweeper(
         const payload: WebhookPayload = {
           // SLAI Issue #4: обязательный version field.
           version: 'v1',
+          schema_version: WEBHOOK_SCHEMA_VERSION,
           job_id: row.id,
           status: row.status,
           // SLAI Issue #3: outbound slug normalize.
