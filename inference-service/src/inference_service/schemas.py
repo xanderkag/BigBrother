@@ -21,6 +21,12 @@ class ClassifyRequest(BaseModel):
     # позволяет роутить разные документы в Phi-4 / Gemma / Mistral / etc.
     # на лету без рестарта inference-service).
     model: str | None = None
+    # reasoning/thinking knob (OpenAI-compat). "none" подавляет hidden
+    # reasoning-токены у thinking-моделей (qwen3.6: ~110s → ~0.5s, JSON
+    # остаётся в message.content). doc-service шлёт это из
+    # provider_settings.extra.reasoning_effort. None → не передаётся в
+    # backend, поведение не меняется (phi4 и прочие не-reasoning модели).
+    reasoning_effort: str | None = None
 
 
 class ClassifyResponse(BaseModel):
@@ -55,6 +61,8 @@ class ExtractRequest(BaseModel):
     # классический text-only путь (поведение не меняется). doc-service шлёт
     # это поле только когда resolved-провайдер помечен vision=true.
     image_base64: str | None = None
+    # См. ClassifyRequest.reasoning_effort — knob для thinking-моделей.
+    reasoning_effort: str | None = None
 
     # Allow population by both "schema" (the public name) and "schema_" (Python attr).
     # `schema` is a reserved attribute on BaseModel in Pydantic v1; the alias keeps
@@ -99,6 +107,8 @@ class VisionRequest(BaseModel):
     prompt: str | None = None
     # См. ClassifyRequest.model — для openai_compatible backend'ов с vision.
     model: str | None = None
+    # См. ClassifyRequest.reasoning_effort.
+    reasoning_effort: str | None = None
 
 
 class VisionResponse(BaseModel):
@@ -137,6 +147,8 @@ class TranscribeResponse(BaseModel):
 class VerifyRequest(BaseModel):
     extracted: dict[str, Any]
     raw_text: str
+    # См. ClassifyRequest.reasoning_effort.
+    reasoning_effort: str | None = None
 
 
 class VerifyResponse(BaseModel):

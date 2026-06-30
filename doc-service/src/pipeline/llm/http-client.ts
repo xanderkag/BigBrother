@@ -32,6 +32,15 @@ export type HttpLlmClientOptions = {
    * (передав `imagePath`). См. LlmClient.supportsVision.
    */
   vision?: boolean;
+  /**
+   * Per-provider knob для reasoning/thinking-моделей (provider_settings.extra.reasoning_effort).
+   * Если задан — клиент кладёт его в body каждого вызова `{reasoning_effort: "none"}`,
+   * inference-service пробрасывает в OpenAI-compat backend, и Ollama-шим
+   * подавляет hidden reasoning-токены (qwen3.6: ~110s → ~7s, JSON остаётся
+   * в message.content). Для не-reasoning моделей (phi4 и т.п.) row.extra
+   * этого ключа не содержит, и поведение не меняется.
+   */
+  reasoningEffort?: string;
 };
 
 export class HttpLlmClient implements LlmClient {
@@ -45,8 +54,17 @@ export class HttpLlmClient implements LlmClient {
     return this.opts.vision === true;
   }
 
-  private withModel<T extends Record<string, unknown>>(body: T): T & { model?: string } {
-    return this.opts.model ? { ...body, model: this.opts.model } : body;
+  private withModel<T extends Record<string, unknown>>(
+    body: T,
+  ): T & { model?: string; reasoning_effort?: string } {
+    let out: T & { model?: string; reasoning_effort?: string } = body;
+    if (this.opts.model) out = { ...out, model: this.opts.model };
+    // reasoning_effort пробрасываем во ВСЕ вызовы клиента (classify/extract/
+    // verify/vision) — чтобы reasoning-провайдер был быстрым на любом hop'е.
+    if (this.opts.reasoningEffort) {
+      out = { ...out, reasoning_effort: this.opts.reasoningEffort };
+    }
+    return out;
   }
 
   async classify(text: string): Promise<LlmClassifyResult> {

@@ -87,11 +87,12 @@ class ClaudeBackend(ModelBackend):
         self,
         text: str,
         model_override: str | None = None,  # noqa: ARG002 — игнорируем, см. ниже
+        reasoning_effort: str | None = None,  # noqa: ARG002 — Ollama-knob, Claude не использует
     ) -> ClassifyResponse:
         # Claude backend привязан к одной модели в __init__ (anthropic_model_id);
         # model_override игнорируем — если хочется другую модель, нужен
         # отдельный backend-инстанс.
-        del model_override
+        del model_override, reasoning_effort
         async with self._admit():
             prompt = classify_prompts.build(text)
             raw = await self._complete_text(prompt)
@@ -109,8 +110,9 @@ class ClaudeBackend(ModelBackend):
         include_debug: bool = False,
         model_override: str | None = None,  # noqa: ARG002 — ignored, см. classify()
         image_base64: str | None = None,
+        reasoning_effort: str | None = None,  # noqa: ARG002 — Ollama-knob, Claude не использует
     ) -> ExtractResponse:
-        del model_override
+        del model_override, reasoning_effort
         # F8: prompt caching. Разделяем static (system) и dynamic (user)
         # части — system кэшируется Anthropic'ом на 5 минут, и при
         # последовательных запросах с тем же hint+schema input tokens
@@ -220,8 +222,9 @@ class ClaudeBackend(ModelBackend):
         extracted: dict[str, Any],
         raw_text: str,
         model_override: str | None = None,  # noqa: ARG002 — ignored
+        reasoning_effort: str | None = None,  # noqa: ARG002 — Ollama-knob, Claude не использует
     ) -> VerifyResponse:
-        del model_override
+        del model_override, reasoning_effort
         prompt = verify_prompts.build(extracted=extracted, raw_text=raw_text)
         async with self._admit():
             raw = await self._complete_text(prompt)

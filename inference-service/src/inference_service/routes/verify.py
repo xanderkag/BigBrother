@@ -17,4 +17,8 @@ async def verify(
     gate: AdmissionGate = Depends(get_admission_gate),
 ) -> VerifyResponse:
     async with gate.acquire():
-        return await backend.verify(extracted=body.extracted, raw_text=body.raw_text)
+        return await backend.verify(
+            extracted=body.extracted,
+            raw_text=body.raw_text,
+            reasoning_effort=body.reasoning_effort,
+        )

@@ -90,6 +90,7 @@ class ModelBackend(ABC):
         self,
         text: str,
         model_override: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> ClassifyResponse:
         ...
 
@@ -103,6 +104,7 @@ class ModelBackend(ABC):
         include_debug: bool = False,
         model_override: str | None = None,
         image_base64: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> ExtractResponse:
         """Извлечь структурированные данные из текста.
 
@@ -139,5 +141,6 @@ class ModelBackend(ABC):
         extracted: dict[str, Any],
         raw_text: str,
         model_override: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> VerifyResponse:
         ...

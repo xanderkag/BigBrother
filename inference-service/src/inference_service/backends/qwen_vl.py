@@ -82,8 +82,9 @@ class QwenVlBackend(ModelBackend):
         self,
         text: str,
         model_override: str | None = None,  # noqa: ARG002 — backend хардкодит модель
+        reasoning_effort: str | None = None,  # noqa: ARG002 — Ollama-knob, не применим
     ) -> ClassifyResponse:
-        del model_override
+        del model_override, reasoning_effort
         prompt = classify_prompts.build(text)
         async with self._admit():
             raw = await self._generate_text(prompt)
@@ -103,8 +104,9 @@ class QwenVlBackend(ModelBackend):
         include_debug: bool = False,
         model_override: str | None = None,  # noqa: ARG002 — ignored
         image_base64: str | None = None,
+        reasoning_effort: str | None = None,  # noqa: ARG002 — Ollama-knob, не применим
     ) -> ExtractResponse:
-        del model_override
+        del model_override, reasoning_effort
         prompt = extract_prompts.build(
             text=text, schema=schema, hint=hint, prompt_override=prompt_override
         )
@@ -166,8 +168,9 @@ class QwenVlBackend(ModelBackend):
         extracted: dict[str, Any],
         raw_text: str,
         model_override: str | None = None,  # noqa: ARG002 — ignored
+        reasoning_effort: str | None = None,  # noqa: ARG002 — Ollama-knob, не применим
     ) -> VerifyResponse:
-        del model_override
+        del model_override, reasoning_effort
         prompt = verify_prompts.build(extracted=extracted, raw_text=raw_text)
         async with self._admit():
             raw = await self._generate_text(prompt)

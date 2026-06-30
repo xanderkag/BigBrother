@@ -25,4 +25,5 @@ async def extract(
             include_debug=body.include_debug,
             model_override=body.model,
             image_base64=body.image_base64,
+            reasoning_effort=body.reasoning_effort,
         )

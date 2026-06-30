@@ -225,6 +225,7 @@ class DynamicLlmClient implements LlmClient {
       timeoutMs: config.llm.timeoutMs,
       model: row.model || undefined,
       vision: row.vision === true,
+      reasoningEffort: readReasoningEffort(row.extra),
     });
   }
 
@@ -257,8 +258,21 @@ class DynamicLlmClient implements LlmClient {
       // иначе inference использует свой OPENAI_MODEL из env.
       model: dbRow?.model || undefined,
       vision: dbRow?.vision === true,
+      reasoningEffort: readReasoningEffort(dbRow?.extra),
     });
   }
+}
+
+/**
+ * Читает `reasoning_effort` из provider_settings.extra (JSONB). Используется
+ * для reasoning/thinking-моделей (qwen3.6) — значение "none" подавляет hidden
+ * reasoning-токены на стороне Ollama. Возвращает undefined если ключа нет /
+ * он не строка, чтобы не-reasoning провайдеры (phi4) не получали лишний param.
+ */
+function readReasoningEffort(extra: Record<string, unknown> | null | undefined): string | undefined {
+  if (!extra || typeof extra !== 'object') return undefined;
+  const v = (extra as Record<string, unknown>).reasoning_effort;
+  return typeof v === 'string' && v.length > 0 ? v : undefined;
 }
 
 /** Singleton LLM-клиент, читающий конфиг из БД с TTL-кэшем. */

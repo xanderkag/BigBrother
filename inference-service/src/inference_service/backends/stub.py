@@ -101,8 +101,9 @@ class StubBackend(ModelBackend):
         self,
         text: str,
         model_override: str | None = None,  # noqa: ARG002 — stub игнорит
+        reasoning_effort: str | None = None,  # noqa: ARG002 — stub игнорит
     ) -> ClassifyResponse:
-        del model_override
+        del model_override, reasoning_effort
         async with self._admit():
             head = text[:4000]
             best: tuple[str, float] | None = None
@@ -122,8 +123,9 @@ class StubBackend(ModelBackend):
         include_debug: bool = False,
         model_override: str | None = None,  # noqa: ARG002 — stub игнорит
         image_base64: str | None = None,  # noqa: ARG002 — stub игнорит
+        reasoning_effort: str | None = None,  # noqa: ARG002 — stub игнорит
     ) -> ExtractResponse:
-        del model_override, image_base64
+        del model_override, image_base64, reasoning_effort
         # Stub mode: для смоук-тестирования pipeline'а возвращаем mock-данные
         # для известных типов документов. Это позволяет проверить ветки
         # llm_extract / multipass / items[] / per-line validators / resolution
@@ -165,8 +167,9 @@ class StubBackend(ModelBackend):
         extracted: dict[str, Any],
         raw_text: str,
         model_override: str | None = None,  # noqa: ARG002 — stub игнорит
+        reasoning_effort: str | None = None,  # noqa: ARG002 — stub игнорит
     ) -> VerifyResponse:
-        del model_override
+        del model_override, reasoning_effort
         # Pass-through: real verify would normalize dates, money, etc.
         async with self._admit():
             return VerifyResponse(extracted=extracted, issues=[])

@@ -180,10 +180,16 @@ class OpenAICompatibleBackend(ModelBackend):
         self,
         text: str,
         model_override: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> ClassifyResponse:
         prompt = classify_prompts.build(text)
         async with self._admit():
-            raw = await self._complete_text(prompt, json_mode=True, model_override=model_override)
+            raw = await self._complete_text(
+                prompt,
+                json_mode=True,
+                model_override=model_override,
+                reasoning_effort=reasoning_effort,
+            )
         data = _parse_json(raw) or {}
         type_value = data.get("type") if isinstance(data.get("type"), str) else None
         confidence = _safe_float(data.get("confidence"))
@@ -198,6 +204,7 @@ class OpenAICompatibleBackend(ModelBackend):
         include_debug: bool = False,
         model_override: str | None = None,
         image_base64: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> ExtractResponse:
         prompt = extract_prompts.build(
             text=text, schema=schema, hint=hint, prompt_override=prompt_override
@@ -221,12 +228,18 @@ class OpenAICompatibleBackend(ModelBackend):
                     }
                 ]
                 raw, usage = await self._complete_with_usage(
-                    messages, json_mode=True, model_override=model_override
+                    messages,
+                    json_mode=True,
+                    model_override=model_override,
+                    reasoning_effort=reasoning_effort,
                 )
             else:
                 # Версия _complete_text с usage: возвращает (text, usage_dict | None).
                 raw, usage = await self._complete_text_with_usage(
-                    prompt, json_mode=True, model_override=model_override
+                    prompt,
+                    json_mode=True,
+                    model_override=model_override,
+                    reasoning_effort=reasoning_effort,
                 )
             duration_ms = int((time.monotonic() - started) * 1000)
         # Восстанавливаем потерянную обёртку `extracted` + канонизируем stray-ключи
@@ -330,10 +343,16 @@ class OpenAICompatibleBackend(ModelBackend):
         extracted: dict[str, Any],
         raw_text: str,
         model_override: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> VerifyResponse:
         prompt = verify_prompts.build(extracted=extracted, raw_text=raw_text)
         async with self._admit():
-            raw = await self._complete_text(prompt, json_mode=True, model_override=model_override)
+            raw = await self._complete_text(
+                prompt,
+                json_mode=True,
+                model_override=model_override,
+                reasoning_effort=reasoning_effort,
+            )
         data = _parse_json(raw) or {}
         normalized = data.get("extracted") if isinstance(data.get("extracted"), dict) else extracted
         issues = data.get("issues") if isinstance(data.get("issues"), list) else []
@@ -346,11 +365,13 @@ class OpenAICompatibleBackend(ModelBackend):
         prompt: str,
         json_mode: bool = False,
         model_override: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> str:
         text, _ = await self._complete_with_usage(
             [{"role": "user", "content": prompt}],
             json_mode=json_mode,
             model_override=model_override,
+            reasoning_effort=reasoning_effort,
         )
         return text
 
@@ -359,11 +380,13 @@ class OpenAICompatibleBackend(ModelBackend):
         prompt: str,
         json_mode: bool = False,
         model_override: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> tuple[str, dict[str, int] | None]:
         return await self._complete_with_usage(
             [{"role": "user", "content": prompt}],
             json_mode=json_mode,
             model_override=model_override,
+            reasoning_effort=reasoning_effort,
         )
 
     async def _complete_with_image(
@@ -400,6 +423,7 @@ class OpenAICompatibleBackend(ModelBackend):
         messages: list[dict[str, Any]],
         json_mode: bool,
         model_override: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> tuple[str, dict[str, int] | None]:
         # json_mode = response_format={"type": "json_object"} — поддерживают
         # все современные OpenAI-compat серверы (OpenAI, vLLM, Ollama 0.5+,
@@ -423,6 +447,15 @@ class OpenAICompatibleBackend(ModelBackend):
         }
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
+        # reasoning_effort (доходит из provider_settings.extra через doc-service):
+        # для thinking-моделей "none" подавляет hidden reasoning-токены —
+        # qwen3.6: ~110s → ~0.5s, JSON остаётся в message.content (не уходит в
+        # reasoning-поле). Шлём через extra_body, чтобы значение всегда попадало
+        # на провод, даже если SDK ужесточит enum (Ollama принимает "none",
+        # что не входит в стандартный OpenAI-набор low/medium/high). Для
+        # не-reasoning моделей (phi4) param приходит None — kwargs не трогаем.
+        if reasoning_effort:
+            kwargs["extra_body"] = {"reasoning_effort": reasoning_effort}
 
         try:
             response = await self._client.chat.completions.create(**kwargs)
@@ -430,6 +463,13 @@ class OpenAICompatibleBackend(ModelBackend):
             if json_mode and _looks_like_json_mode_not_supported(e):
                 log.info("backend rejected response_format=json_object, retrying without")
                 kwargs.pop("response_format", None)
+                response = await self._client.chat.completions.create(**kwargs)
+            elif reasoning_effort and _looks_like_reasoning_effort_not_supported(e):
+                # Бэкенд не знает reasoning_effort — повторяем без него
+                # (мягкая совместимость; thinking-модель станет медленной, но
+                # не упадёт). Известные нам серверы (Ollama 0.24+) принимают.
+                log.info("backend rejected reasoning_effort, retrying without")
+                kwargs.pop("extra_body", None)
                 response = await self._client.chat.completions.create(**kwargs)
             else:
                 raise
@@ -461,6 +501,13 @@ def _looks_like_json_mode_not_supported(err: Exception) -> bool:
     """
     msg = str(err).lower()
     return any(kw in msg for kw in ("response_format", "json_object", "json mode"))
+
+
+def _looks_like_reasoning_effort_not_supported(err: Exception) -> bool:
+    """Эвристика: упало из-за reasoning_effort? Старые серверы могут не знать
+    этот param. Полагаемся на текст ошибки (коды разнятся 400/422/500)."""
+    msg = str(err).lower()
+    return "reasoning_effort" in msg or "reasoning effort" in msg
 
 
 def _image_to_data_url(image: Image.Image) -> str:

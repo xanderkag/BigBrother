@@ -17,4 +17,8 @@ async def classify(
     gate: AdmissionGate = Depends(get_admission_gate),
 ) -> ClassifyResponse:
     async with gate.acquire():
-        return await backend.classify(body.text, model_override=body.model)
+        return await backend.classify(
+            body.text,
+            model_override=body.model,
+            reasoning_effort=body.reasoning_effort,
+        )
