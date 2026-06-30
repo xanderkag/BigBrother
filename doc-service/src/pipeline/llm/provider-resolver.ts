@@ -128,6 +128,52 @@ class DynamicLlmClient implements LlmClient {
   }
 
   /**
+   * Запустить `fn` через активный vision-провайдер (vision=true, is_active).
+   * Используется OCR-движком (VisionLlmEngine), чтобы vision-OCR сканов шёл
+   * на vision-capable модель (qwen3-vl:32b / minicpm-v), а НЕ на default
+   * text-провайдера extraction'а (qwen3.6:27b). Если активной vision-строки
+   * нет — fail-soft, fn выполняется на default-провайдере (как раньше).
+   *
+   * Резолв id кэшируется на TTL_MS, чтобы не дёргать БД на каждую страницу
+   * скана. withForceProvider сам fail-soft'ит, если строка пропала.
+   */
+  async withVisionProvider<T>(fn: () => Promise<T>): Promise<T> {
+    const id = await this.resolveVisionProviderId();
+    if (!id) return fn();
+    return forceProviderContext.run({ providerId: id }, fn);
+  }
+
+  private visionIdCache: { id: string | null; at: number } | null = null;
+
+  private async resolveVisionProviderId(): Promise<string | null> {
+    const now = Date.now();
+    if (this.visionIdCache && now - this.visionIdCache.at < TTL_MS) {
+      return this.visionIdCache.id;
+    }
+    let id: string | null = null;
+    try {
+      // Явный OCR_VISION_PROVIDER_ID имеет приоритет — детерминированный
+      // выбор vision-OCR модели независимо от display_name-ordering. Проверяем
+      // что строка существует, активна и vision; иначе автоподбор.
+      const explicit = config.hybridRouting.ocrVisionProviderId;
+      if (explicit) {
+        const row = await providerSettingsRepo.findById(explicit);
+        if (row && row.kind === 'llm' && row.is_active && row.vision === true) {
+          id = row.id;
+        }
+      }
+      if (!id) {
+        const row = await providerSettingsRepo.findActiveVision();
+        id = row?.id ?? null;
+      }
+    } catch {
+      id = null;
+    }
+    this.visionIdCache = { id, at: Date.now() };
+    return id;
+  }
+
+  /**
    * EXT-B (Q11): запустить `fn` со scoped BYO-провайдером. Все вызовы
    * dynamicLlm внутри callback'а пойдут через ad-hoc HttpLlmClient,
    * собранный из переданных creds — БЕЗ записи в БД и БЕЗ кэширования ключа.

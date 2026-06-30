@@ -263,6 +263,14 @@ const ConfigSchema = z.object({
     enabled: z.coerce.boolean().default(false),
     visionConfThreshold: confidence01FromEnv(0.7),
     visionProviderId: z.string().optional(),
+    /**
+     * Явный id provider_settings-строки для vision-OCR сканов (VisionLlmEngine).
+     * Отделён от visionProviderId (extract-from-image), потому что OCR-движок
+     * должен идти на vision-capable модель (qwen3-vl:32b), а НЕ на default
+     * text-провайдера extraction'а (qwen3.6:27b). Пусто → OCR-движок берёт
+     * любую активную vision-строку через findActiveVision().
+     */
+    ocrVisionProviderId: z.string().optional(),
   }),
 
   /**
@@ -577,6 +585,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       enabled: env.HYBRID_ROUTING_ENABLED,
       visionConfThreshold: env.HYBRID_VISION_CONF_THRESHOLD,
       visionProviderId: env.HYBRID_VISION_PROVIDER_ID || undefined,
+      ocrVisionProviderId: env.OCR_VISION_PROVIDER_ID || undefined,
     },
     fileUrlIngest: {
       enabled: env.FILE_URL_INGEST_ENABLED,

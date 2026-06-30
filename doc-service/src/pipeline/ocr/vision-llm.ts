@@ -26,10 +26,23 @@ const IMAGE_MIMES = new Set(['image/jpeg', 'image/png', 'image/bmp', 'image/tiff
 export class VisionLlmEngine implements OcrEngine {
   readonly name = 'vision-llm' as const;
 
+  /**
+   * visionScope (optional): оборачивает каждый visionOcr-вызов так, чтобы он
+   * шёл через активный vision-провайдер (qwen3-vl:32b), а не через default
+   * text-провайдера extraction'а (qwen3.6:27b). Без него OCR пошёл бы на
+   * модель default-провайдера, которая может быть не vision-capable.
+   * Fail-soft: если scope не задан или vision-строки нет — вызов идёт как есть.
+   */
   constructor(
     public readonly acceptanceThreshold: number,
     private readonly llm: LlmClient,
+    private readonly visionScope?: <T>(fn: () => Promise<T>) => Promise<T>,
   ) {}
+
+  private visionOcr(input: { imagePath: string }): Promise<{ text: string; confidence: number }> {
+    const call = () => this.llm.visionOcr(input);
+    return this.visionScope ? this.visionScope(call) : call();
+  }
 
   supports(input: OcrInput): boolean {
     return PDF_MIMES.has(input.mimeType) || IMAGE_MIMES.has(input.mimeType);
@@ -43,7 +56,7 @@ export class VisionLlmEngine implements OcrEngine {
     const started = Date.now();
 
     if (IMAGE_MIMES.has(input.mimeType)) {
-      const r = await this.llm.visionOcr({ imagePath: input.filePath });
+      const r = await this.visionOcr({ imagePath: input.filePath });
       return {
         engine: this.name,
         text: r.text.trim(),
@@ -78,7 +91,7 @@ export class VisionLlmEngine implements OcrEngine {
   private async processPages(pageFiles: string[], started: number): Promise<OcrResult> {
     const pages: Array<{ text: string; confidence: number }> = [];
     for (const pf of pageFiles) {
-      const r = await this.llm.visionOcr({ imagePath: pf });
+      const r = await this.visionOcr({ imagePath: pf });
       pages.push({ text: r.text.trim(), confidence: r.confidence });
     }
 

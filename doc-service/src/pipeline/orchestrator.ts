@@ -73,7 +73,7 @@ const engines: readonly OcrEngine[] = [
   new XmlEngine(),
   new PdfTextEngine(config.thresholds.pdfText),
   new TesseractEngine(config.thresholds.tesseract, config.tesseractLangs),
-  new VisionLlmEngine(config.thresholds.visionLlm, llm),
+  new VisionLlmEngine(config.thresholds.visionLlm, llm, (fn) => dynamicLlm.withVisionProvider(fn)),
   new YandexVisionEngine(config.yandex),
 ];
 
