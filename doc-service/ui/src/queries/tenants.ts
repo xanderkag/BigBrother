@@ -131,6 +131,23 @@ export interface NewTokenResponse {
   token_last_used_at: null;
 }
 
+export interface ProvisionInstanceInput {
+  name: string;
+  type?: string;
+  webhook_url?: string | null;
+  expires_in_days?: number | null;
+  llm_budget?: number | null;
+  dadata_budget?: number | null;
+}
+
+export interface ProvisionInstanceResult {
+  organization_id: string;
+  user_id: string;
+  project_id: string;
+  plaintext_token: string;
+  webhook_secret: string | null;
+}
+
 export function useGenerateToken() {
   const qc = useQueryClient();
   return useMutation({
@@ -149,6 +166,19 @@ export function useRevokeToken() {
     mutationFn: (userId: string) =>
       api.delete<void>(`/api/v1/users/${encodeURIComponent(userId)}/token`),
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['users'] });
+    },
+  });
+}
+
+export function useProvisionInstance() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: ProvisionInstanceInput) =>
+      api.post<ProvisionInstanceResult>('/api/v1/admin/provision-instance', data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['organizations'] });
+      qc.invalidateQueries({ queryKey: ['projects'] });
       qc.invalidateQueries({ queryKey: ['users'] });
     },
   });

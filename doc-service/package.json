@@ -19,6 +19,7 @@
     "migrate:secrets": "tsx src/scripts/migrate-secrets.ts",
     "rotate:secrets": "tsx src/scripts/rotate-secrets.ts",
     "provision:sandbox": "tsx src/scripts/provision-sandbox.ts",
+    "provision:instance": "tsx src/scripts/provision-instance.ts",
     "seed:users": "tsx src/scripts/seed-users.ts",
     "smoke": "tsx src/scripts/smoke.ts",
     "eval": "tsx src/scripts/eval/run.ts",
