@@ -48,6 +48,82 @@
 
 ## Active Questions
 
+### Q17. schema_version — drift-маркер состава `extracted` (отдельно от envelope `version`)
+
+- **Status:** `ANSWERED` (sign-off Александра 2026-06-30: **принят отдельный top-level `schema_version`**, старт `"1.0"`, в реализации на стороне backend; To: SLAI_DEV — начать читать ключ + подтвердить трактовку bump'ов)
+- **Asked:** 2026-06-30 (микро-сверка SLAI, Q1)
+- **From:** SLAI_DEV
+- **To:** PARSDOCS_DEV / SLAI_DEV
+- **Связано:** webhook v1 (`src/webhooks/deliver.ts` — top-level `version: 'v1'`), `src/pipeline/normalize/match-signals.ts` (`MATCH_SIGNALS_SCHEMA_VERSION = '1.0'`, скоупит ТОЛЬКО `_match_signals`, не весь `extracted`), CONTRACT_TECH_APPENDIX §4.5. Ответ: `PARSDOCS_REPLY_TO_SLAI_SVERKA_2026-06-30.md`.
+
+#### Question / Context
+SLAI валидируют envelope `version` (принимают только `v1`). Сегодня parsdocs **НЕ** шлёт отдельный top-level `schema_version` (verified в коде: `version: 'v1'` стоит в `deliver.ts`/`routes/jobs.ts:1119`/`webhook-sweeper.ts:79`/`webhook-delivery.ts:126`; отдельного `schema_version` на верхнем уровне нет). Существующий `_match_signals.schema_version = "1.0"` скоупит **только проекцию match-сигналов**, не полный состав `extracted`. → Дрейф состава `extracted` (новые/переименованные поля, новые типы) сегодня **ничем не маркируется**. SLAI просят явный маркер, чтобы детектить дрейф, а не молча ломаться. Их вопрос: бампать envelope `version` ИЛИ отдельный `schema_version` — что удобнее на нашей стороне?
+
+#### Решение (sign-off Александра 2026-06-30)
+- **Принят отдельный top-level `schema_version`** (НЕ bump envelope `version`).
+- Envelope `version` остаётся `"v1"` под транспорт (HMAC/заголовки/форма конверта/retry) — **НЕ** бампается на изменения состава полей.
+- Ключ: `schema_version`, **top-level** payload (semver-lite `MAJOR.MINOR`), рядом с `version`/`document_type`, **НЕ** внутри `extracted` — дрейф виден до парсинга тела. Текущее значение `"1.0"`. **Внедряется сейчас** — SLAI может начинать читать.
+- Bump-политика: **MINOR** (`1.0→1.1`) = аддитивно (§4.5 back-compat) → SLAI логирует/замечает; **MAJOR** (`1.x→2.0`) = ломающе (rename/del) → SLAI hard-gate; обе версии параллельно ≥ 6 мес.
+- Старт: top-level `schema_version = "1.0"` на включении как базовая точка (маркер отслеживает дрейф «с этого момента», прошлую историю задним числом не версионируем). Дельта этой сессии (price_list + commercial_invoice) **входит в базовую `1.0`**.
+- Top-level `schema_version` — единый источник версии состава; `_match_signals.schema_version` продолжает версионировать проекцию сигналов независимо (при желании SLAI — синхронизируем по MAJOR, для старта не требуется).
+
+#### Что сделать
+1. **SLAI ack:** начать читать top-level `schema_version` для drift-детекта + подтвердить трактовку MINOR=log / MAJOR=gate.
+2. **parsdocs (backend):** ввести `schema_version` в `WebhookPayload` (`deliver.ts`) + во все 4 места сборки payload (`routes/jobs.ts`, `webhook-sweeper.ts`, `webhook-delivery.ts`), константа версии, старт `"1.0"`. Тесты payload-shape. Commit → RESOLVED. Envelope `version` НЕ трогать.
+
+#### Resolution
+<в реализации backend; RESOLVED после внедрения ключа + commit-ссылки. Ждём ack SLAI (чтение ключа).>
+
+---
+
+### Q18. price_list — enrichment vs полноценная матч-сущность (бизнес-назначение)
+
+- **Status:** `DEFERRED` (backlog — sign-off Александра 2026-06-30: price_list **пока НЕ нужен как сущность**; хранить карточкой достаточно, SLAI ничего не строит. Переоткрыть по реальной потребности.)
+- **Asked:** 2026-06-30 (микро-сверка SLAI, Q2)
+- **From:** SLAI_DEV
+- **To:** —
+- **Связано:** миграция `20260630000001` (price_list), сверка `PARSDOCS_SVERKA_SLAI_2026-06-30.md` §3.1 (HS-линковка отложена), Q16 (price_list.hs_code как richer extraction, не match-ключ). Ответ: `PARSDOCS_REPLY_TO_SLAI_SVERKA_2026-06-30.md`.
+
+#### Question / Context
+`price_list` — новый тип, SLAI его пока не парсят → приходит карточкой без маппинга. Спрашивали: нужен ли им как сущность/обогащение (конкретно `price_list.hs_code` → втянуть в сверку ТН ВЭД), или хранить карточкой достаточно?
+
+#### Решение (sign-off Александра 2026-06-30 — DEFERRED)
+**price_list НЕ нужен как сущность сейчас — паркуем в беклог.** Бизнес-цель документа в матчинге не закреплена; не коммитим SLAI на постройку обработки под цель, которой ещё нет. SLAI: храните карточку как есть, ничего строить не нужно. HS как кросс-док match-ключ (прайс ↔ ГТД ↔ инвойс) остаётся отложенным (та же «HS-линковка» сверки §3.1). Контракт под price_list не расширяется, `schema_version` из-за него не бампается.
+
+**Условие переоткрытия:** если/когда у SLAI появится конкретный сценарий, где price_list должен матчиться к заказу/договору/ГТД по позициям/HS — переоткрыть Q18 и завести отдельной фичей (HS-ключ в `_match_signals` у источников + bump `1.0→1.1` + работа на обеих сторонах, связано с Q17).
+
+#### Resolution
+<отложено в беклог по решению Александра 2026-06-30; код не трогается (карточка уже отдаётся). Re-open при реальной потребности.>
+
+---
+
+### Q16. commercial_invoice.containers[] не доходит до `_match_signals` + сверка 2026-06-30
+
+- **Status:** `OPEN` (To: CLAUDE / PARSDOCS_DEV — фикс на нашей стороне; одна развилка To: SLAI_DEV)
+- **Asked:** 2026-06-30
+- **From:** PARSDOCS_DEV
+- **To:** CLAUDE / SLAI_DEV
+- **Связано:** PD-CONTRACT-1 §2.1, `src/pipeline/normalize/match-signals.ts`, миграции `20260630000001` (price_list) + `20260630000002` (commercial_invoice). Сверка: `PARSDOCS_SVERKA_SLAI_2026-06-30.md`, сообщение SLAI: `PARSDOCS_TO_SLAI_2026-06-30_SVERKA_MSG.md`.
+
+#### Question / Context
+Сессионный аудит извлечения 2026-06-30: новые поля живой схемы.
+- **price_list** (мигр. `...0001`): header `incoterms`/`contract_ref`/`supplier_address`; items[] `hs_code`/`country_of_origin`/`brand`/`manufacturer`/`model`/`description`.
+- **commercial_invoice** (мигр. `...0002`): `buyer.inn`/`buyer.kpp`, `containers[].number`, `total`/`total_with_vat`.
+- Модель извлечения переключена phi4 14B → **qwen3.6:27b** (98.3% golden vs 88.3%, fast-mode `reasoning_effort:"none"`, MODEL_REPORT #36). Контракт не меняется — выше fill-rate.
+- ~24% боевого корпуса (30/32) раньше отдавали ПУСТОЕ извлечение (8192-токен cap) — переобработаны, теперь полные сигналы. 2 near-dup инвойса остаются пустыми.
+
+**Дельта контракта `_match_signals` (verified в коде):**
+`PROJECTORS.commercial_invoice = PROJECTORS.invoice` (alias), invoice-проектор **не вызывает** `collectContainers()`, generic fallback тоже. → `commercial_invoice.containers[].number` **НЕ** проецируется в `_match_signals.containers`. Разрыв линковки commercial_invoice ↔ B/L ↔ packing_list ↔ ГТД по грузовой единице. Остальные новые match-кандидаты (`buyer.inn/kpp`, `total/total_with_vat`) — **уже** проецируются. `price_list.hs_code` — richer extraction, не match-ключ (HS-линковка = отдельная фича + bump 1.0→1.1, отложено до ack SLAI).
+
+#### Что сделать когда подтвердят
+1. **parsdocs (backend):** добавить `collectContainers()` в проектор семейства invoice (или дать `commercial_invoice` обёртку invoice-логика + контейнеры). Хелпер уже есть (B/L/TTN/CMR/Акт). `schema_version` **НЕ** меняется (ключ `containers` уже в 1.0, расширяется только множество типов-источников). Обновить `tests/match-signals.spec.ts` (кейс commercial_invoice + containers). Commit → перевести в RESOLVED.
+2. **SLAI (развилка, ждёт ответа):** (a) переотдача «пустых» доков — re-pull самим (`GET /jobs/:id`) или мы переотдаём webhook по списку `job_id`? (b) нужен ли `hs_code` как кросс-док match-ключ (тогда 1.0→1.1, работа на обеих сторонах)?
+
+#### Resolution
+<пусто — фикс ещё не сделан>
+
+---
+
 ### Q-EXT-CLASS. Новые типы документов (создание сделано; осталась доводка)
 
 - **Status:** `OPEN` (To: CLAUDE)
@@ -476,4 +552,7 @@ A-record), no-redirect, mid-stream byte-ceiling, опц. allowlist
 | 2026-05-26 | Нудж SLAI по Q4/Q5/Q9 (все OPEN >7 дней) подготовлен — `doc-service/docs/PARSDOCS_NUDGE_SLAI_2026-05-26.md` (лид: EXT-A/B/D реализованы, 26 типов, vision проходит гейты 96%/90%; оговорки про digital-PDF и latency 186с). Статусы Q4/Q5/Q9 без изменений — ждём ответ. |
 | 2026-06-21 | Интеграционные заметки обновлены: Акт-lockstep ЗАКРЫТ с обеих сторон (projector `services_act`, executor/customer по ИНН), дефолт-модель `phi4`, каталог типов 30/30 (+4 складских, миграция `20260621000001`). Заведён `Q-EXT-CLASS` (OPEN, To: CLAUDE) — очередь новых типов EXT-CLASS-1/2/3 после пилота WW-23. |
 | 2026-06-23 | Merge github/main→main (сборка LLM-gateway): сведены конфликты, сохранены оба набора Q-блоков — июньский `Q-EXT-CLASS` (HEAD) + github-овые `Q-DADATA-1`, `Q-PERMIT-1`, `Q-CLASS-MATRIX`. Q-DADATA-1 и Q-PERMIT-1 приведены к `ANSWERED`, дубль строки `Asked` в Q-PERMIT-1 убран. Код gateway-фич (Anthropic-бэкенд, `/v1/embeddings`, DaData-passthrough, providers-fallback) влит в `main`; на прод НЕ задеплоено. |
+| 2026-06-30 | Сверка извлечения для SLAI (`PARSDOCS_SVERKA_SLAI_2026-06-30.md` + сообщение `PARSDOCS_TO_SLAI_2026-06-30_SVERKA_MSG.md`). Заведён **Q16** (OPEN): новые поля price_list/commercial_invoice (мигр. `20260630000001/0002`), модель phi4→qwen3.6:27b (98.3%), восстановление ~24% пустых доков. Контракт-дельта: `commercial_invoice.containers[].number` НЕ проецируется в `_match_signals` (invoice-alias не зовёт `collectContainers`) — фикс на нашей стороне, `schema_version` без изменений (1.0). Развилки к SLAI: переотдача пустых + нужен ли HS как match-ключ. |
+| 2026-06-30 | Микро-сверка от SLAI (подтвердили: плоские bl/container + containers[], `_normalized_fields`/`_match_signals`, order_refs[], hs_code как ТН ВЭД-поле не ключ, **идемпотентная переотдача инвойса безопасна** → закрывает §2-вопрос переотдачи «пустых»: переотдаём webhook по `job_id`, правки SLAI не пострадают). 2 встречных вопроса. Заведены **Q17** (schema_version: top-level drift-маркер состава `extracted`, отдельно от envelope `version` — рекоменд. top-level `schema_version` semver MINOR=log/MAJOR=gate, старт 1.0; verified: top-level `schema_version` сегодня НЕТ, `_match_signals.schema_version=1.0` скоупит только проекцию) и **Q18** (price_list: enrichment-дефолт vs полная матч-сущность через HS — назначение = решение Александра). Ответ-док `PARSDOCS_REPLY_TO_SLAI_SVERKA_2026-06-30.md` (DRAFT, 2 пункта ждут sign-off Александра до отправки SLAI). |
+| 2026-06-30 | Sign-off Александра по 2 пунктам микро-сверки. **Q17 → ANSWERED**: принят отдельный top-level `schema_version` (НЕ bump envelope `version`), старт `"1.0"`, политика MINOR=log/MAJOR=gate — в реализации backend, SLAI начать читать ключ. **Q18 → DEFERRED**: price_list пока НЕ нужен как сущность, хранить карточкой, SLAI ничего не строит; переоткрыть по реальной потребности (HS-линковка остаётся отложенной). Reply-док `PARSDOCS_REPLY_TO_SLAI_SVERKA_2026-06-30.md` доведён до send-ready (оба `[НУЖЕН SIGN-OFF]`-гейта убраны); переотдача восстановленных «пустых» доков — мы, по `job_id`, сначала TEST-батч затем остальное. |
 | 2026-06-23 | Чистка устаревших фактов после merge+деплой `6532be5`. **EXT-CLASS:** создание всех 8 типов выполнено и в проде (миграции `20260621000002/3/4`, каталог = 38 типов) — `Q-EXT-CLASS` переписан с «очередь будущих типов» на «создание сделано, осталась доводка `waybill`/`commercial_invoice`»; «30/30» → 38. `Q-CLASS-MATRIX` освежён: зарегистрировано 38 типов, из gap-листа создано всё кроме `TN`, §(c) split `booking_request` отмечен сделанным. **Merge+deploy:** формулировки «код влит в main, НЕ задеплоено» исправлены на «задеплоен на прод, спит за флагами (503)» в `Q-DADATA-1`. Реально открытые вопросы (§(d) TN vs TTN, полная матрица типов, образцы для калибровки, Q-PERMIT-1 ждёт PDF) сохранены. |
