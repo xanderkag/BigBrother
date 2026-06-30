@@ -482,7 +482,7 @@ export default function JobsListPage() {
                   <th className="px-3 py-2 text-center font-medium">Issues</th>
                   <th
                     className="hidden px-3 py-2 text-right font-medium lg:table-cell"
-                    title="Длительность обработки: finished_at − created_at для завершённых job'ов, либо now − created_at с «…» для in-flight."
+                    title="Длительность разбора: реальное время вызова модели (last_llm_call.duration_ms), для regex-типов — сумма шагов пайплайна. In-flight — таймер от старта с «…»."
                   >
                     Время разбора
                   </th>
@@ -881,23 +881,26 @@ function JobCard({
 }
 
 /**
- * Длительность процессинга для колонки «Время разбора».
+ * Длительность РАЗБОРА для колонки «Время разбора».
  *
- * Terminal статусы (done / failed / needs_review / approved) — берём
- * `finished_at`. Если бэкенд не записал finished_at (старые записи или
- * fail до финализации), фоллбэчимся на `updated_at` — это последний
- * момент когда job менялся, что для завершённой работы достаточно
- * близко к настоящему «когда закончилось». In-flight (pending / processing)
- * — `now - created_at` плюс «…» суффикс, чтобы было видно что таймер
- * ещё крутится.
+ * ВАЖНО: время разбора ≠ (finished_at − created_at). У документа, который
+ * загрузили давно и затем пере-разобрали (reprocess), `created_at` и
+ * `started_at` стоят на моменте ЗАГРУЗКИ, а `finished_at`/`updated_at` — на
+ * моменте последнего разбора. Их разница даёт «возраст документа» (дни/часы),
+ * а не время разбора — отсюда абсурдные «98 ч» на пере-разобранных доках.
+ *
+ * Реальную длительность берём из факта разбора:
+ *  1. `last_llm_call.duration_ms` — время вызова модели; обновляется при
+ *     каждом reprocess, единственный надёжный источник для LLM-типов.
+ *  2. Для regex-типов без LLM — сумма `duration_ms` шагов пайплайна.
+ *  3. Иначе «—» (лучше пусто, чем неверные часы).
+ *
+ * In-flight (pending / processing) — таймер `now − started_at` с «…».
  */
 function computeDuration(
   job: Job,
   now: Date,
 ): { label: string; tooltip: string } {
-  const created = Date.parse(job.created_at);
-  if (!Number.isFinite(created)) return { label: '—', tooltip: '' };
-
   const terminal =
     job.status === 'done' ||
     job.status === 'failed' ||
@@ -905,21 +908,32 @@ function computeDuration(
     job.status === 'approved';
 
   if (terminal) {
-    const finishedSource = job.finished_at ?? job.updated_at;
-    const finished = finishedSource ? Date.parse(finishedSource) : NaN;
-    if (!Number.isFinite(finished) || finished < created) {
-      return { label: '—', tooltip: '' };
+    // 1. Реальное время вызова модели (свежее на каждый reprocess).
+    const llmMs = job.last_llm_call?.duration_ms;
+    if (typeof llmMs === 'number' && llmMs > 0) {
+      return {
+        label: formatDuration(llmMs),
+        tooltip: `${llmMs} мс · время вызова модели`,
+      };
     }
-    const ms = finished - created;
-    const fallbackNote = job.finished_at ? '' : ' (по updated_at)';
-    return {
-      label: formatDuration(ms),
-      tooltip: `${ms} мс${fallbackNote}`,
-    };
+    // 2. regex-типы без LLM — сумма длительностей шагов пайплайна.
+    const stepMs = (job.pipeline_steps ?? []).reduce(
+      (acc, s) => acc + (typeof s.duration_ms === 'number' ? s.duration_ms : 0),
+      0,
+    );
+    if (stepMs > 0) {
+      return {
+        label: formatDuration(stepMs),
+        tooltip: `${stepMs} мс · сумма шагов пайплайна`,
+      };
+    }
+    return { label: '—', tooltip: 'нет данных о длительности разбора' };
   }
 
-  // In-flight: pending / processing → таймер ещё крутится
-  const ms = Math.max(0, now.getTime() - created);
+  // In-flight: pending / processing → таймер ещё крутится.
+  const start = Date.parse(job.started_at ?? job.created_at);
+  if (!Number.isFinite(start)) return { label: '—', tooltip: '' };
+  const ms = Math.max(0, now.getTime() - start);
   return {
     label: `${formatDuration(ms)} …`,
     tooltip: `${ms} мс · ещё в работе`,
