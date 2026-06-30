@@ -289,6 +289,24 @@ const PROJECTORS: Record<string, Projector> = {
     if (vehicle) setVehicle(ctx, vehicle.plate, vehicle.trailer);
   },
 
+  // commercial_invoice — логика invoice + контейнеры (Q16). У КИ есть
+  // containers[] в схеме (commercial_invoice ↔ B/L ↔ packing_list ↔ ГТД
+  // линкуются по ISO-6346), поэтому в отличие от обычного invoice проецируем
+  // containers через тот же collectContainers, что и B/L/TTN/CMR/AKT.
+  commercial_invoice: (ctx) => {
+    const { ex } = ctx;
+    setParty(ctx, 'seller', ex.seller);
+    setParty(ctx, 'buyer', ex.buyer);
+    setTotals(ctx, ex.total ?? ex.total_with_vat, ex.currency, ex.vat);
+    setDate(ctx, 'document', ex.date);
+    const orderRefs = collectOrderRefs(ex);
+    if (orderRefs) ctx.out.order_refs = orderRefs;
+    const vehicle = obj(ex.vehicle);
+    if (vehicle) setVehicle(ctx, vehicle.plate, vehicle.trailer);
+    const containers = collectContainers(ex);
+    if (containers) ctx.out.containers = containers;
+  },
+
   wire_transfer_application: (ctx) => {
     const { ex } = ctx;
     // refined schema — плоские sender_*/beneficiary_* поля.
@@ -343,10 +361,9 @@ const PROJECTORS: Record<string, Projector> = {
   },
 };
 
-// invoice-семейство шарит проектор.
+// invoice-семейство шарит проектор (commercial_invoice — свой, с контейнерами).
 PROJECTORS.tax_invoice = PROJECTORS.invoice!;
 PROJECTORS.upd = PROJECTORS.invoice!;
-PROJECTORS.commercial_invoice = PROJECTORS.invoice!;
 PROJECTORS.proforma_invoice = PROJECTORS.invoice!;
 
 // ── §2.3 confidence для канонических ключей ────────────────────────────────

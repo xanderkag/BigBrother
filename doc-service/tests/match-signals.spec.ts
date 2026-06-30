@@ -181,6 +181,64 @@ describe('buildMatchSignals — invoice / tax_invoice', () => {
     expect(s.totals).toEqual({ amount: 100, currency: 'RUB' });
     expect('vat' in (s.totals ?? {})).toBe(false);
   });
+
+  it('обычный invoice НЕ проецирует containers (только commercial_invoice)', () => {
+    const s = buildMatchSignals('invoice', {
+      total: 100,
+      currency: 'RUB',
+      containers: [{ number: 'MSCU1234567' }],
+    });
+    expect(s.containers).toBeUndefined();
+  });
+});
+
+describe('buildMatchSignals — commercial_invoice (Q16)', () => {
+  it('маппит parties/totals/dates + containers из extracted.containers[].number', () => {
+    const s = buildMatchSignals('commercial_invoice', {
+      number: 'CI-2026-7',
+      date: '2026-06-03',
+      seller: { name: 'Продавец', inn: '7728168971' },
+      buyer: { name: 'Покупатель', inn: '7707083893' },
+      total: 16280.0,
+      currency: 'USD',
+      containers: [
+        { number: 'MSCU1234567' },
+        { number: 'TCLU7654321' },
+        { number: 'MSCU1234567' }, // дубль → схлопывается
+      ],
+    });
+    expect(s.containers).toEqual(['MSCU1234567', 'TCLU7654321']);
+    expect(s.parties?.seller?.inn).toBe('7728168971');
+    expect(s.parties?.buyer?.inn).toBe('7707083893');
+    expect(s.totals).toEqual({ amount: 16280.0, currency: 'USD' });
+    expect(s.dates?.document).toBe('2026-06-03');
+    expect(s.schema_version).toBe('1.0');
+  });
+
+  it('containers из items[].container_no и скаляра container_number', () => {
+    const s = buildMatchSignals('commercial_invoice', {
+      number: 'CI-1',
+      items: [{ container_no: 'TCLU7654321' }],
+      container_number: 'GESU7654321',
+    });
+    expect(s.containers).toEqual(['TCLU7654321', 'GESU7654321']);
+  });
+
+  it('order_refs и vehicle всё ещё работают (логика invoice сохранена)', () => {
+    const s = buildMatchSignals('commercial_invoice', {
+      total: 1,
+      order_refs: ['PO-2026-118'],
+    });
+    expect(s.order_refs).toEqual(['PO-2026-118']);
+  });
+
+  it('без контейнеров → ключ containers отсутствует (present-only)', () => {
+    const s = buildMatchSignals('commercial_invoice', {
+      total: 1,
+      currency: 'USD',
+    });
+    expect(s.containers).toBeUndefined();
+  });
 });
 
 describe('buildMatchSignals — cmr / wire_transfer / generic', () => {
