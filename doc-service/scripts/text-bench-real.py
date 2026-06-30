@@ -121,7 +121,10 @@ def call_ollama(url, model, text, num_ctx, num_predict, api_key=""):
     try:
         with urllib.request.urlopen(req, timeout=1800) as r:
             d = json.loads(r.read())
-        return {"ok": True, "text": d.get("response", ""), "dt": time.monotonic() - t0,
+        # thinking-family models (qwen3*) emit the JSON into `thinking`, leaving
+        # `response` empty under format:json — fall back so they score on real output.
+        out = d.get("response", "") or d.get("thinking", "") or ""
+        return {"ok": True, "text": out, "dt": time.monotonic() - t0,
                 "eval_count": d.get("eval_count"), "prompt_eval_count": d.get("prompt_eval_count")}
     except Exception as e:
         return {"ok": False, "error": str(e), "dt": time.monotonic() - t0}
