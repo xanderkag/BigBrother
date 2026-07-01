@@ -11,7 +11,12 @@ process.env.REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
 process.env.STORAGE_DIR = process.env.STORAGE_DIR ?? '/tmp/docsvc-test';
 process.env.WEBHOOK_HMAC_SECRET = process.env.WEBHOOK_HMAC_SECRET ?? 'test';
 
-import { providerSettingsRepo, type ProviderSettingRow } from '../src/storage/provider-settings.js';
+import {
+  providerSettingsRepo,
+  _extraSecretsForTesting,
+  type ProviderSettingRow,
+} from '../src/storage/provider-settings.js';
+import { isEncrypted } from '../src/storage/secrets.js';
 
 function row(overrides: Partial<ProviderSettingRow> = {}): ProviderSettingRow {
   return {
@@ -103,5 +108,43 @@ describe('providerSettingsRepo.toApi', () => {
     const r = row({ kind: 'dadata', extra: { region: 'ru' } });
     const api = providerSettingsRepo.toApi(r);
     expect(api.has_secret_key).toBe(false);
+  });
+
+  it('extra.reasoning_effort passes through toApi verbatim (not masked)', () => {
+    const r = row({
+      id: 'qwen-thinking',
+      kind: 'llm',
+      model: 'qwen3.6:27b',
+      extra: { reasoning_effort: 'none' },
+    });
+    const api = providerSettingsRepo.toApi(r);
+    expect((api.extra as Record<string, unknown>).reasoning_effort).toBe('none');
+  });
+});
+
+describe('provider extra: reasoning_effort round-trips intact and is NOT encrypted', () => {
+  it('is not registered as a secret extra-key', () => {
+    expect(_extraSecretsForTesting.secretKeys).not.toContain('reasoning_effort');
+  });
+
+  it('survives encrypt (write) untouched — stays plaintext, no v1: envelope', () => {
+    const encrypted = _extraSecretsForTesting.encrypt({ reasoning_effort: 'medium' });
+    // Значение НЕ шифруется — остаётся ровно тем, что положил админ.
+    expect((encrypted as Record<string, unknown>).reasoning_effort).toBe('medium');
+    expect(isEncrypted((encrypted as Record<string, string>).reasoning_effort)).toBe(false);
+  });
+
+  it('full write→read round-trip preserves reasoning_effort while encrypting secret_key', () => {
+    const written = _extraSecretsForTesting.encrypt({
+      reasoning_effort: 'high',
+      secret_key: 'dadata-secret-1234',
+    });
+    // secret_key зашифрован envelope'ом, reasoning_effort — нет.
+    expect(isEncrypted((written as Record<string, string>).secret_key)).toBe(true);
+    expect((written as Record<string, unknown>).reasoning_effort).toBe('high');
+
+    const readBack = _extraSecretsForTesting.decrypt(written);
+    expect((readBack as Record<string, unknown>).reasoning_effort).toBe('high');
+    expect((readBack as Record<string, unknown>).secret_key).toBe('dadata-secret-1234');
   });
 });

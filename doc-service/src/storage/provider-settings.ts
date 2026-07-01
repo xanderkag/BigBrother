@@ -322,3 +322,14 @@ class ProviderSettingsRepo {
 }
 
 export const providerSettingsRepo = new ProviderSettingsRepo();
+
+/**
+ * Test-only: доступ к extra-encryption round-trip без БД. Позволяет
+ * доказать, что non-secret ключи (напр. `reasoning_effort`) переживают
+ * write/read нетронутыми и НЕ шифруются (не попадают в SECRET_EXTRA_KEYS).
+ */
+export const _extraSecretsForTesting = {
+  encrypt: encryptExtraSecrets,
+  decrypt: decryptExtraSecrets,
+  secretKeys: SECRET_EXTRA_KEYS,
+};

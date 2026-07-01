@@ -36,6 +36,24 @@ const IdParam = z.object({
   }),
 });
 
+/**
+ * Free-form JSONB bag of per-provider knobs. Arbitrary keys pass through
+ * verbatim on write and read. Two conventions:
+ *   - `secret_key` (kind=dadata) — секрет, шифруется at-rest и МАСКИРУЕТСЯ
+ *     в ответе (никогда не возвращается plaintext).
+ *   - `reasoning_effort` (kind=llm, reasoning/thinking-модели типа qwen3.6) —
+ *     OpenAI-compat knob: `"none"|"low"|"medium"|"high"`. `"none"` подавляет
+ *     скрытые reasoning-токены (FAST-режим). НЕ секрет — хранится и
+ *     возвращается как есть. Прокидывается в тело каждого /v1/{classify,
+ *     extract,verify} через HttpLlmClient. Не-reasoning модели (phi4) поле
+ *     игнорируют — не задавайте его для них.
+ */
+const ExtraDescription =
+  'Свободный JSONB с настройками провайдера (passthrough). ' +
+  'reasoning_effort: "none"|"low"|"medium"|"high" — для reasoning-моделей (qwen3.6); ' +
+  '"none" отключает скрытое reasoning (FAST-режим). ' +
+  'secret_key (kind=dadata) — секрет, маскируется в ответе.';
+
 const ProviderApi = z.object({
   id: z.string(),
   kind: Kind,
@@ -48,7 +66,7 @@ const ProviderApi = z.object({
   model: z.string().nullable(),
   is_active: z.boolean(),
   is_default: z.boolean(),
-  extra: z.record(z.unknown()).nullable(),
+  extra: z.record(z.unknown()).nullable().describe(ExtraDescription),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -73,7 +91,7 @@ const CreateBody = z.object({
   api_key: z.string().max(4000).nullable().optional(),
   model: z.string().max(120).nullable().optional(),
   is_active: z.boolean().optional(),
-  extra: z.record(z.unknown()).nullable().optional(),
+  extra: z.record(z.unknown()).nullable().optional().describe(ExtraDescription),
 });
 
 const PatchBody = CreateBody.omit({ id: true, kind: true }).partial();
@@ -142,7 +160,8 @@ export async function providerSettingsRoutes(app: FastifyInstance): Promise<void
         summary: 'Создать или заменить провайдера',
         description:
           'Upsert по id: если id уже есть — все поля перезаписываются. Поле api_key пишется напрямую; ' +
-          'значение НЕ возвращается в ответе, только маска. Default-флаг через POST не устанавливается — см. POST /:id/set-default.',
+          'значение НЕ возвращается в ответе, только маска. Default-флаг через POST не устанавливается — см. POST /:id/set-default. ' +
+          '`extra` — passthrough JSONB: для reasoning-моделей (qwen3.6) кладите `{"reasoning_effort":"none"}` чтобы отключить скрытое reasoning (FAST-режим). Значение round-trip\'ится назад в GET/list.',
         security: [{ bearerAuth: [] }],
         body: CreateBody,
         response: { 201: ProviderApi, 400: ErrorResponse, 401: ErrorResponse },
@@ -180,7 +199,8 @@ export async function providerSettingsRoutes(app: FastifyInstance): Promise<void
         tags: ['provider-settings'],
         summary: 'Частичное обновление провайдера',
         description:
-          'Только переданные поля пишутся. Чтобы стереть api_key — передайте `api_key: null`.',
+          'Только переданные поля пишутся. Чтобы стереть api_key — передайте `api_key: null`. ' +
+          '`extra` перезаписывается целиком (не merge): чтобы включить FAST-режим для reasoning-модели — `{"reasoning_effort":"none"}`; допустимы "none"|"low"|"medium"|"high". Поле не секрет — возвращается в ответе как есть.',
         security: [{ bearerAuth: [] }],
         params: IdParam,
         body: PatchBody,
