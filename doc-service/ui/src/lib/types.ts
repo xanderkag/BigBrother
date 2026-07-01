@@ -46,6 +46,22 @@ export interface Job {
   project_id: string;
   pipeline_steps?: PipelineStep[];
   last_llm_call?: LlmCallTrace | null;
+  classification?: Classification | null;
+}
+
+/**
+ * Трасса классификатора: как выбран тип документа. null для legacy jobs
+ * (до внедрения фичи). Источник — Job.classification в backend api-schemas.
+ */
+export interface Classification {
+  type: DocumentTypeSlug | null;
+  confidence: number;
+  method: 'llm' | 'keyword' | 'filename' | 'fallback' | 'hint';
+  duration_ms: number | null;
+  llm_said: string | null;
+  keyword_said: { type: DocumentTypeSlug; score: number } | null;
+  candidates: Array<{ type: DocumentTypeSlug; score: number }>;
+  unknown: boolean;
 }
 
 export interface PipelineStep {

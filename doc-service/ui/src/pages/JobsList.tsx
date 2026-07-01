@@ -19,7 +19,7 @@ import {
 import { isSynthetic, matchesOrigin, type DocOrigin } from '@/lib/synthetic';
 import type { JobNavState } from '@/lib/job-nav';
 import type { DocumentTypeTier } from '@/queries/documentTypes';
-import type { Job, JobStatus } from '@/lib/types';
+import type { Job, JobStatus, Classification } from '@/lib/types';
 import { EmptyState, SkeletonTable } from '@/components/Skeleton';
 
 /**
@@ -687,6 +687,7 @@ function JobRow({
           <span className="inline-flex items-center gap-1">
             <span className="badge-indigo uppercase">{job.document_type}</span>
             <TierBadge tier={tier} size="xs" />
+            <ClassifyMethodChip classification={job.classification} />
           </span>
         ) : job.document_hint ? (
           <span className="badge-slate uppercase" title="hint от клиента">
@@ -840,6 +841,7 @@ function JobCard({
               <span className="inline-flex items-center gap-1">
                 <span className="badge-indigo uppercase">{job.document_type}</span>
                 <TierBadge tier={tier} size="xs" />
+                <ClassifyMethodChip classification={job.classification} />
               </span>
             ) : job.document_hint ? (
               <span className="badge-slate uppercase" title="hint от клиента">
@@ -993,6 +995,41 @@ function WebhookChip({ job }: { job: Job }) {
       title={`Вебхук ожидает отправки · попыток: ${job.webhook_attempts}`}
     >
       •
+    </span>
+  );
+}
+
+/**
+ * Компактный индикатор метода классификации рядом с типом. Одна буква
+ * (L / К / И / О / П) в тусклом чипе — оператор видит «как определился тип»
+ * без клика в деталку; полная расшифровка — в title. classification == null
+ * (legacy jobs) или unknown → ничего не рисуем, чтобы не шуметь.
+ */
+const CLASSIFY_METHOD_META: Record<
+  Classification['method'],
+  { short: string; label: string }
+> = {
+  llm: { short: 'L', label: 'LLM' },
+  keyword: { short: 'К', label: 'ключевые слова' },
+  filename: { short: 'И', label: 'имя файла' },
+  fallback: { short: 'О', label: 'откат' },
+  hint: { short: 'П', label: 'подсказка' },
+};
+
+function ClassifyMethodChip({
+  classification,
+}: {
+  classification?: Classification | null;
+}) {
+  if (!classification || classification.unknown) return null;
+  const meta = CLASSIFY_METHOD_META[classification.method];
+  if (!meta) return null;
+  return (
+    <span
+      className="inline-flex h-4 min-w-[16px] items-center justify-center rounded-sm bg-slate-100 px-1 font-mono text-[10px] font-medium text-slate-500 dark:bg-slate-800 dark:text-slate-400"
+      title={`Тип определён: ${meta.label}`}
+    >
+      {meta.short}
     </span>
   );
 }

@@ -32,8 +32,9 @@ import {
   formatPercent,
   shortId,
   formatDateTime,
+  formatDuration,
 } from '@/lib/format';
-import type { Job } from '@/lib/types';
+import type { Job, Classification } from '@/lib/types';
 
 /**
  * F5 multi-doc сегмент — один документ внутри multi-doc PDF/xlsx.
@@ -516,6 +517,11 @@ export default function JobDetailPage() {
         <div className="flex min-h-0 flex-col gap-3 overflow-auto bg-slate-50 dark:bg-slate-900/40 p-4">
           <ValidationBanner issues={issues} />
 
+          <ClassificationCard
+            classification={job.classification ?? null}
+            displayName={(slug) => typeInfoBySlug.get(slug)?.display_name ?? slug}
+          />
+
           <EnrichmentCard enrichment={enrichment} />
 
           {classifyOnly ? (
@@ -782,6 +788,156 @@ function EnrichmentStatusBadge({ status }: { status: string | null }) {
   if (up === 'LIQUIDATED' || up === 'LIQUIDATING')
     return <span className="badge-rose">ликвидирован</span>;
   return <span className="badge-slate">{status}</span>;
+}
+
+/**
+ * Трасса классификатора: как выбран тип документа. Компактная карточка в
+ * верху правой колонки — оператор сразу видит method / время / кандидатов,
+ * не скролля. null (legacy jobs до фичи) → ничего не рисуем.
+ *
+ * Ключевые кейсы:
+ *   - обычный llm — тип + method-чип + время + кандидаты.
+ *   - «LLM исправил keyword-prior» — llm_said ≠ keyword_said.type, показываем
+ *     оба, чтобы было видно что классификатор переспорил регексы.
+ *   - unknown — amber-нота «не опознан», не ошибка, а сигнал под новый тип.
+ */
+const CLASSIFY_METHOD_LABELS: Record<Classification['method'], string> = {
+  llm: 'LLM',
+  keyword: 'ключевые слова',
+  filename: 'имя файла',
+  fallback: 'откат',
+  hint: 'подсказка',
+};
+
+function ClassificationCard({
+  classification,
+  displayName,
+}: {
+  classification: Classification | null;
+  displayName: (slug: string) => string;
+}) {
+  if (!classification) return null;
+  const c = classification;
+
+  const kwType = c.keyword_said?.type ?? null;
+  // «LLM исправил keyword-prior»: llm_said осмысленный, отличается от того,
+  // что подсказали ключевые слова. 'unknown' от LLM сюда не считаем —
+  // это отдельный (unknown) кейс ниже.
+  const llmCorrected =
+    c.method === 'llm' &&
+    !!c.llm_said &&
+    c.llm_said.toLowerCase() !== 'unknown' &&
+    !!kwType &&
+    c.llm_said !== kwType;
+
+  // Кандидаты-раннеры (top-3), исключаем уже выбранный тип, чтобы не
+  // дублировать заголовок.
+  const runners = c.candidates.filter((x) => x.type !== c.type).slice(0, 3);
+
+  return (
+    <div className="card">
+      <div className="card-header flex items-center justify-between">
+        <h3 className="card-title">Классификация</h3>
+        <div className="flex items-center gap-2">
+          <span
+            className="badge-slate"
+            title={`Метод определения типа: ${CLASSIFY_METHOD_LABELS[c.method]}`}
+          >
+            {CLASSIFY_METHOD_LABELS[c.method]}
+          </span>
+          {c.duration_ms !== null && (
+            <span
+              className="font-mono text-xs text-slate-500 dark:text-slate-400"
+              title={`${c.duration_ms} мс · время classify-вызова`}
+            >
+              {formatDuration(c.duration_ms)}
+            </span>
+          )}
+        </div>
+      </div>
+      <div className="card-body space-y-3 text-sm">
+        {/* Итог: тип + confidence, либо amber «не опознан» */}
+        {c.unknown || !c.type ? (
+          <div className="rounded-md border-l-4 border-amber-500 bg-amber-50 px-3 py-2 text-amber-900 dark:bg-amber-500/10 dark:text-amber-200">
+            <div className="font-medium">Не опознан — не подошёл ни один тип</div>
+            <div className="mt-1 text-xs">
+              Кандидат на новый тип, а не ошибка обработки.
+              {(c.llm_said || kwType) && (
+                <>
+                  {' '}
+                  {c.llm_said && (
+                    <>
+                      LLM: <span className="font-mono">{c.llm_said}</span>
+                    </>
+                  )}
+                  {c.llm_said && kwType && ' · '}
+                  {kwType && (
+                    <>
+                      ключевые слова: <span className="font-mono">{kwType}</span>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="badge-indigo" title={c.type}>
+              {displayName(c.type)}
+            </span>
+            <span
+              className={`font-medium ${
+                confidenceValueClass(c.confidence) ||
+                'text-slate-700 dark:text-slate-300'
+              }`}
+            >
+              {formatPercent(c.confidence)}
+            </span>
+          </div>
+        )}
+
+        {/* «LLM исправил keyword-prior» — интересный кейс: показываем оба */}
+        {llmCorrected && (
+          <div className="flex flex-wrap items-center gap-x-1.5 text-xs text-slate-600 dark:text-slate-400">
+            <span>LLM:</span>
+            <span className="font-mono text-slate-800 dark:text-slate-200">
+              {c.llm_said}
+            </span>
+            <span className="text-slate-400 dark:text-slate-500">·</span>
+            <span>ключевые слова:</span>
+            <span className="font-mono text-slate-800 dark:text-slate-200">
+              {kwType}
+            </span>
+          </div>
+        )}
+
+        {/* Кандидаты-раннеры с их score */}
+        {runners.length > 0 && (
+          <div className="space-y-1">
+            <div className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">
+              Кандидаты
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {runners.map((r) => (
+                <span
+                  key={r.type}
+                  className="inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-0.5 text-xs dark:bg-slate-800"
+                  title={r.type}
+                >
+                  <span className="text-slate-700 dark:text-slate-300">
+                    {displayName(r.type)}
+                  </span>
+                  <span className="font-mono tabular-nums text-slate-500 dark:text-slate-400">
+                    {r.score.toFixed(2)}
+                  </span>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 /**
