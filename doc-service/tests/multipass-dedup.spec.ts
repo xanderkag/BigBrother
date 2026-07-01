@@ -35,6 +35,7 @@ function mockLlm(): { llm: LlmClient; extractCalls: number } {
     isAvailable: () => true,
     supportsVision: async () => false,
     classify: vi.fn(),
+    classifyWithCatalog: vi.fn(),
     extract: vi.fn(async (input: { schema?: { properties?: Record<string, unknown> } }) => {
       state.extractCalls++;
       const props = input.schema?.properties ?? {};
@@ -86,6 +87,7 @@ describe('MultiPassLlmParser dedups repeated items on merge', () => {
       isAvailable: () => true,
       supportsVision: async () => false,
       classify: vi.fn(),
+    classifyWithCatalog: vi.fn(),
       extract: vi.fn(async (input: { schema?: { properties?: Record<string, unknown> } }) => {
         const props = input.schema?.properties ?? {};
         if ('items' in props) {

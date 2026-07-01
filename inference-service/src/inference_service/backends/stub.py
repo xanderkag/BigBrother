@@ -102,8 +102,12 @@ class StubBackend(ModelBackend):
         text: str,
         model_override: str | None = None,  # noqa: ARG002 — stub игнорит
         reasoning_effort: str | None = None,  # noqa: ARG002 — stub игнорит
+        catalog: str | None = None,  # noqa: ARG002 — stub игнорит
+        file_name: str | None = None,  # noqa: ARG002
+        keyword_hint: str | None = None,  # noqa: ARG002
+        max_tokens: int | None = None,  # noqa: ARG002
     ) -> ClassifyResponse:
-        del model_override, reasoning_effort
+        del model_override, reasoning_effort, catalog, file_name, keyword_hint, max_tokens
         async with self._admit():
             head = text[:4000]
             best: tuple[str, float] | None = None

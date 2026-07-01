@@ -50,6 +50,7 @@ function mockLlm(): { llm: LlmClient; calls: Array<Record<string, unknown>> } {
     isAvailable: () => true,
     supportsVision: async () => false,
     classify: vi.fn(),
+    classifyWithCatalog: vi.fn(),
     extract: vi.fn(async (input) => {
       calls.push(input as Record<string, unknown>);
       return { extracted: { ok: true }, confidence: 0.9, issues: [] };

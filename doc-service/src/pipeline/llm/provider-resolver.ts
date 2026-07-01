@@ -6,6 +6,8 @@ import { NullLlmClient } from './null-client.js';
 import type {
   LlmClient,
   LlmClassifyResult,
+  LlmCatalogClassifyInput,
+  LlmCatalogClassifyResult,
   LlmExtractResult,
   LlmVerifyResult,
   LlmVisionResult,
@@ -85,6 +87,10 @@ class DynamicLlmClient implements LlmClient {
 
   classify(text: string): Promise<LlmClassifyResult> {
     return this.delegate().then((c) => c.classify(text));
+  }
+
+  classifyWithCatalog(input: LlmCatalogClassifyInput): Promise<LlmCatalogClassifyResult> {
+    return this.delegate().then((c) => c.classifyWithCatalog(input));
   }
 
   extract(input: {

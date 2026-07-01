@@ -63,6 +63,7 @@ vi.mock('../src/pipeline/llm/provider-resolver.js', () => {
     // этого — он сам форсит vision-провайдера.
     supportsVision: async () => false,
     classify: vi.fn(),
+    classifyWithCatalog: vi.fn(),
     extract: vi.fn(async (input: { imagePath?: string }) => {
       extractCalls.push({ imagePath: input.imagePath, forcedProviderId: currentForcedProvider });
       return { extracted: { ok: true }, confidence: 0.9, issues: [] };

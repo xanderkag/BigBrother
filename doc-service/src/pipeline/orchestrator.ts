@@ -23,6 +23,7 @@ import { XmlEngine } from './ocr/xml.js';
 import { selectOcrChain } from './router.js';
 import { sanitizeText } from './text-sanitize.js';
 import { KeywordClassifier } from './classifier/keywords.js';
+import { LlmDocClassifier, type ClassificationMetadata } from './classifier/llm-classifier.js';
 import { combineConfidence } from './quality.js';
 import { ParsersFactory } from './parsers/index.js';
 import { dynamicLlm } from './llm/provider-resolver.js';
@@ -82,6 +83,29 @@ const engines: readonly OcrEngine[] = [
 ];
 
 const classifier = new KeywordClassifier();
+// Production LLM classifier — прогоняется на КАЖДОМ документе поверх keyword
+// prior'а. keyword остаётся PRIOR и FALLBACK. См. classifier/llm-classifier.ts.
+const llmDocClassifier = new LlmDocClassifier(classifier, llm);
+
+/**
+ * Валидация slug'а по каталогу: тип существует и активен для орг. Резолвер уже
+ * кэширует listActiveForOrg — проверяем принадлежность к активному набору
+ * (тот же набор, что попал в каталог классификации). F22-алиасы учитываем
+ * через resolveConfig.get() как fallback (SLAI-нейминг).
+ */
+async function makeCatalogSlugValidator(
+  orgId: string | null,
+): Promise<(slug: string) => Promise<boolean>> {
+  const active = await documentTypeResolver.listActiveForOrg(orgId);
+  const activeSet = new Set(active.map((r) => r.slug));
+  return async (slug: string) => {
+    if (activeSet.has(slug)) return true;
+    // F22: LLM мог вернуть SLAI-alias/регистр-вариант — резолвер расширит.
+    const row = await documentTypeResolver.get(slug);
+    return row !== null && row.is_active === true;
+  };
+}
+
 const dadataClient = new DadataClient(config.dadata);
 
 // ASR transcriber — «OCR for audio». Аудио-вход транскрибируется через
@@ -479,9 +503,27 @@ async function processJobInner(
     // tmp PNG + materialized-файл сразу. Не ждём конца processJob.
     await cleanupArtifacts();
     documentType = post.documentType;
+    // Production LLM classifier: персистим метаданные классификации в
+    // jobs.classification (для UI). best-effort — метаданные наблюдаемости не
+    // должны ронять обработку. classify-step details обогащаем method/unknown.
+    if (post.classification) {
+      try {
+        await jobsRepo.saveClassification(jobId, post.classification);
+      } catch (err) {
+        log.warn({ jobId, err }, 'failed to save classification metadata (non-fatal)');
+      }
+    }
     await stepEvent('classify', 'done', {
       duration_ms: timings.classify_ms,
-      details: { document_type: documentType, source: post.classificationSource },
+      details: {
+        document_type: documentType,
+        source: post.classificationSource,
+        method: post.classification?.method ?? null,
+        llm_said: post.classification?.llm_said ?? null,
+        keyword_said: post.classification?.keyword_said?.type ?? null,
+        classify_llm_duration_ms: post.classification?.duration_ms ?? null,
+        unknown: post.classification?.unknown ?? false,
+      },
     });
     if (classifyOnly) {
       // Phase 3 (CP7): extract-стадия пропущена по профилю потребителя.
@@ -1012,6 +1054,13 @@ export async function runDocumentPipeline(
   documentType: DocumentTypeSlug | null;
   classificationSource: 'hint' | 'keyword';
   classificationMatch?: string;
+  /**
+   * Production LLM classifier: богатые метаданные классификации (method,
+   * llm_said, keyword_said, candidates, duration_ms, unknown). undefined когда
+   * classify не запускался (caller передал hint напрямую). Caller (orchestrator/
+   * reprocess) персистит их в jobs.classification.
+   */
+  classification?: ClassificationMetadata;
   extracted: Record<string, unknown>;
   parserConfidence?: number;
   parserMissing: string[];
@@ -1042,30 +1091,55 @@ export async function runDocumentPipeline(
   let documentType: DocumentTypeSlug | null = options.hint ?? null;
   let classificationSource: 'hint' | 'keyword' = documentType ? 'hint' : 'keyword';
   let classificationMatch: string | undefined;
+  let classification: ClassificationMetadata | undefined;
 
   if (!documentType) {
+    // Production LLM classifier: keyword prior → LLM catalog classify → decision.
+    // НИКОГДА не бросает из-за классификатора (fallback на keyword внутри).
     const tClassify = Date.now();
-    const cls = await classifier.classify(
-      rawText,
-      options.organizationId ?? null,
-      options.fileName ?? null,
+    const validator = await makeCatalogSlugValidator(options.organizationId ?? null);
+    const outcome = await llmDocClassifier.classify(
+      {
+        text: rawText,
+        fileName: options.fileName ?? null,
+        organizationId: options.organizationId ?? null,
+      },
+      validator,
+      log,
+      context,
     );
     const classifyMs = Date.now() - tClassify;
     if (timings) timings.classify_ms = classifyMs;
-    documentType = cls.type;
-    classificationMatch = cls.matched;
+    documentType = outcome.documentType;
+    classification = outcome.metadata;
+    // classificationMatch/source оставляем для backwards-compat pipeline step'а.
+    classificationMatch = outcome.metadata.llm_said ?? outcome.metadata.keyword_said?.type;
     log.info(
       {
         ...context,
-        type: cls.type,
-        source: cls.source,
-        matched: cls.matched,
-        classify_duration_ms: classifyMs,
-        candidates_count: cls.candidatesCount ?? null,
-        llm_classify_used: false, // KeywordClassifier пока не использует LLM
+        type: documentType,
+        method: outcome.metadata.method,
+        llm_said: outcome.metadata.llm_said,
+        keyword_said: outcome.metadata.keyword_said?.type ?? null,
+        unknown: outcome.metadata.unknown,
+        classify_llm_duration_ms: outcome.metadata.duration_ms,
+        classify_total_duration_ms: classifyMs,
       },
       'classified',
     );
+  } else if (options.hint) {
+    // Caller передал hint напрямую (document_hint / reprocess без reclassify) —
+    // фиксируем method='hint' в метаданных, чтобы UI видел «тип задан явно».
+    classification = {
+      type: documentType,
+      confidence: 1,
+      method: 'hint',
+      duration_ms: null,
+      llm_said: null,
+      keyword_said: null,
+      candidates: [],
+      unknown: false,
+    };
   }
 
   let extracted: Record<string, unknown> = {};
@@ -1271,6 +1345,7 @@ export async function runDocumentPipeline(
     documentType,
     classificationSource,
     classificationMatch,
+    classification,
     extracted,
     parserConfidence,
     parserMissing,

@@ -5,6 +5,29 @@ export type LlmClassifyResult = {
   confidence: number;
 };
 
+/**
+ * Ввод catalog-классификации (production LLM classifier). doc-service строит
+ * динамический каталог `slug — description` из document_types и просит модель
+ * выбрать РОВНО ОДИН slug либо `unknown`. См. pipeline/classifier/llm-classifier.ts.
+ */
+export type LlmCatalogClassifyInput = {
+  text: string;
+  catalog: string;
+  fileName?: string | null;
+  keywordHint?: string | null;
+  maxTokens?: number;
+};
+
+/**
+ * Результат catalog-классификации. `slug` — сырой ответ модели (может быть
+ * `unknown`, невалидный slug, или null при пустом ответе). Валидацию по
+ * каталогу делает caller (LlmDocClassifier).
+ */
+export type LlmCatalogClassifyResult = {
+  slug: string | null;
+  confidence: number;
+};
+
 export type LlmExtractDebug = {
   prompt: string;
   raw_response: string;
@@ -53,6 +76,13 @@ export interface LlmClient {
   supportsVision(): Promise<boolean>;
 
   classify(text: string): Promise<LlmClassifyResult>;
+  /**
+   * Catalog-классификация (production LLM classifier): динамический каталог
+   * типов + имя файла + keyword-prior. Модель выбирает РОВНО ОДИН slug либо
+   * `unknown`. Возвращает СЫРОЙ slug — валидация по каталогу на стороне caller'а.
+   * Отдельно от classify(), чтобы не ломать 6-типовый контракт старых вызовов.
+   */
+  classifyWithCatalog(input: LlmCatalogClassifyInput): Promise<LlmCatalogClassifyResult>;
   extract(input: {
     text: string;
     schema: Record<string, unknown>;

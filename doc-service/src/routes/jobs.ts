@@ -1266,6 +1266,18 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         extractedToStore._issues = post.validationIssues;
       }
 
+      // Production LLM classifier: если reprocess переклассифицировал (reclassify=true
+      // → LLM classifier отработал), персистим свежие метаданные классификации.
+      // При обычном reprocess (hint задан) classification.method='hint' — тоже
+      // фиксируем, чтобы UI показал актуальное состояние. best-effort.
+      if (post.classification) {
+        try {
+          await jobsRepo.saveClassification(req.params.id, post.classification);
+        } catch (err) {
+          req.log.warn({ jobId: req.params.id, err }, 'failed to save classification metadata (non-fatal)');
+        }
+      }
+
       const updated = await jobsRepo.finalize(req.params.id, {
         status,
         documentType: post.documentType,

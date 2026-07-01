@@ -88,11 +88,16 @@ class ClaudeBackend(ModelBackend):
         text: str,
         model_override: str | None = None,  # noqa: ARG002 — игнорируем, см. ниже
         reasoning_effort: str | None = None,  # noqa: ARG002 — Ollama-knob, Claude не использует
+        catalog: str | None = None,  # noqa: ARG002 — catalog-режим только в openai_compat
+        file_name: str | None = None,  # noqa: ARG002
+        keyword_hint: str | None = None,  # noqa: ARG002
+        max_tokens: int | None = None,  # noqa: ARG002
     ) -> ClassifyResponse:
         # Claude backend привязан к одной модели в __init__ (anthropic_model_id);
         # model_override игнорируем — если хочется другую модель, нужен
-        # отдельный backend-инстанс.
-        del model_override, reasoning_effort
+        # отдельный backend-инстанс. catalog-режим не поддержан — старый 6-типовый
+        # путь (doc-service fall back'нет на keyword если тип вне каталога).
+        del model_override, reasoning_effort, catalog, file_name, keyword_hint, max_tokens
         async with self._admit():
             prompt = classify_prompts.build(text)
             raw = await self._complete_text(prompt)

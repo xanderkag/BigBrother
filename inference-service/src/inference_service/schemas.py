@@ -27,10 +27,26 @@ class ClassifyRequest(BaseModel):
     # provider_settings.extra.reasoning_effort. None → не передаётся в
     # backend, поведение не меняется (phi4 и прочие не-reasoning модели).
     reasoning_effort: str | None = None
+    # --- Catalog-driven classify (production LLM classifier) ---
+    # Когда задан `catalog` — backend строит каталог-промпт (`slug — description`
+    # всех активных типов) и возвращает голый slug из каталога либо `unknown`
+    # вместо жёсткого 6-типового enum. doc-service строит каталог динамически
+    # из document_types и присылает сюда. Если catalog=None — старое поведение
+    # (6 builtin типов JSON-режимом), backwards compat.
+    catalog: str | None = Field(default=None, max_length=32000)
+    # Имя загруженного файла — сигнал для модели (в user-сообщении).
+    file_name: str | None = None
+    # Подсказка быстрого keyword-классификатора (prior top slug). В user-сообщении.
+    keyword_hint: str | None = None
+    # Потолок токенов ответа (голый slug короткий → ~30). None → backend default.
+    max_tokens: int | None = Field(default=None, ge=1, le=2048)
 
 
 class ClassifyResponse(BaseModel):
-    type: DocumentType | None
+    # str | None — в каталог-режиме возвращаем произвольный slug из динамического
+    # каталога document_types (не только 6 builtin). Старые вызовы без catalog
+    # по-прежнему получают один из 6 literal'ов (все — валидные строки).
+    type: DocumentTypeSlug | None
     confidence: float = Field(ge=0.0, le=1.0)
 
 

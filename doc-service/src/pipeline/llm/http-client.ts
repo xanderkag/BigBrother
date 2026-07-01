@@ -3,6 +3,8 @@ import { request } from 'undici';
 import type {
   LlmClient,
   LlmClassifyResult,
+  LlmCatalogClassifyInput,
+  LlmCatalogClassifyResult,
   LlmExtractResult,
   LlmVerifyResult,
   LlmVisionResult,
@@ -69,6 +71,24 @@ export class HttpLlmClient implements LlmClient {
 
   async classify(text: string): Promise<LlmClassifyResult> {
     return this.post<LlmClassifyResult>('/v1/classify', this.withModel({ text }));
+  }
+
+  async classifyWithCatalog(
+    input: LlmCatalogClassifyInput,
+  ): Promise<LlmCatalogClassifyResult> {
+    // catalog-режим /v1/classify: backend строит каталог-промпт и возвращает
+    // {type: <slug|unknown|null>, confidence}. camelCase → snake_case на границе.
+    const res = await this.post<{ type: string | null; confidence: number }>(
+      '/v1/classify',
+      this.withModel({
+        text: input.text,
+        catalog: input.catalog,
+        ...(input.fileName ? { file_name: input.fileName } : {}),
+        ...(input.keywordHint ? { keyword_hint: input.keywordHint } : {}),
+        ...(input.maxTokens ? { max_tokens: input.maxTokens } : {}),
+      }),
+    );
+    return { slug: res.type ?? null, confidence: res.confidence ?? 0 };
   }
 
   async extract(input: {

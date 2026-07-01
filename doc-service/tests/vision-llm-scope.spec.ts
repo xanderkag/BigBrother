@@ -8,6 +8,7 @@ function fakeLlm(text = 'hello'): LlmClient {
     isAvailable: () => true,
     supportsVision: async () => true,
     classify: vi.fn(),
+    classifyWithCatalog: vi.fn(),
     extract: vi.fn(),
     verify: vi.fn(),
     visionOcr: vi.fn(async () => ({ text, confidence: 0.75 })),

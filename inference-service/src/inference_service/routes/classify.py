@@ -21,4 +21,8 @@ async def classify(
             body.text,
             model_override=body.model,
             reasoning_effort=body.reasoning_effort,
+            catalog=body.catalog,
+            file_name=body.file_name,
+            keyword_hint=body.keyword_hint,
+            max_tokens=body.max_tokens,
         )

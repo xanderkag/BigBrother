@@ -181,7 +181,35 @@ class OpenAICompatibleBackend(ModelBackend):
         text: str,
         model_override: str | None = None,
         reasoning_effort: str | None = None,
+        catalog: str | None = None,
+        file_name: str | None = None,
+        keyword_hint: str | None = None,
+        max_tokens: int | None = None,
     ) -> ClassifyResponse:
+        # Catalog-режим: динамический список типов, модель возвращает голый slug.
+        # Не JSON-режим — reasoning-модели надёжнее выдают короткий slug plaintext.
+        if catalog:
+            messages = classify_prompts.build_catalog_messages(
+                text=text,
+                catalog=catalog,
+                file_name=file_name,
+                keyword_hint=keyword_hint,
+            )
+            async with self._admit():
+                raw, _ = await self._complete_with_usage(
+                    messages,
+                    json_mode=False,
+                    model_override=model_override,
+                    reasoning_effort=reasoning_effort,
+                    max_tokens=max_tokens or 30,
+                )
+            slug = _extract_slug(raw)
+            # confidence: голый slug не несёт числа. Возвращаем 1.0 когда модель
+            # выбрала тип (детерминированный temp=0 выбор), 0.0 на unknown/пусто.
+            # doc-service всё равно валидирует slug по каталогу и решает финально.
+            conf = 0.0 if (slug is None or slug == "unknown") else 1.0
+            return ClassifyResponse(type=slug, confidence=conf)
+
         prompt = classify_prompts.build(text)
         async with self._admit():
             raw = await self._complete_text(
@@ -424,6 +452,7 @@ class OpenAICompatibleBackend(ModelBackend):
         json_mode: bool,
         model_override: str | None = None,
         reasoning_effort: str | None = None,
+        max_tokens: int | None = None,
     ) -> tuple[str, dict[str, int] | None]:
         # json_mode = response_format={"type": "json_object"} — поддерживают
         # все современные OpenAI-compat серверы (OpenAI, vLLM, Ollama 0.5+,
@@ -442,7 +471,9 @@ class OpenAICompatibleBackend(ModelBackend):
         kwargs: dict[str, Any] = {
             "model": effective_model,
             "messages": messages,
-            "max_tokens": self.max_tokens,
+            # Caller-override (classify catalog-режим шлёт ~30 — голый slug
+            # короткий, не жжём токены на длинный вывод). Иначе backend default.
+            "max_tokens": max_tokens or self.max_tokens,
             "temperature": 0.0,  # детерминированно для классификации/извлечения
         }
         if json_mode:
@@ -550,6 +581,27 @@ def _parse_json(text: str) -> dict[str, Any] | None:
         return json.loads(match.group(0))
     except json.JSONDecodeError:
         return None
+
+
+def _extract_slug(raw: str) -> str | None:
+    """Достать голый slug из ответа модели в catalog-режиме.
+
+    Модель просят вернуть ТОЛЬКО slug, но reasoning-модели иногда добавляют
+    обвязку («Тип: invoice», «```\ninvoice\n```», markdown, точку). Берём
+    первый токен, похожий на slug (буквы/цифры/_/-), lowercase-сравнение с
+    `unknown` оставляем doc-service'у (он валидирует по каталогу). Пусто → None.
+    """
+    if not raw:
+        return None
+    text = raw.strip().strip("`").strip()
+    if not text:
+        return None
+    # Первый «словоподобный» токен (slug'и: invoice, commercial_invoice,
+    # factInvoice, УПД-подобных latin-only тут нет — каталог на latin-slug'ах).
+    m = re.search(r"[A-Za-z][A-Za-z0-9_\-]*", text)
+    if not m:
+        return None
+    return m.group(0)
 
 
 def _safe_float(value, default: float = 0.0) -> float:

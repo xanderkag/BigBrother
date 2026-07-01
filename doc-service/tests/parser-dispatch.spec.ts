@@ -32,6 +32,7 @@ function mockLlm(extracted: Record<string, unknown>, confidence: number): LlmCli
     isAvailable: () => true,
     supportsVision: async () => false,
     classify: vi.fn(),
+    classifyWithCatalog: vi.fn(),
     extract: vi.fn().mockResolvedValue({ extracted, confidence, issues: [] }),
     visionOcr: vi.fn(),
     verify: vi.fn(),

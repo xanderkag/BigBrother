@@ -97,6 +97,24 @@ export const Job = z
         'Хронологический след этапов обработки: upload, classify, ocr.<engine>, parse.<kind>, validate, resolve, finalize. ' +
         'Используется UI для живого прогресса и пост-мортема при ошибках.',
       ),
+    classification: z
+      .object({
+        type: DocumentTypeSlugSchema.nullable(),
+        confidence: z.number().min(0).max(1),
+        method: z.enum(['llm', 'keyword', 'filename', 'fallback', 'hint']),
+        duration_ms: z.number().int().nonnegative().nullable(),
+        llm_said: z.string().nullable(),
+        keyword_said: z
+          .object({ type: DocumentTypeSlugSchema, score: z.number() })
+          .nullable(),
+        candidates: z.array(z.object({ type: DocumentTypeSlugSchema, score: z.number() })),
+        unknown: z.boolean(),
+      })
+      .nullable()
+      .describe(
+        'Трасса LLM-классификатора: как выбран тип (method), что сказал keyword-prior (keyword_said) и LLM (llm_said), ' +
+        'кандидаты, время classify-вызова, флаг «не опознан» (unknown). null для legacy jobs до внедрения.',
+      ),
     organization_id: z.string().uuid(),
     project_id: z.string().uuid(),
     created_by_user_id: z.string().uuid().nullable(),

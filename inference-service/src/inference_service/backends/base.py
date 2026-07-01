@@ -91,7 +91,22 @@ class ModelBackend(ABC):
         text: str,
         model_override: str | None = None,
         reasoning_effort: str | None = None,
+        catalog: str | None = None,
+        file_name: str | None = None,
+        keyword_hint: str | None = None,
+        max_tokens: int | None = None,
     ) -> ClassifyResponse:
+        """Классифицирует документ.
+
+        Два режима:
+          - `catalog=None` (default) — жёсткий 6-типовый enum (старое
+            поведение, JSON-режим). Backends без catalog-поддержки могут
+            игнорировать catalog/file_name/keyword_hint/max_tokens.
+          - `catalog` задан — динамический каталог типов (`slug — description`),
+            модель возвращает голый slug из каталога либо `unknown`.
+            Реализовано в OpenAICompatibleBackend (prod qwen3.6). Прочие
+            backends fall back на старый путь (fail-soft).
+        """
         ...
 
     @abstractmethod

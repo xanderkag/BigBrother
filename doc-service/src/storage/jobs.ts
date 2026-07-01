@@ -2,6 +2,7 @@ import { db } from '../db.js';
 import { normalizeExtracted } from './normalize-extracted.js';
 import { normalizeSlugForApi } from '../types/slug-normalize.js';
 import { stripInlineCredentials } from '../pipeline/llm/inline-credentials.js';
+import type { ClassificationMetadata } from '../pipeline/classifier/llm-classifier.js';
 import type { DocumentTypeSlug, JobStatus, OcrEngineName } from '../types/documents.js';
 
 /**
@@ -148,6 +149,13 @@ export type JobRow = {
    * именно ступени job упал.
    */
   pipeline_steps: PipelineStep[];
+  /**
+   * Метаданные LLM-классификатора (production LLM classifier, migration
+   * 20260701000002). Заполняется на classify-стадии оркестратором/reprocess'ом.
+   * UI (job detail) показывает «почему этот тип»: keyword_said, llm_said,
+   * method, duration_ms, candidates, флаг unknown. NULL для legacy jobs.
+   */
+  classification: ClassificationMetadata | null;
 };
 
 /**
@@ -313,6 +321,18 @@ class JobsRepo {
       `UPDATE jobs SET pipeline_steps = pipeline_steps || $2::jsonb WHERE id = $1`,
       [id, JSON.stringify(step)],
     );
+  }
+
+  /**
+   * Сохранить метаданные классификации (production LLM classifier). Вызывается
+   * на classify-стадии — до finalize(). best-effort как pipeline steps: caller
+   * логирует ошибку, но не роняет обработку из-за метаданных наблюдаемости.
+   */
+  async saveClassification(id: string, meta: ClassificationMetadata): Promise<void> {
+    await db.query(`UPDATE jobs SET classification = $2::jsonb WHERE id = $1`, [
+      id,
+      JSON.stringify(meta),
+    ]);
   }
 
   async markProcessing(id: string): Promise<void> {
@@ -1045,6 +1065,9 @@ class JobsRepo {
       error: row.error,
       last_llm_call: row.last_llm_call,
       pipeline_steps: row.pipeline_steps ?? [],
+      // Production LLM classifier: трасса «почему этот тип» для UI. null для
+      // legacy jobs до внедрения (миграция 20260701000002).
+      classification: row.classification ?? null,
       organization_id: row.organization_id,
       project_id: row.project_id,
       created_by_user_id: row.created_by_user_id,

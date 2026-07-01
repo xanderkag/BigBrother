@@ -91,7 +91,20 @@ export class DocumentTypeResolver {
    */
   private listCache = new Map<string, { rows: DocumentTypeRow[]; at: number }>();
 
+  /**
+   * Хуки, вызываемые на invalidate() — производные кэши (LLM-каталог
+   * классификатора), которые зависят от состава активных типов. Регистрируются
+   * извне (registerInvalidationHook), чтобы избежать циклического импорта
+   * resolver ↔ catalog. Ошибки хука не роняют invalidate.
+   */
+  private invalidationHooks: Array<() => void> = [];
+
   constructor(private readonly ttlMs: number = DEFAULT_TTL_MS) {}
+
+  /** Зарегистрировать callback, срабатывающий на каждый invalidate(). */
+  registerInvalidationHook(hook: () => void): void {
+    this.invalidationHooks.push(hook);
+  }
 
   /**
    * CP7: scope-aware активный набор для пайплайна организации `orgId`.
@@ -216,6 +229,15 @@ export class DocumentTypeResolver {
     // активных типов в любом bucket'е (global-тип виден всем; tenant-тип —
     // одной орг). Чистим весь map целиком — типы меняются редко.
     this.listCache.clear();
+    // Производные кэши (LLM-каталог классификатора) — тоже сбрасываем, состав
+    // типов мог поменяться. Ошибки хука глушим (invalidate не должен падать).
+    for (const hook of this.invalidationHooks) {
+      try {
+        hook();
+      } catch {
+        // best-effort — производный кэш протухнет сам по TTL
+      }
+    }
   }
 
   /**

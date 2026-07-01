@@ -83,8 +83,12 @@ class QwenVlBackend(ModelBackend):
         text: str,
         model_override: str | None = None,  # noqa: ARG002 — backend хардкодит модель
         reasoning_effort: str | None = None,  # noqa: ARG002 — Ollama-knob, не применим
+        catalog: str | None = None,  # noqa: ARG002 — catalog-режим только в openai_compat
+        file_name: str | None = None,  # noqa: ARG002
+        keyword_hint: str | None = None,  # noqa: ARG002
+        max_tokens: int | None = None,  # noqa: ARG002
     ) -> ClassifyResponse:
-        del model_override, reasoning_effort
+        del model_override, reasoning_effort, catalog, file_name, keyword_hint, max_tokens
         prompt = classify_prompts.build(text)
         async with self._admit():
             raw = await self._generate_text(prompt)

@@ -17,6 +17,9 @@ export class NullLlmClient implements LlmClient {
   async classify(): Promise<never> {
     throw new Error('LLM client not configured');
   }
+  async classifyWithCatalog(): Promise<never> {
+    throw new Error('LLM client not configured');
+  }
   async extract(): Promise<never> {
     throw new Error('LLM client not configured');
   }
