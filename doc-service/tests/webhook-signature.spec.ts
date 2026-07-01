@@ -50,7 +50,6 @@ function payload(over: Partial<WebhookPayload> = {}): WebhookPayload {
     job_id: 'job-123',
     status: 'completed',
     document_type: 'invoice',
-    unrecognized: false,
     confidence: 0.99,
     ocr_engine: null,
     extracted: {},
@@ -132,34 +131,37 @@ describe('webhook payload — top-level schema_version drift marker (SLAI)', () 
   });
 });
 
-describe('webhook payload — unrecognized flag (schema_version 1.1, additive)', () => {
-  it('нормальный распознанный документ → unrecognized:false, document_type присутствует', async () => {
+describe('webhook payload — unrecognized → document_type "unknown" (schema_version 1.1)', () => {
+  it('нормальный распознанный документ → document_type slug, поля unrecognized нет', async () => {
     await deliverWebhook(
       'job-ok',
       'https://consumer.test/hook',
-      payload({ job_id: 'job-ok', document_type: 'invoice', unrecognized: false }),
+      payload({ job_id: 'job-ok', document_type: 'invoice' }),
       log,
     );
 
     const body = requestMock.mock.calls[0]![1].body as string;
     const sent = JSON.parse(body) as Record<string, unknown>;
-    expect(sent.unrecognized).toBe(false);
     expect(sent.document_type).toBe('invoice');
     expect(sent.schema_version).toBe('1.1');
+    // Поле unrecognized удалено из контракта (SLAI 2026-07-01).
+    expect(sent).not.toHaveProperty('unrecognized');
   });
 
-  it('не опознанный документ (classification.unknown) → document_type:null, unrecognized:true', async () => {
+  it('не опознанный документ → document_type:"unknown", поля unrecognized нет', async () => {
+    // Builders проставляют строку "unknown" при classification.unknown;
+    // здесь проверяем wire-репрезентацию — payload несёт "unknown".
     await deliverWebhook(
       'job-unk',
       'https://consumer.test/hook',
-      payload({ job_id: 'job-unk', document_type: null, unrecognized: true }),
+      payload({ job_id: 'job-unk', document_type: 'unknown' }),
       log,
     );
 
     const body = requestMock.mock.calls[0]![1].body as string;
     const sent = JSON.parse(body) as Record<string, unknown>;
-    // null явно передан в payload, не выкинут и не приведён к "".
-    expect(sent).toHaveProperty('document_type', null);
-    expect(sent.unrecognized).toBe(true);
+    expect(sent.document_type).toBe('unknown');
+    expect(sent.schema_version).toBe('1.1');
+    expect(sent).not.toHaveProperty('unrecognized');
   });
 });

@@ -250,7 +250,6 @@ components:
         - job_id
         - status
         - document_type
-        - unrecognized
         - confidence
         - ocr_engine
         - extracted
@@ -270,8 +269,9 @@ components:
           description: |
             Drift marker for the payload field-set, independent of the
             envelope `version`. Semver `MAJOR.MINOR` string, currently
-            `"1.1"` (1.0 → 1.1 added the additive top-level `unrecognized`
-            flag on 2026-07-01). Bumped when fields are added/changed;
+            `"1.1"` (1.0 → 1.1, 2026-07-01: `document_type` may now carry
+            the literal `"unknown"` for docs the classifier could not
+            assign a type). Bumped when fields are added/changed;
             `version` stays `"v1"`. Distinct from
             `extracted._match_signals.schema_version` (which scopes only the
             match-signals projection).
@@ -287,18 +287,12 @@ components:
             - type: "null"
           description: |
             Recognized document type slug in outbound (lowercase
-            snake_case) form. `null` means the classifier was unable
-            to assign a type — in that case `unrecognized` is `true`
-            (typically paired with `status: needs_review`).
-        unrecognized:
-          type: boolean
-          description: |
-            Additive flag (schema_version 1.1, 2026-07-01). `true` only
-            when the classifier deliberately flagged the document as not
-            recognized (`classification.unknown`); in that case
-            `document_type` is `null`. `false` for every normally
-            classified document. Back-compat: pre-1.1 consumers may omit
-            the field; envelope `version` stays `"v1"`.
+            snake_case) form. The literal `"unknown"` (schema_version
+            1.1, 2026-07-01) means the classifier could not assign a type
+            — the explicit signal for an unrecognized document (typically
+            paired with `status: needs_review`), replacing the older
+            `null` + `unrecognized` flag representation. `null` may still
+            appear for jobs that failed before classification.
         confidence:
           oneOf:
             - type: number
@@ -394,6 +388,11 @@ components:
         `POST /api/v1/document-types` ship their own slug (any
         lowercase snake_case string). Receivers SHOULD tolerate
         unknown slugs and route to a generic handler.
+
+        The reserved literal `"unknown"` (schema_version 1.1) is not a
+        catalog type — it marks a document the classifier could not
+        assign a type to (unrecognized). Receivers SHOULD hold it for
+        manual/review, not fail.
 
         Outbound aliasing happens at delivery time
         (`normalizeSlugForApi`):
@@ -871,7 +870,6 @@ components:
         job_id: 1e7a2c44-8b9c-4f5d-b3a1-7e6f2c4d9a01
         status: done
         document_type: invoice
-        unrecognized: false
         confidence: 0.93
         ocr_engine: pdf-text
         extracted:
@@ -931,7 +929,6 @@ components:
         job_id: 2c81f5a2-3d4b-49a6-9c2e-5e0a3f1b8d44
         status: needs_review
         document_type: invoice
-        unrecognized: false
         confidence: 0.71
         ocr_engine: tesseract
         extracted:
@@ -956,7 +953,6 @@ components:
         job_id: 3df9e711-9a04-4ab9-8d6e-1f0b2c5d8e93
         status: done
         document_type: invoice
-        unrecognized: false
         confidence: 0.91
         ocr_engine: pdf-text
         extracted:
@@ -1000,7 +996,6 @@ components:
         job_id: 4e72a118-bfa2-4d11-9c3a-2a5b6c0e7d12
         status: failed
         document_type: null
-        unrecognized: false
         confidence: null
         ocr_engine: null
         extracted: null
@@ -1008,14 +1003,13 @@ components:
         error: "PDF защищён паролем. Удалите защиту и загрузите снова."
 
     Unrecognized:
-      summary: "Document not recognized by the classifier (`unrecognized: true`)."
+      summary: "Document not recognized by the classifier (`document_type: \"unknown\"`)."
       value:
         version: v1
         schema_version: "1.1"
         job_id: 3010199a-1b2c-4d3e-8f90-a1b2c3d4e5f6
         status: needs_review
-        document_type: null
-        unrecognized: true
+        document_type: unknown
         confidence: 0.0
         ocr_engine: pdf-text
         extracted: {}

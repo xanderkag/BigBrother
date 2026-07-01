@@ -33,15 +33,17 @@ export type WebhookPayload = {
   schema_version: string;
   job_id: string;
   status: string;
-  document_type: string | null;
   /**
-   * Additive-маркер (schema_version 1.1, 2026-07-01): документ НЕ опознан
-   * классификатором. `true` только когда LLM-классификатор явно пометил
-   * `classification.unknown === true` — тогда `document_type` тоже `null`.
-   * Для всех нормально классифицированных документов — `false`. Back-compat:
-   * старые consumer'ы игнорируют поле, envelope `version` остаётся 'v1'.
+   * Outbound-slug типа документа. Для неопознанных доков
+   * (`classification.unknown === true`) — литерал `"unknown"` (SLAI
+   * confirmed 2026-07-01: строка "unknown" как явный сигнал вместо null +
+   * отдельного флага; их receiver нормализует и возвращает 201).
+   * schema_version остаётся 1.1 — drift-маркер по-прежнему применим
+   * (document_type теперь может нести новое значение "unknown").
+   * В БД для таких доков остаётся `document_type = null` +
+   * `classification.unknown = true` — это ТОЛЬКО wire-представление.
    */
-  unrecognized: boolean;
+  document_type: string | null;
   confidence: number | null;
   ocr_engine: string | null;
   extracted: Record<string, unknown> | null;

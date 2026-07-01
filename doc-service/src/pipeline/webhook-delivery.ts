@@ -132,10 +132,14 @@ export async function deliverFinalizedJobWebhook(
       job_id: updated.id,
       status: updated.status,
       // 2026-05-18 (SLAI Issue #3): нормализация slug → lowercase snake_case.
-      document_type: normalizeSlugForApi(updated.document_type),
-      // schema_version 1.1: additive-флаг «документ не опознан». true только
-      // если классификатор явно пометил unknown (тогда document_type=null).
-      unrecognized: updated.classification?.unknown === true,
+      // schema_version 1.1 (SLAI confirmed 2026-07-01): неопознанный док
+      // (classification.unknown) уходит как литерал "unknown", НЕ null —
+      // отдельного флага больше нет, "unknown" сам по себе сигнал. В БД
+      // document_type остаётся null — это только wire-представление.
+      document_type:
+        updated.classification?.unknown === true
+          ? 'unknown'
+          : normalizeSlugForApi(updated.document_type),
       confidence: updated.confidence === null ? null : Number(updated.confidence),
       ocr_engine: updated.ocr_engine,
       extracted: extractedOut,

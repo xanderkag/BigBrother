@@ -306,7 +306,10 @@ describe('C. deliverFinalizedJobWebhook passes override url/secret to deliverWeb
     }));
   });
 
-  function makeJob(webhookUrl: string | null): import('../src/storage/jobs.js').JobRow {
+  function makeJob(
+    webhookUrl: string | null,
+    over: Partial<import('../src/storage/jobs.js').JobRow> = {},
+  ): import('../src/storage/jobs.js').JobRow {
     // Минимальный JobRow — поля, которые читает deliverFinalizedJobWebhook.
     return {
       id: 'job-1',
@@ -319,6 +322,7 @@ describe('C. deliverFinalizedJobWebhook passes override url/secret to deliverWeb
       error: null,
       webhook_url: webhookUrl,
       file_path: null,
+      ...over,
     } as unknown as import('../src/storage/jobs.js').JobRow;
   }
 
@@ -347,5 +351,40 @@ describe('C. deliverFinalizedJobWebhook passes override url/secret to deliverWeb
     const args = deliverWebhookMock.mock.calls[0]!;
     expect(args[1]).toBe('https://profile/hook');
     expect(args[4]).toBe('profile-secret');
+  });
+
+  // schema_version 1.1 (SLAI 2026-07-01): неопознанный док
+  // (classification.unknown) уходит как document_type:"unknown"; отдельного
+  // флага unrecognized нет. Нормальный док несёт реальный slug.
+  it('classification.unknown → payload.document_type "unknown", no unrecognized key', async () => {
+    deliverWebhookMock.mockClear();
+    vi.resetModules();
+    const { deliverFinalizedJobWebhook } = await import('../src/pipeline/webhook-delivery.js');
+    await deliverFinalizedJobWebhook(
+      makeJob('https://job/hook', {
+        document_type: null,
+        classification: { unknown: true },
+      } as Partial<import('../src/storage/jobs.js').JobRow>),
+      'job-1',
+      log,
+    );
+
+    const payload = deliverWebhookMock.mock.calls[0]![2] as Record<string, unknown>;
+    expect(payload.document_type).toBe('unknown');
+    expect(payload.schema_version).toBe('1.1');
+    expect(payload.version).toBe('v1');
+    expect(payload).not.toHaveProperty('unrecognized');
+  });
+
+  it('normal doc → payload.document_type real slug, no unrecognized key', async () => {
+    deliverWebhookMock.mockClear();
+    vi.resetModules();
+    const { deliverFinalizedJobWebhook } = await import('../src/pipeline/webhook-delivery.js');
+    await deliverFinalizedJobWebhook(makeJob('https://job/hook'), 'job-1', log);
+
+    const payload = deliverWebhookMock.mock.calls[0]![2] as Record<string, unknown>;
+    expect(payload.document_type).toBe('invoice');
+    expect(payload.schema_version).toBe('1.1');
+    expect(payload).not.toHaveProperty('unrecognized');
   });
 });
