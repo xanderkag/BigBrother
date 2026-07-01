@@ -294,16 +294,17 @@ describe('C. deliverFinalizedJobWebhook passes override url/secret to deliverWeb
   const deliverWebhookMock = vi.fn(async () => undefined);
 
   beforeAll(() => {
-    vi.doMock('../src/webhooks/deliver.js', () => ({
-      deliverWebhook: deliverWebhookMock,
-      // webhook-delivery.ts также импортит computeTargetEntityHint (для
-      // target_entity_hint в payload) и WEBHOOK_SCHEMA_VERSION (drift-маркер
-      // в payload). Эти тесты проверяют только аргументы deliverWebhook,
-      // поэтому хинт можно занулить — главное чтобы экспорты существовали,
-      // иначе ESM-мок падает «No export defined».
-      computeTargetEntityHint: vi.fn(() => null),
-      WEBHOOK_SCHEMA_VERSION: '1.1',
-    }));
+    // Мокаем ТОЛЬКО deliverWebhook (перехват аргументов доставки); остальные
+    // экспорты (buildWebhookPayload / computeTargetEntityHint /
+    // WEBHOOK_SCHEMA_VERSION) — реальные, чтобы webhook-delivery.ts собрал
+    // настоящий payload (тесты проверяют document_type/schema_version/version).
+    vi.doMock('../src/webhooks/deliver.js', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../src/webhooks/deliver.js')>();
+      return {
+        ...actual,
+        deliverWebhook: deliverWebhookMock,
+      };
+    });
   });
 
   function makeJob(

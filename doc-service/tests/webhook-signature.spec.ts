@@ -115,6 +115,56 @@ describe('deliverWebhook — EXT-A signature aliases', () => {
   });
 });
 
+describe('buildWebhookPayload — единый билдер для всех путей доставки', () => {
+  // Envelope-источник в форме, которую отдают все три пути (finalize/sweeper/
+  // redeliver). confidence приходит строкой (pg NUMERIC) или числом.
+  const src = {
+    id: 'job-1',
+    status: 'done',
+    document_type: 'TTN', // исторический UPPERCASE-слаг
+    classification: null,
+    confidence: '0.87',
+    ocr_engine: 'pdf-text',
+    error: null,
+  };
+
+  it('нормальный job → v1 / schema_version 1.1 / нормализованный slug', async () => {
+    const { buildWebhookPayload } = await import('../src/webhooks/deliver.js');
+    const p = buildWebhookPayload(src, { extracted: { number: '5' }, metadata: null });
+    expect(p.version).toBe('v1');
+    expect(p.schema_version).toBe('1.1');
+    // TTN → ttn (outbound normalize).
+    expect(p.document_type).toBe('ttn');
+    expect(p.confidence).toBe(0.87);
+    expect(p.extracted).toEqual({ number: '5' });
+  });
+
+  it('classification.unknown → document_type "unknown", ключа unrecognized нет', async () => {
+    const { buildWebhookPayload } = await import('../src/webhooks/deliver.js');
+    const p = buildWebhookPayload(
+      { ...src, document_type: null, classification: { unknown: true } },
+      { extracted: null, metadata: null },
+    );
+    expect(p.document_type).toBe('unknown');
+    expect(p).not.toHaveProperty('unrecognized');
+  });
+
+  it('пути sweeper/redeliver: без content-хинтов → нет _field_confidence/documents/target_entity_hint в body', async () => {
+    const { buildWebhookPayload } = await import('../src/webhooks/deliver.js');
+    // sweeper: только extracted/metadata; redeliver добавляет targetEntityHint.
+    const sweeper = buildWebhookPayload(src, { extracted: {}, metadata: null });
+    // undefined-поля не сериализуются → ключей нет в body (byte-identical
+    // с прежним sweeper-литералом, где их не было вовсе).
+    const parsed = JSON.parse(JSON.stringify(sweeper)) as Record<string, unknown>;
+    expect(parsed).not.toHaveProperty('_field_confidence');
+    expect(parsed).not.toHaveProperty('documents');
+    expect(parsed).not.toHaveProperty('target_entity_hint');
+    // Общий envelope тот же самый, что и на finalize-пути.
+    expect(parsed.version).toBe('v1');
+    expect(parsed.schema_version).toBe('1.1');
+  });
+});
+
 describe('webhook payload — top-level schema_version drift marker (SLAI)', () => {
   it('доставленный body несёт schema_version: "1.1" и version: "v1" не тронут', async () => {
     const { WEBHOOK_SCHEMA_VERSION } = await import('../src/webhooks/deliver.js');

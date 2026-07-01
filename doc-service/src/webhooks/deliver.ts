@@ -4,6 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { config } from '../config.js';
 import { jobsRepo } from '../storage/jobs.js';
 import { webhookAttemptsTotal } from '../metrics.js';
+import { normalizeSlugForApi } from '../types/slug-normalize.js';
 import type { Logger } from 'pino';
 
 /**
@@ -91,6 +92,86 @@ export function computeTargetEntityHint(
   if (v && typeof v.plate === 'string' && v.plate.length > 0) return 'Transportation';
   if (extracted.route_from && extracted.route_to) return 'Transportation';
   return undefined;
+}
+
+/**
+ * Envelope-часть job'а, из которой собирается webhook payload. Одинакова для
+ * всех трёх точек доставки (finalize / sweeper / manual redeliver); отличается
+ * лишь способ получения row'а (updated / listStaleWebhooks / findById), поэтому
+ * билдер принимает уже нормализованный срез, а не сырой JobRow.
+ *
+ * `classification` — только для деривации document_type "unknown" (в БД
+ * document_type остаётся null для неопознанных). `confidence` приходит как
+ * строка (pg NUMERIC) или число.
+ */
+export type WebhookEnvelopeSource = {
+  id: string;
+  status: string;
+  document_type: string | null;
+  classification: { unknown?: boolean } | null;
+  confidence: string | number | null;
+  ocr_engine: string | null;
+  error: string | null;
+};
+
+/**
+ * Опциональное контент-наполнение payload'а. Content-поля отличаются по путям:
+ *   - finalize (webhook-delivery): extracted/metadata после F2/F4/F5, плюс
+ *     fieldConfidence/documents/targetEntityHint;
+ *   - sweeper: сырые extracted/metadata из БД, без content-хинтов;
+ *   - manual redeliver: сырые extracted/metadata (metadata через
+ *     stripInlineCredentials), плюс targetEntityHint.
+ *
+ * `undefined`-значения не сериализуются JSON.stringify → ключ отсутствует в
+ * body ровно как раньше на путях, где его не было (byte-identical на проводе).
+ */
+export type WebhookPayloadContent = {
+  extracted?: Record<string, unknown> | null;
+  metadata?: Record<string, unknown> | null;
+  fieldConfidence?: Record<string, number>;
+  documents?: WebhookPayload['documents'];
+  targetEntityHint?: WebhookPayload['target_entity_hint'];
+};
+
+/**
+ * Единый билдер webhook payload'а для всех трёх точек доставки (finalize,
+ * sweeper, manual redeliver). Раньше envelope-штамповка (version/schema_version/
+ * document_type-деривация "unknown"/confidence-нормализация/...) была
+ * продублирована в трёх местах; здесь она в одном.
+ *
+ * Порядок ключей и правило пропуска undefined-полей сохранены точь-в-точь как
+ * в исходных литералах — body на проводе byte-identical для каждого пути.
+ */
+export function buildWebhookPayload(
+  src: WebhookEnvelopeSource,
+  content: WebhookPayloadContent = {},
+): WebhookPayload {
+  return {
+    // 2026-05-18 (SLAI Issue #4): обязательное поле контракта v1.
+    version: 'v1',
+    schema_version: WEBHOOK_SCHEMA_VERSION,
+    job_id: src.id,
+    status: src.status,
+    // 2026-05-18 (SLAI Issue #3): нормализация slug → lowercase snake_case.
+    // schema_version 1.1 (SLAI confirmed 2026-07-01): неопознанный док
+    // (classification.unknown) уходит как литерал "unknown", НЕ null —
+    // отдельного флага больше нет. В БД document_type остаётся null.
+    document_type:
+      src.classification?.unknown === true
+        ? 'unknown'
+        : normalizeSlugForApi(src.document_type ?? null),
+    confidence: src.confidence === null ? null : Number(src.confidence),
+    ocr_engine: src.ocr_engine ?? null,
+    extracted: content.extracted ?? null,
+    metadata: content.metadata ?? null,
+    error: src.error ?? null,
+    _field_confidence:
+      content.fieldConfidence && Object.keys(content.fieldConfidence).length > 0
+        ? content.fieldConfidence
+        : undefined,
+    documents: content.documents,
+    target_entity_hint: content.targetEntityHint,
+  };
 }
 
 /**

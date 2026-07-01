@@ -41,7 +41,7 @@ import { SYSTEM_DEFAULT_ORG_ID, SYSTEM_DEFAULT_PROJECT_ID } from '../auth.js';
 import {
   deliverWebhook,
   computeTargetEntityHint,
-  WEBHOOK_SCHEMA_VERSION,
+  buildWebhookPayload,
 } from '../webhooks/deliver.js';
 import { organizationSettingsRepo } from '../storage/organization-settings.js';
 import { normalizeSlugForApi } from '../types/slug-normalize.js';
@@ -1133,29 +1133,12 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
       // чтобы deliverWebhook начинал с попытки №1.
       await jobsRepo.resetWebhookAttempts(req.params.id);
       const extractedForPayload = (job.extracted as Record<string, unknown> | null) ?? null;
-      const payload = {
-        // SLAI Issue #4: обязательный version field в контракте v1.
-        version: 'v1' as const,
-        schema_version: WEBHOOK_SCHEMA_VERSION,
-        job_id: job.id,
-        status: job.status,
-        // SLAI Issue #3: outbound slug normalize (TTN→ttn, etc.).
-        // schema_version 1.1 (SLAI confirmed 2026-07-01): неопознанный док
-        // (classification.unknown) уходит как литерал "unknown", НЕ null;
-        // отдельного флага нет. job грузится через findById (SELECT *),
-        // classification на row доступен. В БД document_type остаётся null.
-        document_type:
-          job.classification?.unknown === true
-            ? 'unknown'
-            : normalizeSlugForApi(job.document_type ?? null),
-        confidence: job.confidence !== null ? Number(job.confidence) : null,
-        ocr_engine: job.ocr_engine ?? null,
+      const payload = buildWebhookPayload(job, {
         extracted: extractedForPayload,
         metadata: stripInlineCredentials((job.metadata as Record<string, unknown> | null) ?? null),
-        error: job.error ?? null,
         // EXT-HINT-1: единая логика хинта что и в основном webhook-delivery.
-        target_entity_hint: computeTargetEntityHint(extractedForPayload),
-      };
+        targetEntityHint: computeTargetEntityHint(extractedForPayload),
+      });
       // SLAI 2026-06-03 DF-2 fix: подписываем per-org HMAC secret (резолвлен
       // выше). Без этого manual redeliver подписывает глобальным
       // config.webhook.hmacSecret и consumer'ы с per-tenant verify отбрасывают 401.

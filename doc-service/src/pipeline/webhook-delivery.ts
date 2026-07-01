@@ -29,7 +29,7 @@ import type { Logger } from 'pino';
 import {
   deliverWebhook,
   computeTargetEntityHint,
-  WEBHOOK_SCHEMA_VERSION,
+  buildWebhookPayload,
 } from '../webhooks/deliver.js';
 import { jobsRepo, type JobRow } from '../storage/jobs.js';
 import { removeStoredFile } from '../storage/files.js';
@@ -125,27 +125,10 @@ export async function deliverFinalizedJobWebhook(
   await deliverWebhook(
     jobId,
     targetUrl,
-    {
-      // 2026-05-18 (SLAI Issue #4): обязательное поле контракта v1.
-      version: 'v1',
-      schema_version: WEBHOOK_SCHEMA_VERSION,
-      job_id: updated.id,
-      status: updated.status,
-      // 2026-05-18 (SLAI Issue #3): нормализация slug → lowercase snake_case.
-      // schema_version 1.1 (SLAI confirmed 2026-07-01): неопознанный док
-      // (classification.unknown) уходит как литерал "unknown", НЕ null —
-      // отдельного флага больше нет, "unknown" сам по себе сигнал. В БД
-      // document_type остаётся null — это только wire-представление.
-      document_type:
-        updated.classification?.unknown === true
-          ? 'unknown'
-          : normalizeSlugForApi(updated.document_type),
-      confidence: updated.confidence === null ? null : Number(updated.confidence),
-      ocr_engine: updated.ocr_engine,
+    buildWebhookPayload(updated, {
       extracted: extractedOut,
       metadata: metadataOut,
-      error: updated.error,
-      _field_confidence: Object.keys(fieldConfidence).length > 0 ? fieldConfidence : undefined,
+      fieldConfidence,
       // F5: массив найденных документов если xlsx/PDF был multi-doc.
       // При single-doc отсутствует (backwards compat).
       documents,
@@ -153,8 +136,8 @@ export async function deliverFinalizedJobWebhook(
       // один транспортный сигнал: order_ref/permit_no/vehicle.plate/route).
       // На редактированном extractedOut, не на raw — чтобы PII-redact не
       // мог удалить сигнал и оставить hint висящим.
-      target_entity_hint: computeTargetEntityHint(extractedOut),
-    },
+      targetEntityHint: computeTargetEntityHint(extractedOut),
+    }),
     log,
     resolvedSecret,
   );

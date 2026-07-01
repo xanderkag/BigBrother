@@ -3,10 +3,9 @@ import { config } from '../config.js';
 import { jobsRepo as defaultJobsRepo, type JobRow } from '../storage/jobs.js';
 import {
   deliverWebhook,
-  WEBHOOK_SCHEMA_VERSION,
+  buildWebhookPayload,
   type WebhookPayload,
 } from '../webhooks/deliver.js';
-import { normalizeSlugForApi } from '../types/slug-normalize.js';
 
 /**
  * Automatic webhook re-delivery sweeper (A4 remainder).
@@ -78,26 +77,10 @@ export function startWebhookSweeper(
       let triggered = 0;
       for (const row of stale) {
         if (!row.webhook_url) continue; // should not happen given SQL filter
-        const payload: WebhookPayload = {
-          // SLAI Issue #4: обязательный version field.
-          version: 'v1',
-          schema_version: WEBHOOK_SCHEMA_VERSION,
-          job_id: row.id,
-          status: row.status,
-          // SLAI Issue #3: outbound slug normalize.
-          // schema_version 1.1 (SLAI confirmed 2026-07-01): неопознанный док
-          // (classification.unknown) уходит как литерал "unknown", НЕ null;
-          // отдельного флага нет. В БД document_type остаётся null.
-          document_type:
-            row.classification?.unknown === true
-              ? 'unknown'
-              : normalizeSlugForApi(row.document_type ?? null),
-          confidence: row.confidence !== null ? Number(row.confidence) : null,
-          ocr_engine: row.ocr_engine ?? null,
+        const payload: WebhookPayload = buildWebhookPayload(row, {
           extracted: (row.extracted as Record<string, unknown> | null) ?? null,
           metadata: (row.metadata as Record<string, unknown> | null) ?? null,
-          error: row.error ?? null,
-        };
+        });
         try {
           // Fire-and-forget per job — one broken endpoint doesn't block the
           // rest. deliverWebhook() has its own internal retry loop.
