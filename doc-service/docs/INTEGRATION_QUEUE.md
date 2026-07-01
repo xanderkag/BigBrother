@@ -48,6 +48,34 @@
 
 ## Active Questions
 
+### Q19. `unrecognized` состояние + bump `schema_version 1.0 → 1.1` (аддитивно)
+
+- **Status:** `OPEN` (To: SLAI_DEV — подтвердить приём `document_type: null` + чтение флага `unrecognized`. Blocked-on-deploy: поле ещё не в проде, реализуется сейчас. → RESOLVED после (а) деплоя webhook-поля + (б) ack SLAI.)
+- **Asked:** 2026-07-01
+- **From:** PARSDOCS_DEV
+- **To:** SLAI_DEV
+- **Что нужно:** SLAI подтверждает, что принимает `document_type: null` без падения и трактует `unrecognized: true` как «hold-for-manual / review», не как fail.
+- **Что сделать когда подтвердят:** после деплоя webhook-поля + ack SLAI → RESOLVED с commit-ссылкой.
+- **Связано:** Q17 (top-level `schema_version`, старт `1.0` — это первый MINOR-bump), Q16 (переотдача — исправленные типы придут на переотданных доках), CONTRACT_TECH_APPENDIX §4.5 (аддитив = back-compat), TECH_DEBT `LLM-CLASSIFIER (2026-07-01)` + `FILENAME-SIGNAL + DOC (2026-07-01)`. Note-док: `PARSDOCS_TO_SLAI_2026-07-01_CLASSIFICATION.md`.
+
+#### Question / Context
+Классификация переработана: имя файла как weighted-сигнал + фикс regex АКТ (миграция `20260701000001`) + новый LLM-классификатор qwen3.6:27b (прогон на КАЖДОМ доке ~1s, выбор slug из ~38-типового каталога, fallback на keyword-классификатор при любой ошибке/таймауте — **никогда не роняет док**). `document_type` стал заметно точнее; пофикшены мис-классификации (Акт→`customs_declaration`, ТТН→`invoice`, УПД→`factInvoice`).
+
+**Единственное реальное изменение контракта:** док, не подходящий ни под один тип каталога, раньше получал уверенно-неверный тип; теперь приходит как **`document_type: null` + новое опциональное top-level поле `unrecognized: true`** (осознанное «не опознан», present-only — только когда типа нет). Это НЕ ошибка обработки: док извлечён и доставлен нормально, просто без уверенного типа.
+
+**Контракт-дельта:** `schema_version` бампается **1.0 → 1.1** — **аддитивно, back-compat** (одно новое опциональное поле + `document_type` может быть `null`). По политике Q17 это **MINOR** (SLAI логирует/замечает, не гейтит). Envelope `version` остаётся `"v1"`. Код SLAI формально может не меняться и не сломается, но SHOULD: (а) принимать `document_type: null` без падения / без форс-роутинга по типу; (б) трактовать `unrecognized: true` как hold-for-manual/review.
+
+**Внутренняя наблюдаемость (НЕ контракт, FYI):** пер-документная метаданная классификации (`method` llm/keyword/filename/fallback, `duration_ms` ~1s, `candidates`, `confidence`) пишется в `jobs.classification` (jsonb) для нашего оператора — это **внутренний job-API, в webhook-payload её НЕТ**, SLAI её не видит и ничего не делает. Опционально можем позже отдать в вебхуке confidence-сигнал (hint авто-vs-ручная), если понадобится SLAI — не обязательство.
+
+#### Что сделать когда подтвердят
+1. **parsdocs (backend):** добавить в `WebhookPayload` опц. top-level `unrecognized?: true` + разрешить `document_type: null` для неопознанных, во всех местах сборки payload (`deliver.ts`, `routes/jobs.ts`, `webhook-sweeper.ts`, `webhook-delivery.ts`); bump константы `schema_version 1.0→1.1` (связано с Q17-внедрением top-level ключа). Тесты payload-shape (`unrecognized` present-only, `document_type` nullable). Commit → деплой → сообщить SLAI «задеплоено».
+2. **SLAI (ждёт ответа):** подтвердить приём `document_type: null` + чтение флага `unrecognized` (hold-for-manual, не fail). Проверить, нет ли жёсткого допущения «`document_type` всегда непустой».
+
+#### Resolution
+<пусто — webhook-поле ещё не реализовано/не задеплоено; ждём ack SLAI>
+
+---
+
 ### Q17. schema_version — drift-маркер состава `extracted` (отдельно от envelope `version`)
 
 - **Status:** `ANSWERED` (sign-off Александра 2026-06-30: **принят отдельный top-level `schema_version`**, старт `"1.0"`, в реализации на стороне backend; To: SLAI_DEV — начать читать ключ + подтвердить трактовку bump'ов)
@@ -555,4 +583,5 @@ A-record), no-redirect, mid-stream byte-ceiling, опц. allowlist
 | 2026-06-30 | Сверка извлечения для SLAI (`PARSDOCS_SVERKA_SLAI_2026-06-30.md` + сообщение `PARSDOCS_TO_SLAI_2026-06-30_SVERKA_MSG.md`). Заведён **Q16** (OPEN): новые поля price_list/commercial_invoice (мигр. `20260630000001/0002`), модель phi4→qwen3.6:27b (98.3%), восстановление ~24% пустых доков. Контракт-дельта: `commercial_invoice.containers[].number` НЕ проецируется в `_match_signals` (invoice-alias не зовёт `collectContainers`) — фикс на нашей стороне, `schema_version` без изменений (1.0). Развилки к SLAI: переотдача пустых + нужен ли HS как match-ключ. |
 | 2026-06-30 | Микро-сверка от SLAI (подтвердили: плоские bl/container + containers[], `_normalized_fields`/`_match_signals`, order_refs[], hs_code как ТН ВЭД-поле не ключ, **идемпотентная переотдача инвойса безопасна** → закрывает §2-вопрос переотдачи «пустых»: переотдаём webhook по `job_id`, правки SLAI не пострадают). 2 встречных вопроса. Заведены **Q17** (schema_version: top-level drift-маркер состава `extracted`, отдельно от envelope `version` — рекоменд. top-level `schema_version` semver MINOR=log/MAJOR=gate, старт 1.0; verified: top-level `schema_version` сегодня НЕТ, `_match_signals.schema_version=1.0` скоупит только проекцию) и **Q18** (price_list: enrichment-дефолт vs полная матч-сущность через HS — назначение = решение Александра). Ответ-док `PARSDOCS_REPLY_TO_SLAI_SVERKA_2026-06-30.md` (DRAFT, 2 пункта ждут sign-off Александра до отправки SLAI). |
 | 2026-06-30 | Sign-off Александра по 2 пунктам микро-сверки. **Q17 → ANSWERED**: принят отдельный top-level `schema_version` (НЕ bump envelope `version`), старт `"1.0"`, политика MINOR=log/MAJOR=gate — в реализации backend, SLAI начать читать ключ. **Q18 → DEFERRED**: price_list пока НЕ нужен как сущность, хранить карточкой, SLAI ничего не строит; переоткрыть по реальной потребности (HS-линковка остаётся отложенной). Reply-док `PARSDOCS_REPLY_TO_SLAI_SVERKA_2026-06-30.md` доведён до send-ready (оба `[НУЖЕН SIGN-OFF]`-гейта убраны); переотдача восстановленных «пустых» доков — мы, по `job_id`, сначала TEST-батч затем остальное. |
+| 2026-07-01 | Переработка классификации (имя файла как сигнал + фикс regex АКТ, миграция `20260701000001` + LLM-классификатор qwen3.6:27b на каждом доке, fallback на keyword). Заведён **Q19** (OPEN, To: SLAI_DEV): новое состояние `unrecognized` — неопознанный док приходит как `document_type: null` + опц. top-level поле `unrecognized: true` (present-only), bump `schema_version 1.0→1.1` (аддитивно/back-compat, MINOR по Q17). Просим SLAI подтвердить приём `null` + чтение флага (hold-for-manual, не fail). **Blocked-on-deploy** (webhook-поле реализуется, не в проде). Метаданные классификации (method/duration/candidates/confidence в `jobs.classification`) — внутренние, НЕ в payload. Note-док `PARSDOCS_TO_SLAI_2026-07-01_CLASSIFICATION.md`. Drafting-only, прод-код/схемы не трогали. |
 | 2026-06-23 | Чистка устаревших фактов после merge+деплой `6532be5`. **EXT-CLASS:** создание всех 8 типов выполнено и в проде (миграции `20260621000002/3/4`, каталог = 38 типов) — `Q-EXT-CLASS` переписан с «очередь будущих типов» на «создание сделано, осталась доводка `waybill`/`commercial_invoice`»; «30/30» → 38. `Q-CLASS-MATRIX` освежён: зарегистрировано 38 типов, из gap-листа создано всё кроме `TN`, §(c) split `booking_request` отмечен сделанным. **Merge+deploy:** формулировки «код влит в main, НЕ задеплоено» исправлены на «задеплоен на прод, спит за флагами (503)» в `Q-DADATA-1`. Реально открытые вопросы (§(d) TN vs TTN, полная матрица типов, образцы для калибровки, Q-PERMIT-1 ждёт PDF) сохранены. |
