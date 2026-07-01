@@ -46,10 +46,11 @@ function ok() {
 function payload(over: Partial<WebhookPayload> = {}): WebhookPayload {
   return {
     version: 'v1',
-    schema_version: '1.0',
+    schema_version: '1.1',
     job_id: 'job-123',
     status: 'completed',
     document_type: 'invoice',
+    unrecognized: false,
     confidence: 0.99,
     ocr_engine: null,
     extracted: {},
@@ -116,17 +117,49 @@ describe('deliverWebhook — EXT-A signature aliases', () => {
 });
 
 describe('webhook payload — top-level schema_version drift marker (SLAI)', () => {
-  it('доставленный body несёт schema_version: "1.0" и version: "v1" не тронут', async () => {
+  it('доставленный body несёт schema_version: "1.1" и version: "v1" не тронут', async () => {
     const { WEBHOOK_SCHEMA_VERSION } = await import('../src/webhooks/deliver.js');
-    expect(WEBHOOK_SCHEMA_VERSION).toBe('1.0');
+    expect(WEBHOOK_SCHEMA_VERSION).toBe('1.1');
 
     await deliverWebhook('job-sv', 'https://consumer.test/hook', payload({ job_id: 'job-sv' }), log);
 
     const body = requestMock.mock.calls[0]![1].body as string;
     const sent = JSON.parse(body) as Record<string, unknown>;
     // Drift-маркер — top-level sibling к version, не внутри extracted.
-    expect(sent.schema_version).toBe('1.0');
+    expect(sent.schema_version).toBe('1.1');
     // Envelope-версия контракта осталась v1 (НЕ бампается вместе со schema_version).
     expect(sent.version).toBe('v1');
+  });
+});
+
+describe('webhook payload — unrecognized flag (schema_version 1.1, additive)', () => {
+  it('нормальный распознанный документ → unrecognized:false, document_type присутствует', async () => {
+    await deliverWebhook(
+      'job-ok',
+      'https://consumer.test/hook',
+      payload({ job_id: 'job-ok', document_type: 'invoice', unrecognized: false }),
+      log,
+    );
+
+    const body = requestMock.mock.calls[0]![1].body as string;
+    const sent = JSON.parse(body) as Record<string, unknown>;
+    expect(sent.unrecognized).toBe(false);
+    expect(sent.document_type).toBe('invoice');
+    expect(sent.schema_version).toBe('1.1');
+  });
+
+  it('не опознанный документ (classification.unknown) → document_type:null, unrecognized:true', async () => {
+    await deliverWebhook(
+      'job-unk',
+      'https://consumer.test/hook',
+      payload({ job_id: 'job-unk', document_type: null, unrecognized: true }),
+      log,
+    );
+
+    const body = requestMock.mock.calls[0]![1].body as string;
+    const sent = JSON.parse(body) as Record<string, unknown>;
+    // null явно передан в payload, не выкинут и не приведён к "".
+    expect(sent).toHaveProperty('document_type', null);
+    expect(sent.unrecognized).toBe(true);
   });
 });

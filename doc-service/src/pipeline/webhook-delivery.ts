@@ -133,6 +133,9 @@ export async function deliverFinalizedJobWebhook(
       status: updated.status,
       // 2026-05-18 (SLAI Issue #3): нормализация slug → lowercase snake_case.
       document_type: normalizeSlugForApi(updated.document_type),
+      // schema_version 1.1: additive-флаг «документ не опознан». true только
+      // если классификатор явно пометил unknown (тогда document_type=null).
+      unrecognized: updated.classification?.unknown === true,
       confidence: updated.confidence === null ? null : Number(updated.confidence),
       ocr_engine: updated.ocr_engine,
       extracted: extractedOut,

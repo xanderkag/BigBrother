@@ -14,7 +14,7 @@ import type { Logger } from 'pino';
  * НЕ путать с `extracted._match_signals.schema_version` (тот скоупит
  * проекцию match-сигналов, не общий контракт).
  */
-export const WEBHOOK_SCHEMA_VERSION = '1.0';
+export const WEBHOOK_SCHEMA_VERSION = '1.1';
 
 export type WebhookPayload = {
   /**
@@ -34,6 +34,14 @@ export type WebhookPayload = {
   job_id: string;
   status: string;
   document_type: string | null;
+  /**
+   * Additive-маркер (schema_version 1.1, 2026-07-01): документ НЕ опознан
+   * классификатором. `true` только когда LLM-классификатор явно пометил
+   * `classification.unknown === true` — тогда `document_type` тоже `null`.
+   * Для всех нормально классифицированных документов — `false`. Back-compat:
+   * старые consumer'ы игнорируют поле, envelope `version` остаётся 'v1'.
+   */
+  unrecognized: boolean;
   confidence: number | null;
   ocr_engine: string | null;
   extracted: Record<string, unknown> | null;

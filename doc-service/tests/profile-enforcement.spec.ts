@@ -302,7 +302,7 @@ describe('C. deliverFinalizedJobWebhook passes override url/secret to deliverWeb
       // поэтому хинт можно занулить — главное чтобы экспорты существовали,
       // иначе ESM-мок падает «No export defined».
       computeTargetEntityHint: vi.fn(() => null),
-      WEBHOOK_SCHEMA_VERSION: '1.0',
+      WEBHOOK_SCHEMA_VERSION: '1.1',
     }));
   });
 

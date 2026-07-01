@@ -86,6 +86,8 @@ export function startWebhookSweeper(
           status: row.status,
           // SLAI Issue #3: outbound slug normalize.
           document_type: normalizeSlugForApi(row.document_type ?? null),
+          // schema_version 1.1: additive-флаг «документ не опознан».
+          unrecognized: row.classification?.unknown === true,
           confidence: row.confidence !== null ? Number(row.confidence) : null,
           ocr_engine: row.ocr_engine ?? null,
           extracted: (row.extracted as Record<string, unknown> | null) ?? null,

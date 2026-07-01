@@ -1141,6 +1141,9 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         status: job.status,
         // SLAI Issue #3: outbound slug normalize (TTN→ttn, etc.).
         document_type: normalizeSlugForApi(job.document_type ?? null),
+        // schema_version 1.1: additive-флаг «документ не опознан». job грузится
+        // через findById (SELECT *), classification на row доступен.
+        unrecognized: job.classification?.unknown === true,
         confidence: job.confidence !== null ? Number(job.confidence) : null,
         ocr_engine: job.ocr_engine ?? null,
         extracted: extractedForPayload,
