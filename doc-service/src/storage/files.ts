@@ -111,6 +111,8 @@ function guessExt(mime: string): string {
       return '.xlsm';
     case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
       return '.docx';
+    case 'application/msword':
+      return '.doc';
     // 2026-06-25: XML — электронные документы (ЭД), таможенные декларации.
     case 'application/xml':
     case 'text/xml':
@@ -378,10 +380,14 @@ export const ACCEPTED_DOCUMENT_MIMES: ReadonlySet<string> = new Set([
   'application/vnd.ms-excel.sheet.macroEnabled.12',
   // Legacy .xls (BIFF8) детектится `file-type` пакетом как
   // application/x-cfb (OLE Compound File Binary — общий контейнер для
-  // MS Office 97-2003). Принимаем при условии что extension .xls;
-  // если внутри окажется .doc/.ppt — sheetjs упадёт с понятной ошибкой
-  // на runtime в XlsxEngine.
+  // MS Office 97-2003). Роутинг по extension в engine.supports():
+  //   .xls* → XlsxEngine (sheetjs), .doc → DocEngine (catdoc).
+  // Прочие x-cfb (.ppt и т.п.) — движки вернут false → all engines failed.
   'application/x-cfb',
+  // 2026-07-01: legacy .doc (Word 97-2003). file-type обычно отдаёт x-cfb,
+  // но некоторые детекторы/клиенты — native application/msword. Оба
+  // маршрутизируются в DocEngine (src/pipeline/ocr/doc.ts) по .doc extension.
+  'application/msword',
   // 2026-05-18: DOCX от ЭДО — Акты, Спецификации, Договоры.
   // Парсятся mammoth через DocxEngine в src/pipeline/ocr/docx.ts.
   // .doc (legacy binary, не OOXML) НЕ поддерживается — для него

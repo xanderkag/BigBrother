@@ -48,7 +48,14 @@ export class XlsxEngine implements OcrEngine {
   readonly acceptanceThreshold = 0.5;
 
   supports(input: OcrInput): boolean {
-    return XLS_MIMES.has(input.mimeType);
+    if (!XLS_MIMES.has(input.mimeType)) return false;
+    // x-cfb (OLE Compound) — общий контейнер для .xls И .doc/.ppt. Разводим
+    // по extension пути: xlsx движок берёт только spreadsheet-расширения,
+    // .doc уходит к DocEngine. Не-cfb mime (native xls/xlsx) — берём как есть.
+    if (input.mimeType === 'application/x-cfb') {
+      return /\.(xls|xlsm|xlsb|xlt)$/i.test(input.filePath);
+    }
+    return true;
   }
 
   isAvailable(): boolean {

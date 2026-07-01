@@ -26,6 +26,14 @@ export interface Classifier {
    *   глобальные ∪ типы этой орг; null/undefined ⇒ только глобальные
    *   (см. DocumentTypeResolver.listActiveForOrg). Tenant никогда не видит
    *   кастомные типы другого tenant'а.
+   * @param fileName  Имя загруженного файла — weighted-сигнал классификации
+   *   (booster / tie-breaker). Тип из имени (`Act_*`, `ТТН_*`, `*MBL.xls`)
+   *   усиливает совпавший контент-тип или переворачивает low-confidence/null
+   *   кейс, но НЕ бьёт strong контент-матч. См. filename-signal.ts.
    */
-  classify(text: string, organizationId?: string | null): Promise<ClassificationResult>;
+  classify(
+    text: string,
+    organizationId?: string | null,
+    fileName?: string | null,
+  ): Promise<ClassificationResult>;
 }

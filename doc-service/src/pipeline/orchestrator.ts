@@ -18,6 +18,7 @@ import { VisionLlmEngine } from './ocr/vision-llm.js';
 import { YandexVisionEngine } from './ocr/yandex.js';
 import { XlsxEngine } from './ocr/xlsx.js';
 import { DocxEngine } from './ocr/docx.js';
+import { DocEngine } from './ocr/doc.js';
 import { XmlEngine } from './ocr/xml.js';
 import { selectOcrChain } from './router.js';
 import { sanitizeText } from './text-sanitize.js';
@@ -70,6 +71,9 @@ const engines: readonly OcrEngine[] = [
   // Ставим первыми для cache-locality.
   new XlsxEngine(),
   new DocxEngine(),
+  // DocEngine — legacy .doc (x-cfb + .doc extension) через catdoc. Идёт после
+  // XlsxEngine: оба видят x-cfb, но supports() разводит по расширению файла.
+  new DocEngine(),
   new XmlEngine(),
   new PdfTextEngine(config.thresholds.pdfText),
   new TesseractEngine(config.thresholds.tesseract, config.tesseractLangs),
@@ -447,6 +451,7 @@ async function processJobInner(
         hint: documentType ?? undefined,
         promptOverride,
         organizationId: job.organization_id,
+        fileName: job.file_name,
         classifyOnly,
         imagePath: firstPageImage.imagePath,
         forceExtractFromImage,
@@ -949,6 +954,13 @@ export async function runDocumentPipeline(
     promptOverride?: string;
     organizationId?: string | null;
     /**
+     * Имя загруженного файла — weighted-сигнал классификации (booster /
+     * tie-breaker). Прокидывается в classifier; тип из имени усиливает или
+     * переворачивает low-confidence кейс, но не бьёт strong контент-матч.
+     * См. classifier/filename-signal.ts.
+     */
+    fileName?: string | null;
+    /**
      * Phase 3 (CP7): classify_only-режим потребителя. Когда true — гоняем
      * только классификацию (нужен documentType), но НЕ запускаем parser/
      * LLM-extract. Возвращаем extracted={}, llmCall=null, validationIssues=[].
@@ -1033,7 +1045,11 @@ export async function runDocumentPipeline(
 
   if (!documentType) {
     const tClassify = Date.now();
-    const cls = await classifier.classify(rawText, options.organizationId ?? null);
+    const cls = await classifier.classify(
+      rawText,
+      options.organizationId ?? null,
+      options.fileName ?? null,
+    );
     const classifyMs = Date.now() - tClassify;
     if (timings) timings.classify_ms = classifyMs;
     documentType = cls.type;

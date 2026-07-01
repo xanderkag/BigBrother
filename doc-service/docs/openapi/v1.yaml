@@ -415,6 +415,7 @@ components:
         - yandex
         - xlsx
         - docx
+        - doc
         - xml
         - transcribe
       description: |
@@ -423,9 +424,10 @@ components:
         a text layer; `tesseract` covers scans; `vision-llm` is the
         Qwen-VL / Claude vision fallback when text-extraction quality
         is low. `yandex` is currently disabled in production (152-ФЗ
-        risk) — listed for forward compatibility only. `xlsx`/`docx`/`xml`
+        risk) — listed for forward compatibility only. `xlsx`/`docx`/`doc`/`xml`
         are exact text-readers for those container formats (no OCR/vision):
-        `xml` flattens electronic documents (ЭД, customs declarations) into
+        `doc` reads legacy Word 97-2003 (.doc) via catdoc; `xml` flattens
+        electronic documents (ЭД, customs declarations) into
         readable `path/element: value` lines. `transcribe` is the ASR
         (speech-to-text) path: for audio uploads the transcript replaces
         OCR text and feeds the same downstream pipeline. Only produced

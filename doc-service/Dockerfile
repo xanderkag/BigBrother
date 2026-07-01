@@ -10,6 +10,8 @@ FROM node:22-slim AS base
 #   poppler-utils             — pdftoppm / pdfinfo, rasterize PDF → PNG для tesseract
 #   libheif-examples          — heif-convert для HEIC/HEIF (iPhone-фото) → JPG.
 #                                См. src/pipeline/preprocess/heic.ts
+#   catdoc                    — legacy .doc (Word 97-2003 binary) → text.
+#                                cp1251-aware, ~200 KB. См. src/pipeline/ocr/doc.ts
 #   ca-certificates           — outbound TLS to LLM/Yandex
 #
 # По дефолту TESSERACT_LANGS=rus+eng в .env (без китайского/турецкого/польского,
@@ -24,6 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tesseract-ocr-pol \
     poppler-utils \
     libheif-examples \
+    catdoc \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 

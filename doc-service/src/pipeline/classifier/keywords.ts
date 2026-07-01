@@ -4,6 +4,11 @@ import { dirname, join, resolve } from 'node:path';
 import type { DocumentTypeSlug } from '../../types/documents.js';
 import { documentTypeResolver } from '../document-type-resolver.js';
 import type { Classifier, ClassificationResult } from './types.js';
+import {
+  markerFromFileName,
+  FILENAME_SIGNAL_WEIGHT,
+  FILENAME_AGREE_BOOST,
+} from './filename-signal.js';
 
 /**
  * KeywordClassifier — две стадии:
@@ -92,56 +97,173 @@ type CompiledRule = {
   weight: number;
 };
 
+/**
+ * Best content match для одного типа: raw weight (не клампленный) + текст матча.
+ * `titleBoosted` — совпадение попало в первые TITLE_BOOST_WINDOW chars
+ * (definitive-заголовок). Это «сильный сигнал»: filename-маркер НЕ переворачивает
+ * title-boosted контент-победителя (защита от ложных флипов).
+ */
+type TypeScore = { weight: number; matched: string; titleBoosted: boolean };
+
 export class KeywordClassifier implements Classifier {
-  async classify(text: string, organizationId?: string | null): Promise<ClassificationResult> {
+  async classify(
+    text: string,
+    organizationId?: string | null,
+    fileName?: string | null,
+  ): Promise<ClassificationResult> {
     const haystack = text.slice(0, HEADER_WINDOW);
+    const nameMarker = markerFromFileName(fileName);
 
     // --- Stage 1: DB-driven rules (scoped к организации job'а, CP7) ---
-    const dbBest = await this.classifyByDbRules(haystack, organizationId ?? null);
-    if (dbBest) {
-      return {
-        type: dbBest.type,
-        confidence: dbBest.confidence,
-        source: 'keyword',
-        matched: dbBest.matched,
-        candidatesCount: dbBest.candidatesCount,
-      };
+    // Возвращает null когда БД недоступна ИЛИ ни одно DB-правило не сматчилось —
+    // тогда падаем в hardcoded fallback (сохраняем исходный контракт fallthrough).
+    const dbScores = await this.scoreByDbRules(haystack, organizationId ?? null);
+    if (dbScores && dbScores.scores.size > 0) {
+      return this.pickWithFilename(dbScores.scores, dbScores.candidates, nameMarker);
     }
 
     // --- Stage 2: hardcoded fallback ---
-    let best: { type: DocumentTypeSlug; confidence: number; matched: string } | null = null;
+    const scores = new Map<DocumentTypeSlug, TypeScore>();
     let candidates = 0;
     for (const rule of FALLBACK_RULES) {
       const m = rule.pattern.exec(haystack);
       if (!m) continue;
       candidates += 1;
-      // Same title-position boost как в DB stage.
       const isInTitle = m.index !== undefined && m.index < TITLE_BOOST_WINDOW;
-      const effectiveWeight = isInTitle
-        ? rule.weight * TITLE_BOOST_MULTIPLIER
-        : rule.weight;
-      if (this.beats(best, effectiveWeight, m[0])) {
-        best = { type: rule.type, confidence: effectiveWeight, matched: m[0] };
-      }
+      const effectiveWeight = isInTitle ? rule.weight * TITLE_BOOST_MULTIPLIER : rule.weight;
+      this.recordScore(scores, rule.type, effectiveWeight, m[0], isInTitle);
+    }
+    return this.pickWithFilename(scores, candidates, nameMarker);
+  }
+
+  /** Обновить per-type best score, если новый кандидат сильнее (weight, при равенстве — длиннее match). */
+  private recordScore(
+    scores: Map<DocumentTypeSlug, TypeScore>,
+    type: DocumentTypeSlug,
+    weight: number,
+    matched: string,
+    titleBoosted: boolean,
+  ): void {
+    const cur = scores.get(type);
+    if (!cur || weight > cur.weight || (weight === cur.weight && matched.length > cur.matched.length)) {
+      scores.set(type, { weight, matched, titleBoosted });
+    }
+  }
+
+  /**
+   * Выбор победителя с учётом filename-сигнала (weighted booster / tie-breaker,
+   * НЕ override). Сначала находим контент-победителя, затем решаем, переворачивает
+   * ли имя файла.
+   *
+   * Правило флипа (имя ≠ контент-победитель):
+   *   - Контент-победитель **title-boosted** (definitive-заголовок в первых
+   *     TITLE_BOOST_WINDOW chars) — это СИЛЬНЫЙ сигнал, имя его НЕ бьёт.
+   *     Защищает `Заявка_ИСТ-ВЕСТ.pdf`: заголовок «Приложение к Договору» →
+   *     contract_specification (title-boosted) остаётся, несмотря на «Заявка» в имени.
+   *   - Контент-победитель НЕ title-boosted (совпал ссылкой в теле — ДТ-номер
+   *     в счёт-фактуре, SWIFT в акте) ИЛИ контента нет — имя переворачивает.
+   *     Реальные кейсы: `ТТН_*` (OCR не поймал «накладную»), `VAT_invoice_*`
+   *     (customs-ключ ссылкой на ДТ), `Act_*` (SWIFT в акте), `*MBL.xls` (без типа).
+   *
+   * Boost имени к weight маркер-типа (когда флип разрешён):
+   *   - тип имеет контент-поддержку → +FILENAME_AGREE_BOOST (усиление);
+   *   - тип без контент-поддержки → FILENAME_SIGNAL_WEIGHT (одиночный сигнал).
+   *
+   * Generic-имена не дают маркер (см. filename-signal.ts) — тип не форсится.
+   */
+  private pickWithFilename(
+    scores: Map<DocumentTypeSlug, TypeScore>,
+    candidates: number,
+    marker: DocumentTypeSlug | null,
+  ): ClassificationResult {
+    const contentBest = this.bestScore(scores);
+
+    // Нет маркера имени — чистый результат контент-классификации.
+    if (!marker) return this.toResult(contentBest, candidates);
+
+    const markerScore = scores.get(marker) ?? null;
+
+    // Имя совпало с контент-победителем → усиливаем уверенность (agree-boost),
+    // тип не меняется.
+    if (contentBest && contentBest.type === marker) {
+      return this.toResult(
+        { type: marker, weight: contentBest.weight + FILENAME_AGREE_BOOST, matched: contentBest.matched },
+        candidates,
+      );
     }
 
-    if (!best) return { type: null, confidence: 0, source: 'keyword', candidatesCount: 0 };
+    // Имя расходится с контентом. Флип запрещён, если контент-победитель —
+    // strong (title-boosted definitive-заголовок). Тогда контент побеждает.
+    if (contentBest && contentBest.titleBoosted) {
+      return this.toResult(contentBest, candidates);
+    }
+
+    // Флип разрешён: контент слабый (не title-boosted) или отсутствует.
+    // Вес маркера: контент-поддержка → +agree-boost, иначе одиночный сигнал.
+    const markerWeight = markerScore
+      ? markerScore.weight + FILENAME_AGREE_BOOST
+      : FILENAME_SIGNAL_WEIGHT;
+    // Флипаем только если маркер реально сильнее контент-победителя.
+    if (!contentBest || markerWeight >= contentBest.weight) {
+      return this.toResult(
+        {
+          type: marker,
+          weight: markerWeight,
+          matched: markerScore ? markerScore.matched : `filename:${marker}`,
+        },
+        candidates,
+      );
+    }
+    return this.toResult(contentBest, candidates);
+  }
+
+  /** Победитель по score-map: максимальный weight, при равенстве — длиннее match. */
+  private bestScore(
+    scores: Map<DocumentTypeSlug, TypeScore>,
+  ): { type: DocumentTypeSlug; weight: number; matched: string; titleBoosted: boolean } | null {
+    let best:
+      | { type: DocumentTypeSlug; weight: number; matched: string; titleBoosted: boolean }
+      | null = null;
+    for (const [type, s] of scores) {
+      if (
+        !best ||
+        s.weight > best.weight ||
+        (s.weight === best.weight && s.matched.length > best.matched.length)
+      ) {
+        best = { type, weight: s.weight, matched: s.matched, titleBoosted: s.titleBoosted };
+      }
+    }
+    return best;
+  }
+
+  private toResult(
+    best: { type: DocumentTypeSlug; weight: number; matched: string } | null,
+    candidates: number,
+  ): ClassificationResult {
+    if (!best) {
+      return { type: null, confidence: 0, source: 'keyword', candidatesCount: candidates };
+    }
+    // Outbound clamp: internal weight ∈ [0, ∞] (specific patterns 5.0 vs generic 1.0),
+    // но confidence в API-контракте — [0, 1].
     return {
       type: best.type,
-      confidence: best.confidence,
+      confidence: Math.min(1.0, best.weight),
       source: 'keyword',
       matched: best.matched,
       candidatesCount: candidates,
     };
   }
 
-  private async classifyByDbRules(
+  /**
+   * Прогон DB-правил → per-type best score map. Возвращает null, если БД
+   * недоступна / нет активных типов / ни одного скомпилированного правила
+   * (тогда caller падает в hardcoded fallback). Пустой map (правила есть, но
+   * ничего не сматчилось) — валидный результат: caller применит filename-сигнал.
+   */
+  private async scoreByDbRules(
     haystack: string,
     organizationId: string | null,
-  ): Promise<
-    | { type: DocumentTypeSlug; confidence: number; matched: string; candidatesCount: number }
-    | null
-  > {
+  ): Promise<{ scores: Map<DocumentTypeSlug, TypeScore>; candidates: number } | null> {
     const rows = await documentTypeResolver.listActiveForOrg(organizationId);
     if (rows.length === 0) return null;
 
@@ -169,7 +291,7 @@ export class KeywordClassifier implements Classifier {
     }
     if (compiled.length === 0) return null;
 
-    let best: { type: DocumentTypeSlug; confidence: number; matched: string } | null = null;
+    const scores = new Map<DocumentTypeSlug, TypeScore>();
     let candidates = 0;
     for (const rule of compiled) {
       const m = rule.pattern.exec(haystack);
@@ -178,22 +300,10 @@ export class KeywordClassifier implements Classifier {
       // Position-based boost: match'и в title (первые TITLE_BOOST_WINDOW
       // chars) сильнее. `m.index` — позиция начала матча в haystack.
       const isInTitle = m.index !== undefined && m.index < TITLE_BOOST_WINDOW;
-      const effectiveWeight = isInTitle
-        ? rule.weight * TITLE_BOOST_MULTIPLIER
-        : rule.weight;
-      if (this.beats(best, effectiveWeight, m[0])) {
-        best = { type: rule.type, confidence: effectiveWeight, matched: m[0] };
-      }
+      const effectiveWeight = isInTitle ? rule.weight * TITLE_BOOST_MULTIPLIER : rule.weight;
+      this.recordScore(scores, rule.type, effectiveWeight, m[0], isInTitle);
     }
-    if (!best) return null;
-    // Outbound clamp: classifier weight живёт в [0, ∞] для internal
-    // scoring (specific patterns могут иметь weight 5.0 vs generic 1.0),
-    // но confidence в API контракте — [0, 1]. weight≥1 → confidence=1.0.
-    return {
-      ...best,
-      confidence: Math.min(1.0, best.confidence),
-      candidatesCount: candidates,
-    };
+    return { scores, candidates };
   }
 
   /**
@@ -207,17 +317,5 @@ export class KeywordClassifier implements Classifier {
     const w = (metadata as Record<string, unknown>).classification_weight;
     if (typeof w === 'number' && w >= 0) return w;
     return null;
-  }
-
-  /** Новый кандидат побеждает текущего, если weight выше; при равенстве — длиннее матч. */
-  private beats(
-    current: { confidence: number; matched: string } | null,
-    weight: number,
-    matched: string,
-  ): boolean {
-    if (!current) return true;
-    if (weight > current.confidence) return true;
-    if (weight === current.confidence && matched.length > current.matched.length) return true;
-    return false;
   }
 }

@@ -65,6 +65,12 @@ describe('XlsxEngine', () => {
       expect(engine.supports({ filePath: 'x.txt', mimeType: 'text/plain' })).toBe(false);
     });
 
+    it('x-cfb + .xls → supported; x-cfb + .doc → NOT supported (routed to DocEngine)', () => {
+      // x-cfb — общий OLE-контейнер для .xls и .doc. Разводим по расширению.
+      expect(engine.supports({ filePath: 'a/988726MBL.xls', mimeType: 'application/x-cfb' })).toBe(true);
+      expect(engine.supports({ filePath: 'a/Заявка_ИСТ-ВЕСТ.doc', mimeType: 'application/x-cfb' })).toBe(false);
+    });
+
     it('isAvailable() = true (xlsx — npm пакет)', () => {
       expect(engine.isAvailable()).toBe(true);
     });
