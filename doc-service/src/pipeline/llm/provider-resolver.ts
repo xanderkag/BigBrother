@@ -65,6 +65,17 @@ type Resolved = {
   resolvedAt: number;
 };
 
+/**
+ * Причина, по которой запрошенный forced-provider id не резолвится и роутинг
+ * молча откатывается на default. Возвращается probeForceProvider() —
+ * observability-only, само поведение (fallthrough) не меняет.
+ */
+export type ForceProviderFallthroughReason =
+  | 'not_found'
+  | 'non_llm_kind'
+  | 'missing_base_url'
+  | 'lookup_error';
+
 const TTL_MS = 30_000;
 
 class DynamicLlmClient implements LlmClient {
@@ -131,6 +142,29 @@ class DynamicLlmClient implements LlmClient {
    */
   withForceProvider<T>(providerId: string, fn: () => Promise<T>): Promise<T> {
     return forceProviderContext.run({ providerId }, fn);
+  }
+
+  /**
+   * Observability-only: проверяет, зарезолвится ли forced-provider id, БЕЗ
+   * побочных эффектов и БЕЗ создания клиента. Возвращает reason, если id
+   * молча откатится на default (см. resolveById — те же ветки), либо null
+   * если резолв пройдёт штатно. Роутинг НЕ меняет — caller (orchestrator)
+   * лишь логирует/считает fallthrough перед обычным withForceProvider.
+   */
+  async probeForceProvider(id: string): Promise<ForceProviderFallthroughReason | null> {
+    let row;
+    try {
+      row = await providerSettingsRepo.findById(id);
+    } catch {
+      return 'lookup_error';
+    }
+    if (!row) return 'not_found';
+    if (row.kind !== 'llm') return 'non_llm_kind';
+    // 'stub' резолвится в рабочий NullLlmClient — это не fallthrough.
+    if (row.id === 'stub') return null;
+    const baseUrl = row.base_url || config.llm.url || null;
+    if (!baseUrl) return 'missing_base_url';
+    return null;
   }
 
   /**

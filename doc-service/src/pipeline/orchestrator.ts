@@ -39,6 +39,7 @@ import {
   ocrEngineDurationSeconds,
   llmCredentialsSuppliedTotal,
   llmProviderErrorsTotal,
+  forcedProviderFallthroughTotal,
 } from '../metrics.js';
 import {
   decryptInlineCredentials,
@@ -218,6 +219,18 @@ export async function processJob(
   const forceProviderId = meta?.['_force_provider_id'];
   if (typeof forceProviderId === 'string' && forceProviderId.length > 0) {
     log.info({ jobId, force_provider: forceProviderId }, 'using forced LLM provider for this job');
+    // Observability (TECH_DEBT M3): плохой forced-provider id молча откатывается
+    // на default внутри delegate(). Пробуем резолв заранее — если не выйдет,
+    // логируем warn + инкрементим counter (routing НЕ меняем, реальный fallthrough
+    // делает withForceProvider как и раньше).
+    const fallthrough = await dynamicLlm.probeForceProvider(forceProviderId);
+    if (fallthrough) {
+      log.warn(
+        { jobId, force_provider: forceProviderId, reason: fallthrough },
+        'forced LLM provider did not resolve; falling through to default provider',
+      );
+      forcedProviderFallthroughTotal.inc({ reason: fallthrough });
+    }
     return dynamicLlm.withForceProvider(forceProviderId, () => processJobInner(job, jobId, log, opts));
   }
   return processJobInner(job, jobId, log, opts);

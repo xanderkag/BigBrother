@@ -91,6 +91,18 @@ export const llmProviderErrorsTotal = new Counter({
   registers: [registry],
 });
 
+// Incremented when a job's per-job `_force_provider_id` cannot be resolved and
+// routing silently falls through to the default provider. `reason` is one of:
+// not_found | non_llm_kind | missing_base_url | lookup_error. The provider id
+// is not a secret but is intentionally NOT a label (unbounded cardinality) —
+// it is emitted in the structured warn log instead.
+export const forcedProviderFallthroughTotal = new Counter({
+  name: 'docservice_extractor_forced_provider_fallthrough_total',
+  help: 'Jobs whose forced LLM provider id failed to resolve, falling back to default, by reason.',
+  labelNames: ['reason'] as const,
+  registers: [registry],
+});
+
 // --- Webhook delivery ---
 
 export const webhookAttemptsTotal = new Counter({
