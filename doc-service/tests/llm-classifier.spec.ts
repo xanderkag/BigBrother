@@ -119,6 +119,57 @@ describe('LlmDocClassifier — production LLM classifier', () => {
     expect((llm.classifyWithCatalog as ReturnType<typeof vi.fn>)).toHaveBeenCalledOnce();
   });
 
+  it('candidates[] carries real top-N runners-up from prior ranked score-map', async () => {
+    // prior возвращает ranked score-map (winner + 2 runners-up). candidates[]
+    // должен отразить top-3 c их score'ами, а не единственного победителя.
+    const prior = priorStub({
+      type: 'factInvoice',
+      confidence: 1,
+      source: 'keyword',
+      ranked: [
+        { type: 'factInvoice', score: 1 },
+        { type: 'invoice', score: 0.9 },
+        { type: 'AKT', score: 0.95 * 1.5 > 1 ? 1 : 0.95 },
+      ],
+    });
+    const llm = llmStub({ slug: 'factInvoice' });
+    const c = new LlmDocClassifier(prior, llm);
+
+    const out = await c.classify(
+      { text: 'Счёт-фактура № 7. Счёт на оплату № 100. АКТ выполненных.', organizationId: null },
+      validatorFor([...CATALOG_SLUGS, 'factInvoice']),
+      log,
+    );
+
+    // decision unchanged — llm подтвердил factInvoice.
+    expect(out.documentType).toBe('factInvoice');
+    // candidates[] — реальные runners-up, ≥2 записи со score.
+    expect(out.metadata.candidates.length).toBeGreaterThanOrEqual(2);
+    expect(out.metadata.candidates[0]!.type).toBe('factInvoice');
+    const types = out.metadata.candidates.map((x) => x.type);
+    expect(types).toContain('invoice');
+    for (const cand of out.metadata.candidates) {
+      expect(typeof cand.score).toBe('number');
+    }
+    // keyword_said остаётся best prior'а (не список).
+    expect(out.metadata.keyword_said).toEqual({ type: 'factInvoice', score: 1 });
+  });
+
+  it('candidates[] falls back to single entry when prior has no ranked map', async () => {
+    // Обратная совместимость: prior без ranked → candidates = [keyword_said].
+    const prior = priorStub({ type: 'invoice', confidence: 0.6, source: 'keyword' });
+    const llm = llmStub({ slug: 'commercial_invoice' });
+    const c = new LlmDocClassifier(prior, llm);
+
+    const out = await c.classify(
+      { text: 'COMMERCIAL INVOICE No. CI-1', organizationId: null },
+      validatorFor(CATALOG_SLUGS),
+      log,
+    );
+
+    expect(out.metadata.candidates).toEqual([{ type: 'invoice', score: 0.6 }]);
+  });
+
   it('unknown + prior not confident → flagged not-recognized (type null, unknown=true)', async () => {
     const prior = priorStub({ type: null, confidence: 0, source: 'keyword' });
     const llm = llmStub({ slug: 'unknown' });

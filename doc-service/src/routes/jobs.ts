@@ -33,7 +33,7 @@ import { diffExtracted } from '../pipeline/normalize/diff-extracted.js';
 import { usersRepo } from '../storage/users.js';
 import { bearerAuthHook } from '../auth.js';
 import { validateExtractedWithResolver } from '../pipeline/validation/index.js';
-import { runDocumentPipeline } from '../pipeline/orchestrator.js';
+import { runDocumentPipeline, persistClassification } from '../pipeline/orchestrator.js';
 import { combineConfidence } from '../pipeline/quality.js';
 import { projectsRepo } from '../storage/projects.js';
 import { sanitizeMetadata } from '../storage/metadata-sanitizer.js';
@@ -1259,14 +1259,8 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
       // Production LLM classifier: если reprocess переклассифицировал (reclassify=true
       // → LLM classifier отработал), персистим свежие метаданные классификации.
       // При обычном reprocess (hint задан) classification.method='hint' — тоже
-      // фиксируем, чтобы UI показал актуальное состояние. best-effort.
-      if (post.classification) {
-        try {
-          await jobsRepo.saveClassification(req.params.id, post.classification);
-        } catch (err) {
-          req.log.warn({ jobId: req.params.id, err }, 'failed to save classification metadata (non-fatal)');
-        }
-      }
+      // фиксируем, чтобы UI показал актуальное состояние. Общий helper с воркером.
+      await persistClassification(req.params.id, post.classification, req.log as never);
 
       const updated = await jobsRepo.finalize(req.params.id, {
         status,

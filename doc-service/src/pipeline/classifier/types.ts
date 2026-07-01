@@ -18,6 +18,16 @@ export type ClassificationResult = {
    * один из 5 кандидатов».
    */
   candidatesCount?: number;
+  /**
+   * Ранжированная score-map: ВСЕ сматчившиеся типы, отсортированы по убыванию
+   * (тот же порядок, что и выбор победителя — вес, при равенстве длиннее match).
+   * `ranked[0]` — это победитель (`type`), остальные — runners-up. `score` —
+   * тот же outbound-clamp [0,1] что и `confidence`. Пусто/undefined когда
+   * ничего не сматчилось. Additive-поле: caller (LlmDocClassifier) использует
+   * его для обогащённого `candidates[]`; downstream, читающий только `type`,
+   * не затронут.
+   */
+  ranked?: Array<{ type: DocumentTypeSlug; score: number }>;
 };
 
 export interface Classifier {

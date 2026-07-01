@@ -504,15 +504,8 @@ async function processJobInner(
     await cleanupArtifacts();
     documentType = post.documentType;
     // Production LLM classifier: персистим метаданные классификации в
-    // jobs.classification (для UI). best-effort — метаданные наблюдаемости не
-    // должны ронять обработку. classify-step details обогащаем method/unknown.
-    if (post.classification) {
-      try {
-        await jobsRepo.saveClassification(jobId, post.classification);
-      } catch (err) {
-        log.warn({ jobId, err }, 'failed to save classification metadata (non-fatal)');
-      }
-    }
+    // jobs.classification (для UI). Общий helper для воркера и reprocess-route.
+    await persistClassification(jobId, post.classification, log);
     await stepEvent('classify', 'done', {
       duration_ms: timings.classify_ms,
       details: {
@@ -978,6 +971,26 @@ async function prepareFirstPageImage(
     log.warn({ err }, 'first-page rasterization for image-extract failed; falling back to text');
     if (dir) await rm(dir, { recursive: true, force: true }).catch(() => {});
     return noop;
+  }
+}
+
+/**
+ * Персист метаданных классификации в jobs.classification (jsonb, для UI).
+ * Один источник для обоих путей — воркер (processJob) и reprocess-route.
+ * best-effort: метаданные наблюдаемости не должны ронять обработку, ошибку
+ * глушим в warn. No-op когда classification не задан (caller передал hint
+ * напрямую и pipeline не заполнил метаданные — редкий путь).
+ */
+export async function persistClassification(
+  jobId: string,
+  classification: ClassificationMetadata | undefined,
+  log: Logger,
+): Promise<void> {
+  if (!classification) return;
+  try {
+    await jobsRepo.saveClassification(jobId, classification);
+  } catch (err) {
+    log.warn({ jobId, err }, 'failed to save classification metadata (non-fatal)');
   }
 }
 

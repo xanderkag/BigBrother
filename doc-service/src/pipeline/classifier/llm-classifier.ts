@@ -117,9 +117,11 @@ export class LlmDocClassifier {
     const keywordSaid: ClassificationCandidate | null = prior.type
       ? { type: prior.type, score: round3(prior.confidence) }
       : null;
-    // prior даёт только победителя (KeywordClassifier не возвращает список),
-    // но фиксируем его как единственного кандидата — контракт candidates[].
-    const candidates: ClassificationCandidate[] = keywordSaid ? [keywordSaid] : [];
+    // candidates[] — реальные top-N кандидаты prior'а из ranked score-map
+    // (winner-first): победитель + top-2 runners-up. `keyword_said` остаётся
+    // отдельным полем (= best prior). Если ranked нет (старый путь / нет
+    // матчей) — падаем на единственного кандидата (прежний контракт).
+    const candidates: ClassificationCandidate[] = buildCandidates(prior, keywordSaid);
 
     // --- 2. LLM classify ---
     const { text: catalog, count } = await this.getCatalog(input.organizationId ?? null);
@@ -318,4 +320,30 @@ function llmConfidence(prior: ClassificationResult, llmSlug: string): number {
 
 function round3(c: number): number {
   return Math.round(c * 1000) / 1000;
+}
+
+/**
+ * Максимум кандидатов в `candidates[]` (победитель + runners-up). Держим
+ * коротким — это UI-метаданные «почему этот тип», не полный дамп score-map.
+ */
+const MAX_CANDIDATES = 3;
+
+/**
+ * Собрать `candidates[]` из ranked score-map prior'а (winner-first): победитель +
+ * top-(MAX_CANDIDATES-1) runners-up, все со score. Score округляем round3 —
+ * так же как `keyword_said`. Fallback: если ranked нет (LLM-путь не давал его /
+ * prior без матчей) — единственный кандидат = keyword_said (прежний контракт).
+ * НЕ влияет на решение — только метаданные UI.
+ */
+function buildCandidates(
+  prior: ClassificationResult,
+  keywordSaid: ClassificationCandidate | null,
+): ClassificationCandidate[] {
+  const ranked = prior.ranked;
+  if (ranked && ranked.length > 0) {
+    return ranked
+      .slice(0, MAX_CANDIDATES)
+      .map((r) => ({ type: r.type, score: round3(r.score) }));
+  }
+  return keywordSaid ? [keywordSaid] : [];
 }

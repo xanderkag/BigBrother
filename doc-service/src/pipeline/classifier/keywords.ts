@@ -136,6 +136,25 @@ export class KeywordClassifier implements Classifier {
     return this.pickWithFilename(scores, candidates, nameMarker);
   }
 
+  /**
+   * Ранжированная score-map: все сматчившиеся типы, отсортированы по убыванию
+   * веса (при равенстве — длиннее match, потом стабильно по slug). Порядок
+   * идентичен выбору победителя в `bestScore` — `ranked[0]` = контент-победитель.
+   * `score` клампится в [0,1] как outbound-confidence. Только для UI-метаданных
+   * (candidates[]); не влияет на решение.
+   */
+  private rankScores(
+    scores: Map<DocumentTypeSlug, TypeScore>,
+  ): Array<{ type: DocumentTypeSlug; score: number }> {
+    return [...scores.entries()]
+      .sort(([aType, a], [bType, b]) => {
+        if (b.weight !== a.weight) return b.weight - a.weight;
+        if (b.matched.length !== a.matched.length) return b.matched.length - a.matched.length;
+        return aType < bType ? -1 : aType > bType ? 1 : 0;
+      })
+      .map(([type, s]) => ({ type, score: Math.min(1.0, s.weight) }));
+  }
+
   /** Обновить per-type best score, если новый кандидат сильнее (weight, при равенстве — длиннее match). */
   private recordScore(
     scores: Map<DocumentTypeSlug, TypeScore>,
@@ -177,9 +196,12 @@ export class KeywordClassifier implements Classifier {
     marker: DocumentTypeSlug | null,
   ): ClassificationResult {
     const contentBest = this.bestScore(scores);
+    // Ранжированная score-map по контенту (winner-first). Пробрасываем в
+    // toResult как `ranked` — победитель поднимается на первую позицию там.
+    const ranked = this.rankScores(scores);
 
     // Нет маркера имени — чистый результат контент-классификации.
-    if (!marker) return this.toResult(contentBest, candidates);
+    if (!marker) return this.toResult(contentBest, candidates, ranked);
 
     const markerScore = scores.get(marker) ?? null;
 
@@ -189,13 +211,14 @@ export class KeywordClassifier implements Classifier {
       return this.toResult(
         { type: marker, weight: contentBest.weight + FILENAME_AGREE_BOOST, matched: contentBest.matched },
         candidates,
+        ranked,
       );
     }
 
     // Имя расходится с контентом. Флип запрещён, если контент-победитель —
     // strong (title-boosted definitive-заголовок). Тогда контент побеждает.
     if (contentBest && contentBest.titleBoosted) {
-      return this.toResult(contentBest, candidates);
+      return this.toResult(contentBest, candidates, ranked);
     }
 
     // Флип разрешён: контент слабый (не title-boosted) или отсутствует.
@@ -212,9 +235,10 @@ export class KeywordClassifier implements Classifier {
           matched: markerScore ? markerScore.matched : `filename:${marker}`,
         },
         candidates,
+        ranked,
       );
     }
-    return this.toResult(contentBest, candidates);
+    return this.toResult(contentBest, candidates, ranked);
   }
 
   /** Победитель по score-map: максимальный weight, при равенстве — длиннее match. */
@@ -239,18 +263,29 @@ export class KeywordClassifier implements Classifier {
   private toResult(
     best: { type: DocumentTypeSlug; weight: number; matched: string } | null,
     candidates: number,
+    contentRanked: Array<{ type: DocumentTypeSlug; score: number }> = [],
   ): ClassificationResult {
     if (!best) {
       return { type: null, confidence: 0, source: 'keyword', candidatesCount: candidates };
     }
     // Outbound clamp: internal weight ∈ [0, ∞] (specific patterns 5.0 vs generic 1.0),
     // но confidence в API-контракте — [0, 1].
+    const confidence = Math.min(1.0, best.weight);
+    // Финальная ranked-map (winner-first): победитель — `best.type` с его
+    // фактическим (возможно boosted/filename) score, дальше runners-up из
+    // контент-ранга (кроме победителя, чтобы не задваивать). Это гарантирует
+    // ranked[0].type === выбранный тип даже когда имя перевернуло решение.
+    const ranked: Array<{ type: DocumentTypeSlug; score: number }> = [
+      { type: best.type, score: confidence },
+      ...contentRanked.filter((r) => r.type !== best.type),
+    ];
     return {
       type: best.type,
-      confidence: Math.min(1.0, best.weight),
+      confidence,
       source: 'keyword',
       matched: best.matched,
       candidatesCount: candidates,
+      ranked,
     };
   }
 
