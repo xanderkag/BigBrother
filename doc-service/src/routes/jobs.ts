@@ -1230,7 +1230,15 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
           : undefined;
       const post = await runDocumentPipeline(
         job.raw_text,
-        { hint, promptOverride },
+        {
+          hint,
+          promptOverride,
+          // org-scope активного набора типов (как в воркере) + имя файла как
+          // weighted-сигнал классификации — без них reclassify не задействует
+          // ни кастомные типы орг, ни filename-marker (мискласс не чинится).
+          organizationId: job.organization_id,
+          fileName: job.file_name,
+        },
         req.log as never,
         {
           jobId: job.id,
