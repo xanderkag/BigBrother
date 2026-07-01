@@ -3,6 +3,7 @@ import type { DocumentTypeSlug } from '../../types/documents.js';
 import type { LlmClient } from '../llm/types.js';
 import type { Classifier, ClassificationResult } from './types.js';
 import { getCatalogForOrg } from './catalog.js';
+import { config } from '../../config.js';
 
 /**
  * LlmDocClassifier — production LLM-классификатор (design ТЗ).
@@ -63,14 +64,17 @@ export type LlmClassificationOutcome = {
  * Используется в unknown-решении: если LLM сказал unknown И у prior confidence
  * ниже этого — документ помечается «не опознан». Если prior уверенный — берём
  * его тип (fallback), но всё равно фиксируем llm_said=unknown в метаданных.
+ *
+ * Значения ниже (порог/лимит символов/таймаут) вынесены в config.classifier —
+ * env-tunable в одном месте. Дефолты = прежние хардкоды (behavior-preserving).
  */
-const PRIOR_CONFIDENT_THRESHOLD = 0.5;
+const PRIOR_CONFIDENT_THRESHOLD = config.classifier.priorConfidentThreshold;
 
 /** Первые ~2500 chars raw-текста в prompt (как в probe). */
-const LLM_TEXT_CHARS = 2500;
+const LLM_TEXT_CHARS = config.classifier.llmTextChars;
 
 /** Таймаут одного classify-вызова (мс) — hung classify не должен стопорить очередь. */
-const CLASSIFY_TIMEOUT_MS = 18_000;
+const CLASSIFY_TIMEOUT_MS = config.classifier.classifyTimeoutMs;
 
 /** ~30 токенов достаточно для голого slug'а. */
 const CLASSIFY_MAX_TOKENS = 30;

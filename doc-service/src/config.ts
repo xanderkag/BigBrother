@@ -189,6 +189,31 @@ const ConfigSchema = z.object({
     itemsParallelism: numberFromEnv(3),
   }),
 
+  /**
+   * Classifier tuning. Раньше эти числа были хардкодом в двух модулях
+   * (filename-signal.ts + llm-classifier.ts) и подбирались руками; вынесены
+   * сюда чтобы быть env-tunable в одном месте. Дефолты = прежние значения
+   * (behavior-preserving).
+   *
+   *   - filenameSignalWeight: вес одиночного filename-сигнала во внутреннем
+   *     weight-пространстве keyword-классификатора (не в [0,1]). 5.5 > invoice(5),
+   *     но < title-boosted strong-матч (7.5). См. filename-signal.ts.
+   *   - filenameAgreeBoost: аддитивный boost когда имя подтверждает тип с
+   *     контент-поддержкой.
+   *   - priorConfidentThreshold: порог уверенности keyword-prior'а, ниже
+   *     которого при LLM=unknown документ помечается «не опознан» (иначе берём
+   *     тип prior'а как fallback).
+   *   - llmTextChars: сколько первых символов raw-текста уходит в classify-prompt.
+   *   - classifyTimeoutMs: таймаут одного classify-вызова к LLM.
+   */
+  classifier: z.object({
+    filenameSignalWeight: numberFromEnv(5.5),
+    filenameAgreeBoost: numberFromEnv(1.0),
+    priorConfidentThreshold: confidence01FromEnv(0.5),
+    llmTextChars: numberFromEnv(2500),
+    classifyTimeoutMs: numberFromEnv(18_000),
+  }),
+
   tesseractLangs: z.string().default('rus+eng'),
 
   llm: z.object({
@@ -567,6 +592,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       maxPasses: env.MULTIPASS_MAX_PASSES,
       maxItemsTotal: env.MULTIPASS_MAX_ITEMS_TOTAL,
       itemsParallelism: env.MULTIPASS_ITEMS_PARALLELISM,
+    },
+    classifier: {
+      filenameSignalWeight: env.FILENAME_SIGNAL_WEIGHT,
+      filenameAgreeBoost: env.FILENAME_AGREE_BOOST,
+      priorConfidentThreshold: env.CLASSIFY_PRIOR_CONFIDENT_THRESHOLD,
+      llmTextChars: env.CLASSIFY_TEXT_CHARS,
+      classifyTimeoutMs: env.CLASSIFY_TIMEOUT_MS,
     },
     tesseractLangs: env.TESSERACT_LANGS,
     llm: {

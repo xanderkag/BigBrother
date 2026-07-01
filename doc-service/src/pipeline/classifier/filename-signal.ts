@@ -1,4 +1,5 @@
 import type { DocumentTypeSlug } from '../../types/documents.js';
+import { config } from '../../config.js';
 
 /**
  * Filename signal (2026-07-01). Реальный кейс: имя файла буквально содержит
@@ -27,11 +28,14 @@ import type { DocumentTypeSlug } from '../../types/documents.js';
  *   - НЕ било title-boosted strong контент-матч (contract_specification
  *     «Приложение к Договору» = 5.0 ×1.5 = 7.5 > 5.5) — защита `Заявка_*.pdf`
  *     от ложного флипа.
+ *
+ * Значение (как и FILENAME_AGREE_BOOST) вынесено в config.classifier —
+ * env-tunable (FILENAME_SIGNAL_WEIGHT). Дефолт 5.5 = прежний хардкод.
  */
-export const FILENAME_SIGNAL_WEIGHT = 5.5;
+export const FILENAME_SIGNAL_WEIGHT = config.classifier.filenameSignalWeight;
 
 /** Аддитивный boost, когда имя подтверждает тип с контент-поддержкой. */
-export const FILENAME_AGREE_BOOST = 1.0;
+export const FILENAME_AGREE_BOOST = config.classifier.filenameAgreeBoost;
 
 type Marker = { pattern: RegExp; slug: DocumentTypeSlug };
 
