@@ -67,12 +67,25 @@ describe('buildMatchSignals — bill_of_lading', () => {
     expect(s.order_refs).toBeUndefined();
   });
 
-  it('legacy DB-снимок: bl_number + container_number', () => {
+  it('legacy bl_number более НЕ читается проектором (double-BL-schema branch удалён)', () => {
+    // Прежний DB-снимок обнулён миграцией 20260604000001; активная BL_SCHEMA
+    // эмитит только number → проектор больше не подхватывает legacy bl_number
+    // (PD-CONTRACT-1: удалён legacy-read из BL-проектора).
     const s = buildMatchSignals('bill_of_lading', {
       bl_number: 'BL-LEGACY-1',
+    });
+    expect(s.bl_number).toBeUndefined();
+  });
+
+  it('collectContainers всё ещё читает containers[].container_number (общая логика, не BL-снимок)', () => {
+    // Array-item container_number — фолбэк внутри shared collectContainers,
+    // используется всеми типами с контейнерами; НЕ трогается при удалении
+    // BL-снимка. Оставлено для устойчивости к разнобою ключей от модели.
+    const s = buildMatchSignals('bill_of_lading', {
+      number: 'BL-1',
       containers: [{ container_number: 'MSCU1234567' }],
     });
-    expect(s.bl_number).toBe('BL-LEGACY-1');
+    expect(s.bl_number).toBe('BL-1');
     expect(s.containers).toEqual(['MSCU1234567']);
   });
 

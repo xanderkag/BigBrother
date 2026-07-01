@@ -221,10 +221,10 @@ function genericFallback(ctx: Ctx): void {
 const PROJECTORS: Record<string, Projector> = {
   bill_of_lading: (ctx) => {
     const { ex } = ctx;
-    // Активная BL_SCHEMA — плоская (number/containers/...), но прежний DB-снимок
-    // использовал bl_number / containers[].container_number → поддерживаем оба.
-    const bl = obj(ex.bl);
-    const blNumber = str(ex.number) ?? str(ex.bl_number) ?? str(bl?.number);
+    // Активная BL_SCHEMA — плоская (number/containers[].number). Прежний DB-снимок
+    // (bl_number / containers[].container_number / nested bl) обнулён миграцией
+    // 20260604000001 и не эмитится ни схемой, ни pipeline (PD-CONTRACT-1).
+    const blNumber = str(ex.number);
     if (blNumber) ctx.out.bl_number = blNumber;
     const containers = collectContainers(ex);
     if (containers) ctx.out.containers = containers;
@@ -372,7 +372,7 @@ PROJECTORS.proforma_invoice = PROJECTORS.invoice!;
 // Мапим source-path → canonical key только для уже присутствующих сигналов.
 
 const CONFIDENCE_SOURCES: Record<string, readonly string[]> = {
-  bl_number: ['number', 'bl_number', 'bl.number'],
+  bl_number: ['number'],
   ttn_number: ['number'],
   cmr_number: ['number'],
   declaration_numbers: ['declaration_number'],
