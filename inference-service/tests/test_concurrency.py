@@ -238,6 +238,7 @@ class SlowExtractBackend(ModelBackend):
         include_debug: bool = False,
         model_override: str | None = None,
         image_base64: str | None = None,
+        reasoning_effort: str | None = None,
     ) -> ExtractResponse:
         await asyncio.sleep(self.sleep_seconds)
         return ExtractResponse(extracted={}, confidence=1.0, issues=[])
