@@ -46,12 +46,13 @@ function ok() {
 function payload(over: Partial<WebhookPayload> = {}): WebhookPayload {
   return {
     version: 'v1',
-    schema_version: '1.1',
+    schema_version: '1.2',
     job_id: 'job-123',
     status: 'completed',
     document_type: 'invoice',
     confidence: 0.99,
     ocr_engine: null,
+    file_sha256: null,
     extracted: {},
     metadata: null,
     error: null,
@@ -125,18 +126,30 @@ describe('buildWebhookPayload — единый билдер для всех пу
     classification: null,
     confidence: '0.87',
     ocr_engine: 'pdf-text',
+    file_sha256: 'a'.repeat(64),
     error: null,
   };
 
-  it('нормальный job → v1 / schema_version 1.1 / нормализованный slug', async () => {
+  it('нормальный job → v1 / schema_version 1.2 / нормализованный slug', async () => {
     const { buildWebhookPayload } = await import('../src/webhooks/deliver.js');
     const p = buildWebhookPayload(src, { extracted: { number: '5' }, metadata: null });
     expect(p.version).toBe('v1');
-    expect(p.schema_version).toBe('1.1');
+    expect(p.schema_version).toBe('1.2');
     // TTN → ttn (outbound normalize).
     expect(p.document_type).toBe('ttn');
     expect(p.confidence).toBe(0.87);
     expect(p.extracted).toEqual({ number: '5' });
+    // schema 1.2: file_sha256 сурфейсится в top-level из envelope-источника.
+    expect(p.file_sha256).toBe('a'.repeat(64));
+  });
+
+  it('file_sha256 null (legacy job без хэша) → null в payload', async () => {
+    const { buildWebhookPayload } = await import('../src/webhooks/deliver.js');
+    const p = buildWebhookPayload(
+      { ...src, file_sha256: null },
+      { extracted: {}, metadata: null },
+    );
+    expect(p.file_sha256).toBeNull();
   });
 
   it('classification.unknown → document_type "unknown", ключа unrecognized нет', async () => {
@@ -161,27 +174,29 @@ describe('buildWebhookPayload — единый билдер для всех пу
     expect(parsed).not.toHaveProperty('target_entity_hint');
     // Общий envelope тот же самый, что и на finalize-пути.
     expect(parsed.version).toBe('v1');
-    expect(parsed.schema_version).toBe('1.1');
+    expect(parsed.schema_version).toBe('1.2');
   });
 });
 
 describe('webhook payload — top-level schema_version drift marker (SLAI)', () => {
-  it('доставленный body несёт schema_version: "1.1" и version: "v1" не тронут', async () => {
+  it('доставленный body несёт schema_version: "1.2" и version: "v1" не тронут', async () => {
     const { WEBHOOK_SCHEMA_VERSION } = await import('../src/webhooks/deliver.js');
-    expect(WEBHOOK_SCHEMA_VERSION).toBe('1.1');
+    expect(WEBHOOK_SCHEMA_VERSION).toBe('1.2');
 
     await deliverWebhook('job-sv', 'https://consumer.test/hook', payload({ job_id: 'job-sv' }), log);
 
     const body = requestMock.mock.calls[0]![1].body as string;
     const sent = JSON.parse(body) as Record<string, unknown>;
     // Drift-маркер — top-level sibling к version, не внутри extracted.
-    expect(sent.schema_version).toBe('1.1');
+    expect(sent.schema_version).toBe('1.2');
     // Envelope-версия контракта осталась v1 (НЕ бампается вместе со schema_version).
     expect(sent.version).toBe('v1');
+    // schema 1.2: file_sha256 присутствует top-level (null для этого payload).
+    expect(sent).toHaveProperty('file_sha256');
   });
 });
 
-describe('webhook payload — unrecognized → document_type "unknown" (schema_version 1.1)', () => {
+describe('webhook payload — unrecognized → document_type "unknown" (schema_version 1.2)', () => {
   it('нормальный распознанный документ → document_type slug, поля unrecognized нет', async () => {
     await deliverWebhook(
       'job-ok',
@@ -193,7 +208,7 @@ describe('webhook payload — unrecognized → document_type "unknown" (schema_v
     const body = requestMock.mock.calls[0]![1].body as string;
     const sent = JSON.parse(body) as Record<string, unknown>;
     expect(sent.document_type).toBe('invoice');
-    expect(sent.schema_version).toBe('1.1');
+    expect(sent.schema_version).toBe('1.2');
     // Поле unrecognized удалено из контракта (SLAI 2026-07-01).
     expect(sent).not.toHaveProperty('unrecognized');
   });
@@ -211,7 +226,7 @@ describe('webhook payload — unrecognized → document_type "unknown" (schema_v
     const body = requestMock.mock.calls[0]![1].body as string;
     const sent = JSON.parse(body) as Record<string, unknown>;
     expect(sent.document_type).toBe('unknown');
-    expect(sent.schema_version).toBe('1.1');
+    expect(sent.schema_version).toBe('1.2');
     expect(sent).not.toHaveProperty('unrecognized');
   });
 });

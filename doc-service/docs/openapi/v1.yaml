@@ -252,6 +252,7 @@ components:
         - document_type
         - confidence
         - ocr_engine
+        - file_sha256
         - extracted
         - metadata
         - error
@@ -265,16 +266,16 @@ components:
             only the `extracted` field-set drifts — see `schema_version`.
         schema_version:
           type: string
-          example: "1.1"
+          example: "1.2"
           description: |
             Drift marker for the payload field-set, independent of the
             envelope `version`. Semver `MAJOR.MINOR` string, currently
-            `"1.1"` (1.0 → 1.1, 2026-07-01: `document_type` may now carry
-            the literal `"unknown"` for docs the classifier could not
-            assign a type). Bumped when fields are added/changed;
-            `version` stays `"v1"`. Distinct from
-            `extracted._match_signals.schema_version` (which scopes only the
-            match-signals projection).
+            `"1.2"` (1.1 → 1.2, 2026-07-02: added top-level `file_sha256`;
+            1.0 → 1.1, 2026-07-01: `document_type` may now carry the literal
+            `"unknown"` for docs the classifier could not assign a type).
+            Bumped when fields are added/changed; `version` stays `"v1"`.
+            Distinct from `extracted._match_signals.schema_version` (which
+            scopes only the match-signals projection).
         job_id:
           type: string
           format: uuid
@@ -307,6 +308,16 @@ components:
             - $ref: "#/components/schemas/OcrEngine"
             - type: "null"
           description: Which OCR engine produced the text used downstream.
+        file_sha256:
+          oneOf:
+            - type: string
+              pattern: "^[0-9a-f]{64}$"
+            - type: "null"
+          description: |
+            SHA256 of the original uploaded file (lowercase hex, 64 chars).
+            Added in schema_version 1.2 (2026-07-02) for consumer-side
+            deduplication. `null` for legacy jobs ingested before the hash
+            column existed.
         extracted:
           oneOf:
             - $ref: "#/components/schemas/Extracted"
@@ -470,8 +481,9 @@ components:
         dates, totals) so consumers get stable keys without digging
         into per-type nested fields. Present-only — a key is omitted
         when the document has no value (never `""`/`[]`/`null`).
-        `schema_version` is always present. See `MatchSignals`. This is
-        a **reserved key** and a v1-compatible addition (existing
+        `schema_version` (now `"1.1"`) and `document_stage` are always
+        present (`document_stage` defaults to `final`). See `MatchSignals`.
+        This is a **reserved key** and a v1-compatible addition (existing
         per-type fields unchanged).
 
     MatchSignals:
@@ -482,12 +494,44 @@ components:
         the document carries a value. Built declaratively per
         `document_type` with a generic fallback for unknown types
         (`src/pipeline/normalize/match-signals.ts`).
-      required: [schema_version]
+      required: [schema_version, document_stage]
       properties:
         schema_version:
           type: string
-          enum: ["1.0"]
-          description: Always `"1.0"`.
+          enum: ["1.1"]
+          description: |
+            Always present. Bumped to `"1.1"` (2026-07-02) with the
+            addition of `document_stage`/`release_type`/`bl_type`/
+            `master_bl_number`/`number_of_original_bls`.
+        document_stage:
+          type: string
+          enum: [draft, proforma, final]
+          description: |
+            Document stage. **Always present** (the one exception to
+            present-only besides `schema_version`). `proforma` for
+            proforma invoices; `draft` when an explicit draft marker is
+            found; otherwise `final`. SLAI treats an omitted stage as
+            `final` — we always emit it to remove ambiguity.
+        release_type:
+          type: string
+          enum: [original, telex_release, seaway_waybill, surrendered]
+          description: |
+            B/L release state (bill_of_lading only, present-only). Set
+            from an explicit marker; inferred `original` when
+            `number_of_original_bls >= 1`. Never guessed as telex when
+            unknown.
+        bl_type:
+          type: string
+          enum: [Master, House, "Sea Waybill"]
+          description: B/L type (bill_of_lading only, present-only).
+        master_bl_number:
+          type: string
+          description: |
+            Master B/L number for a House B/L (bill_of_lading only,
+            present-only). Omitted on a Master B/L (no parent).
+        number_of_original_bls:
+          type: integer
+          description: Number of original B/Ls issued (bill_of_lading only, present-only).
         containers:
           type: array
           items:
@@ -866,12 +910,13 @@ components:
       summary: "Standard invoice, auto-routed (`status: done`)."
       value:
         version: v1
-        schema_version: "1.1"
+        schema_version: "1.2"
         job_id: 1e7a2c44-8b9c-4f5d-b3a1-7e6f2c4d9a01
         status: done
         document_type: invoice
         confidence: 0.93
         ocr_engine: pdf-text
+        file_sha256: "3b1e2f0c5a7d9e4b6c8a1f2d3e4b5c6a7d8e9f0a1b2c3d4e5f60718293a4b5c6d"
         extracted:
           number: "СЧ-2026-00471"
           date: "2026-05-12"
@@ -892,7 +937,8 @@ components:
               total: 118750.00
               vat: 19791.67
           _match_signals:
-            schema_version: "1.0"
+            schema_version: "1.1"
+            document_stage: final
             parties:
               seller:
                 name: "ООО Альфа"
@@ -925,12 +971,13 @@ components:
       summary: Invoice flagged for review — VAT-consistency issue.
       value:
         version: v1
-        schema_version: "1.1"
+        schema_version: "1.2"
         job_id: 2c81f5a2-3d4b-49a6-9c2e-5e0a3f1b8d44
         status: needs_review
         document_type: invoice
         confidence: 0.71
         ocr_engine: tesseract
+        file_sha256: null
         extracted:
           number: "12/05"
           date: "2026-05-12"
@@ -949,12 +996,13 @@ components:
       summary: Three-document PDF (invoice + ТТН + АКТ) on three pages.
       value:
         version: v1
-        schema_version: "1.1"
+        schema_version: "1.2"
         job_id: 3df9e711-9a04-4ab9-8d6e-1f0b2c5d8e93
         status: done
         document_type: invoice
         confidence: 0.91
         ocr_engine: pdf-text
+        file_sha256: "9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0"
         extracted:
           number: "INV-2026-00045"
           date: "2026-05-15"
@@ -992,12 +1040,13 @@ components:
       summary: Password-protected PDF — unrecoverable.
       value:
         version: v1
-        schema_version: "1.1"
+        schema_version: "1.2"
         job_id: 4e72a118-bfa2-4d11-9c3a-2a5b6c0e7d12
         status: failed
         document_type: null
         confidence: null
         ocr_engine: null
+        file_sha256: "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809"
         extracted: null
         metadata: null
         error: "PDF защищён паролем. Удалите защиту и загрузите снова."
@@ -1006,12 +1055,13 @@ components:
       summary: "Document not recognized by the classifier (`document_type: \"unknown\"`)."
       value:
         version: v1
-        schema_version: "1.1"
+        schema_version: "1.2"
         job_id: 3010199a-1b2c-4d3e-8f90-a1b2c3d4e5f6
         status: needs_review
         document_type: unknown
         confidence: 0.0
         ocr_engine: pdf-text
+        file_sha256: "abcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcabcab"
         extracted: {}
         metadata: null
         error: null

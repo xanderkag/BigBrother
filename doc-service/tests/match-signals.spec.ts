@@ -15,17 +15,19 @@ import {
 } from '../src/pipeline/normalize/match-signals.js';
 
 describe('buildMatchSignals — общий контракт', () => {
-  it('schema_version всегда 1.0', () => {
-    expect(buildMatchSignals(null, null).schema_version).toBe('1.0');
+  it('schema_version теперь 1.1', () => {
+    expect(MATCH_SIGNALS_SCHEMA_VERSION).toBe('1.1');
+    expect(buildMatchSignals(null, null).schema_version).toBe('1.1');
     expect(buildMatchSignals('invoice', {}).schema_version).toBe(MATCH_SIGNALS_SCHEMA_VERSION);
   });
 
-  it('пустой extracted → только schema_version (present-only)', () => {
+  it('пустой extracted → schema_version + document_stage (present-only + always)', () => {
     const s = buildMatchSignals('TTN', {});
-    expect(Object.keys(s)).toEqual(['schema_version']);
+    expect(Object.keys(s).sort()).toEqual(['document_stage', 'schema_version']);
+    expect(s.document_stage).toBe('final');
   });
 
-  it('не эмитит пустые строки / массивы / null', () => {
+  it('не эмитит пустые строки / массивы / null (кроме always-present document_stage)', () => {
     const s = buildMatchSignals('bill_of_lading', {
       number: '',
       containers: [],
@@ -36,7 +38,7 @@ describe('buildMatchSignals — общий контракт', () => {
     expect(s.containers).toBeUndefined();
     expect(s.parties).toBeUndefined();
     expect(s.dates).toBeUndefined();
-    expect(Object.keys(s)).toEqual(['schema_version']);
+    expect(Object.keys(s).sort()).toEqual(['document_stage', 'schema_version']);
   });
 });
 
@@ -225,7 +227,7 @@ describe('buildMatchSignals — commercial_invoice (Q16)', () => {
     expect(s.parties?.buyer?.inn).toBe('7707083893');
     expect(s.totals).toEqual({ amount: 16280.0, currency: 'USD' });
     expect(s.dates?.document).toBe('2026-06-03');
-    expect(s.schema_version).toBe('1.0');
+    expect(s.schema_version).toBe('1.1');
   });
 
   it('containers из items[].container_no и скаляра container_number', () => {
@@ -380,8 +382,11 @@ describe('buildMatchSignals — services_act (Акт)', () => {
     expect(s.order_refs).toEqual(['Заказ № 42', 'PO-2026-118']);
   });
 
-  it('пустой акт → только schema_version (present-only)', () => {
-    expect(Object.keys(buildMatchSignals('AKT', {}))).toEqual(['schema_version']);
+  it('пустой акт → schema_version + document_stage (present-only + always)', () => {
+    expect(Object.keys(buildMatchSignals('AKT', {})).sort()).toEqual([
+      'document_stage',
+      'schema_version',
+    ]);
   });
 });
 
@@ -411,5 +416,113 @@ describe('buildMatchSignals — §2.3 confidence', () => {
   it('нет field-confidence → нет _confidence', () => {
     const s = buildMatchSignals('invoice', { total: 100 });
     expect(s._confidence).toBeUndefined();
+  });
+});
+
+describe('buildMatchSignals — schema 1.1: document_stage (always-present)', () => {
+  it('обычный commercial_invoice без маркера → final', () => {
+    const s = buildMatchSignals('commercial_invoice', {
+      total: 100,
+      currency: 'USD',
+    });
+    expect(s.document_stage).toBe('final');
+  });
+
+  it('proforma_invoice → proforma (по типу)', () => {
+    const s = buildMatchSignals('proforma_invoice', { total: 100, currency: 'USD' });
+    expect(s.document_stage).toBe('proforma');
+  });
+
+  it('extracted.document_stage="DRAFT" → draft', () => {
+    const s = buildMatchSignals('commercial_invoice', {
+      total: 100,
+      document_stage: 'DRAFT',
+    });
+    expect(s.document_stage).toBe('draft');
+  });
+
+  it('extracted.document_stage маркер "proforma" перебивает default final для не-proforma типа', () => {
+    const s = buildMatchSignals('invoice', {
+      total: 100,
+      document_stage: 'Proforma invoice',
+    });
+    expect(s.document_stage).toBe('proforma');
+  });
+
+  it('null extracted → document_stage всё равно присутствует (final)', () => {
+    expect(buildMatchSignals('bill_of_lading', null).document_stage).toBe('final');
+    expect(buildMatchSignals('proforma_invoice', null).document_stage).toBe('proforma');
+  });
+});
+
+describe('buildMatchSignals — schema 1.1: bill_of_lading BL-поля', () => {
+  it('bl_type нормализуется Master/House/Sea Waybill', () => {
+    expect(buildMatchSignals('bill_of_lading', { bl_type: 'MASTER' }).bl_type).toBe('Master');
+    expect(buildMatchSignals('bill_of_lading', { bl_type: 'House B/L' }).bl_type).toBe('House');
+    expect(buildMatchSignals('bill_of_lading', { bl_type: 'HBL' }).bl_type).toBe('House');
+    expect(buildMatchSignals('bill_of_lading', { bl_type: 'Sea Waybill' }).bl_type).toBe(
+      'Sea Waybill',
+    );
+    expect(buildMatchSignals('bill_of_lading', { bl_type: 'SWB' }).bl_type).toBe('Sea Waybill');
+    // неизвестное → present-only omit
+    expect(buildMatchSignals('bill_of_lading', { bl_type: 'что-то' }).bl_type).toBeUndefined();
+  });
+
+  it('House с master_bl_number → оба присутствуют', () => {
+    const s = buildMatchSignals('bill_of_lading', {
+      number: 'HBL-1',
+      bl_type: 'House',
+      master_bl_number: 'MSCUMASTER123',
+    });
+    expect(s.bl_type).toBe('House');
+    expect(s.bl_number).toBe('HBL-1');
+    expect(s.master_bl_number).toBe('MSCUMASTER123');
+  });
+
+  it('Master с master_bl_number в extracted → master_bl_number ОМИТ (у мастера нет родителя)', () => {
+    const s = buildMatchSignals('bill_of_lading', {
+      number: 'MBL-1',
+      bl_type: 'Master',
+      master_bl_number: 'SHOULD-NOT-APPEAR',
+    });
+    expect(s.bl_type).toBe('Master');
+    expect(s.master_bl_number).toBeUndefined();
+  });
+
+  it('release_type: явный telex → telex_release', () => {
+    const s = buildMatchSignals('bill_of_lading', {
+      number: 'BL-1',
+      release_type: 'TELEX RELEASE',
+    });
+    expect(s.release_type).toBe('telex_release');
+  });
+
+  it('release_type: отсутствует + number_of_original_bls=3 → original', () => {
+    const s = buildMatchSignals('bill_of_lading', {
+      number: 'BL-1',
+      number_of_original_bls: 3,
+    });
+    expect(s.release_type).toBe('original');
+    expect(s.number_of_original_bls).toBe(3);
+  });
+
+  it('release_type: отсутствует + number_of_original_bls=0 → омит (не угадываем)', () => {
+    const s = buildMatchSignals('bill_of_lading', {
+      number: 'BL-1',
+      number_of_original_bls: 0,
+    });
+    expect(s.release_type).toBeUndefined();
+    expect(s.number_of_original_bls).toBe(0);
+  });
+
+  it('number_of_original_bls проецируется как integer, дробное → омит', () => {
+    expect(
+      buildMatchSignals('bill_of_lading', { number: 'BL-1', number_of_original_bls: 2 })
+        .number_of_original_bls,
+    ).toBe(2);
+    expect(
+      buildMatchSignals('bill_of_lading', { number: 'BL-1', number_of_original_bls: 2.5 })
+        .number_of_original_bls,
+    ).toBeUndefined();
   });
 });

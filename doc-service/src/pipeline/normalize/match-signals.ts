@@ -27,7 +27,7 @@
 import { normalizePlate } from './identifiers.js';
 import { normalizeSlugForApi } from '../../types/slug-normalize.js';
 
-export const MATCH_SIGNALS_SCHEMA_VERSION = '1.0';
+export const MATCH_SIGNALS_SCHEMA_VERSION = '1.1';
 
 interface Party {
   name?: string;
@@ -53,6 +53,16 @@ export interface MatchSignals {
   parties?: Record<string, Party>;
   dates?: Record<string, string>;
   totals?: { amount?: number; currency?: string; vat?: number };
+  /**
+   * Стадия документа (schema 1.1). ВСЕГДА присутствует (единственное исключение
+   * из present-only, наравне с schema_version). SLAI трактует отсутствие как
+   * final — эмитим всегда чтобы убрать неоднозначность. См. computeDocumentStage.
+   */
+  document_stage?: 'draft' | 'proforma' | 'final';
+  release_type?: 'original' | 'telex_release' | 'seaway_waybill' | 'surrendered';
+  bl_type?: 'Master' | 'House' | 'Sea Waybill';
+  master_bl_number?: string;
+  number_of_original_bls?: number;
   /** §2.3 confidence для канонических ключей, если доступен из _field_confidence */
   _confidence?: Record<string, number>;
 }
@@ -84,6 +94,69 @@ function obj(v: unknown): Extracted | undefined {
 
 function arr(v: unknown): unknown[] | undefined {
   return Array.isArray(v) ? v : undefined;
+}
+
+// ── schema 1.1: document_stage / release_type / bl_type ────────────────────
+
+/**
+ * Стадия документа (schema 1.1). ВСЕГДА возвращает значение (default final).
+ * proforma_invoice → 'proforma' по типу; иначе читаем LLM-маркер
+ * `ex.document_stage` (draft/proforma/final по подстроке); нет маркера → final.
+ * SLAI трактует отсутствие поля как final — мы всегда эмитим явно.
+ */
+function computeDocumentStage(
+  canonicalType: string | null,
+  ex: Extracted,
+): 'draft' | 'proforma' | 'final' {
+  if (canonicalType === 'proforma_invoice') return 'proforma';
+  const marker = str(ex.document_stage)?.toLowerCase();
+  if (marker) {
+    if (marker.includes('draft')) return 'draft';
+    if (marker.includes('proforma')) return 'proforma';
+    if (marker.includes('final')) return 'final';
+  }
+  return 'final';
+}
+
+/** Нормализует bl_type к канону SLAI. Неизвестное → undefined (present-only). */
+function normalizeBlType(
+  v: string | undefined,
+): 'Master' | 'House' | 'Sea Waybill' | undefined {
+  const t = v?.toLowerCase();
+  if (!t) return undefined;
+  if (t.includes('master')) return 'Master';
+  if (t.includes('house') || t.includes('hbl')) return 'House';
+  if (
+    t.includes('sea waybill') ||
+    t.includes('seaway') ||
+    t.includes('swb') ||
+    t.includes('waybill')
+  ) {
+    return 'Sea Waybill';
+  }
+  return undefined;
+}
+
+/**
+ * Нормализует release_type. Если явный маркер (v) есть — мапим его. Если нет —
+ * выводим 'original' ТОЛЬКО когда число оригиналов >= 1 (present-only: не
+ * угадываем telex при неизвестном).
+ */
+function normalizeReleaseType(
+  v: string | undefined,
+  originals: unknown,
+): 'original' | 'telex_release' | 'seaway_waybill' | 'surrendered' | undefined {
+  const t = v?.toLowerCase();
+  if (t) {
+    if (t.includes('telex')) return 'telex_release';
+    if (t.includes('surrender')) return 'surrendered';
+    if (t.includes('seaway') || t.includes('sea waybill')) return 'seaway_waybill';
+    if (t.includes('original')) return 'original';
+    return undefined;
+  }
+  const n = num(originals);
+  if (n !== undefined && Number.isInteger(n) && n >= 1) return 'original';
+  return undefined;
 }
 
 /** Собирает Party из исходного объекта стороны (present-only). undefined если пусто. */
@@ -233,6 +306,19 @@ const PROJECTORS: Record<string, Projector> = {
     setParty(ctx, 'notify_party', ex.notify_party);
     setDate(ctx, 'document', ex.date);
     setDate(ctx, 'shipped_on_board', ex.shipped_on_board);
+    // schema 1.1: тип BL / master-link / состояние выпуска / число оригиналов.
+    const blType = normalizeBlType(str(ex.bl_type));
+    if (blType) ctx.out.bl_type = blType;
+    // master link: у Master нет родителя → master_bl_number на Master ОМИТ.
+    // Нормализуем ТЕМ ЖЕ str() что и bl_number (trim), без доп. канонизации.
+    if (blType !== 'Master') {
+      const m = str(ex.master_bl_number);
+      if (m) ctx.out.master_bl_number = m;
+    }
+    const rel = normalizeReleaseType(str(ex.release_type), ex.number_of_original_bls);
+    if (rel) ctx.out.release_type = rel;
+    const nob = num(ex.number_of_original_bls);
+    if (nob !== undefined && Number.isInteger(nob)) ctx.out.number_of_original_bls = nob;
   },
 
   ttn: (ctx) => {
@@ -434,7 +520,12 @@ export function buildMatchSignals(
   fieldConfidence?: Record<string, number>,
 ): MatchSignals {
   const out: MatchSignals = { schema_version: MATCH_SIGNALS_SCHEMA_VERSION };
-  if (!extracted || typeof extracted !== 'object') return out;
+  const canonicalType = documentType ? normalizeSlugForApi(documentType) : null;
+  if (!extracted || typeof extracted !== 'object') {
+    // document_stage ВСЕГДА присутствует даже без extracted (см. ниже).
+    out.document_stage = computeDocumentStage(canonicalType, {});
+    return out;
+  }
 
   const ctx: Ctx = { ex: extracted, out };
 
@@ -442,9 +533,13 @@ export function buildMatchSignals(
   // плоских полей. Per-type проектор затем добивает и уточняет специфику.
   genericFallback(ctx);
 
-  const canonicalType = documentType ? normalizeSlugForApi(documentType) : null;
   const projector = canonicalType ? PROJECTORS[canonicalType] : undefined;
   if (projector) projector(ctx);
+
+  // schema 1.1: document_stage — ЕДИНСТВЕННОЕ исключение из present-only
+  // (наравне со schema_version): ВСЕГДА присутствует. SLAI трактует отсутствие
+  // как final; мы эмитим явно чтобы убрать неоднозначность (draft vs final).
+  out.document_stage = computeDocumentStage(canonicalType, extracted);
 
   const fc =
     fieldConfidence ??

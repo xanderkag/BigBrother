@@ -476,6 +476,12 @@ const INVOICE_SCHEMA = {
       },
     },
     items: ITEMS_ARRAY,
+    document_stage: {
+      type: 'string',
+      enum: ['draft', 'proforma', 'final'],
+      description:
+        'Стадия документа. draft — если есть явный маркер черновика (watermark «DRAFT», «ПРОЕКТ», «предварительный»); final — если явно «FINAL»/«ORIGINAL»/чистовик. Нет явного маркера — опусти (по умолчанию трактуется как final).',
+    },
   },
 } as const;
 
@@ -753,6 +759,23 @@ const BL_SCHEMA = {
     date_of_issue: { type: 'string', description: 'Дата выдачи коносамента (ISO YYYY-MM-DD), если отличается от date.' },
     number_of_original_bls: { type: 'integer', description: 'Количество оригиналов B/L (обычно 3).' },
     bl_type: { type: 'string', description: 'Тип: Master / House / Sea Waybill.' },
+    master_bl_number: {
+      type: 'string',
+      description:
+        'Номер МАСТЕР-коносамента (ocean/master B/L), если этот документ — House B/L (HBL) под мастером. На самом Master B/L НЕ заполнять.',
+    },
+    release_type: {
+      type: 'string',
+      enum: ['original', 'telex_release', 'seaway_waybill', 'surrendered'],
+      description:
+        'Состояние выпуска B/L: original (выданы бумажные оригиналы), telex_release (телекс-релиз / surrendered по телексу), seaway_waybill (морская накладная, без оборотного оригинала), surrendered (оригиналы сданы перевозчику). Заполняй ТОЛЬКО при явном маркере в документе (штамп/текст «TELEX RELEASE», «SURRENDERED», «SEA WAYBILL», «3/3 ORIGINALS»). Нет маркера — опусти.',
+    },
+    document_stage: {
+      type: 'string',
+      enum: ['draft', 'proforma', 'final'],
+      description:
+        'Стадия документа. draft — если есть явный маркер черновика (watermark «DRAFT», «ПРОЕКТ», «предварительный»); final — если явно «FINAL»/«ORIGINAL»/чистовик. Нет явного маркера — опусти (по умолчанию трактуется как final).',
+    },
     scac_code: { type: 'string', description: 'SCAC-код перевозчика (4 буквы), если указан.' },
     transport_docs: {
       type: 'array',

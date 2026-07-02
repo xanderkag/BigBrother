@@ -15,7 +15,7 @@ import type { Logger } from 'pino';
  * НЕ путать с `extracted._match_signals.schema_version` (тот скоупит
  * проекцию match-сигналов, не общий контракт).
  */
-export const WEBHOOK_SCHEMA_VERSION = '1.1';
+export const WEBHOOK_SCHEMA_VERSION = '1.2';
 
 export type WebhookPayload = {
   /**
@@ -47,6 +47,12 @@ export type WebhookPayload = {
   document_type: string | null;
   confidence: number | null;
   ocr_engine: string | null;
+  /**
+   * SHA-256 хэш исходного загруженного файла (hex lowercase, 64 chars) или
+   * null для legacy job'ов до миграции. schema 1.2 (2026-07-02): SLAI просил
+   * surface'ить file-hash в top-level для дедупликации на их стороне.
+   */
+  file_sha256: string | null;
   extracted: Record<string, unknown> | null;
   metadata: Record<string, unknown> | null;
   error: string | null;
@@ -111,6 +117,7 @@ export type WebhookEnvelopeSource = {
   classification: { unknown?: boolean } | null;
   confidence: string | number | null;
   ocr_engine: string | null;
+  file_sha256: string | null;
   error: string | null;
 };
 
@@ -162,6 +169,9 @@ export function buildWebhookPayload(
         : normalizeSlugForApi(src.document_type ?? null),
     confidence: src.confidence === null ? null : Number(src.confidence),
     ocr_engine: src.ocr_engine ?? null,
+    // schema 1.2: surface file-hash в top-level (SLAI дедуп). Значение уже на
+    // JobRow (SELECT * / RETURNING *), билдер получает его через structural src.
+    file_sha256: src.file_sha256 ?? null,
     extracted: content.extracted ?? null,
     metadata: content.metadata ?? null,
     error: src.error ?? null,
