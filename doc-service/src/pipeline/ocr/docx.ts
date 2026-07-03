@@ -55,6 +55,29 @@ export function selectImagesForVision(
     .slice(0, Math.max(0, max));
 }
 
+/**
+ * Решение о запуске vision-fallback (P1-B). Чистая функция — юнит-тестится без
+ * реального docx. Триггерим при ОДНОМ из:
+ *   1) текста почти нет (< minTextChars) и есть хоть одна картинка ≥ minImageKb;
+ *   2) документ картинко-доминирован: есть скан-размерная картинка (≥ largeImageKb)
+ *      И текста меньше «страницы» (< imageDocMaxChars) — содержание в картинке,
+ *      текст лишь шапка/заголовок. Именно этот случай упускал порог по тексту
+ *      (Тех.описание: 588 симв, но 582/231 KB картинки).
+ * Если ни одной картинки ≥ minImageKb нет — vision не нужен (логотипы отсеяны).
+ */
+export function decideVisionFallback(
+  textLength: number,
+  imageSizes: number[],
+  cfg: { minTextChars: number; minImageKb: number; largeImageKb: number; imageDocMaxChars: number },
+): boolean {
+  const candidates = imageSizes.filter((s) => s >= cfg.minImageKb * 1024);
+  if (candidates.length === 0) return false;
+  const veryThinText = textLength < cfg.minTextChars;
+  const hasScanImage = candidates.some((s) => s >= cfg.largeImageKb * 1024);
+  const imageDominated = hasScanImage && textLength < cfg.imageDocMaxChars;
+  return veryThinText || imageDominated;
+}
+
 export class DocxEngine implements OcrEngine {
   readonly name = 'docx';
   readonly acceptanceThreshold = 0.5;
@@ -95,20 +118,18 @@ export class DocxEngine implements OcrEngine {
     );
     let text = htmlToMarkdown(result.value || '');
 
-    // P1-B: картиночный docx (скан в ворде) — текста почти нет. Если vision-хук
-    // задан и текста меньше порога, прогоняем крупные картинки через vision и
-    // склеиваем. Если текста достаточно — картинки не трогаем (не жжём GPU).
+    // P1-B: картиночный docx (скан в ворде). Триггер — decideVisionFallback:
+    // либо текста почти нет, либо док картинко-доминирован (скан-картинка +
+    // мало текста). Если текста достаточно и нет скан-картинки — не трогаем
+    // (не жжём GPU). См. чистую функцию выше.
+    const cfg = config.officeImageFallback;
     let confidence = text.length > 0 ? 1.0 : 0.0;
     if (
-      config.officeImageFallback.enabled &&
+      cfg.enabled &&
       this.visionOcr &&
-      text.length < config.officeImageFallback.minTextChars
+      decideVisionFallback(text.length, images.map((i) => i.buffer.length), cfg)
     ) {
-      const picked = selectImagesForVision(
-        images,
-        config.officeImageFallback.minImageKb * 1024,
-        config.officeImageFallback.maxImages,
-      );
+      const picked = selectImagesForVision(images, cfg.minImageKb * 1024, cfg.maxImages);
       if (picked.length > 0) {
         const visionText = await this.runVision(picked);
         if (visionText.trim().length > 0) {

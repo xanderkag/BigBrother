@@ -225,15 +225,23 @@ const ConfigSchema = z.object({
    * жжём GPU зря).
    *
    *   - enabled=false → fallback выключен, docx-движок ведёт себя как раньше.
-   *   - minTextChars: порог «текста мало» (< → пробуем vision).
+   *   - minTextChars: «текста почти нет» (< → vision при любой картинке ≥ minImageKb).
    *   - minImageKb: логотипы/печати мельче этого не идут в vision.
    *   - maxImages: потолок числа картинок на документ (latency/GPU-guard).
+   *   - largeImageKb: «скан-размер» картинки (полная страница, не логотип).
+   *   - imageDocMaxChars: если есть скан-картинка И текста меньше этого — док
+   *     «картинко-доминирован» (содержание в картинке, текст — шапка), гоним
+   *     vision даже когда текста > minTextChars. Ловит реальный кейс
+   *     (Тех.описание: 588 симв текста + картинки 582/231 KB — vision НЕ сработал
+   *     на пороге minTextChars=200, т.к. 588 > 200).
    */
   officeImageFallback: z.object({
     enabled: z.coerce.boolean().default(true),
     minTextChars: numberFromEnv(200),
     minImageKb: numberFromEnv(50),
     maxImages: numberFromEnv(8),
+    largeImageKb: numberFromEnv(200),
+    imageDocMaxChars: numberFromEnv(2500),
   }),
 
   llm: z.object({
@@ -626,6 +634,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       minTextChars: env.OFFICE_MIN_TEXT_CHARS,
       minImageKb: env.OFFICE_IMAGE_MIN_KB,
       maxImages: env.OFFICE_IMAGE_MAX_COUNT,
+      largeImageKb: env.OFFICE_IMAGE_LARGE_KB,
+      imageDocMaxChars: env.OFFICE_IMAGE_DOC_MAX_CHARS,
     },
     llm: {
       url: env.LLM_INFERENCE_URL || undefined,
