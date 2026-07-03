@@ -1,15 +1,18 @@
 /**
- * DOCX OCR engine — конвертирует Word документ в plain text для
+ * DOCX OCR engine — конвертирует Word документ в markdown-текст для
  * feeding в classifier + LLM extract.
  *
- * Использует mammoth — npm-пакет, читает .docx (Office Open XML).
- * Извлекает чистый текст без styling. Структура (parag breaks, lists,
- * tables) сохраняется через `\n` separator'ы — этого хватает LLM
- * чтобы понять разделы документа.
+ * Использует mammoth (читает .docx / Office Open XML) → HTML, затем свой
+ * узкий HTML→Markdown конвертер (`html-to-markdown.ts`). До 2026-07-02
+ * использовался `extractRawText`, который ПЛЮЩИЛ таблицы в поток строк
+ * (ячейки склеивались через `\n`, колонки исчезали) — на ВЭД-доках с
+ * таблицами это резало fill (SDS-доки батча 232 давали 4 бизнес-поля).
+ * Теперь таблицы отдаются pipe-таблицами (`| a | b |`) — LLM видит
+ * «строка × колонка». Картинки в docx на этом шаге отбрасываются
+ * (base64 не тащим); vision-fallback для картиночных docx — P1-B.
  *
  * Не поддерживает .doc (legacy Word 97-2003 binary) — для них нужен
- * libreoffice/antiword. Если редко встречаются — клиент конвертирует
- * вручную в .docx или PDF.
+ * catdoc/antiword (см. doc.ts).
  *
  * Сценарии из реального ЭДО-кейса 2026-05-18:
  *   - Акт к договору №0401-260001.docx (services_act / AKT)
@@ -18,6 +21,7 @@
 import mammothPkg from 'mammoth';
 const mammoth = mammothPkg;
 import type { OcrEngine, OcrInput, OcrResult } from './types.js';
+import { htmlToMarkdown } from './html-to-markdown.js';
 
 const DOCX_MIMES = new Set([
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -42,11 +46,15 @@ export class DocxEngine implements OcrEngine {
 
   async run(input: OcrInput): Promise<OcrResult> {
     const t0 = Date.now();
-    // mammoth.extractRawText читает docx и возвращает plain text +
-    // массив messages (warnings про неподдерживаемые элементы, не
-    // блокирующие).
-    const result = await mammoth.extractRawText({ path: input.filePath });
-    let text = result.value || '';
+    // mammoth.convertToHtml читает docx → HTML (сохраняет структуру таблиц),
+    // затем свой конвертер → markdown (таблицы pipe'ами). convertImage-хук
+    // возвращает пустой src, чтобы mammoth НЕ инлайнил base64 картинок
+    // (мы их всё равно отбрасываем; экономим память на картиночных docx).
+    const result = await mammoth.convertToHtml(
+      { path: input.filePath },
+      { convertImage: mammoth.images.imgElement(() => Promise.resolve({ src: '' })) },
+    );
+    let text = htmlToMarkdown(result.value || '');
 
     // Защита от мегабольших: trim до limit с маркером
     let truncated = false;
