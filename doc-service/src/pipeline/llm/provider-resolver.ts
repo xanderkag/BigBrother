@@ -305,6 +305,7 @@ class DynamicLlmClient implements LlmClient {
     // и inference-service.openai_compatible подменит свой default из env.
     // Это позволяет иметь несколько provider_settings rows с одним base_url
     // но разными model — каждая строка = «прогон через эту модель».
+    const override = readBackendOverride(row.extra);
     return new HttpLlmClient({
       baseUrl,
       apiKey,
@@ -312,6 +313,8 @@ class DynamicLlmClient implements LlmClient {
       model: row.model || undefined,
       vision: row.vision === true,
       reasoningEffort: readReasoningEffort(row.extra),
+      backend: override.backend,
+      upstreamBaseUrl: override.upstreamBaseUrl,
     });
   }
 
@@ -336,6 +339,7 @@ class DynamicLlmClient implements LlmClient {
     }
 
     const apiKey = dbRow?.api_key || config.llm.apiKey;
+    const override = readBackendOverride(dbRow?.extra);
     return new HttpLlmClient({
       baseUrl,
       apiKey,
@@ -345,6 +349,9 @@ class DynamicLlmClient implements LlmClient {
       model: dbRow?.model || undefined,
       vision: dbRow?.vision === true,
       reasoningEffort: readReasoningEffort(dbRow?.extra),
+      // VANGA-LLM-2: per-instance cloud/local/gpu из extra.backend (+upstream).
+      backend: override.backend,
+      upstreamBaseUrl: override.upstreamBaseUrl,
     });
   }
 }
@@ -359,6 +366,28 @@ function readReasoningEffort(extra: Record<string, unknown> | null | undefined):
   if (!extra || typeof extra !== 'object') return undefined;
   const v = (extra as Record<string, unknown>).reasoning_effort;
   return typeof v === 'string' && v.length > 0 ? v : undefined;
+}
+
+/**
+ * VANGA-LLM-2: читает per-instance backend-override из provider_settings.extra.
+ *   extra.backend            — "claude"|"openai_compat"|"openai"|"qwen"|"stub"
+ *   extra.upstream_base_url  — upstream endpoint для openai_compat (GPU vLLM и т.п.)
+ * Оба опциональны и non-secret (ключи облака сюда НЕ кладём — они в env
+ * inference-service). Undefined если ключа нет / не строка → inference
+ * использует свой env-дефолт (cloud/local/gpu переключается строкой в БД
+ * без рестарта). Возвращает пару для прокидки в HttpLlmClient.
+ */
+function readBackendOverride(
+  extra: Record<string, unknown> | null | undefined,
+): { backend?: string; upstreamBaseUrl?: string } {
+  if (!extra || typeof extra !== 'object') return {};
+  const e = extra as Record<string, unknown>;
+  const backend = typeof e.backend === 'string' && e.backend.length > 0 ? e.backend : undefined;
+  const upstreamBaseUrl =
+    typeof e.upstream_base_url === 'string' && e.upstream_base_url.length > 0
+      ? e.upstream_base_url
+      : undefined;
+  return { backend, upstreamBaseUrl };
 }
 
 /** Singleton LLM-клиент, читающий конфиг из БД с TTL-кэшем. */

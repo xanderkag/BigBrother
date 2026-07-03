@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends
 from ..admission import AdmissionGate, get_admission_gate
 from ..auth import require_api_key
 from ..backends.base import ModelBackend
-from ..deps import get_backend
+from ..deps import get_backend, resolve_backend
 from ..schemas import ExtractRequest, ExtractResponse
 
 router = APIRouter()
@@ -13,9 +13,13 @@ router = APIRouter()
 async def extract(
     body: ExtractRequest,
     _: None = Depends(require_api_key),
-    backend: ModelBackend = Depends(get_backend),
+    default_backend: ModelBackend = Depends(get_backend),
     gate: AdmissionGate = Depends(get_admission_gate),
 ) -> ExtractResponse:
+    # VANGA-LLM-2: per-request backend override on top of the DI default.
+    backend = resolve_backend(
+        body.backend, body.base_url, body.api_key, default=default_backend
+    )
     async with gate.acquire():
         return await backend.extract(
             text=body.text,

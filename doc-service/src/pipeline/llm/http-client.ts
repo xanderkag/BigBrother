@@ -43,6 +43,23 @@ export type HttpLlmClientOptions = {
    * этого ключа не содержит, и поведение не меняется.
    */
   reasoningEffort?: string;
+  /**
+   * VANGA-LLM-2: per-request backend для inference-service
+   * (provider_settings.extra.backend). "stub"|"claude"|"openai"|
+   * "openai_compat"|"qwen". Если задан — клиент кладёт его в body каждого
+   * вызова, и inference-service резолвит этот backend per-request вместо
+   * своего env-синглтона. Позволяет разным инстансам быть в разных
+   * режимах (cloud/local/gpu) без рестарта inference-service. Не задан →
+   * inference использует env-дефолт (поведение как раньше).
+   */
+  backend?: string;
+  /**
+   * VANGA-LLM-2: per-request upstream endpoint для openai_compat-backend
+   * (provider_settings.extra.upstream_base_url). Например один инстанс →
+   * локальный Ollama, другой → GPU-vLLM. Уходит в body как `base_url`.
+   * Не путать с `baseUrl` выше — тот адресует сам inference-service.
+   */
+  upstreamBaseUrl?: string;
 };
 
 export class HttpLlmClient implements LlmClient {
@@ -58,13 +75,29 @@ export class HttpLlmClient implements LlmClient {
 
   private withModel<T extends Record<string, unknown>>(
     body: T,
-  ): T & { model?: string; reasoning_effort?: string } {
-    let out: T & { model?: string; reasoning_effort?: string } = body;
+  ): T & {
+    model?: string;
+    reasoning_effort?: string;
+    backend?: string;
+    base_url?: string;
+  } {
+    let out: T & {
+      model?: string;
+      reasoning_effort?: string;
+      backend?: string;
+      base_url?: string;
+    } = body;
     if (this.opts.model) out = { ...out, model: this.opts.model };
     // reasoning_effort пробрасываем во ВСЕ вызовы клиента (classify/extract/
     // verify/vision) — чтобы reasoning-провайдер был быстрым на любом hop'е.
     if (this.opts.reasoningEffort) {
       out = { ...out, reasoning_effort: this.opts.reasoningEffort };
+    }
+    // VANGA-LLM-2: per-request backend + upstream endpoint. Оба опциональны;
+    // без них inference-service использует свой env-дефолт (как раньше).
+    if (this.opts.backend) out = { ...out, backend: this.opts.backend };
+    if (this.opts.upstreamBaseUrl) {
+      out = { ...out, base_url: this.opts.upstreamBaseUrl };
     }
     return out;
   }

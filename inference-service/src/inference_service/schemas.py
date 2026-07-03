@@ -2,6 +2,27 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+# --- VANGA-LLM-2: per-request backend override ---
+# Mixed into request models that hit the model backend (classify / extract /
+# vision / verify). All optional; when all None the route uses the env
+# singleton (`get_backend()`) — behaviour identical to before.
+#
+#   backend  — "stub"|"claude"|"openai"|"openai_compat"|"qwen". doc-service
+#              resolves it from provider_settings.extra.backend of the calling
+#              instance → cloud/local/gpu switch without restarting the service.
+#   base_url — per-request upstream OpenAI-compatible endpoint (openai_compat):
+#              e.g. one instance → local Ollama, another → GPU vLLM. "" / None
+#              means use the env preset (OPENAI_BASE_URL).
+#   api_key  — per-request upstream key (cloud/claude). None → env preset.
+#
+# Only doc-service reaches these routes (require_api_key), and the values come
+# from admin-controlled provider_settings — same trust level as the doc text.
+class BackendOverrideMixin(BaseModel):
+    backend: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
+
+
 # Six builtin types we have hardcoded prompts/schemas for. Used as a hint in
 # /v1/classify response (модель должна выбрать ровно один из них). На /v1/extract
 # hint — свободная строка (`DocumentTypeSlug`), потому что админ может через
@@ -13,7 +34,7 @@ DocumentTypeSlug = str
 
 # --- /v1/classify ---
 
-class ClassifyRequest(BaseModel):
+class ClassifyRequest(BackendOverrideMixin):
     text: str = Field(min_length=1)
     # Опциональный per-request model override. Если задан — backend использует
     # эту модель вместо OPENAI_MODEL из env (актуально для openai_compatible —
@@ -52,7 +73,7 @@ class ClassifyResponse(BaseModel):
 
 # --- /v1/extract ---
 
-class ExtractRequest(BaseModel):
+class ExtractRequest(BackendOverrideMixin):
     text: str = Field(min_length=1)
     schema_: dict[str, Any] = Field(alias="schema")
     # Свободный slug: builtin или пользовательский из Document Type Registry.
@@ -118,7 +139,7 @@ class ExtractResponse(BaseModel):
 
 # --- /v1/vision-ocr ---
 
-class VisionRequest(BaseModel):
+class VisionRequest(BackendOverrideMixin):
     image_base64: str = Field(min_length=1)
     prompt: str | None = None
     # См. ClassifyRequest.model — для openai_compatible backend'ов с vision.
@@ -160,7 +181,7 @@ class TranscribeResponse(BaseModel):
 
 # --- /v1/verify ---
 
-class VerifyRequest(BaseModel):
+class VerifyRequest(BackendOverrideMixin):
     extracted: dict[str, Any]
     raw_text: str
     # См. ClassifyRequest.reasoning_effort.

@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends
 from ..admission import AdmissionGate, get_admission_gate
 from ..auth import require_api_key
 from ..backends.base import ModelBackend
-from ..deps import get_backend
+from ..deps import get_backend, resolve_backend
 from ..schemas import VisionRequest, VisionResponse
 from ._payload import decode_b64_payload
 
@@ -19,9 +19,13 @@ MAX_IMAGE_BYTES = 25 * 1024 * 1024
 async def vision_ocr(
     body: VisionRequest,
     _: None = Depends(require_api_key),
-    backend: ModelBackend = Depends(get_backend),
+    default_backend: ModelBackend = Depends(get_backend),
     gate: AdmissionGate = Depends(get_admission_gate),
 ) -> VisionResponse:
+    # VANGA-LLM-2: per-request backend override on top of the DI default.
+    backend = resolve_backend(
+        body.backend, body.base_url, body.api_key, default=default_backend
+    )
     image_bytes = decode_b64_payload(
         body.image_base64, field="image_base64", max_bytes=MAX_IMAGE_BYTES
     )
