@@ -8,8 +8,10 @@
  * (ячейки склеивались через `\n`, колонки исчезали) — на ВЭД-доках с
  * таблицами это резало fill (SDS-доки батча 232 давали 4 бизнес-поля).
  * Теперь таблицы отдаются pipe-таблицами (`| a | b |`) — LLM видит
- * «строка × колонка». Картинки в docx на этом шаге отбрасываются
- * (base64 не тащим); vision-fallback для картиночных docx — P1-B.
+ * «строка × колонка». Картинки в HTML не инлайнятся (base64 не тащим), но
+ * собираются в буферы: для картиночных docx (скан в ворде, текста почти нет)
+ * работает vision-fallback (P1-B) — крупные картинки прогоняются через
+ * vision-движок и склеиваются с текстом. Гейтится config.officeImageFallback.
  *
  * Не поддерживает .doc (legacy Word 97-2003 binary) — для них нужен
  * catdoc/antiword (см. doc.ts).
@@ -18,10 +20,14 @@
  *   - Акт к договору №0401-260001.docx (services_act / AKT)
  *   - Спец 1, 5 от ИП.docx (contract_specification)
  */
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import mammothPkg from 'mammoth';
 const mammoth = mammothPkg;
 import type { OcrEngine, OcrInput, OcrResult } from './types.js';
 import { htmlToMarkdown } from './html-to-markdown.js';
+import { config } from '../../config.js';
 
 const DOCX_MIMES = new Set([
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -32,9 +38,30 @@ const DOCX_MIMES = new Set([
 /** Защита от мегабольших docx'ов (огромных контрактов) */
 const MAX_TEXT_CHARS = 500_000; // ~125k tokens — больше Qwen context window
 
+/**
+ * Отбор картинок для vision-fallback (P1-B). Чистая функция — вся рискованная
+ * логика порогов/сортировки/капа здесь, чтобы юнит-тестить без реального docx.
+ * Возвращает буферы ≥ minBytes, крупнейшие первыми, не более max штук.
+ */
+export function selectImagesForVision(
+  images: Array<{ buffer: Buffer }>,
+  minBytes: number,
+  max: number,
+): Buffer[] {
+  return images
+    .map((i) => i.buffer)
+    .filter((b) => b.length >= minBytes)
+    .sort((a, b) => b.length - a.length)
+    .slice(0, Math.max(0, max));
+}
+
 export class DocxEngine implements OcrEngine {
   readonly name = 'docx';
   readonly acceptanceThreshold = 0.5;
+
+  constructor(
+    private readonly visionOcr?: (imagePath: string) => Promise<{ text: string; confidence: number }>,
+  ) {}
 
   supports(input: OcrInput): boolean {
     return DOCX_MIMES.has(input.mimeType);
@@ -48,18 +75,53 @@ export class DocxEngine implements OcrEngine {
     const t0 = Date.now();
     // mammoth.convertToHtml читает docx → HTML (сохраняет структуру таблиц),
     // затем свой конвертер → markdown (таблицы pipe'ами). convertImage-хук
-    // возвращает пустой src, чтобы mammoth НЕ инлайнил base64 картинок
-    // (мы их всё равно отбрасываем; экономим память на картиночных docx).
+    // возвращает пустой src (mammoth НЕ инлайнит base64 в HTML), но
+    // ПАРАЛЛЕЛЬНО собирает буферы картинок в `images` — для vision-fallback
+    // на картиночных docx (P1-B).
+    const images: Array<{ buffer: Buffer; contentType: string }> = [];
     const result = await mammoth.convertToHtml(
       { path: input.filePath },
-      { convertImage: mammoth.images.imgElement(() => Promise.resolve({ src: '' })) },
+      {
+        convertImage: mammoth.images.imgElement(async (image) => {
+          try {
+            const buffer = await image.read();
+            images.push({ buffer, contentType: image.contentType });
+          } catch {
+            /* картинку не прочитать — пропускаем */
+          }
+          return { src: '' };
+        }),
+      },
     );
     let text = htmlToMarkdown(result.value || '');
 
+    // P1-B: картиночный docx (скан в ворде) — текста почти нет. Если vision-хук
+    // задан и текста меньше порога, прогоняем крупные картинки через vision и
+    // склеиваем. Если текста достаточно — картинки не трогаем (не жжём GPU).
+    let confidence = text.length > 0 ? 1.0 : 0.0;
+    if (
+      config.officeImageFallback.enabled &&
+      this.visionOcr &&
+      text.length < config.officeImageFallback.minTextChars
+    ) {
+      const picked = selectImagesForVision(
+        images,
+        config.officeImageFallback.minImageKb * 1024,
+        config.officeImageFallback.maxImages,
+      );
+      if (picked.length > 0) {
+        const visionText = await this.runVision(picked);
+        if (visionText.trim().length > 0) {
+          text = text.length > 0
+            ? `${text}\n\n=== [OCR изображений документа] ===\n${visionText}`
+            : visionText;
+          confidence = 0.7; // vision-derived, ниже точного чтения
+        }
+      }
+    }
+
     // Защита от мегабольших: trim до limit с маркером
-    let truncated = false;
     if (text.length > MAX_TEXT_CHARS) {
-      truncated = true;
       text = text.slice(0, MAX_TEXT_CHARS) +
         `\n\n[TRUNCATED: документ длиннее ${MAX_TEXT_CHARS} chars, обрезан]`;
     }
@@ -67,10 +129,49 @@ export class DocxEngine implements OcrEngine {
     return {
       engine: 'docx',
       text,
-      // confidence 1.0 для непустого — это точное чтение через OOXML XML,
-      // не вероятностное OCR на изображении.
-      confidence: text.length > 0 ? 1.0 : 0.0,
+      // confidence 1.0 для непустого точного чтения OOXML; 0.7 когда текст
+      // получен vision-OCR картинок (вероятностный); 0.0 для пустого.
+      confidence: text.length > 0 ? confidence : 0.0,
       durationMs: Date.now() - t0,
     };
   }
+
+  /**
+   * Пишет буферы во временные файлы, прогоняет каждый через vision-OCR
+   * последовательно, склеивает непустые результаты. Один битый файл не роняет
+   * документ (guard на каждый вызов). Временная папка чистится в finally.
+   */
+  private async runVision(buffers: Buffer[]): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), 'docsvc-docx-img-'));
+    try {
+      const texts: string[] = [];
+      for (let i = 0; i < buffers.length; i++) {
+        const buf = buffers[i]!;
+        const ext = sniffExt(buf);
+        const path = join(dir, `img-${i}.${ext}`);
+        try {
+          await writeFile(path, buf);
+          const r = await this.visionOcr!(path);
+          const t = r.text.trim();
+          if (t.length > 0) texts.push(t);
+        } catch {
+          /* один битый кадр не роняет документ — пропускаем */
+        }
+      }
+      return texts.join('\n\n');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+}
+
+/** Определяет расширение по magic-байтам. PNG / JPEG, иначе .png по умолчанию. */
+function sniffExt(buf: Buffer): string {
+  if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
+    return 'png';
+  }
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return 'jpeg';
+  }
+  return 'png';
 }

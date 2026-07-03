@@ -72,7 +72,7 @@ const engines: readonly OcrEngine[] = [
   // вернут supports()==false. Идут текстовым путём, БЕЗ OCR/vision/cascade.
   // Ставим первыми для cache-locality.
   new XlsxEngine(),
-  new DocxEngine(),
+  new DocxEngine((imagePath) => dynamicLlm.withVisionProvider(() => llm.visionOcr({ imagePath }))),
   // DocEngine — legacy .doc (x-cfb + .doc extension) через catdoc. Идёт после
   // XlsxEngine: оба видят x-cfb, но supports() разводит по расширению файла.
   new DocEngine(),

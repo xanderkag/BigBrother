@@ -216,6 +216,26 @@ const ConfigSchema = z.object({
 
   tesseractLangs: z.string().default('rus+eng'),
 
+  /**
+   * P1-B (OFFICE_FILES_V2 §3): vision-fallback для картиночных офисных файлов.
+   * Docx-обёртка вокруг скана даёт почти пустой текст → LLM извлекает из
+   * огрызка. Когда извлечённого текста < minTextChars И есть крупные картинки
+   * (≥ minImageKb), картинки прогоняются через vision-движок (qwen3-vl:32b) и
+   * склеиваются с текстом. Если текста достаточно — картинки не трогаем (не
+   * жжём GPU зря).
+   *
+   *   - enabled=false → fallback выключен, docx-движок ведёт себя как раньше.
+   *   - minTextChars: порог «текста мало» (< → пробуем vision).
+   *   - minImageKb: логотипы/печати мельче этого не идут в vision.
+   *   - maxImages: потолок числа картинок на документ (latency/GPU-guard).
+   */
+  officeImageFallback: z.object({
+    enabled: z.coerce.boolean().default(true),
+    minTextChars: numberFromEnv(200),
+    minImageKb: numberFromEnv(50),
+    maxImages: numberFromEnv(8),
+  }),
+
   llm: z.object({
     url: z.string().optional(),
     apiKey: z.string().optional(),
@@ -601,6 +621,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       classifyTimeoutMs: env.CLASSIFY_TIMEOUT_MS,
     },
     tesseractLangs: env.TESSERACT_LANGS,
+    officeImageFallback: {
+      enabled: env.OFFICE_IMAGE_FALLBACK_ENABLED,
+      minTextChars: env.OFFICE_MIN_TEXT_CHARS,
+      minImageKb: env.OFFICE_IMAGE_MIN_KB,
+      maxImages: env.OFFICE_IMAGE_MAX_COUNT,
+    },
     llm: {
       url: env.LLM_INFERENCE_URL || undefined,
       apiKey: env.LLM_API_KEY || undefined,
