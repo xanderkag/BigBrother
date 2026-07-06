@@ -26,7 +26,9 @@ import {
   ListFeedbackResponse,
   ListJobsQuery,
   ListJobsResponse,
+  SheetsResponse,
 } from '../types/api-schemas.js';
+import { readSheetsForPreview, isSpreadsheet } from '../pipeline/ocr/xlsx-preview.js';
 import { jobFeedbackRepo, type FeedbackField } from '../storage/job-feedback.js';
 import { extractionCorrectionsRepo } from '../storage/extraction-corrections.js';
 import { diffExtracted } from '../pipeline/normalize/diff-extracted.js';
@@ -941,6 +943,67 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
       });
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       return (reply as any).send(createReadStream(materialized.absolutePath));
+    },
+  );
+
+  // GET /jobs/:id/sheets — превью листов Excel для UI (грид ячеек по листам).
+  // Читает исходный xlsx/xls тем же SheetJS, что и OCR, но отдаёт таблицы —
+  // фронт рисует preview рядом с extracted. 400 если не таблица, 410 после
+  // retention-чистки. Дисплей-капы внутри readSheetsForPreview.
+  r.get(
+    '/jobs/:id/sheets',
+    {
+      schema: {
+        tags: ['jobs'],
+        summary: 'Превью листов Excel (грид ячеек)',
+        description:
+          'Парсит исходный xlsx/xls в грид по листам для preview в UI. ' +
+          '400 если формат не табличный; 410 после retention; 422 если файл битый.',
+        security: [{ bearerAuth: [] }],
+        params: JobIdParam,
+        response: {
+          200: SheetsResponse,
+          400: ErrorResponse,
+          401: ErrorResponse,
+          403: ErrorResponse,
+          404: ErrorResponse,
+          410: ErrorResponse,
+          422: ErrorResponse,
+        },
+      },
+    },
+    async (req, reply) => {
+      const job = await jobsRepo.findById(req.params.id);
+      if (!job) {
+        reply.code(404);
+        return { error: 'job not found' };
+      }
+      if (!(await requireProjectAccess(req, reply, job.project_id))) return reply;
+      if (!isSpreadsheet(job.mime_type, job.file_name)) {
+        reply.code(400);
+        return { error: 'not a spreadsheet document' };
+      }
+      if (!job.file_path) {
+        reply.code(410);
+        return { error: 'file no longer available (retention period elapsed)' };
+      }
+      let materialized: Awaited<ReturnType<typeof fileStorage.materialize>>;
+      try {
+        materialized = await fileStorage.materialize(job.file_path);
+      } catch {
+        reply.code(410);
+        return { error: 'file missing on disk' };
+      }
+      try {
+        const sheets = readSheetsForPreview(materialized.absolutePath);
+        return { file_name: job.file_name, sheets };
+      } catch (err) {
+        req.log.warn({ jobId: job.id, err }, 'failed to parse spreadsheet for preview');
+        reply.code(422);
+        return { error: 'failed to parse spreadsheet' };
+      } finally {
+        await materialized.cleanup().catch(() => undefined);
+      }
     },
   );
 

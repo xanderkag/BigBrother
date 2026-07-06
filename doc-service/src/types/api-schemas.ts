@@ -269,6 +269,20 @@ export const ListJobsQuery = z.object({
   offset: z.coerce.number().int().min(0).default(0),
 });
 
+// GET /jobs/:id/sheets — превью листов Excel (грид ячеек по листам).
+export const SheetsResponse = z.object({
+  file_name: z.string(),
+  sheets: z.array(
+    z.object({
+      name: z.string(),
+      rows: z.array(z.array(z.string())),
+      totalRows: z.number(),
+      totalCols: z.number(),
+      truncated: z.boolean(),
+    }),
+  ),
+});
+
 export const ListJobsResponse = z.object({
   items: z.array(Job),
   limit: z.number(),
