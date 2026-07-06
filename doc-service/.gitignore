@@ -7,3 +7,7 @@ data/
 .DS_Store
 coverage/
 .vitest-cache/
+
+# graphify knowledge-graph outputs (local, reusable via /graphify query)
+doc-service/graphify-out/
+graphify-out/
