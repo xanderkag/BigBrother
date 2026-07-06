@@ -21,6 +21,10 @@ export const jobsKeys = {
 export interface ListJobsFilters {
   status?: string;
   document_type?: string;
+  /** Несколько типов через запятую (OR): `invoice,factInvoice,UPD`. */
+  document_types?: string;
+  /** Формат(ы) файла через запятую (OR): pdf|excel|word|image|xml|other. */
+  format?: string;
   organization_id?: string;
   project_id?: string;
   from?: string;

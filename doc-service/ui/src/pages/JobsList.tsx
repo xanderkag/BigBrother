@@ -1,10 +1,11 @@
-import { useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import { Link, useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { useQueries, useQueryClient } from '@tanstack/react-query';
 import { useJobsList, useApproveJob, useReprocessJob, jobsKeys } from '@/queries/jobs';
 import { useDocumentTypes } from '@/queries/documentTypes';
 import { api } from '@/lib/api';
 import ConfidenceBar from '@/components/ConfidenceBar';
+import FilterDropdown from '@/components/FilterDropdown';
 import TierBadge from '@/components/TierBadge';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import BulkResultBanner from '@/components/BulkResultBanner';
@@ -17,17 +18,20 @@ import {
   shortIdSplit,
 } from '@/lib/format';
 import { isSynthetic, matchesOrigin, type DocOrigin } from '@/lib/synthetic';
+import { typeGroupOf, TYPE_GROUPS, type TypeGroup } from '@/lib/type-groups';
 import type { JobNavState } from '@/lib/job-nav';
-import type { DocumentTypeTier } from '@/queries/documentTypes';
+import type { DocumentTypeEntry, DocumentTypeTier } from '@/queries/documentTypes';
 import type { Job, JobStatus, Classification } from '@/lib/types';
 import { EmptyState, SkeletonTable } from '@/components/Skeleton';
 
 /**
  * JobsList — таблица всех загруженных документов.
  *
- * UX-design (raund 1, 2026-05-19):
+ * UX-design (raund 1, 2026-05-19; raund 2 — шапка фильтров, 2026-07-06):
  *   - Tab-стрипы со счётчиками вместо <select> для статуса
- *   - Подфильтр с document_type как отдельный strip
+ *   - Строка фильтров: поиск + дропдауны «Тип документа» (мультивыбор,
+ *     группы, поиск), «Период» (from/to), «Формат», «Ещё» (источник);
+ *     ниже — чипы выбранных фильтров и пресеты
  *   - Расширенный набор колонок: FILE / ID / TYPE / STATUS /
  *     CONFIDENCE-bar / TOTAL / VAT / ISSUES / ENGINE / AGE
  *   - ID — split-формат (`a8f3…91c2`) для скана глазами
@@ -58,21 +62,43 @@ export default function JobsListPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const location = useLocation();
   const status = searchParams.get('status') ?? '';
-  const documentType = searchParams.get('document_type') ?? '';
   const q = searchParams.get('q') ?? '';
   const origin = (searchParams.get('origin') as DocOrigin) || 'all';
   const offset = Number(searchParams.get('offset') ?? 0);
+  const typesParam = searchParams.get('document_types') ?? '';
+  const formatParam = searchParams.get('format') ?? '';
+  const period = searchParams.get('period') ?? '';
+  const fromParam = searchParams.get('from') ?? '';
+  const toParam = searchParams.get('to') ?? '';
+
+  const selectedTypes = useMemo(
+    () => typesParam.split(',').map((s) => s.trim()).filter(Boolean),
+    [typesParam],
+  );
+  const selectedFormats = useMemo(
+    () => formatParam.split(',').map((s) => s.trim()).filter(Boolean),
+    [formatParam],
+  );
+  // Период → серверные from/to (ISO). Пресеты считаем от начала дня,
+  // чтобы queryKey был стабилен в течение суток.
+  const range = useMemo(
+    () => periodToRange(period, fromParam, toParam),
+    [period, fromParam, toParam],
+  );
 
   // Главный фильтрованный список — то что показывается в таблице.
   const filters = useMemo(
     () => ({
       status: status || undefined,
-      document_type: documentType || undefined,
+      document_types: selectedTypes.length > 0 ? selectedTypes.join(',') : undefined,
+      format: selectedFormats.length > 0 ? selectedFormats.join(',') : undefined,
+      from: range.from,
+      to: range.to,
       q: q || undefined,
       limit: PAGE_SIZE,
       offset,
     }),
-    [status, documentType, q, offset],
+    [status, selectedTypes, selectedFormats, range, q, offset],
   );
 
   const { data, isLoading, error, refetch, isFetching } = useJobsList(filters);
@@ -84,6 +110,11 @@ export default function JobsListPage() {
     }
     return m;
   }, [docTypes]);
+  const nameBySlug = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const t of docTypes?.items ?? []) m.set(t.slug, t.display_name || t.slug);
+    return m;
+  }, [docTypes]);
 
   // Счётчики по статусам — отдельные параллельные запросы limit=1
   // (нам нужен только response.total). На каждый refetchInterval 15s,
@@ -92,10 +123,16 @@ export default function JobsListPage() {
   //
   // status='in_progress' — синтетический агрегат, складываем processing
   // и pending в один счётчик (UI-понятие «в работе»).
-  // Counter queries учитывают активный quick-search q — иначе бы tabs
-  // показывали global total «1284 jobs» даже когда табличка отфильтрована
-  // по «invoice» и показывает 3 строки. Это сбивает.
-  const baseFilters = { document_type: documentType || undefined, q: q || undefined } as const;
+  // Counter queries учитывают активные фильтры (типы, формат, период, q) —
+  // иначе бы tabs показывали global total «1284 jobs» даже когда табличка
+  // отфильтрована и показывает 3 строки. Это сбивает.
+  const baseFilters = {
+    document_types: filters.document_types,
+    format: filters.format,
+    from: filters.from,
+    to: filters.to,
+    q: q || undefined,
+  } as const;
   const counterQueries = useQueries({
     queries: [
       { key: '', extra: {} },
@@ -105,7 +142,15 @@ export default function JobsListPage() {
       { key: 'processing', extra: { status: 'processing' } },
       { key: 'pending', extra: { status: 'pending' } },
     ].map(({ key, extra }) => ({
-      queryKey: ['jobs-count', key, documentType, q],
+      queryKey: [
+        'jobs-count',
+        key,
+        typesParam,
+        formatParam,
+        range.from ?? '',
+        range.to ?? '',
+        q,
+      ],
       queryFn: async () => {
         const params = new URLSearchParams();
         const merged = { ...baseFilters, ...extra, limit: 1 };
@@ -132,13 +177,50 @@ export default function JobsListPage() {
     in_progress: inProgressSum,
   };
 
-  const updateFilter = (key: string, value: string) => {
-    const next = new URLSearchParams(searchParams);
-    if (value) next.set(key, value);
-    else next.delete(key);
-    next.delete('offset');
-    setSearchParams(next);
+  const updateParams = useCallback(
+    (patch: Record<string, string | null>) => {
+      const next = new URLSearchParams(searchParams);
+      for (const [key, value] of Object.entries(patch)) {
+        if (value) next.set(key, value);
+        else next.delete(key);
+      }
+      next.delete('offset');
+      setSearchParams(next);
+    },
+    [searchParams, setSearchParams],
+  );
+  const updateFilter = (key: string, value: string) =>
+    updateParams({ [key]: value || null });
+
+  // ─── Строка фильтров: открытое меню + черновик мультивыбора типов ──
+  const [openMenu, setOpenMenu] = useState<null | 'type' | 'period' | 'format' | 'more'>(null);
+  const [typeDraft, setTypeDraft] = useState<string[]>([]);
+  const closeMenu = useCallback(() => setOpenMenu(null), []);
+  const toggleMenu = (menu: 'type' | 'period' | 'format' | 'more') => {
+    if (openMenu === menu) {
+      setOpenMenu(null);
+      return;
+    }
+    if (menu === 'type') setTypeDraft(selectedTypes);
+    setOpenMenu(menu);
   };
+  const toggleFormat = (key: string) => {
+    const next = selectedFormats.includes(key)
+      ? selectedFormats.filter((f) => f !== key)
+      : [...selectedFormats, key];
+    updateParams({ format: next.join(',') || null });
+  };
+  const periodLabel = periodChipLabel(period, fromParam, toParam);
+  const hasFilters = !!(
+    status ||
+    q ||
+    selectedTypes.length > 0 ||
+    selectedFormats.length > 0 ||
+    period ||
+    fromParam ||
+    toParam ||
+    origin !== 'all'
+  );
 
   const updateOffset = (newOffset: number) => {
     const next = new URLSearchParams(searchParams);
@@ -347,62 +429,174 @@ export default function JobsListPage() {
         })}
       </div>
 
-      {/* Origin filter strip — real / synth / all */}
-      <div className="flex flex-wrap items-center gap-1 text-xs">
-        <span className="px-2 py-1 uppercase tracking-wider text-slate-500 dark:text-slate-400">
-          источник:
-        </span>
-        {(['all', 'real', 'synth'] as DocOrigin[]).map((o) => (
-          <button
-            key={o}
-            type="button"
-            onClick={() => updateFilter('origin', o === 'all' ? '' : o)}
-            className={`rounded-sm px-2 py-1 uppercase tracking-wider transition ${
-              origin === o
-                ? 'bg-indigo-600 dark:bg-indigo-500 text-white'
-                : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
-            }`}
-          >
-            {o === 'all' ? 'все' : o === 'real' ? 'реальные' : 'синтетика'}
-          </button>
-        ))}
-        <span className="ml-2 font-mono text-[10px] text-slate-400 dark:text-slate-500">
-          на странице: {realOnPage} real / {synthOnPage} synth
-        </span>
+      {/* Строка фильтров: поиск + дропдауны Тип/Период/Формат/Ещё */}
+      <div className="flex flex-wrap items-center gap-2">
+        <JobsSearchInput value={q} onChange={(v) => updateParams({ q: v || null })} />
+        <FilterDropdown
+          label="Тип документа"
+          badge={selectedTypes.length}
+          active={selectedTypes.length > 0}
+          open={openMenu === 'type'}
+          onToggle={() => toggleMenu('type')}
+          onClose={closeMenu}
+          widthClass="w-80"
+        >
+          <TypeFilterPanel
+            items={docTypes?.items ?? []}
+            draft={typeDraft}
+            onDraftChange={setTypeDraft}
+            onReset={() => setTypeDraft([])}
+            onApply={() => {
+              updateParams({ document_types: typeDraft.join(',') || null });
+              closeMenu();
+            }}
+          />
+        </FilterDropdown>
+        <FilterDropdown
+          label="Период"
+          active={!!(period || fromParam || toParam)}
+          open={openMenu === 'period'}
+          onToggle={() => toggleMenu('period')}
+          onClose={closeMenu}
+          widthClass="w-64"
+        >
+          <PeriodFilterPanel
+            period={period}
+            from={fromParam}
+            to={toParam}
+            onPick={(key) => {
+              updateParams({ period: key || null, from: null, to: null });
+              closeMenu();
+            }}
+            onCustom={(from, to) => {
+              updateParams({ period: null, from: from || null, to: to || null });
+              closeMenu();
+            }}
+          />
+        </FilterDropdown>
+        <FilterDropdown
+          label="Формат"
+          badge={selectedFormats.length}
+          active={selectedFormats.length > 0}
+          open={openMenu === 'format'}
+          onToggle={() => toggleMenu('format')}
+          onClose={closeMenu}
+          widthClass="w-48"
+        >
+          <FormatFilterPanel selected={selectedFormats} onToggle={toggleFormat} />
+        </FilterDropdown>
+        <FilterDropdown
+          label="Ещё"
+          active={origin !== 'all'}
+          open={openMenu === 'more'}
+          onToggle={() => toggleMenu('more')}
+          onClose={closeMenu}
+          align="right"
+          widthClass="w-60"
+        >
+          <div className="px-1 text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">
+            Источник
+          </div>
+          <div className="mt-1 space-y-0.5">
+            {(['all', 'real', 'synth'] as DocOrigin[]).map((o) => {
+              const activeOrigin = origin === o;
+              return (
+                <button
+                  key={o}
+                  type="button"
+                  onClick={() => updateParams({ origin: o === 'all' ? null : o })}
+                  className={`flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-left text-sm transition ${
+                    activeOrigin
+                      ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300'
+                      : 'text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  {o === 'all' ? 'Все' : o === 'real' ? 'Реальные' : 'Синтетика'}
+                  {activeOrigin && <span aria-hidden="true">✓</span>}
+                </button>
+              );
+            })}
+          </div>
+          <p className="mt-2 border-t border-slate-200 px-1 pt-2 font-mono text-[10px] text-slate-400 dark:border-slate-700 dark:text-slate-500">
+            на странице: {realOnPage} real / {synthOnPage} synth
+          </p>
+        </FilterDropdown>
       </div>
 
-      {/* Document-type filter strip */}
-      {docTypes && docTypes.items.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1 text-xs">
-          <span className="px-2 py-1 uppercase tracking-wider text-slate-500 dark:text-slate-400">тип:</span>
+      {/* Чипы выбранных фильтров */}
+      {(selectedTypes.length > 0 ||
+        selectedFormats.length > 0 ||
+        periodLabel ||
+        origin !== 'all') && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {selectedTypes.map((slug) => (
+            <FilterChip
+              key={slug}
+              label={nameBySlug.get(slug) ?? slug}
+              onRemove={() =>
+                updateParams({
+                  document_types:
+                    selectedTypes.filter((s) => s !== slug).join(',') || null,
+                })
+              }
+            />
+          ))}
+          {selectedFormats.map((f) => (
+            <FilterChip
+              key={f}
+              label={FORMAT_LABELS[f] ?? f}
+              onRemove={() =>
+                updateParams({
+                  format: selectedFormats.filter((x) => x !== f).join(',') || null,
+                })
+              }
+            />
+          ))}
+          {periodLabel && (
+            <FilterChip
+              label={periodLabel}
+              onRemove={() => updateParams({ period: null, from: null, to: null })}
+            />
+          )}
+          {origin !== 'all' && (
+            <FilterChip
+              label={origin === 'real' ? 'Реальные' : 'Синтетика'}
+              onRemove={() => updateParams({ origin: null })}
+            />
+          )}
           <button
             type="button"
-            onClick={() => updateFilter('document_type', '')}
-            className={`rounded-sm px-2 py-1 uppercase tracking-wider transition ${
-              !documentType
-                ? 'bg-indigo-600 dark:bg-indigo-500 text-white'
-                : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
-            }`}
+            onClick={() =>
+              updateParams({
+                document_types: null,
+                format: null,
+                period: null,
+                from: null,
+                to: null,
+                origin: null,
+              })
+            }
+            className="ml-1 text-xs text-slate-500 underline-offset-2 hover:text-slate-700 hover:underline dark:text-slate-400 dark:hover:text-slate-200"
           >
-            все
+            сбросить всё
           </button>
-          {docTypes.items.map((t) => (
-            <button
-              key={t.slug}
-              type="button"
-              onClick={() => updateFilter('document_type', t.slug)}
-              className={`rounded-sm px-2 py-1 uppercase tracking-wider transition ${
-                documentType === t.slug
-                  ? 'bg-indigo-600 dark:bg-indigo-500 text-white'
-                  : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
-              }`}
-              title={t.display_name}
-            >
-              {t.slug}
-            </button>
-          ))}
         </div>
       )}
+
+      {/* Пресеты — готовые наборы фильтров одним кликом (замещают текущие) */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        {PRESETS.map((p) => (
+          <button
+            key={p.label}
+            type="button"
+            onClick={() => setSearchParams(new URLSearchParams(p.params))}
+            className="inline-flex items-center gap-1 rounded-full border border-slate-200 px-2.5 py-1 text-xs text-slate-600 transition hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-700 dark:border-slate-700 dark:text-slate-400 dark:hover:border-indigo-700 dark:hover:bg-indigo-900/30 dark:hover:text-indigo-300"
+          >
+            <span aria-hidden="true">{p.icon}</span>
+            {p.label}
+          </button>
+        ))}
+      </div>
 
       {/* Error */}
       {error && (
@@ -417,12 +611,12 @@ export default function JobsListPage() {
       ) : !isLoading && items.length === 0 ? (
         <EmptyState
           title={
-            status || documentType
+            hasFilters
               ? 'По текущим фильтрам ничего не найдено'
               : 'Документов ещё нет'
           }
           description={
-            status || documentType
+            hasFilters
               ? 'Попробуйте сбросить фильтры или изменить параметры поиска.'
               : 'Загрузите первый документ — система определит тип, извлечёт поля и покажет результат.'
           }
@@ -438,7 +632,7 @@ export default function JobsListPage() {
             </svg>
           }
           cta={
-            status || documentType ? (
+            hasFilters ? (
               <button
                 type="button"
                 className="btn-secondary"
@@ -587,6 +781,373 @@ export default function JobsListPage() {
         onCancel={() => setConfirmKind(null)}
       />
     </div>
+  );
+}
+
+// ─── Строка фильтров: константы и помощники ────────────────────────
+
+const PERIOD_OPTIONS = [
+  { key: '', label: 'Всё время' },
+  { key: 'today', label: 'Сегодня' },
+  { key: '7d', label: '7 дней' },
+  { key: '30d', label: '30 дней' },
+] as const;
+
+const FORMAT_OPTIONS = [
+  { key: 'pdf', label: 'PDF' },
+  { key: 'excel', label: 'Excel' },
+  { key: 'word', label: 'Word' },
+  { key: 'image', label: 'Фото' },
+  { key: 'xml', label: 'XML' },
+  { key: 'other', label: 'Прочее' },
+] as const;
+
+const FORMAT_LABELS: Record<string, string> = Object.fromEntries(
+  FORMAT_OPTIONS.map((o) => [o.key, o.label]),
+);
+
+/** Пресеты — готовый набор query-параметров, замещает текущие фильтры. */
+const PRESETS: { icon: string; label: string; params: Record<string, string> }[] = [
+  { icon: '⚑', label: 'На проверку сегодня', params: { status: 'needs_review', period: 'today' } },
+  {
+    icon: '₽',
+    label: 'Счета за неделю',
+    params: {
+      document_types: 'invoice,factInvoice,UPD,commercial_invoice,proforma_invoice',
+      period: '7d',
+    },
+  },
+  { icon: '⚠', label: 'Ошибки разбора', params: { status: 'failed' } },
+  { icon: '▤', label: 'Excel и Word', params: { format: 'excel,word' } },
+];
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function startOfDayIso(daysBack: number): string {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - daysBack);
+  return d.toISOString();
+}
+
+/**
+ * URL-состояние периода → серверные from/to (ISO 8601 UTC, как требует
+ * ListJobsQuery). Пресеты (`period=today|7d|30d`) считаются от начала
+ * локального дня; свой диапазон (`from`/`to` = YYYY-MM-DD) — включительно
+ * с обеих сторон (to → конец дня).
+ */
+function periodToRange(
+  period: string,
+  from: string,
+  to: string,
+): { from?: string; to?: string } {
+  if (period === 'today') return { from: startOfDayIso(0) };
+  if (period === '7d') return { from: startOfDayIso(7) };
+  if (period === '30d') return { from: startOfDayIso(30) };
+  const r: { from?: string; to?: string } = {};
+  if (DATE_RE.test(from)) r.from = new Date(`${from}T00:00:00`).toISOString();
+  if (DATE_RE.test(to)) r.to = new Date(`${to}T23:59:59.999`).toISOString();
+  return r;
+}
+
+function periodChipLabel(period: string, from: string, to: string): string | null {
+  const opt = PERIOD_OPTIONS.find((p) => p.key !== '' && p.key === period);
+  if (opt) return opt.label;
+  if (from || to) {
+    const fmt = (d: string) => (DATE_RE.test(d) ? d.split('-').reverse().join('.') : '…');
+    return `${from ? fmt(from) : '…'} — ${to ? fmt(to) : '…'}`;
+  }
+  return null;
+}
+
+/**
+ * Поиск в строке фильтров. Дублирует глобальный SearchBox из TopBar:
+ * оба синкаются через URL `?q=`, локальный стейт + debounce 300ms.
+ */
+function JobsSearchInput({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const [local, setLocal] = useState(value);
+  useEffect(() => setLocal(value), [value]);
+  useEffect(() => {
+    const trimmed = local.trim();
+    if (trimmed === value) return;
+    const t = setTimeout(() => onChange(trimmed), 300);
+    return () => clearTimeout(t);
+  }, [local, value, onChange]);
+
+  return (
+    <div className="relative flex min-w-[220px] flex-1 items-center">
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 20 20"
+        fill="currentColor"
+        className="pointer-events-none absolute left-2.5 h-4 w-4 text-slate-400 dark:text-slate-500"
+        aria-hidden="true"
+      >
+        <path
+          fillRule="evenodd"
+          d="M9 3.5a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11ZM2 9a7 7 0 1 1 12.452 4.391l3.328 3.329a.75.75 0 1 1-1.06 1.06l-3.329-3.328A7 7 0 0 1 2 9Z"
+          clipRule="evenodd"
+        />
+      </svg>
+      <input
+        type="search"
+        value={local}
+        onChange={(e) => setLocal(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') setLocal('');
+        }}
+        placeholder="Поиск: имя файла, ID, ИНН…"
+        aria-label="Поиск по документам"
+        className="w-full rounded-sm border border-slate-200 bg-white py-1.5 pl-8 pr-2 text-sm text-slate-800 placeholder:text-slate-400 hover:border-slate-300 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:placeholder:text-slate-500 dark:hover:border-slate-600 dark:focus:border-indigo-400 dark:focus:ring-indigo-400"
+      />
+    </div>
+  );
+}
+
+/**
+ * Панель «Тип документа»: поиск по русскому названию и слагу, группы
+ * из lib/type-groups (типы вне мапы — «Прочее»), чекбоксы-мультивыбор.
+ * Черновик живёт на странице; URL меняется только по «Применить».
+ */
+function TypeFilterPanel({
+  items,
+  draft,
+  onDraftChange,
+  onApply,
+  onReset,
+}: {
+  items: DocumentTypeEntry[];
+  draft: string[];
+  onDraftChange: (next: string[]) => void;
+  onApply: () => void;
+  onReset: () => void;
+}) {
+  const [search, setSearch] = useState('');
+  const grouped = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    const filtered = needle
+      ? items.filter(
+          (t) =>
+            (t.display_name ?? '').toLowerCase().includes(needle) ||
+            t.slug.toLowerCase().includes(needle),
+        )
+      : items;
+    const buckets = new Map<TypeGroup, DocumentTypeEntry[]>();
+    for (const t of filtered) {
+      const g = typeGroupOf(t.slug);
+      const arr = buckets.get(g);
+      if (arr) arr.push(t);
+      else buckets.set(g, [t]);
+    }
+    return TYPE_GROUPS.filter((g) => buckets.has(g)).map((g) => ({
+      group: g,
+      types: buckets.get(g)!,
+    }));
+  }, [items, search]);
+
+  const toggle = (slug: string) => {
+    onDraftChange(
+      draft.includes(slug) ? draft.filter((s) => s !== slug) : [...draft, slug],
+    );
+  };
+
+  return (
+    <div className="flex flex-col">
+      <input
+        type="search"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="Найти тип…"
+        aria-label="Поиск по типам документов"
+        autoFocus
+        className="mb-2 w-full rounded-sm border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-800 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:placeholder:text-slate-500"
+      />
+      <div className="max-h-72 space-y-3 overflow-y-auto pr-1">
+        {grouped.length === 0 && (
+          <p className="px-1 py-2 text-sm text-slate-500 dark:text-slate-400">
+            Ничего не найдено
+          </p>
+        )}
+        {grouped.map(({ group, types }) => (
+          <div key={group}>
+            <div className="mb-1 flex items-center justify-between px-1 text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">
+              <span>{group}</span>
+              <span className="font-mono">{types.length}</span>
+            </div>
+            {types.map((t) => (
+              <label
+                key={t.slug}
+                className="flex cursor-pointer items-center gap-2 rounded-sm px-1 py-1 text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800"
+              >
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded-sm border-slate-300 text-indigo-600 focus:ring-1 focus:ring-indigo-500 dark:border-slate-600 dark:bg-slate-700"
+                  checked={draft.includes(t.slug)}
+                  onChange={() => toggle(t.slug)}
+                />
+                <span className="truncate" title={t.slug}>
+                  {t.display_name || t.slug}
+                </span>
+              </label>
+            ))}
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 flex items-center justify-between gap-2 border-t border-slate-200 pt-2 dark:border-slate-700">
+        <button
+          type="button"
+          className="rounded-sm px-2 py-1 text-xs uppercase tracking-wider text-slate-500 hover:bg-slate-100 disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-800"
+          disabled={draft.length === 0}
+          onClick={onReset}
+        >
+          Сбросить
+        </button>
+        <button
+          type="button"
+          className="btn-primary px-3 py-1.5 text-xs"
+          onClick={onApply}
+        >
+          Применить
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Панель «Период»: быстрые пресеты применяются сразу, свой диапазон —
+ * два date-инпута + «Применить». В URL: `period=` либо `from`/`to`
+ * (YYYY-MM-DD, взаимоисключимо с period).
+ */
+function PeriodFilterPanel({
+  period,
+  from,
+  to,
+  onPick,
+  onCustom,
+}: {
+  period: string;
+  from: string;
+  to: string;
+  onPick: (key: string) => void;
+  onCustom: (from: string, to: string) => void;
+}) {
+  const [draftFrom, setDraftFrom] = useState(from);
+  const [draftTo, setDraftTo] = useState(to);
+  const customActive = !period && !!(from || to);
+  const dateCls =
+    'w-full rounded-sm border border-slate-200 bg-white px-2 py-1 text-sm text-slate-800 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 [color-scheme:light] dark:[color-scheme:dark]';
+
+  return (
+    <div className="space-y-1 text-sm">
+      {PERIOD_OPTIONS.map((p) => {
+        const active =
+          p.key === '' ? !period && !from && !to : period === p.key;
+        return (
+          <button
+            key={p.key || 'all'}
+            type="button"
+            onClick={() => onPick(p.key)}
+            className={`flex w-full items-center justify-between rounded-sm px-2 py-1.5 text-left transition ${
+              active
+                ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300'
+                : 'text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800'
+            }`}
+          >
+            {p.label}
+            {active && <span aria-hidden="true">✓</span>}
+          </button>
+        );
+      })}
+      <div className="border-t border-slate-200 pt-2 dark:border-slate-700">
+        <div
+          className={`mb-1 px-2 text-xs uppercase tracking-wider ${
+            customActive
+              ? 'text-indigo-600 dark:text-indigo-400'
+              : 'text-slate-500 dark:text-slate-400'
+          }`}
+        >
+          Свой диапазон
+        </div>
+        <div className="flex items-center gap-2 px-2">
+          <input
+            type="date"
+            value={draftFrom}
+            onChange={(e) => setDraftFrom(e.target.value)}
+            aria-label="С даты"
+            className={dateCls}
+          />
+          <span className="text-slate-400 dark:text-slate-500">—</span>
+          <input
+            type="date"
+            value={draftTo}
+            onChange={(e) => setDraftTo(e.target.value)}
+            aria-label="По дату"
+            className={dateCls}
+          />
+        </div>
+        <div className="mt-2 px-2 pb-1">
+          <button
+            type="button"
+            className="btn-primary w-full px-3 py-1.5 text-xs"
+            disabled={!draftFrom && !draftTo}
+            onClick={() => onCustom(draftFrom, draftTo)}
+          >
+            Применить
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Панель «Формат»: чекбоксы, применяются сразу (URL `format=excel,word`). */
+function FormatFilterPanel({
+  selected,
+  onToggle,
+}: {
+  selected: string[];
+  onToggle: (key: string) => void;
+}) {
+  return (
+    <div className="space-y-0.5">
+      {FORMAT_OPTIONS.map((f) => (
+        <label
+          key={f.key}
+          className="flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800"
+        >
+          <input
+            type="checkbox"
+            className="h-4 w-4 rounded-sm border-slate-300 text-indigo-600 focus:ring-1 focus:ring-indigo-500 dark:border-slate-600 dark:bg-slate-700"
+            checked={selected.includes(f.key)}
+            onChange={() => onToggle(f.key)}
+          />
+          {f.label}
+        </label>
+      ))}
+    </div>
+  );
+}
+
+function FilterChip({ label, onRemove }: { label: string; onRemove: () => void }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-sm bg-indigo-100 py-0.5 pl-2 pr-1 text-xs text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-200">
+      {label}
+      <button
+        type="button"
+        onClick={onRemove}
+        className="rounded-sm px-0.5 hover:bg-indigo-200 dark:hover:bg-indigo-800/60"
+        aria-label={`Убрать фильтр ${label}`}
+      >
+        ✕
+      </button>
+    </span>
   );
 }
 
