@@ -214,9 +214,42 @@ export const ListCorrectionsResponse = z.object({
 
 // --- GET /jobs (list with filters) ---
 
+/**
+ * Формат исходного файла — фильтр «Формат» в журнале. Маппится на
+ * mime-предикаты в storage/jobs.ts (buildJobsFilter). `x-cfb` (OLE-контейнер,
+ * общий для legacy .xls и .doc) разводится по расширению file_name — та же
+ * логика, что у роутинга OCR-движков.
+ */
+export const FILE_FORMATS = ['pdf', 'excel', 'word', 'image', 'xml', 'other'] as const;
+export type FileFormat = (typeof FILE_FORMATS)[number];
+
 export const ListJobsQuery = z.object({
   status: z.enum(JOB_STATUSES).optional(),
   document_type: DocumentTypeSlugSchema.optional(),
+  /**
+   * Несколько типов сразу (OR), через запятую: `invoice,factInvoice,UPD`.
+   * Дополняет одиночный document_type (back-compat); если клиент задал оба —
+   * применяются оба предиката (AND), делать так не стоит.
+   */
+  document_types: z
+    .string()
+    .trim()
+    .min(1)
+    .max(2000)
+    .transform((s) => s.split(',').map((t) => t.trim()).filter((t) => t.length > 0))
+    .pipe(z.array(DocumentTypeSlugSchema).min(1).max(60))
+    .optional()
+    .describe('Список slug-типов через запятую (OR)'),
+  /** Формат(ы) исходного файла, через запятую (OR): `excel,word`. */
+  format: z
+    .string()
+    .trim()
+    .min(1)
+    .max(120)
+    .transform((s) => s.split(',').map((t) => t.trim()).filter((t) => t.length > 0))
+    .pipe(z.array(z.enum(FILE_FORMATS)).min(1).max(FILE_FORMATS.length))
+    .optional()
+    .describe('Формат(ы) исходного файла через запятую (OR)'),
   organization_id: z.string().uuid().optional(),
   project_id: z.string().uuid().optional(),
   from: z.string().datetime().optional().describe('ISO 8601, нижняя граница created_at'),

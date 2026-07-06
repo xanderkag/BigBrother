@@ -200,6 +200,10 @@ export type CreateJobInput = {
 export type ListFilters = {
   status?: JobStatus;
   document_type?: DocumentTypeSlug;
+  /** Несколько типов сразу (OR). Приходит из query `document_types` (comma-separated). */
+  document_types?: DocumentTypeSlug[];
+  /** Формат(ы) исходного файла (OR) — см. FORMAT_PREDICATES ниже. */
+  format?: Array<'pdf' | 'excel' | 'word' | 'image' | 'xml' | 'other'>;
   from?: string;
   to?: string;
   /** Tenant-фильтр. Если не задан — super_admin видит всё. */
@@ -228,6 +232,28 @@ export type ProcessingUpdate = {
    * вызовам не затирать ранее сохранённый trace, если новый run не дёргал LLM.
    */
   llmCall?: LlmCallTrace | null;
+};
+
+/**
+ * SQL-предикаты фильтра «Формат» (ListFilters.format). Статические строки —
+ * пользовательский ввод сюда не попадает (format прошёл z.enum). `x-cfb`
+ * (OLE-контейнер, общий для legacy .xls и .doc) разводится по расширению
+ * file_name — та же логика, что у роутинга OCR-движков (xlsx.ts / doc.ts).
+ * `other` — всё, что не подошло ни под один формат (честное дополнение).
+ */
+const EXCEL_PRED = `(mime_type IN ('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet','application/vnd.ms-excel','application/vnd.ms-excel.sheet.macroEnabled.12') OR (mime_type = 'application/x-cfb' AND file_name ~* '\\.(xls|xlsm|xlsb|xlt)$'))`;
+const WORD_PRED = `(mime_type IN ('application/vnd.openxmlformats-officedocument.wordprocessingml.document','application/msword') OR (mime_type = 'application/x-cfb' AND file_name ~* '\\.doc$'))`;
+const PDF_PRED = `mime_type = 'application/pdf'`;
+const IMAGE_PRED = `mime_type LIKE 'image/%'`;
+const XML_PRED = `mime_type IN ('application/xml','text/xml')`;
+
+const FORMAT_PREDICATES: Record<NonNullable<ListFilters['format']>[number], string> = {
+  pdf: PDF_PRED,
+  excel: EXCEL_PRED,
+  word: WORD_PRED,
+  image: IMAGE_PRED,
+  xml: XML_PRED,
+  other: `NOT (${PDF_PRED} OR ${EXCEL_PRED} OR ${WORD_PRED} OR ${IMAGE_PRED} OR ${XML_PRED})`,
 };
 
 class JobsRepo {
@@ -947,6 +973,15 @@ class JobsRepo {
     if (filters.document_type) {
       params.push(filters.document_type);
       where.push(`document_type = $${params.length}`);
+    }
+    if (filters.document_types && filters.document_types.length > 0) {
+      params.push(filters.document_types);
+      where.push(`document_type = ANY($${params.length})`);
+    }
+    if (filters.format && filters.format.length > 0) {
+      // Статические предикаты (пользовательский ввод в SQL не попадает —
+      // значения прошли z.enum). Несколько форматов — OR.
+      where.push(`(${filters.format.map((f) => FORMAT_PREDICATES[f]).join(' OR ')})`);
     }
     if (filters.organization_id) {
       params.push(filters.organization_id);
