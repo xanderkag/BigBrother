@@ -5,6 +5,21 @@ const numberFromEnv = (def: number) =>
     .preprocess((v) => (v === undefined || v === '' ? undefined : Number(v)), z.number())
     .default(def);
 
+// Булев флаг из env. НЕ `z.coerce.boolean()` — тот трактует ЛЮБУЮ непустую
+// строку как true, включая "false" → нельзя выключить дефолтно-включённый флаг
+// (был баг: OFFICE_IMAGE_FALLBACK_ENABLED=false не выключал vision-fallback).
+// Здесь: не задан/"" → дефолт; "false"/"0"/"no"/"off" (без регистра) → false;
+// всё прочее непустое → true.
+const booleanFromEnv = (def: boolean) =>
+  z
+    .preprocess((v) => {
+      if (v === undefined || v === '') return undefined;
+      if (typeof v === 'boolean') return v;
+      const s = String(v).trim().toLowerCase();
+      return !(s === 'false' || s === '0' || s === 'no' || s === 'off');
+    }, z.boolean())
+    .default(def);
+
 // M1: confidence-пороги — это доли 0..1. Misconfig вроде
 // HYBRID_VISION_CONF_THRESHOLD=70 (думали «70%») роутил бы ВСЁ в vision.
 // Жёстко отбиваем out-of-range на старте с понятным сообщением — лучше
@@ -236,7 +251,7 @@ const ConfigSchema = z.object({
    *     на пороге minTextChars=200, т.к. 588 > 200).
    */
   officeImageFallback: z.object({
-    enabled: z.coerce.boolean().default(true),
+    enabled: booleanFromEnv(true),
     minTextChars: numberFromEnv(200),
     minImageKb: numberFromEnv(50),
     maxImages: numberFromEnv(8),

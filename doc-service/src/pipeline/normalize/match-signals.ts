@@ -311,6 +311,12 @@ const PROJECTORS: Record<string, Projector> = {
     if (blType) ctx.out.bl_type = blType;
     // master link: у Master нет родителя → master_bl_number на Master ОМИТ.
     // Нормализуем ТЕМ ЖЕ str() что и bl_number (trim), без доп. канонизации.
+    // Условие `!== 'Master'` НАМЕРЕННО ловит и blType===undefined (тип BL не
+    // распознан): если модель не дала bl_type, но заполнила master_bl_number —
+    // это почти всегда House с непрочитанным типом, master-линк осмыслен.
+    // Сузить до `=== 'House'` регрессировало бы (потеря линка при пустом
+    // bl_type). Ложный Master-номер тут не пройдёт: schema-промпт явно
+    // запрещает заполнять master_bl_number на самом Master B/L.
     if (blType !== 'Master') {
       const m = str(ex.master_bl_number);
       if (m) ctx.out.master_bl_number = m;

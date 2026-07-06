@@ -63,6 +63,32 @@ describe('M1: confidence/threshold env bounds (0..1)', () => {
   });
 });
 
+describe('booleanFromEnv: OFFICE_IMAGE_FALLBACK_ENABLED — выключаемый kill-switch', () => {
+  it('не задан → дефолт true', () => {
+    const cfg = configMod.loadConfig({ ...BASE_ENV });
+    expect(cfg.officeImageFallback.enabled).toBe(true);
+  });
+
+  it('="false" → ВЫКЛючает (регресс z.coerce.boolean, где "false"→true)', () => {
+    const cfg = configMod.loadConfig({ ...BASE_ENV, OFFICE_IMAGE_FALLBACK_ENABLED: 'false' });
+    expect(cfg.officeImageFallback.enabled).toBe(false);
+  });
+
+  it('="0" / "off" / "no" → false', () => {
+    for (const v of ['0', 'off', 'no', 'FALSE']) {
+      const cfg = configMod.loadConfig({ ...BASE_ENV, OFFICE_IMAGE_FALLBACK_ENABLED: v });
+      expect(cfg.officeImageFallback.enabled).toBe(false);
+    }
+  });
+
+  it('="true" / "1" → true', () => {
+    for (const v of ['true', '1']) {
+      const cfg = configMod.loadConfig({ ...BASE_ENV, OFFICE_IMAGE_FALLBACK_ENABLED: v });
+      expect(cfg.officeImageFallback.enabled).toBe(true);
+    }
+  });
+});
+
 describe('H1: assertRuntimeConfig fail-closed cross-validation', () => {
   const base = {
     byoLlmEnabled: false,
