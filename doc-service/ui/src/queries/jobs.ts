@@ -7,7 +7,7 @@
  * mount / window focus).
  */
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { api } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
 import type { Job } from '@/lib/types';
 
 export const jobsKeys = {
@@ -17,6 +17,7 @@ export const jobsKeys = {
   file: (id: string) => ['jobs', id, 'file'] as const,
   rawText: (id: string) => ['jobs', id, 'raw-text'] as const,
   sheets: (id: string) => ['jobs', id, 'sheets'] as const,
+  previewPdf: (id: string) => ['jobs', id, 'preview-pdf'] as const,
 };
 
 export interface ListJobsFilters {
@@ -180,6 +181,38 @@ export function useJobFile(jobId: string) {
     },
     gcTime: 0,
     staleTime: Infinity,
+  });
+}
+
+/**
+ * Фототочное превью office-файла (Excel/Word) через сконвертированный
+ * backend'ом PDF: GET /jobs/:id/preview-pdf → стрим application/pdf.
+ * Конвертация (LibreOffice) может занять несколько секунд — вызывающий
+ * показывает спиннер «Готовим превью…».
+ *
+ * Терминальные ошибки (не ретраим): 400 — не office-файл, 410 — файл
+ * удалён по retention, 422 — конвертация не удалась. Статус кладём в
+ * ApiError.status, чтобы JobDetail развёл fallback (Excel → грид,
+ * Word → сообщение).
+ *
+ * Blob-URL освобождается на стороне вызывающего useEffect cleanup'е
+ * (как useJobFile). gcTime:0 — не переживает unmount компонента.
+ */
+export function useJobPreviewPdf(jobId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: jobsKeys.previewPdf(jobId),
+    queryFn: async (): Promise<string> => {
+      const res = await api.getResponse(`/api/v1/jobs/${jobId}/preview-pdf`);
+      if (!res.ok) {
+        throw new ApiError(res.status, null, `preview-pdf HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      return URL.createObjectURL(blob);
+    },
+    enabled: enabled && !!jobId,
+    gcTime: 0,
+    staleTime: Infinity,
+    retry: false, // 400/410/422 терминальны
   });
 }
 

@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   useJob,
   useJobFile,
+  useJobPreviewPdf,
   useApproveJob,
   useReprocessJob,
   useRedeliverWebhook,
@@ -28,7 +29,8 @@ import {
   confidenceValueClass,
 } from '@/lib/confidence';
 import { usePermissions } from '@/lib/permissions';
-import { isExcelPreview } from '@/lib/file-preview';
+import { ApiError } from '@/lib/api';
+import { isExcelPreview, isOfficePreview } from '@/lib/file-preview';
 import {
   formatFileSize,
   formatPercent,
@@ -506,10 +508,16 @@ export default function JobDetailPage() {
             бесконечный «безумный зум». min-w-0 фиксит дефолтный
             min-width:auto grid-айтема и обрывает петлю. */}
         <div className="min-h-0 min-w-0 overflow-hidden bg-white dark:bg-slate-900">
-          {isExcelPreview(job.mime_type, job.file_name) ? (
-            // Excel — грид листов с backend'а (SheetViewer сам грузит /sheets),
-            // а не битый <img> из PdfViewer'а. Оригинал скачивается кнопкой в шапке.
-            <SheetViewer jobId={job.id} />
+          {isOfficePreview(job.mime_type, job.file_name) ? (
+            // Office (Excel/Word) — фототочный рендер через сконвертированный
+            // backend'ом PDF (LibreOffice). На ошибку конвертации — fallback:
+            // Excel → грид (SheetViewer), Word → сообщение.
+            <OfficePreview
+              pdfRef={pdfRef}
+              jobId={job.id}
+              mimeType={job.mime_type}
+              fileName={job.file_name}
+            />
           ) : fileUrl ? (
             <PdfViewer ref={pdfRef} fileUrl={fileUrl} mimeType={job.mime_type} />
           ) : (
@@ -702,6 +710,87 @@ function JobDetailSkeleton() {
       </div>
     </div>
   );
+}
+
+/**
+ * Превью office-файла (Excel/Word) фототочно через сконвертированный PDF.
+ * Backend отдаёт GET /jobs/:id/preview-pdf (LibreOffice → PDF). Пока идёт
+ * конвертация — спиннер «Готовим превью…».
+ *
+ * Fallback на ошибку:
+ *   - 410 → «Файл удалён по истечении срока хранения».
+ *   - иначе (422 «не сконвертировался» / сеть) И это Excel → грид
+ *     (SheetViewer), чтобы данные были видны всегда.
+ *   - иначе (Word) → сообщение «Не удалось сделать превью документа»
+ *     + подсказка скачать оригинал (кнопка «↓ Оригинал» в шапке).
+ */
+function OfficePreview({
+  pdfRef,
+  jobId,
+  mimeType,
+  fileName,
+}: {
+  pdfRef: RefObject<PdfViewerHandle>;
+  jobId: string;
+  mimeType: string;
+  fileName: string;
+}) {
+  const { data: pdfUrl, isLoading, error } = useJobPreviewPdf(jobId, true);
+
+  // Освобождаем blob-URL при unmount (react-pdf держит ссылку — только при
+  // размонтировании, не при ре-фетче).
+  useEffect(() => {
+    return () => {
+      if (pdfUrl) URL.revokeObjectURL(pdfUrl);
+    };
+  }, [pdfUrl]);
+
+  if (isLoading) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 bg-slate-100 text-sm text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+        <span className="h-6 w-6 animate-spin rounded-full border-2 border-slate-300 border-t-brand-600 dark:border-slate-600 dark:border-t-brand-500" />
+        Готовим превью…
+      </div>
+    );
+  }
+
+  if (error) {
+    const status = error instanceof ApiError ? error.status : 0;
+    // 410 — файл удалён по retention, единый текст для Excel и Word.
+    if (status === 410) {
+      return (
+        <div className="flex h-full items-center justify-center p-6">
+          <div className="max-w-md text-center text-sm text-slate-600 dark:text-slate-300">
+            Файл удалён по истечении срока хранения
+          </div>
+        </div>
+      );
+    }
+    // Excel: конвертация не удалась → показываем грид-данные (данные важнее
+    // фототочности — они должны быть видны всегда).
+    if (isExcelPreview(mimeType, fileName)) {
+      return <SheetViewer jobId={jobId} />;
+    }
+    // Word: грида нет — понятное сообщение + подсказка на «↓ Оригинал».
+    return (
+      <div className="flex h-full items-center justify-center p-6">
+        <div className="max-w-md text-center text-sm text-slate-600 dark:text-slate-300">
+          Не удалось сделать превью документа. Скачайте оригинал кнопкой
+          «↓ Оригинал» вверху страницы.
+        </div>
+      </div>
+    );
+  }
+
+  if (!pdfUrl) {
+    return (
+      <div className="flex h-full items-center justify-center text-sm text-slate-500 dark:text-slate-400">
+        Готовим превью…
+      </div>
+    );
+  }
+
+  return <PdfViewer ref={pdfRef} fileUrl={pdfUrl} mimeType="application/pdf" />;
 }
 
 function StatusBadge({ status }: { status: string }) {
