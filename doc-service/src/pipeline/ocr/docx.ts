@@ -27,6 +27,7 @@ import mammothPkg from 'mammoth';
 const mammoth = mammothPkg;
 import type { OcrEngine, OcrInput, OcrResult } from './types.js';
 import { htmlToMarkdown } from './html-to-markdown.js';
+import { readDocxHeadersFooters } from './docx-parts.js';
 import { config } from '../../config.js';
 
 const DOCX_MIMES = new Set([
@@ -117,6 +118,23 @@ export class DocxEngine implements OcrEngine {
       },
     );
     let text = htmlToMarkdown(result.value || '');
+
+    // P2.2: колонтитулы — mammoth их не отдаёт, а реквизиты (ИНН/КПП/банк)
+    // в русских договорах часто в футере. Дочитываем header/footer XML из zip
+    // и приклеиваем секцией (пропуская строки, уже присутствующие в теле).
+    const headersFooters = await readDocxHeadersFooters(input.filePath);
+    if (headersFooters) {
+      const bodyLower = text.toLowerCase();
+      const extra = headersFooters
+        .split('\n')
+        .filter((l) => l.trim().length > 0 && !bodyLower.includes(l.trim().toLowerCase()));
+      if (extra.length > 0) {
+        text =
+          text.length > 0
+            ? `${text}\n\n=== Колонтитулы ===\n${extra.join('\n')}`
+            : extra.join('\n');
+      }
+    }
 
     // P1-B: картиночный docx (скан в ворде). Триггер — decideVisionFallback:
     // либо текста почти нет, либо док картинко-доминирован (скан-картинка +
