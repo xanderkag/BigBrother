@@ -29,6 +29,7 @@ import {
   SheetsResponse,
 } from '../types/api-schemas.js';
 import { readSheetsForPreview, isSpreadsheet } from '../pipeline/ocr/xlsx-preview.js';
+import { officeToPdf, isOfficePreviewable } from '../pipeline/preview/office-pdf.js';
 import { jobFeedbackRepo, type FeedbackField } from '../storage/job-feedback.js';
 import { extractionCorrectionsRepo } from '../storage/extraction-corrections.js';
 import { diffExtracted } from '../pipeline/normalize/diff-extracted.js';
@@ -1004,6 +1005,90 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
       } finally {
         await materialized.cleanup().catch(() => undefined);
       }
+    },
+  );
+
+  // GET /jobs/:id/preview-pdf — фототочное превью office-файла: конвертируем
+  // xls/xlsx/doc/docx → PDF через headless LibreOffice (с кешем) и стримим.
+  // UI показывает результат в готовом PDF-просмотрщике. 400 если не office,
+  // 410 после retention, 422 если конвертация упала/зависла.
+  r.get(
+    '/jobs/:id/preview-pdf',
+    {
+      schema: {
+        tags: ['jobs'],
+        summary: 'Фототочное PDF-превью office-файла (LibreOffice)',
+        description:
+          'Конвертирует xls/xlsx/doc/docx в PDF (headless LibreOffice, с кешем ' +
+          'по file_sha256) и стримит inline. 400 если не office-формат; 410 после ' +
+          'retention; 422 если конвертация не удалась.',
+        security: [{ bearerAuth: [] }],
+        params: JobIdParam,
+        response: {
+          400: ErrorResponse,
+          401: ErrorResponse,
+          403: ErrorResponse,
+          404: ErrorResponse,
+          410: ErrorResponse,
+          422: ErrorResponse,
+        },
+      },
+    },
+    async (req, reply) => {
+      const job = await jobsRepo.findById(req.params.id);
+      if (!job) {
+        reply.code(404);
+        return { error: 'job not found' };
+      }
+      if (!(await requireProjectAccess(req, reply, job.project_id))) return reply;
+      if (!isOfficePreviewable(job.mime_type)) {
+        reply.code(400);
+        return { error: 'not an office document (use /file for pdf/image)' };
+      }
+      if (!job.file_path) {
+        reply.code(410);
+        return { error: 'file no longer available (retention period elapsed)' };
+      }
+      let materialized: Awaited<ReturnType<typeof fileStorage.materialize>>;
+      try {
+        materialized = await fileStorage.materialize(job.file_path);
+      } catch {
+        reply.code(410);
+        return { error: 'file missing on disk' };
+      }
+      let pdfPath: string;
+      try {
+        pdfPath = await officeToPdf(
+          materialized.absolutePath,
+          job.file_sha256 ?? job.id,
+          job.file_name,
+          job.mime_type,
+        );
+      } catch (err) {
+        req.log.warn({ jobId: job.id, err }, 'office→pdf preview conversion failed');
+        await materialized.cleanup().catch(() => undefined);
+        reply.code(422);
+        return { error: 'preview conversion failed' };
+      }
+      // Оригинал больше не нужен — PDF лежит в кеше (STORAGE_DIR/preview-cache).
+      await materialized.cleanup().catch(() => undefined);
+      let size: number;
+      try {
+        size = (await stat(pdfPath)).size;
+      } catch {
+        reply.code(422);
+        return { error: 'preview missing after conversion' };
+      }
+      reply.header('Content-Type', 'application/pdf');
+      reply.header('Content-Length', size);
+      const fnAscii =
+        job.file_name.replace(/\.[^.]+$/, '').replace(/[^\x20-\x7E]/g, '_') + '.pdf';
+      reply.header('Content-Disposition', `inline; filename="${fnAscii}"`);
+      reply.raw.on('close', () => {
+        // PDF в кеше — не удаляем (переиспользуется). Просто закрываем поток.
+      });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (reply as any).send(createReadStream(pdfPath));
     },
   );
 

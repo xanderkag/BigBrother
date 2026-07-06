@@ -14,6 +14,13 @@ FROM node:22-slim AS base
 #                                cp1251-aware, ~200 KB. См. src/pipeline/ocr/doc.ts
 #   antiword                  — запасной конвертер .doc, если catdoc упал
 #                                (fallback в doc.ts: antiword -m UTF-8.txt).
+#   libreoffice-calc/writer   — headless-конвертация office→PDF для ФОТОТОЧНОГО
+#                                превью (src/pipeline/preview/office-pdf.ts).
+#                                Тяжёлые (~400-500 МБ), но дают верный рендер
+#                                xls/xlsx/doc/docx со всем оформлением. Только
+#                                calc+writer (не весь пакет), без recommends.
+#   fonts-liberation/dejavu   — метрически-совместимые шрифты (Arial/Times) +
+#                                кириллица, чтобы PDF не был «квадратиками».
 #   ca-certificates           — outbound TLS to LLM/Yandex
 #
 # По дефолту TESSERACT_LANGS=rus+eng в .env (без китайского/турецкого/польского,
@@ -30,6 +37,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libheif-examples \
     catdoc \
     antiword \
+    libreoffice-calc \
+    libreoffice-writer \
+    fonts-liberation \
+    fonts-dejavu-core \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
