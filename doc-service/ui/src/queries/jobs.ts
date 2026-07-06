@@ -16,6 +16,7 @@ export const jobsKeys = {
   detail: (id: string) => ['jobs', id] as const,
   file: (id: string) => ['jobs', id, 'file'] as const,
   rawText: (id: string) => ['jobs', id, 'raw-text'] as const,
+  sheets: (id: string) => ['jobs', id, 'sheets'] as const,
 };
 
 export interface ListJobsFilters {
@@ -259,6 +260,35 @@ export function useJobRawText(jobId: string, enabled: boolean) {
     enabled: enabled && !!jobId,
     staleTime: 5 * 60 * 1000,
     retry: false, // 404 «нет raw_text» — не ретраим
+  });
+}
+
+/**
+ * Excel-превью (GET /jobs/:id/sheets) — грид листов книги, распарсенный на
+ * backend'е (SheetJS в UI не тащим). Возвращается только для табличных
+ * форматов; на не-таблицу бэк отдаёт 400, на retention-чистку — 410, на
+ * битый файл — 422 (см. SheetViewer для человеческих сообщений).
+ */
+export interface JobSheet {
+  name: string;
+  rows: string[][];
+  totalRows: number;
+  totalCols: number;
+  truncated: boolean;
+}
+
+export interface JobSheetsResponse {
+  file_name: string;
+  sheets: JobSheet[];
+}
+
+export function useJobSheets(jobId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: jobsKeys.sheets(jobId),
+    queryFn: () => api.get<JobSheetsResponse>(`/api/v1/jobs/${jobId}/sheets`),
+    enabled: enabled && !!jobId,
+    staleTime: 5 * 60 * 1000,
+    retry: false, // 400/410/422 — терминальны, не ретраим
   });
 }
 

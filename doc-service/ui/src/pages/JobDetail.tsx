@@ -10,6 +10,7 @@ import {
 import { useDocumentTypes, type DocumentTypeTier } from '@/queries/documentTypes';
 import { api } from '@/lib/api';
 import PdfViewer, { type PdfViewerHandle } from '@/components/PdfViewer';
+import SheetViewer from '@/components/SheetViewer';
 import ExtractedDataPanel from '@/components/ExtractedDataPanel';
 import ConfidenceBar from '@/components/ConfidenceBar';
 import TierBadge from '@/components/TierBadge';
@@ -27,6 +28,7 @@ import {
   confidenceValueClass,
 } from '@/lib/confidence';
 import { usePermissions } from '@/lib/permissions';
+import { isExcelPreview } from '@/lib/file-preview';
 import {
   formatFileSize,
   formatPercent,
@@ -504,7 +506,11 @@ export default function JobDetailPage() {
             бесконечный «безумный зум». min-w-0 фиксит дефолтный
             min-width:auto grid-айтема и обрывает петлю. */}
         <div className="min-h-0 min-w-0 overflow-hidden bg-white dark:bg-slate-900">
-          {fileUrl ? (
+          {isExcelPreview(job.mime_type, job.file_name) ? (
+            // Excel — грид листов с backend'а (SheetViewer сам грузит /sheets),
+            // а не битый <img> из PdfViewer'а. Оригинал скачивается кнопкой в шапке.
+            <SheetViewer jobId={job.id} />
+          ) : fileUrl ? (
             <PdfViewer ref={pdfRef} fileUrl={fileUrl} mimeType={job.mime_type} />
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-slate-500 dark:text-slate-400 dark:text-slate-500">
