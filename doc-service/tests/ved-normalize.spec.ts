@@ -109,6 +109,12 @@ describe('detectScript', () => {
   it('null when no letters', () => {
     expect(detectScript('123')).toBeNull();
   });
+  it('non-string inputs → null (no bogus latin from String())', () => {
+    expect(detectScript({ value: 'GF8484' } as unknown)).toBeNull();
+    expect(detectScript(['GF8484'] as unknown)).toBeNull();
+    expect(detectScript(true as unknown)).toBeNull();
+    expect(detectScript(123 as unknown)).toBeNull();
+  });
 });
 
 describe('plateWithScript (перецеп-связка)', () => {

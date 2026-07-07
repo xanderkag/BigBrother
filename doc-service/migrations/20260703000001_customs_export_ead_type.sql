@@ -42,7 +42,10 @@ INSERT INTO document_types (
       '\bMRN\b',
       '\b\d{2}[A-Z]{2}[A-Z0-9]{14}\b'
     ]::text[],
-    ARRAY[6.0, 6.0, 5.0, 4.0, 3.0, 4.0]::numeric(4,2)[],
+    -- вес русского «экспортная декларация ЕС» = 7.0: строго выше generic
+    -- 'экспортн[а-я]+ деклараци' (6.0) у export_declaration/ГТД, иначе
+    -- EU-EAD на русском/двуязычный уходит в русскую ГТД (review VANGA-VED-1).
+    ARRAY[6.0, 6.0, 7.0, 4.0, 3.0, 4.0]::numeric(4,2)[],
     '{
       "type": "object",
       "properties": {

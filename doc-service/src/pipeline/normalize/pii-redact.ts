@@ -144,7 +144,9 @@ export function redactPii(
   }
 
   // 3. Regex-чистка строк во всех полях (паспорт, телефон, email)
-  // Не трогаем _normalized_fields — там только ИНН/госномер (не PII)
+  // Не трогаем _normalized_fields — там canonical-значения для матчинга
+  // (ИНН, госномер, валюта-ISO, ТНВЭД, script-флаги cyrillic|latin), все
+  // non-PII. Исключаем из regex-чистки, восстанавливаем verbatim.
   const normalized = copy._normalized_fields;
   delete copy._normalized_fields;
   const cleaned = redactStringFields(copy, redacted) as Record<string, unknown>;

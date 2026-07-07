@@ -27,6 +27,7 @@ import { normalizeCurrency, normalizeHsCode, detectScript } from './ved-fields.j
 const VED_PLATE_PATHS: ReadonlyArray<readonly string[]> = [
   ['vehicle', 'plate'],
   ['vehicle', 'trailer_plate'],
+  ['vehicle', 'trailer'], // invoice.ts кладёт номер прицепа сюда (review VANGA-VED-1)
   ['vehicle', 'license_plate'],
   ['trailer', 'plate'],
   ['transport_identity', 'truck_plate'],
@@ -216,8 +217,9 @@ export function normalizeExtractedFields(
     if (sc) normalizedMap[`${path.join('.')}.script`] = sc;
   }
   // §4: script-флаг ФИО водителя (для транслит-сверки паспорт↔CMR).
+  // TTN хранит имя под fullName, INVOICE-семейство — под name, CMR — fio.
   const driver = extracted.driver as Record<string, unknown> | undefined;
-  const driverName = driver?.fio ?? driver?.name;
+  const driverName = driver?.fio ?? driver?.name ?? driver?.fullName;
   const driverScript = detectScript(driverName);
   if (driverScript) normalizedMap['driver.script'] = driverScript;
 

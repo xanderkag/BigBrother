@@ -53,6 +53,18 @@ describe('§7.1 комплект №2 — Milka (EAD + водитель)', () =>
     const nf = normalizeExtractedFields(cmr)!._normalized_fields as Record<string, string>;
     expect(nf['driver.script']).toBe('latin');
   });
+
+  it('TTN driver.fullName тоже покрыт (review-fix)', () => {
+    const ttn = { driver: { fullName: 'ИВАНОВ ИВАН ПЕТРОВИЧ' } };
+    const nf = normalizeExtractedFields(ttn)!._normalized_fields as Record<string, string>;
+    expect(nf['driver.script']).toBe('cyrillic');
+  });
+
+  it('vehicle.trailer (invoice.ts) получает script-флаг (review-fix)', () => {
+    const inv = { vehicle: { plate: 'С380ТУ60', trailer: 'GF8484' } };
+    const nf = normalizeExtractedFields(inv)!._normalized_fields as Record<string, string>;
+    expect(nf['vehicle.trailer.script']).toBe('latin');
+  });
 });
 
 describe('regression: не-VED документ не обрастает VED-полями', () => {

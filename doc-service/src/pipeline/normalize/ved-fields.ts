@@ -128,8 +128,10 @@ export function normalizeHsCode(raw: unknown): string | null {
  * транслит-осведомлённо, а расхождение письменности само по себе — норма.
  */
 export function detectScript(raw: unknown): 'cyrillic' | 'latin' | 'mixed' | null {
-  if (raw === null || raw === undefined) return null;
-  const s = String(raw);
+  // Только строки: без guard объект/массив/boolean дал бы «[object Object]»/
+  // «true» → ложный 'latin' и испортил бы перецеп-сигнал (review VANGA-VED-1).
+  if (typeof raw !== 'string' || raw === '') return null;
+  const s = raw;
   const hasCyr = /[а-яё]/i.test(s);
   const hasLat = /[a-z]/i.test(s);
   if (hasCyr && hasLat) return 'mixed';

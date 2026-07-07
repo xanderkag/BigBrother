@@ -47,7 +47,9 @@ describe('customs_export_ead migration', () => {
 
   it('classification keywords all compile as RegExp', () => {
     // keywords array = the ARRAY[...]::text[] right before the weights ARRAY.
-    const kwBlock = raw.match(/ARRAY\[([\s\S]*?)\]::text\[\],\s*\n\s*ARRAY\[[\d.,\s]+\]::numeric/);
+    // keyword text[] array — распознаём по «за ним идёт numeric-массив весов»
+    // (единственная такая смежность). Между ними допускаем SQL-комментарии.
+    const kwBlock = raw.match(/ARRAY\[([\s\S]*?)\]::text\[\],\s*(?:--[^\n]*\n\s*)*ARRAY\[[\d.,\s]+\]::numeric/);
     expect(kwBlock, 'keyword array present').not.toBeNull();
     const keywords = parseSqlStringArray(kwBlock![1]!);
     expect(keywords.length).toBeGreaterThan(3);
