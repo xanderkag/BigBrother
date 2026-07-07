@@ -19,6 +19,20 @@
  *   - `vehicle.plate` / `vehicle.license_plate`
  */
 import { normalizeInn, normalizePlate } from './identifiers.js';
+import { normalizeCurrency, normalizeHsCode, detectScript } from './ved-fields.js';
+
+// VANGA-VED-1 §4: пути номеров ТС для script-флага (перецеп-сверка). Читаем
+// ОРИГИНАЛ (не нормализованную кириллицу) — расхождение письменности между
+// заявкой (С380ТУ60, cyr) и CMR (9096BC, lat) = связка машин, не конфликт.
+const VED_PLATE_PATHS: ReadonlyArray<readonly string[]> = [
+  ['vehicle', 'plate'],
+  ['vehicle', 'trailer_plate'],
+  ['vehicle', 'license_plate'],
+  ['trailer', 'plate'],
+  ['transport_identity', 'truck_plate'],
+  ['transport_identity', 'trailer_plate'],
+  ['transport', 'vehicle', 'plate'],
+];
 
 const INN_PATHS: ReadonlyArray<readonly string[]> = [
   ['seller', 'inn'],
@@ -166,6 +180,46 @@ export function normalizeExtractedFields(
   }
   // TTN/CMR document number top-level (для matcher.matchToTransfer по cmr.number / bl.number).
   // У invoice это уже не нужно (SLAI matcher invoice не использует number для плеча).
+
+  // ── VANGA-VED-1 §4: валюта → ISO 4217 ──────────────────────────────
+  const isoCur = normalizeCurrency(extracted.currency);
+  if (isoCur) normalizedMap['currency'] = isoCur;
+  const declaredValue = extracted.declared_value as Record<string, unknown> | undefined;
+  if (declaredValue) {
+    const c = normalizeCurrency(declaredValue.currency);
+    if (c) normalizedMap['declared_value.currency'] = c;
+  }
+
+  // §4: ТНВЭД/HS — очищенная форма (10/8/6 знаков, без пробелов, строкой).
+  // doc-level hs_codes[] (CMR ячейка 10) + позиционные items[].hs_code.
+  const hsCodes = extracted.hs_codes;
+  if (Array.isArray(hsCodes)) {
+    hsCodes.forEach((h, i) => {
+      const clean = normalizeHsCode(h);
+      if (clean) normalizedMap[`hs_codes.${i}`] = clean;
+    });
+  }
+  const items = extracted.items;
+  if (Array.isArray(items)) {
+    items.forEach((it, i) => {
+      if (it && typeof it === 'object') {
+        const clean = normalizeHsCode((it as Record<string, unknown>).hs_code);
+        if (clean) normalizedMap[`items.${i}.hs_code`] = clean;
+      }
+    });
+  }
+
+  // §4: script-флаг номеров ТС (cyrillic|latin) — ядро перецеп-сверки.
+  for (const path of VED_PLATE_PATHS) {
+    const raw = getByPath(extracted, path);
+    const sc = detectScript(raw);
+    if (sc) normalizedMap[`${path.join('.')}.script`] = sc;
+  }
+  // §4: script-флаг ФИО водителя (для транслит-сверки паспорт↔CMR).
+  const driver = extracted.driver as Record<string, unknown> | undefined;
+  const driverName = driver?.fio ?? driver?.name;
+  const driverScript = detectScript(driverName);
+  if (driverScript) normalizedMap['driver.script'] = driverScript;
 
   if (Object.keys(normalizedMap).length === 0) return extracted;
 

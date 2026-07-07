@@ -620,8 +620,15 @@ const CMR_SCHEMA = {
           },
         },
         packages_total: { type: 'integer', description: 'Общее число мест (sum по packages[].count). Alias для legacy.' },
+        packages_kind: { type: 'string', description: 'Вид упаковки одной строкой (CTN/PLT/…), если груз однородный (VANGA-VED-1 §3.1).' },
         weight: { type: 'number', description: 'Вес брутто, кг (legacy alias)' },
-        gross_weight_kg: { type: 'number', description: 'Вес брутто в кг (ячейка 11)' },
+        gross_weight_kg: { type: 'number', description: 'Вес брутто в кг С ПАЛЛЕТАМИ (ячейка 11).' },
+        // VANGA-VED-1 §3.1/§4: транзитная сверка требует различать брутто
+        // с паллетами и без. Реальные данные: нетто 16026.96, брутто-без
+        // 17653.02, брутто-с 18528.02 — три разных числа, нельзя путать.
+        gross_weight_without_pallets: { type: 'number', description: 'Вес брутто без паллет, кг (VANGA-VED-1 §3.1).' },
+        pallets_weight: { type: 'number', description: 'Вес паллет, кг (gross_weight − gross_weight_without_pallets).' },
+        pallets: { type: 'integer', description: 'Количество паллет (не путать с packages/мест).' },
         volume: { type: 'number', description: 'Объём, м³ (legacy alias)' },
         volume_m3: { type: 'number', description: 'Объём в м³ (ячейка 12)' },
       },
@@ -632,6 +639,31 @@ const CMR_SCHEMA = {
     place_of_delivery: { type: 'string', description: 'Место разгрузки (ячейка 3)' },
     loading_place: { type: 'string', description: 'Alias для place_of_loading (legacy).' },
     delivery_place: { type: 'string', description: 'Alias для place_of_delivery (legacy).' },
+    // ── VANGA-VED-1 §3.1: транзитный CMR-комплект (реальные данные БКТ Транзит) ──
+    place_of_taking_over: { type: 'string', description: 'Место принятия груза к перевозке (ячейка 4, если отличается от place_of_loading).' },
+    taking_over_date: { type: 'string', description: 'Дата принятия груза к перевозке, ISO YYYY-MM-DD.' },
+    border_crossing: { type: 'string', description: 'Погранпереход / КПП выезда (например EU/LTVK2000).' },
+    driver: {
+      type: 'object',
+      description: 'Водитель, если указан в CMR.',
+      properties: {
+        fio: { type: 'string', description: 'ФИО водителя как в документе (script-флаг проставляется нормализатором).' },
+      },
+    },
+    declared_value: {
+      type: 'object',
+      description: 'Объявленная стоимость груза (ячейка 13).',
+      properties: {
+        amount: { type: 'number', description: 'Сумма.' },
+        currency: { type: 'string', description: 'Валюта, ISO 4217.' },
+      },
+    },
+    hs_codes: {
+      type: 'array',
+      description: 'Коды ТН ВЭД на уровне документа (ячейка 10 «Статист. №»), если перечислены в шапке. Позиционные — в items[].hs_code.',
+      items: { type: 'string' },
+    },
+    carrier_reservations: { type: 'string', description: 'Оговорки и замечания перевозчика (ячейка 18).' },
     vehicle: {
       type: 'object',
       description: 'Транспортное средство (ячейка 25).',
