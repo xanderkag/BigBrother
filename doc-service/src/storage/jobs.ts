@@ -42,6 +42,41 @@ export type OperationalSummary = {
 };
 
 /**
+ * Time-series bucket для дашборд-графиков. Каждый бакет — интервал
+ * шириной `bucket_minutes` (см. TimeseriesResult), содержит агрегаты
+ * по документам, попавшим в этот интервал по `created_at`.
+ *
+ * ts — начало бакета (UTC ISO). fronted строит по нему подписи оси X.
+ * latency_p95_ms считается только по терминальным (finished_at IS NOT
+ * NULL); pending/failed без finished_at в percentile не входят.
+ */
+export type TimeseriesBucket = {
+  ts: string;
+  total: number;
+  done: number;
+  needs_review: number;
+  failed: number;
+  latency_p95_ms: number | null;
+};
+
+/**
+ * Результат /api/v1/metrics/timeseries: сетка бакетов + шаг сетки.
+ *
+ * `bucket_minutes` вычисляется автоматически из window'а так, чтобы
+ * получилось 24–30 бакетов (оптимально для читаемого графика на десктопе).
+ * Соответствие: 1h→5min · 24h→60min · 7d→360min (6h) · 30d→1440min (1d).
+ *
+ * Список бакетов — plottable-ready: **гарантированно 24+ точек**
+ * даже для пустых интервалов (заполняем нулями SQL-side через
+ * generate_series). Иначе бары «схлопывались» бы в дыры.
+ */
+export type TimeseriesResult = {
+  window_hours: number;
+  bucket_minutes: number;
+  buckets: TimeseriesBucket[];
+};
+
+/**
  * Строка per-group breakdown. Ключ группы (`slug` / `engine` / `tier`)
  * параметризован — метрики одинаковы для всех трёх разрезов.
  */
@@ -63,6 +98,24 @@ export type OperationalGroupRow<K extends string> = {
   validation_issue_rate: number;
   llm_fallback_rate: number;
 };
+
+/**
+ * Шаг сетки для time-series графика. Цель — ~24-30 бакетов, читаемо на
+ * десктопе (>30 → бары становятся тонкими, <20 → «зубчато»).
+ *
+ *   1h  →  5 min ( 12 бакетов)
+ *   24h →  60 min (24)
+ *   7d  → 360 min (7×24 / 6 = 28)
+ *   30d → 1440 min (30)
+ *
+ * Для нестандартных windowHours берём ближайший из этих режимов.
+ */
+function pickBucketMinutes(windowHours: number): number {
+  if (windowHours <= 1) return 5;
+  if (windowHours <= 24) return 60;
+  if (windowHours <= 24 * 7) return 360;
+  return 1440;
+}
 
 function emptySummary(windowHours: number): OperationalSummary {
   return {
@@ -878,6 +931,111 @@ class JobsRepo {
       by_engine: byEngine,
       by_tier: byTier,
     };
+  }
+
+  /**
+   * Time-series для дашборд-графиков: сколько документов приходит по
+   * времени внутри окна. Автоматически подбирает шаг сетки (bucket_minutes)
+   * так, чтобы получилось ~24–30 бакетов — читаемо на десктопном экране.
+   *
+   * `date_bin(interval, ts, origin)` округляет timestamp к сетке. Origin
+   * фиксирован (Unix epoch), чтобы бакеты не «плыли» при повторных
+   * вызовах в разные секунды. Пустые бакеты доrisовываем через
+   * generate_series — иначе gaps в баре, ось X «сжимается».
+   *
+   * scope: тот же фильтр что в getOperationalSummary.
+   */
+  async getTimeseries(
+    windowHours: number,
+    scope:
+      | { kind: 'all' }
+      | { kind: 'org'; orgId: string }
+      | { kind: 'projects'; projectIds: Set<string> },
+  ): Promise<TimeseriesResult> {
+    // Пустой projects-scope → пустая сетка (24 нулей), чтобы UI показал
+    // ровный график из «ничего», а не падал.
+    const bucketMinutes = pickBucketMinutes(windowHours);
+    if (scope.kind === 'projects' && scope.projectIds.size === 0) {
+      return { window_hours: windowHours, bucket_minutes: bucketMinutes, buckets: [] };
+    }
+
+    // Сборка scope-фильтра. windowHours и bucketMinutes → params[0..1].
+    const params: unknown[] = [String(windowHours), String(bucketMinutes)];
+    const scopeWhere: string[] = [];
+    if (scope.kind === 'org') {
+      params.push(scope.orgId);
+      scopeWhere.push(`organization_id = $${params.length}`);
+    } else if (scope.kind === 'projects') {
+      params.push(Array.from(scope.projectIds));
+      scopeWhere.push(`project_id = ANY($${params.length}::uuid[])`);
+    }
+    const scopeExtra = scopeWhere.length ? `AND ${scopeWhere.join(' AND ')}` : '';
+
+    // generate_series строит полную сетку бакетов от now()-window до now(),
+    // затем LEFT JOIN на агрегаты по jobs. Пустые бакеты остаются с
+    // total=0. `date_bin` требует Postgres 14+ (у нас 16).
+    const sql = `
+      WITH grid AS (
+        SELECT gs AS bucket
+        FROM generate_series(
+          date_bin(($2 || ' minutes')::interval, now() - ($1 || ' hours')::interval, TIMESTAMP 'epoch'),
+          date_bin(($2 || ' minutes')::interval, now(), TIMESTAMP 'epoch'),
+          ($2 || ' minutes')::interval
+        ) AS gs
+      ),
+      binned AS (
+        SELECT
+          date_bin(($2 || ' minutes')::interval, created_at, TIMESTAMP 'epoch') AS bucket,
+          status,
+          finished_at,
+          created_at
+        FROM jobs
+        WHERE created_at > now() - ($1 || ' hours')::interval
+        ${scopeExtra}
+      ),
+      agg AS (
+        SELECT
+          bucket,
+          COUNT(*)::text                                                AS total,
+          COUNT(*) FILTER (WHERE status = 'done')::text                 AS done,
+          COUNT(*) FILTER (WHERE status = 'needs_review')::text         AS needs_review,
+          COUNT(*) FILTER (WHERE status = 'failed')::text               AS failed,
+          percentile_cont(0.95) WITHIN GROUP (
+            ORDER BY EXTRACT(EPOCH FROM (finished_at - created_at)) * 1000
+          ) FILTER (WHERE finished_at IS NOT NULL)                      AS lat_p95
+        FROM binned
+        GROUP BY bucket
+      )
+      SELECT
+        grid.bucket AS ts,
+        COALESCE(agg.total, '0')        AS total,
+        COALESCE(agg.done, '0')         AS done,
+        COALESCE(agg.needs_review, '0') AS needs_review,
+        COALESCE(agg.failed, '0')       AS failed,
+        agg.lat_p95                      AS lat_p95
+      FROM grid
+      LEFT JOIN agg ON agg.bucket = grid.bucket
+      ORDER BY grid.bucket ASC;
+    `;
+    const { rows } = await db.query<{
+      ts: string;
+      total: string;
+      done: string;
+      needs_review: string;
+      failed: string;
+      lat_p95: string | null;
+    }>(sql, params);
+
+    const buckets: TimeseriesBucket[] = rows.map((r) => ({
+      ts: new Date(r.ts).toISOString(),
+      total: Number(r.total),
+      done: Number(r.done),
+      needs_review: Number(r.needs_review),
+      failed: Number(r.failed),
+      latency_p95_ms: r.lat_p95 === null ? null : Math.round(Number(r.lat_p95)),
+    }));
+
+    return { window_hours: windowHours, bucket_minutes: bucketMinutes, buckets };
   }
 
   /**

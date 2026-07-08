@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   useOperationalMetrics,
+  useTimeseriesMetrics,
   type MetricsWindow,
   type MetricsBreakdownRow,
 } from '@/queries/metrics';
@@ -9,6 +10,7 @@ import { useJobsList } from '@/queries/jobs';
 import { formatPercent, formatDateTime, formatNumber } from '@/lib/format';
 import ConfidenceBar from '@/components/ConfidenceBar';
 import TierBadge from '@/components/TierBadge';
+import TimeseriesChart from '@/components/TimeseriesChart';
 import type { DocumentTypeTier } from '@/queries/documentTypes';
 import type { Job } from '@/lib/types';
 
@@ -47,6 +49,7 @@ export default function DashboardPage() {
   });
 
   const { data, isLoading, error, refetch, isFetching } = useOperationalMetrics(window);
+  const timeseries = useTimeseriesMetrics(window);
 
   useEffect(() => {
     localStorage.setItem(WINDOW_KEY, window);
@@ -158,6 +161,36 @@ export default function DashboardPage() {
               tone="rose"
               link={data.totals.failed > 0 ? '/jobs?status=failed' : undefined}
             />
+          </div>
+
+          {/* Time-series — как менялась активность внутри окна.
+              Показывает то, чего нет в тоталах: спайки, тихие периоды,
+              сдвиг ошибок относительно нормального потока. */}
+          <div className="card">
+            <div className="card-header">
+              <h3 className="card-title">Активность по времени</h3>
+              <span className="text-xs text-slate-500 dark:text-slate-500">
+                {timeseries.data
+                  ? `${timeseries.data.buckets.length} бакетов по ${fmtBucket(timeseries.data.bucket_minutes)}`
+                  : ''}
+              </span>
+            </div>
+            <div className="card-body">
+              {timeseries.isLoading && !timeseries.data ? (
+                <div className="h-40 animate-pulse rounded bg-slate-100 dark:bg-slate-800/60" />
+              ) : timeseries.error ? (
+                <div className="text-sm text-rose-700 dark:text-rose-300">
+                  Ошибка загрузки графика:{' '}
+                  {timeseries.error instanceof Error ? timeseries.error.message : String(timeseries.error)}
+                </div>
+              ) : timeseries.data ? (
+                <TimeseriesChart
+                  buckets={timeseries.data.buckets}
+                  bucketMinutes={timeseries.data.bucket_minutes}
+                  showLatencyOverlay
+                />
+              ) : null}
+            </div>
           </div>
 
           {/* Последние документы — реальная активность за выбранное окно */}
@@ -439,6 +472,13 @@ function fmtMs(ms: number | null | undefined): string {
   if (ms === null || ms === undefined) return '—';
   if (ms < 1000) return `${Math.round(ms)} ms`;
   return `${(ms / 1000).toFixed(1)} s`;
+}
+
+/** Ширина бакета time-series в человекочитаемой форме («1ч», «6ч», «1д»). */
+function fmtBucket(minutes: number): string {
+  if (minutes < 60) return `${minutes} мин`;
+  if (minutes < 60 * 24) return `${minutes / 60} ч`;
+  return `${minutes / (60 * 24)} д`;
 }
 
 /* ------------------------------------------------------------------ */

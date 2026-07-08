@@ -73,3 +73,38 @@ export function useOperationalMetrics(window: MetricsWindow = '7d') {
     staleTime: 15_000,
   });
 }
+
+// --- Time-series (для графиков на дашборде) ---
+
+export interface TimeseriesBucket {
+  ts: string;
+  total: number;
+  done: number;
+  needs_review: number;
+  failed: number;
+  latency_p95_ms: number | null;
+}
+
+export interface TimeseriesMetrics {
+  window: MetricsWindow;
+  window_hours: number;
+  /** Ширина одного бакета в минутах (сервер подбирает 5|60|360|1440). */
+  bucket_minutes: number;
+  generated_at: string;
+  scope: 'all' | 'org' | 'projects';
+  buckets: TimeseriesBucket[];
+}
+
+/**
+ * Time-series для графиков. Использует тот же refresh-цикл что и
+ * useOperationalMetrics — оба хука срабатывают синхронно.
+ */
+export function useTimeseriesMetrics(window: MetricsWindow = '7d') {
+  return useQuery({
+    queryKey: ['metrics', 'timeseries', window],
+    queryFn: () =>
+      api.get<TimeseriesMetrics>(`/api/v1/metrics/timeseries?window=${window}`),
+    refetchInterval: 30_000,
+    staleTime: 15_000,
+  });
+}

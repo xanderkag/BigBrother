@@ -102,6 +102,31 @@ const OperationalResponse = z.object({
   by_tier: z.array(TierRow),
 });
 
+// --- Time-series (для графиков на дашборде) ---
+//
+// Отдельный эндпоинт `/metrics/timeseries?window=…` возвращает **сетку
+// бакетов** внутри выбранного окна: сколько документов было в каждом
+// временном интервале + их статусы + latency P95. UI рисует бары/линии.
+// Шаг сетки (bucket_minutes) выбирается сервером под окно, чтобы всегда
+// получалось ~24-30 точек (см. jobs.ts pickBucketMinutes).
+const TimeseriesBucket = z.object({
+  ts: z.string(),
+  total: z.number().int(),
+  done: z.number().int(),
+  needs_review: z.number().int(),
+  failed: z.number().int(),
+  latency_p95_ms: z.number().nullable(),
+});
+
+const TimeseriesResponse = z.object({
+  window: WindowSchema,
+  window_hours: z.number(),
+  bucket_minutes: z.number().int(),
+  generated_at: z.string(),
+  scope: z.enum(['all', 'org', 'projects']),
+  buckets: z.array(TimeseriesBucket),
+});
+
 export async function operationalMetricsRoutes(app: FastifyInstance): Promise<void> {
   const r = app.withTypeProvider<ZodTypeProvider>();
   r.addHook('onRequest', bearerAuthHook);
@@ -143,6 +168,40 @@ export async function operationalMetricsRoutes(app: FastifyInstance): Promise<vo
         by_type: summary.by_type,
         by_engine: summary.by_engine,
         by_tier: summary.by_tier,
+      };
+    },
+  );
+
+  r.get(
+    '/metrics/timeseries',
+    {
+      schema: {
+        tags: ['metrics'],
+        summary: 'Time-series для дашборд-графиков (jobs/статусы/latency по времени)',
+        description:
+          'Сетка бакетов внутри окна: ~24–30 точек для читаемого графика на десктопе. ' +
+          'Шаг подбирается сервером (1h→5min · 24h→60min · 7d→6h · 30d→1d). ' +
+          'Пустые бакеты возвращаются с нулями — фронтенд рисует полную ось X без «дыр».',
+        security: [{ bearerAuth: [] }],
+        querystring: OperationalQuery,
+        response: {
+          200: TimeseriesResponse,
+          401: ErrorResponse,
+        },
+      },
+    },
+    async (req) => {
+      const win = req.query.window ?? '7d';
+      const hours = WINDOW_HOURS[win]!;
+      const scope = await getEffectiveScope(req);
+      const ts = await jobsRepo.getTimeseries(hours, scope);
+      return {
+        window: win,
+        window_hours: ts.window_hours,
+        bucket_minutes: ts.bucket_minutes,
+        generated_at: new Date().toISOString(),
+        scope: scope.kind,
+        buckets: ts.buckets,
       };
     },
   );
