@@ -16,6 +16,7 @@ import { PdfTextEngine } from './ocr/pdf-text.js';
 import { TesseractEngine } from './ocr/tesseract.js';
 import { VisionLlmEngine } from './ocr/vision-llm.js';
 import { YandexVisionEngine } from './ocr/yandex.js';
+import { isYandexVisionAllowed, recordYandexVisionPages } from './ocr/yandex-gate.js';
 import { XlsxEngine } from './ocr/xlsx.js';
 import { DocxEngine } from './ocr/docx.js';
 import { DocEngine } from './ocr/doc.js';
@@ -835,14 +836,22 @@ export async function runOcrChain(
   log: Logger,
   options: { documentType?: string; disableExternalOcr?: boolean } = {},
 ): Promise<OcrResult> {
+  // Рубильник коннектора `yandex_vision` из «Интеграций» + суточный лимит.
+  // Спрашиваем БД только если Yandex вообще сконфигурирован (иначе лишний
+  // запрос на каждом docx/xlsx). Гейт fail-closed: см. ocr/yandex-gate.ts.
+  const yandexConfigured = engines.some((e) => e.name === 'yandex' && e.isAvailable());
+  const yandexVisionAllowed = yandexConfigured ? await isYandexVisionAllowed(log) : undefined;
+
   // I8: PII opt-out. Per-job флаг приходит из orchestrator (через metadata),
   // глобальный disableForPii — из env. selectOcrChain выкинет Yandex если
-  // что-то из условий совпало.
+  // что-то из условий совпало. Все фильтры через AND: рубильник может только
+  // убрать Yandex, но не вернуть его после PII-фильтра.
   const chain = selectOcrChain(engines, input, {
     documentType: options.documentType,
     disableExternalOcr: options.disableExternalOcr,
     disableYandexForPii: config.yandex.disableForPii,
     preferYandexForScans: config.yandex.preferForScans,
+    yandexVisionAllowed,
   });
   // documentType прокидываем в OcrInput, чтобы YandexVisionEngine выбрал
   // tableModel для табличных типов (счёт-фактура/УПД скан).
@@ -888,6 +897,16 @@ export async function runOcrChain(
       const engine = chain[i]!;
       try {
         const r = await engine.run(ocrInput);
+        // Учёт облачного OCR: страницы уже отправлены и оплачены — пишем расход
+        // независимо от того, победил ли Yandex в каскаде. `model` пишем как
+        // имя сервиса: конкретная OCR-модель (page/table) выбирается движком
+        // внутри и наружу не выдаётся, врать про неё не будем.
+        if (engine.name === 'yandex') {
+          await recordYandexVisionPages(
+            { pages: r.pages?.length ?? 1, latencyMs: r.durationMs, model: 'yandex-vision' },
+            log,
+          );
+        }
         const accepted = r.confidence >= engine.acceptanceThreshold;
         log.info(
           {

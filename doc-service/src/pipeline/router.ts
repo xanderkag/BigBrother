@@ -35,6 +35,19 @@ export type ChainOptions = {
    * впереди. PII-фильтр выше: если Yandex выкинут, переупорядочивать нечего.
    */
   preferYandexForScans?: boolean;
+  /**
+   * Рубильник коннектора `yandex_vision` из «Интеграций» + его суточный лимит
+   * (см. `ocr/yandex-gate.ts`). `false` → Yandex выкидывается из цепочки.
+   *
+   * `undefined` = «не спрашивали» → Yandex остаётся (обратная совместимость
+   * для smoke-CLI и тестов, которые не ходят в БД). Прод-путь `runOcrChain`
+   * всегда передаёт явное значение.
+   *
+   * Это ОПЕРАЦИОННЫЙ контроль, не гарантия ПДн: он объединён с PII-фильтрами
+   * через AND, поэтому может только убрать Yandex, но не вернуть его, если
+   * `disableExternalOcr`/`disableYandexForPii` уже его отфильтровали.
+   */
+  yandexVisionAllowed?: boolean;
 };
 
 /**
@@ -69,6 +82,10 @@ export function selectOcrChain(
     // I8: PII opt-out для Yandex (per-job или глобальный для PII-типов)
     if (e.name === 'yandex' && options.disableExternalOcr) return false;
     if (e.name === 'yandex' && options.disableYandexForPii && isPiiDoc) return false;
+    // Рубильник/лимит коннектора `yandex_vision` из «Интеграций».
+    // Все три условия — через AND: любое из них убирает Yandex, ни одно не
+    // способно его вернуть.
+    if (e.name === 'yandex' && options.yandexVisionAllowed === false) return false;
     return true;
   });
 

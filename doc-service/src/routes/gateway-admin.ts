@@ -30,7 +30,8 @@ import { requireSuperAdmin } from '../authz.js';
 // любой коннектор в БД с unit_kind вне этого списка уронит валидацией ВЕСЬ экран
 // «Интеграции», а не только свою строку. Добавляя коннектор в gateway_connectors,
 // сначала добавь его единицу сюда.
-const UnitKind = z.enum(['tokens', 'calls', 'geocodes', 'routes']);
+//   pages — страницы, отправленные в облачный OCR (коннектор yandex_vision).
+const UnitKind = z.enum(['tokens', 'calls', 'geocodes', 'routes', 'pages']);
 
 const Connector = z.object({
   slug: z.string(),

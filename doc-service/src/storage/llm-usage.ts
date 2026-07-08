@@ -18,7 +18,8 @@ export type GatewayUsageStatus = 'success' | 'error' | 'timeout';
  * Generic единица учёта коннектора (INTEGRATION_HUB_VISION). LLM кладёт
  * tokens, DaData/Яндекс — calls; geocodes/routes под Ф2.
  */
-export type GatewayUnitKind = 'tokens' | 'calls' | 'geocodes' | 'routes';
+// 'pages' — страницы, отправленные во внешний OCR (коннектор yandex_vision).
+export type GatewayUnitKind = 'tokens' | 'calls' | 'geocodes' | 'routes' | 'pages';
 
 export type GatewayUsageInput = {
   /** Имя клиента из named key (API_KEYS_JSON); null для root-key. */

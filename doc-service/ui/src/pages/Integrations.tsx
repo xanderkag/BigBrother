@@ -223,10 +223,16 @@ function ExecutorPicker({
     return <span className="text-xs text-slate-400 dark:text-slate-500">…</span>;
   }
 
+  // Выбирать не из чего: у коннектора один фиксированный исполнитель
+  // (например `yandex_vision` — это и есть Яндекс). Ставим прочерк, а не
+  // пустой селектор и не «нет провайдеров» — провайдер как раз есть.
   if (candidates.length === 0) {
     return (
-      <span className="text-xs text-slate-400 dark:text-slate-500">
-        нет активных провайдеров
+      <span
+        className="text-slate-400 dark:text-slate-500"
+        title="У этой интеграции один исполнитель — выбирать не из чего"
+      >
+        —
       </span>
     );
   }

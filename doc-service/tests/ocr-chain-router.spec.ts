@@ -84,3 +84,56 @@ describe('selectOcrChain — ordering + PII guard', () => {
     expect(names(chain)).toEqual(['pdf-text', 'yandex', 'tesseract', 'vision-llm']);
   });
 });
+
+// Рубильник коннектора `yandex_vision` из «Интеграций» (см. ocr/yandex-gate.ts).
+describe('selectOcrChain — рубильник yandex_vision', () => {
+  it('yandexVisionAllowed=false выкидывает yandex из цепочки', () => {
+    const chain = selectOcrChain(defaultChain(), scanInput, { yandexVisionAllowed: false });
+    expect(names(chain)).toEqual(['pdf-text', 'tesseract', 'vision-llm']);
+  });
+
+  it('yandexVisionAllowed=true оставляет yandex (как и раньше)', () => {
+    const chain = selectOcrChain(defaultChain(), scanInput, { yandexVisionAllowed: true });
+    expect(names(chain)).toEqual(['pdf-text', 'tesseract', 'vision-llm', 'yandex']);
+  });
+
+  it('undefined = «не спрашивали» → yandex остаётся (обратная совместимость)', () => {
+    const chain = selectOcrChain(defaultChain(), scanInput, {});
+    expect(names(chain)).toContain('yandex');
+  });
+
+  it('рубильник бьёт даже при preferYandexForScans', () => {
+    const chain = selectOcrChain(defaultChain(), scanInput, {
+      preferYandexForScans: true,
+      yandexVisionAllowed: false,
+    });
+    expect(names(chain)).toEqual(['pdf-text', 'tesseract', 'vision-llm']);
+  });
+
+  // ── Ключевой инвариант безопасности ────────────────────────────────
+  it('PII-гард СИЛЬНЕЕ рубильника: allowed=true не возвращает yandex для ТТН', () => {
+    const chain = selectOcrChain(defaultChain(), scanInput, {
+      yandexVisionAllowed: true, // «интеграция включена»
+      disableYandexForPii: true,
+      documentType: 'TTN',
+    });
+    expect(names(chain)).not.toContain('yandex');
+  });
+
+  it('PII-гард СИЛЬНЕЕ рубильника: allowed=true не возвращает yandex при per-job opt-out', () => {
+    const chain = selectOcrChain(defaultChain(), scanInput, {
+      yandexVisionAllowed: true,
+      disableExternalOcr: true,
+    });
+    expect(names(chain)).not.toContain('yandex');
+  });
+
+  it('оба запрета сразу — yandex всё равно отсутствует ровно один раз', () => {
+    const chain = selectOcrChain(defaultChain(), scanInput, {
+      yandexVisionAllowed: false,
+      disableYandexForPii: true,
+      documentType: 'CMR',
+    });
+    expect(names(chain)).toEqual(['pdf-text', 'tesseract', 'vision-llm']);
+  });
+});
