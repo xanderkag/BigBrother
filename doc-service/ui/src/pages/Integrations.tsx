@@ -10,6 +10,11 @@ import {
   type ConsumerBudget,
   type UsageGroup,
 } from '@/queries/gateway';
+import {
+  useProviders,
+  useSetDefaultProvider,
+  type ProviderEntry,
+} from '@/queries/providers';
 import { SkeletonTable } from '@/components/Skeleton';
 import { formatNumber } from '@/lib/format';
 
@@ -39,6 +44,14 @@ function unitLabel(unitKind: string): string {
     character: 'символы',
     token: 'токены',
     tokens: 'токены',
+    page: 'страницы',
+    pages: 'страницы',
+    minute: 'минуты',
+    minutes: 'минуты',
+    geocode: 'геокоды',
+    geocodes: 'геокоды',
+    route: 'маршруты',
+    routes: 'маршруты',
   };
   return map[unitKind] ?? unitKind;
 }
@@ -97,6 +110,11 @@ export default function IntegrationsPage() {
 function ConnectorsSection() {
   const { data, isLoading, error } = useConnectors();
   const connectors = data ?? [];
+  // Провайдеры нужны, чтобы показать И дать переключить исполнителя коннектора
+  // (например OCR: Tesseract ↔ Yandex Vision). Ошибку списка не роняем на экран —
+  // без него строка просто покажет «—» вместо селектора.
+  const providersQuery = useProviders();
+  const providers = providersQuery.data?.items ?? [];
 
   return (
     <section className="space-y-3">
@@ -105,8 +123,9 @@ function ConnectorsSection() {
           Коннекторы
         </h2>
         <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">
-          Внешние сервисы за ключом платформы. Тумблер включает/усыпляет
-          сервис целиком; лимиты ограничивают расход всего ключа.
+          Внешние сервисы за ключом платформы. «Исполнитель» — кто фактически
+          выполняет работу (переключается без перезапуска). Тумблер
+          включает/усыпляет сервис целиком; лимиты ограничивают расход всего ключа.
         </p>
       </div>
 
@@ -117,7 +136,7 @@ function ConnectorsSection() {
       )}
 
       {isLoading ? (
-        <SkeletonTable rows={3} columns={6} />
+        <SkeletonTable rows={3} columns={7} />
       ) : connectors.length === 0 ? (
         <div className="card">
           <div className="card-body py-10 text-center">
@@ -137,6 +156,7 @@ function ConnectorsSection() {
               <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-900/40 dark:text-slate-400">
                 <tr>
                   <th className="px-4 py-2">Сервис</th>
+                  <th className="px-4 py-2">Исполнитель</th>
                   <th className="px-4 py-2">Считаем в</th>
                   <th className="px-4 py-2">Статус</th>
                   <th className="px-4 py-2">Лимит ключа в сутки</th>
@@ -146,7 +166,7 @@ function ConnectorsSection() {
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
                 {connectors.map((c) => (
-                  <ConnectorRow key={c.slug} connector={c} />
+                  <ConnectorRow key={c.slug} connector={c} providers={providers} />
                 ))}
               </tbody>
             </table>
@@ -157,7 +177,79 @@ function ConnectorsSection() {
   );
 }
 
-function ConnectorRow({ connector }: { connector: GatewayConnector }) {
+/**
+ * Переключатель исполнителя коннектора. Показывает активные provider_settings
+ * того же `kind` и позволяет назначить дефолтного (`set-default`) — смена
+ * применяется без перезапуска сервиса (VANGA-LLM-2).
+ *
+ * Например у коннектора `ocr` это Tesseract ↔ Yandex Vision, у `llm` —
+ * облако / локальная модель / GPU.
+ *
+ * Провайдеров такого kind нет (сейчас — `asr`, он настраивается через env
+ * inference-service) → честно пишем это, а не рисуем пустой селектор.
+ */
+function ExecutorPicker({
+  connector,
+  providers,
+}: {
+  connector: GatewayConnector;
+  providers: ProviderEntry[];
+}) {
+  const setDefault = useSetDefaultProvider();
+  const [error, setError] = useState<string | null>(null);
+
+  const candidates = useMemo(
+    () => providers.filter((p) => p.kind === connector.provider_kind && p.is_active),
+    [providers, connector.provider_kind],
+  );
+  const current = candidates.find((p) => p.is_default) ?? null;
+
+  if (candidates.length === 0) {
+    return (
+      <span className="text-xs text-slate-400 dark:text-slate-500">
+        настраивается через окружение
+      </span>
+    );
+  }
+
+  return (
+    <div className="space-y-1">
+      <select
+        className="form-select w-48 text-sm"
+        value={current?.id ?? ''}
+        disabled={setDefault.isPending}
+        aria-label={`Исполнитель для «${connector.display_name}»`}
+        onChange={(e) => {
+          const id = e.target.value;
+          if (!id || id === current?.id) return;
+          setError(null);
+          setDefault.mutate(id, {
+            onError: (err) => setError(err instanceof Error ? err.message : String(err)),
+          });
+        }}
+      >
+        {!current && <option value="">— не выбран —</option>}
+        {candidates.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.display_name}
+            {p.model ? ` · ${p.model}` : ''}
+          </option>
+        ))}
+      </select>
+      {error && (
+        <div className="text-xs text-rose-600 dark:text-rose-400">{error}</div>
+      )}
+    </div>
+  );
+}
+
+function ConnectorRow({
+  connector,
+  providers,
+}: {
+  connector: GatewayConnector;
+  providers: ProviderEntry[];
+}) {
   const patch = usePatchConnector();
   const [editing, setEditing] = useState(false);
   const [daily, setDaily] = useState<string>(
@@ -224,6 +316,9 @@ function ConnectorRow({ connector }: { connector: GatewayConnector }) {
           <div className="font-mono text-xs text-slate-500 dark:text-slate-400">
             {connector.slug}
           </div>
+        </td>
+        <td className="px-4 py-2.5">
+          <ExecutorPicker connector={connector} providers={providers} />
         </td>
         <td className="px-4 py-2.5 text-slate-600 dark:text-slate-400">
           {unitLabel(connector.unit_kind)}
@@ -309,7 +404,7 @@ function ConnectorRow({ connector }: { connector: GatewayConnector }) {
       </tr>
       {error && (
         <tr>
-          <td colSpan={6} className="px-4 pb-2">
+          <td colSpan={7} className="px-4 pb-2">
             <div className="error-banner text-xs">{error}</div>
           </td>
         </tr>
