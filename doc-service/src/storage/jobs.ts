@@ -795,14 +795,18 @@ class JobsRepo {
     }
 
     // Сборка scope-фильтра. Кладём в начало параметров, дальше idx сдвигается.
+    // ВАЖНО: prefix `j.` для колонок, потому что by_tier делает LEFT JOIN
+    // с document_types (у них тоже есть organization_id). totalsSql тоже
+    // aliasit jobs как `j`, чтобы whereExtra работал единообразно во всех
+    // четырёх подзапросах.
     const params: unknown[] = [String(windowHours)];
     const scopeWhere: string[] = [];
     if (scope.kind === 'org') {
       params.push(scope.orgId);
-      scopeWhere.push(`organization_id = $${params.length}`);
+      scopeWhere.push(`j.organization_id = $${params.length}`);
     } else if (scope.kind === 'projects') {
       params.push(Array.from(scope.projectIds));
-      scopeWhere.push(`project_id = ANY($${params.length}::uuid[])`);
+      scopeWhere.push(`j.project_id = ANY($${params.length}::uuid[])`);
     }
     const whereExtra = scopeWhere.length ? `AND ${scopeWhere.join(' AND ')}` : '';
 
@@ -840,8 +844,8 @@ class JobsRepo {
           ORDER BY (last_llm_call->>'duration_ms')::int
         ) FILTER (WHERE (last_llm_call->>'duration_ms') IS NOT NULL) AS llm_dur_p95,
         AVG(confidence) FILTER (WHERE status IN ('done','needs_review'))::text AS avg_confidence
-      FROM jobs
-      WHERE created_at >= now() - ($1 || ' hours')::interval
+      FROM jobs j
+      WHERE j.created_at >= now() - ($1 || ' hours')::interval
         ${whereExtra}
     `;
     const totalsRes = await db.query<{
@@ -874,17 +878,21 @@ class JobsRepo {
     //  - by_type   GROUP BY document_type (NULL → '_unknown')
     //  - by_engine GROUP BY ocr_engine    (NULL/'' → '_none')
     //  - by_tier   LEFT JOIN document_types, GROUP BY tier (нет типа → '_untyped')
+    // Все три ветки используют alias `j` для jobs, чтобы избежать ambiguity
+    // при LEFT JOIN'е с document_types (обе таблицы имеют created_at,
+    // organization_id, updated_at). Без квалификации Postgres валился с
+    // "column reference "created_at" is ambiguous" на by_tier.
     const byType = await this.groupBreakdown<'slug'>(
       'slug',
-      `COALESCE(document_type, '_unknown')`,
-      'jobs',
+      `COALESCE(j.document_type, '_unknown')`,
+      'jobs j',
       whereExtra,
       params,
     );
     const byEngine = await this.groupBreakdown<'engine'>(
       'engine',
-      `COALESCE(NULLIF(ocr_engine, ''), '_none')`,
-      'jobs',
+      `COALESCE(NULLIF(j.ocr_engine, ''), '_none')`,
+      'jobs j',
       whereExtra,
       params,
     );
@@ -1058,23 +1066,23 @@ class JobsRepo {
       SELECT
         ${groupExpr}                                                  AS grp,
         COUNT(*)::text                                                AS total,
-        COUNT(*) FILTER (WHERE status = 'done')::text                 AS done,
-        COUNT(*) FILTER (WHERE status = 'needs_review')::text         AS needs_review,
-        COUNT(*) FILTER (WHERE status = 'failed')::text               AS failed,
+        COUNT(*) FILTER (WHERE j.status = 'done')::text               AS done,
+        COUNT(*) FILTER (WHERE j.status = 'needs_review')::text       AS needs_review,
+        COUNT(*) FILTER (WHERE j.status = 'failed')::text             AS failed,
         COUNT(*) FILTER (
-          WHERE extracted ? '_issues'
-            AND jsonb_array_length(COALESCE(extracted->'_issues','[]'::jsonb)) > 0
+          WHERE j.extracted ? '_issues'
+            AND jsonb_array_length(COALESCE(j.extracted->'_issues','[]'::jsonb)) > 0
         )::text                                                       AS validation_issues,
-        COUNT(*) FILTER (WHERE last_llm_call IS NOT NULL)::text       AS llm_used,
+        COUNT(*) FILTER (WHERE j.last_llm_call IS NOT NULL)::text     AS llm_used,
         percentile_cont(0.5) WITHIN GROUP (
-          ORDER BY EXTRACT(EPOCH FROM (finished_at - created_at)) * 1000
-        ) FILTER (WHERE finished_at IS NOT NULL)                      AS lat_p50,
+          ORDER BY EXTRACT(EPOCH FROM (j.finished_at - j.created_at)) * 1000
+        ) FILTER (WHERE j.finished_at IS NOT NULL)                    AS lat_p50,
         percentile_cont(0.95) WITHIN GROUP (
-          ORDER BY EXTRACT(EPOCH FROM (finished_at - created_at)) * 1000
-        ) FILTER (WHERE finished_at IS NOT NULL)                      AS lat_p95,
-        AVG(confidence) FILTER (WHERE status IN ('done','needs_review'))::text AS avg_confidence
+          ORDER BY EXTRACT(EPOCH FROM (j.finished_at - j.created_at)) * 1000
+        ) FILTER (WHERE j.finished_at IS NOT NULL)                    AS lat_p95,
+        AVG(j.confidence) FILTER (WHERE j.status IN ('done','needs_review'))::text AS avg_confidence
       FROM ${from}
-      WHERE created_at >= now() - ($1 || ' hours')::interval
+      WHERE j.created_at >= now() - ($1 || ' hours')::interval
         ${whereExtra}
       GROUP BY 1
       ORDER BY COUNT(*) DESC, grp ASC
