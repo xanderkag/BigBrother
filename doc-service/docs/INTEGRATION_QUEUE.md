@@ -48,9 +48,79 @@
 
 ## Active Questions
 
+### Q-REDELIVER-1. Переотдача 30 «пустых» инвойсов webhook'ом (Q16 branch)
+
+- **Status:** `OPEN` (To: PARSDOCS_DEV — реализовать batch-переотдачу; SLAI ack получен).
+- **Asked:** 2026-07-08 (SLAI reply на сверку 2026-07-07)
+- **From:** SLAI_DEV → PARSDOCS_DEV
+- **Что нужно:** переотдать webhook для 30 инвойсов, которые до фикса 8192-токен cap отдавали ПУСТОЕ извлечение (Q16 §Context). Приём у SLAI **идемпотентный по `job_id`** — дублей не создаст, ручные правки не затрёт. Их выбор: не re-pull, а именно webhook-переотдача.
+- **Что сделать:** (1) собрать список 30 `job_id` из БД (те commercial_invoice/invoice, что были пустые до батча 2026-06-30 и переобработаны qwen3.6:27b); (2) скрипт/CLI-вызов для re-delivery (использовать существующий webhook-sweeper или отдельный admin-endpoint); (3) переотдать; (4) пинг SLAI в чате «переотдано».
+- **Связано:** Q16 (закрыт), `PARSDOCS_SVERKA_SLAI_2026-06-30.md` §2, `PARSDOCS_SVERKA_SLAI_2026-07-07.md` §5.B.
+
+#### Resolution
+<пусто — реализация переотдачи не готова>
+
+---
+
+### Q-HSCODE-1. `hs_code` как кросс-док match-ключ (commercial_invoice ↔ packing_list ↔ ГТД)
+
+- **Status:** `DEFERRED` (backlog — sign-off SLAI 2026-07-08: полезно, но не в этот заход; отдельной итерацией после WW-23 демо, тогда и bump 1.3).
+- **Asked:** 2026-06-30 (Q16 §branch) → повторно 2026-07-07 (сверка §5.C)
+- **From:** PARSDOCS_DEV → SLAI_DEV
+- **Ответ SLAI (2026-07-08):** «полезно для ВЭД-цепочки, но не сейчас. Отдельной итерацией после демо, тогда и bump 1.3.»
+- **Что сделать когда переоткроем:** (1) HS-ключ в `_match_signals.hs_codes` для commercial_invoice + packing_list + customs_declaration (нужен свой projector или расширение generic); (2) bump `WEBHOOK_SCHEMA_VERSION` 1.2→1.3 (по политике Q17 MINOR); (3) обновить OpenAPI; (4) сообщить SLAI.
+- **Связано:** Q16, Q17, Q18 (price_list — тот же кросс-док кластер).
+
+#### Resolution
+<отложено до после WW-23 демо; переоткрыть Q как только SLAI даст сигнал>
+
+---
+
+### Q-DOCSTAGE-1. Семантика `document_stage` — copy бывает часто (BL до 7 копий)
+
+- **Status:** `RESOLVED` 2026-07-08 (heads-up SLAI, действий не требует — но полезно помнить в pipeline).
+- **Asked:** 2026-07-07 (сверка §5.G)
+- **From:** PARSDOCS_DEV → SLAI_DEV
+- **Ответ SLAI (2026-07-08):** «В основном `original`, но `copy` реально бывает: по коносаментам до 7 копий на заказ. `draft` редко. Расширять enum не нужно, `copy` в потоке учитывать.»
+- **Импликация для parsdocs:** матч-логика на нашей стороне не строится (это SLAI-side), но при повторных webhook-доставках одного и того же груза с `document_stage=copy` — не создавать дублирующий job (SHA-256 cache должен закрывать). Проверить, что при разных PDF-копиях с идентичным контентом cache-hit срабатывает. **Не обязательство сейчас — verify only.**
+- **Связано:** schema 1.2 (`document_stage` в `_match_signals`), `MATCH_SIGNALS_SCHEMA_VERSION 1.0→1.1`.
+
+#### Resolution
+Ответ SLAI получен; enum не расширяется. Verify cache-hit при copy-документах — вошло в TECH_DEBT «copy-cache».
+
+---
+
+### Q-NEG-SECRET-1. Отдельный webhook_hmac_secret для `slai-negabarit`
+
+- **Status:** `AWAITING-CHANNEL` (SLAI пришлёт secret безопасным каналом; после — applied в БД).
+- **Asked:** 2026-07-07 (сверка §5.F)
+- **From:** PARSDOCS_DEV → SLAI_DEV
+- **Ответ SLAI (2026-07-08):** «Давайте заведём отдельный, так чище. Передадим безопасным каналом, не в переписке.»
+- **Что сделать когда получим:** положить в `organizations.webhook_hmac_secret` для `slai-negabarit` (73d314a6-c6bf-4860-a910-548fb6040d65), убрать global env-fallback для этого tenant'а. Записать в SLAI_SECRETS_INBOX.
+- **Связано:** Q-NEG-1 (RESOLVED 2026-06-01, base provisioning).
+
+#### Resolution
+<пусто — ждём secret от SLAI>
+
+---
+
+### Q-CUTOVER-1. Пилот WW-23 → cutover Asha на корп-прод parsdocs
+
+- **Status:** `SCHEDULED-AFTER-DEMO` (SLAI reply 2026-07-08: точную дату назовут, как зафиксируют показ).
+- **Asked:** 2026-07-07 (сверка §5.A)
+- **From:** PARSDOCS_DEV → SLAI_DEV
+- **Ответ SLAI (2026-07-08):** «Открытых багов за нами не держим. За cutover сразу после демо. Точную дату назовём, как зафиксируем показ.»
+- **Что сделать когда получим дату:** (1) на прод parsdocs (kb-docker) — включить `HYBRID_ROUTING` + `FILE_URL_INGEST` заранее (SLAI разрешил включать когда удобно); (2) активировать `chat` + `embeddings` + `dadata` **одним пакетом** с пингом SLAI за 24-48ч до включения; (3) на нашей стороне — cutover-runbook (ключи, HMAC-секреты обоих sandbox'ов, webhook_url, backup Asha на N дней).
+- **Связано:** SLAI_INTEGRATION_BACKLOG.md §3 (пилот), фича-флаги ROADMAP.md §Готово-но-выключено.
+
+#### Resolution
+<ждём дату демо от SLAI>
+
+---
+
 ### Q19. `unrecognized` состояние + bump `schema_version 1.0 → 1.1` (аддитивно)
 
-- **Status:** `OPEN` (To: SLAI_DEV — подтвердить приём `document_type: null` + чтение флага `unrecognized`. Blocked-on-deploy: поле ещё не в проде, реализуется сейчас. → RESOLVED после (а) деплоя webhook-поля + (б) ack SLAI.)
+- **Status:** `RESOLVED` 2026-07-08 — финал: `document_type: "unknown"` литерал (не `null`), без отдельного флага `unrecognized`. SLAI подтвердил приём + hold-for-manual (SLAI reply 2026-07-08, наш commit `41a256a` + bump 1.2 `2264fbe`).
 - **Asked:** 2026-07-01
 - **From:** PARSDOCS_DEV
 - **To:** SLAI_DEV
@@ -80,7 +150,7 @@
 
 ### Q17. schema_version — drift-маркер состава `extracted` (отдельно от envelope `version`)
 
-- **Status:** `ANSWERED` (sign-off Александра 2026-06-30: **принят отдельный top-level `schema_version`**, старт `"1.0"`, в реализации на стороне backend; To: SLAI_DEV — начать читать ключ + подтвердить трактовку bump'ов)
+- **Status:** `RESOLVED` 2026-07-08 — SLAI начал читать top-level `schema_version` (reply 2026-07-08), подтвердил трактовку: MINOR/PATCH логируем, MAJOR гейтим. Уже добавили лог на матчере, добавляют и на приёме. Текущее значение на проде — `"1.2"` (commit `2264fbe`).
 - **Asked:** 2026-06-30 (микро-сверка SLAI, Q1)
 - **From:** SLAI_DEV
 - **To:** PARSDOCS_DEV / SLAI_DEV
@@ -129,7 +199,7 @@ SLAI валидируют envelope `version` (принимают только `v
 
 ### Q16. commercial_invoice.containers[] не доходит до `_match_signals` + сверка 2026-06-30
 
-- **Status:** `OPEN` (To: CLAUDE / PARSDOCS_DEV — фикс на нашей стороне; одна развилка To: SLAI_DEV)
+- **Status:** `RESOLVED` 2026-07-08 — (1) наш собственный projector для `commercial_invoice` с `collectContainers()` в проде (commit `2264fbe`, `src/pipeline/normalize/match-signals.ts:388-401`); SLAI подтвердил чтение (reply 2026-07-08). (2) Развилка переотдачи 30 пустых инвойсов — SLAI попросил webhook-переотдачу по списку `job_id` (идемпотентно), в работе (см. новый Q-REDELIVER-1). (3) `hs_code` как кросс-док match-ключ — отложен до после WW-23 демо (см. новый Q-HSCODE-1).
 - **Asked:** 2026-06-30
 - **From:** PARSDOCS_DEV
 - **To:** CLAUDE / SLAI_DEV
