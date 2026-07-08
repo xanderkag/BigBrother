@@ -80,12 +80,14 @@ export class HttpLlmClient implements LlmClient {
     reasoning_effort?: string;
     backend?: string;
     base_url?: string;
+    api_key?: string;
   } {
     let out: T & {
       model?: string;
       reasoning_effort?: string;
       backend?: string;
       base_url?: string;
+      api_key?: string;
     } = body;
     if (this.opts.model) out = { ...out, model: this.opts.model };
     // reasoning_effort пробрасываем во ВСЕ вызовы клиента (classify/extract/
@@ -99,6 +101,24 @@ export class HttpLlmClient implements LlmClient {
     if (this.opts.upstreamBaseUrl) {
       out = { ...out, base_url: this.opts.upstreamBaseUrl };
     }
+    // MTI-3 (2026-07-08): унифицируем передачу LLM-ключа. Если opts.apiKey
+    // задан — кладём его в body как `api_key`, чтобы inference-service
+    // мог собрать ephemeral-клиент через `resolve_backend()` под нужный
+    // SDK (Anthropic/OpenAI). Поле `api_key` в inference-schemas.py уже
+    // есть (VANGA-LLM-2 `BackendOverrideMixin`), доп. миграция не нужна.
+    //
+    // При этом `Authorization: Bearer` заголовок сохраняем (dual-write,
+    // back-compat: если у inference установлен API_KEY env для inter-service
+    // auth — Bearer нужен пройти проверку). Отдельным PR разделим два
+    // концепта: `Authorization: Bearer <INFERENCE_API_KEY>` (inter-service)
+    // + `body.api_key` (LLM-ключ). См. `MTI_TZ_2026-05-31.md` §3.1.
+    //
+    // NB: чтобы inference поднял правильный SDK, нужен и `backend` (какой
+    // SDK) — он придёт из VANGA-LLM-2 через opts.backend, если админ
+    // указал `provider_settings.extra.backend`. Без него inference
+    // использует env-default backend, что для локальных моделей корректно
+    // (Ollama api_key не требуется в принципе).
+    if (this.opts.apiKey) out = { ...out, api_key: this.opts.apiKey };
     return out;
   }
 
