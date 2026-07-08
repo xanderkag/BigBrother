@@ -174,6 +174,52 @@ describe('YandexVisionEngine — recognizeText contract', () => {
   });
 });
 
+// Каждая страница — отдельный оплачиваемый POST. Если движок падает на N-й,
+// страницы 1..N-1 уже отправлены и оплачены: он ОБЯЗАН сообщить их число, иначе
+// счётчик не спишет расход, суточный лимит не сдвинется, а ретрай BullMQ
+// отправит и оплатит их заново.
+describe('YandexVisionEngine — pagesSent при падении посреди документа', () => {
+  const ok = () =>
+    reply({ statusCode: 200, json: { result: { textAnnotation: { fullText: 'OK' } } } });
+
+  it('падение на 3-й из 5 страниц → pagesSent = 2 (уже отправлены и оплачены)', async () => {
+    requestMock
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(ok())
+      .mockResolvedValueOnce(reply({ statusCode: 429, text: 'rate limited' }));
+
+    const pages = [
+      await makePng('p1.png'),
+      await makePng('p2.png'),
+      await makePng('p3.png'),
+      await makePng('p4.png'),
+      await makePng('p5.png'),
+    ];
+
+    const err = await engine()
+      .run({ filePath: 'x.pdf', mimeType: 'application/pdf', rasterizedPages: pages })
+      .then(() => null)
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(Error);
+    expect((err as { pagesSent?: number }).pagesSent).toBe(2);
+    // после падения оставшиеся страницы не отправляются
+    expect(requestMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('падение на первой странице → pagesSent = 0', async () => {
+    requestMock.mockResolvedValueOnce(reply({ statusCode: 500, text: 'boom' }));
+    const pages = [await makePng('only.png')];
+
+    const err = await engine()
+      .run({ filePath: 'x.pdf', mimeType: 'application/pdf', rasterizedPages: pages })
+      .then(() => null)
+      .catch((e: unknown) => e);
+
+    expect((err as { pagesSent?: number }).pagesSent).toBe(0);
+  });
+});
+
 describe('YandexVisionEngine — model selection', () => {
   async function modelForRun(
     cfg: ConstructorParameters<typeof YandexVisionEngine>[0],

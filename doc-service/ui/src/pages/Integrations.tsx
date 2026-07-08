@@ -61,6 +61,16 @@ function consumerLabel(consumer: string | null): string {
   return consumer ?? '(root)';
 }
 
+/**
+ * Виды провайдеров, которые реально живут в provider_settings и резолвятся в
+ * рантайме через `findDefault(kind)` — то есть у которых ЕСТЬ что выбирать.
+ * Держать в синхроне с `ProviderKind` (storage/provider-settings.ts).
+ *
+ * Коннектор с другим provider_kind (например `yandex_vision`) имеет ровно
+ * одного исполнителя — ему рисуем прочерк, а не селектор.
+ */
+const SELECTABLE_PROVIDER_KINDS = new Set(['llm', 'ocr', 'dadata', 'yandex_maps']);
+
 export default function IntegrationsPage() {
   const me = useCurrentUser();
 
@@ -223,16 +233,32 @@ function ExecutorPicker({
     return <span className="text-xs text-slate-400 dark:text-slate-500">…</span>;
   }
 
-  // Выбирать не из чего: у коннектора один фиксированный исполнитель
-  // (например `yandex_vision` — это и есть Яндекс). Ставим прочерк, а не
-  // пустой селектор и не «нет провайдеров» — провайдер как раз есть.
-  if (candidates.length === 0) {
+  // Прочерк ставим ТОЛЬКО когда исполнитель у коннектора действительно
+  // фиксирован — то есть его provider_kind вообще не из тех, что живут в
+  // provider_settings (например `yandex_vision`: это и есть Яндекс, выбирать
+  // не из чего).
+  //
+  // Раньше прочерк ставился по «нет кандидатов», и на свежей установке строки
+  // llm/dadata/yandex_maps врали «исполнитель один»: провайдеры dadata и
+  // yandex_maps ничем не засеяны, а засеянные llm приходят is_active=false.
+  // Это маскировало ровно ту misconfiguration, ради которой админ сюда и зашёл.
+  if (!SELECTABLE_PROVIDER_KINDS.has(connector.provider_kind)) {
     return (
       <span
         className="text-slate-400 dark:text-slate-500"
         title="У этой интеграции один исполнитель — выбирать не из чего"
       >
         —
+      </span>
+    );
+  }
+
+  // Вид провайдера настраиваемый, но активных нет → это реальная проблема
+  // конфигурации, о которой надо сказать прямо, а не прятать за прочерком.
+  if (candidates.length === 0) {
+    return (
+      <span className="text-xs text-amber-600 dark:text-amber-400">
+        нет активных провайдеров
       </span>
     );
   }

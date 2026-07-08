@@ -141,9 +141,19 @@ export class YandexVisionEngine implements OcrEngine {
     model: string,
   ): Promise<OcrResult> {
     const pages: Array<{ text: string; confidence: number }> = [];
-    for (const pf of pageFiles) {
-      const buf = await readFile(pf);
-      pages.push(await this.recognize(buf, 'image/png', model));
+    try {
+      for (const pf of pageFiles) {
+        const buf = await readFile(pf);
+        pages.push(await this.recognize(buf, 'image/png', model));
+      }
+    } catch (err) {
+      // Каждая страница — отдельный POST. Упали на N-й → страницы 1..N-1 уже
+      // ушли в Яндекс, распознаны и ОПЛАЧЕНЫ. Если просто пробросить ошибку,
+      // orchestrator ничего не спишет, суточный лимит не сдвинется, а ретрай
+      // BullMQ отправит и оплатит их заново. Сообщаем счёт наружу.
+      throw Object.assign(err instanceof Error ? err : new Error(String(err)), {
+        pagesSent: pages.length,
+      });
     }
 
     const fullText = pages.map((p) => p.text).join('\n\n');

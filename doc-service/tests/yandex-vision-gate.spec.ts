@@ -18,8 +18,13 @@ vi.mock('../src/storage/llm-usage.js', () => ({
   llmGatewayUsageRepo: { record: (...args: unknown[]) => record(...args) },
 }));
 
-const { isYandexVisionAllowed, recordYandexVisionPages, YANDEX_VISION_CONNECTOR, INTERNAL_CONSUMER } =
-  await import('../src/pipeline/ocr/yandex-gate.js');
+const {
+  isYandexVisionAllowed,
+  recordYandexVisionPages,
+  pagesSentFrom,
+  YANDEX_VISION_CONNECTOR,
+  INTERNAL_CONSUMER,
+} = await import('../src/pipeline/ocr/yandex-gate.js');
 
 // Минимальный логгер-заглушка вместо pino.
 const log = { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() } as never;
@@ -90,5 +95,26 @@ describe('recordYandexVisionPages', () => {
     await expect(
       recordYandexVisionPages({ pages: 2, latencyMs: 10, model: 'yandex-vision' }, log),
     ).resolves.toBeUndefined();
+  });
+});
+
+// Страницы, улетевшие до падения движка, обязаны быть списаны — иначе лимит
+// не сдвинется, а ретрай отправит и оплатит их заново.
+describe('pagesSentFrom', () => {
+  it('достаёт число страниц из ошибки, помеченной движком', () => {
+    expect(pagesSentFrom(Object.assign(new Error('429'), { pagesSent: 2 }))).toBe(2);
+  });
+
+  it('0 для обычной ошибки без пометки', () => {
+    expect(pagesSentFrom(new Error('boom'))).toBe(0);
+  });
+
+  it('0 для мусора и нечисловых/отрицательных значений', () => {
+    expect(pagesSentFrom(null)).toBe(0);
+    expect(pagesSentFrom(undefined)).toBe(0);
+    expect(pagesSentFrom('строка')).toBe(0);
+    expect(pagesSentFrom({ pagesSent: 'два' })).toBe(0);
+    expect(pagesSentFrom({ pagesSent: -1 })).toBe(0);
+    expect(pagesSentFrom({ pagesSent: Number.NaN })).toBe(0);
   });
 });

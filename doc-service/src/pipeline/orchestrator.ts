@@ -16,7 +16,11 @@ import { PdfTextEngine } from './ocr/pdf-text.js';
 import { TesseractEngine } from './ocr/tesseract.js';
 import { VisionLlmEngine } from './ocr/vision-llm.js';
 import { YandexVisionEngine } from './ocr/yandex.js';
-import { isYandexVisionAllowed, recordYandexVisionPages } from './ocr/yandex-gate.js';
+import {
+  isYandexVisionAllowed,
+  recordYandexVisionPages,
+  pagesSentFrom,
+} from './ocr/yandex-gate.js';
 import { XlsxEngine } from './ocr/xlsx.js';
 import { DocxEngine } from './ocr/docx.js';
 import { DocEngine } from './ocr/doc.js';
@@ -895,6 +899,7 @@ export async function runOcrChain(
   try {
     for (let i = 0; i < chain.length; i += 1) {
       const engine = chain[i]!;
+      const engineStartedAt = Date.now();
       try {
         const r = await engine.run(ocrInput);
         // Учёт облачного OCR: страницы уже отправлены и оплачены — пишем расход
@@ -938,6 +943,18 @@ export async function runOcrChain(
           return r;
         }
       } catch (err) {
+        // Движок упал — но облачный OCR мог уже отправить (и оплатить) часть
+        // страниц: каждая страница = отдельный POST. Без этого списания
+        // суточный лимит не сдвинется, а ретрай отправит их повторно.
+        if (engine.name === 'yandex') {
+          const sent = pagesSentFrom(err);
+          if (sent > 0) {
+            await recordYandexVisionPages(
+              { pages: sent, latencyMs: Date.now() - engineStartedAt, model: 'yandex-vision' },
+              log,
+            );
+          }
+        }
         const errMsg = err instanceof Error ? err.message : String(err);
         log.warn({ engine: engine.name, err: errMsg, skipped: false }, 'ocr engine failed');
         ocrEngineDurationSeconds.observe({ engine: engine.name, outcome: 'error' }, 0);

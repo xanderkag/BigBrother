@@ -37,6 +37,19 @@ describe('yandex_vision connector migration', () => {
     expect(sql).toMatch(/DELETE FROM gateway_connectors WHERE slug = 'yandex_vision'/);
   });
 
+  it('down сначала сносит зависимые бюджеты (FK без CASCADE), потом коннектор', () => {
+    const down = sql.slice(sql.indexOf('-- Down Migration'));
+    const budgetsIdx = down.indexOf('DELETE FROM gateway_consumer_budgets');
+    const connIdx = down.indexOf('DELETE FROM gateway_connectors');
+    expect(budgetsIdx, 'бюджеты удаляются в down').toBeGreaterThan(-1);
+    expect(budgetsIdx, 'бюджеты — ДО коннектора, иначе foreign key violation').toBeLessThan(connIdx);
+  });
+
+  it('не обещает жёсткий суточный лимит: зафиксировано, что он мягкий', () => {
+    expect(sql).toMatch(/МЯГКИЙ/);
+    expect(sql).toContain('не резервирующий');
+  });
+
   it("unit_kind 'pages' разрешён zod-энумом UnitKind (иначе экран падает целиком)", () => {
     const m = gatewayAdmin.match(/const UnitKind = z\.enum\(\[([^\]]+)\]\)/);
     expect(m, 'UnitKind z.enum найден').not.toBeNull();

@@ -41,6 +41,11 @@ export const INTERNAL_CONSUMER = 'parsdocs';
 /**
  * Разрешён ли сейчас облачный OCR: тумблер коннектора включён И суточный лимит
  * не исчерпан. Fail-closed (см. шапку).
+ *
+ * ⚠ Лимит МЯГКИЙ: проверка одна на джобу, без резервирования, а расход
+ * списывается после прогона документа. Перерасход ограничен примерно
+ * (страниц в документе × параллельных воркеров). Тумблер (`connector_disabled`)
+ * при этом срабатывает жёстко — он не зависит от накопленного расхода.
  */
 export async function isYandexVisionAllowed(log: Logger): Promise<boolean> {
   try {
@@ -71,6 +76,20 @@ export async function isYandexVisionAllowed(log: Logger): Promise<boolean> {
     );
     return false;
   }
+}
+
+/**
+ * Сколько страниц уже улетело в Яндекс к моменту падения движка.
+ *
+ * `YandexVisionEngine.processPages` шлёт по одному POST на страницу и, упав на
+ * N-й, вешает на ошибку `pagesSent = N-1`. Эти страницы распознаны и оплачены —
+ * их обязан списать счётчик, иначе суточный лимит не сдвинется, а ретрай
+ * отправит и оплатит их повторно. Возвращает 0, если поля нет.
+ */
+export function pagesSentFrom(err: unknown): number {
+  if (typeof err !== 'object' || err === null) return 0;
+  const n = (err as { pagesSent?: unknown }).pagesSent;
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0;
 }
 
 /**
