@@ -103,18 +103,22 @@ export type OperationalGroupRow<K extends string> = {
  * Шаг сетки для time-series графика. Цель — ~24-30 бакетов, читаемо на
  * десктопе (>30 → бары становятся тонкими, <20 → «зубчато»).
  *
- *   1h  →  5 min ( 12 бакетов)
- *   24h →  60 min (24)
- *   7d  → 360 min (7×24 / 6 = 28)
- *   30d → 1440 min (30)
+ * Формула: `windowMinutes / TARGET_BUCKETS`, округлённая вверх до ближайшего
+ * «человеческого» шага (5/10/15/30 мин, 1/2/3/6/12 ч, 1/2/3/7 дней) —
+ * иначе на графике 47-минутные бакеты. Для стандартных окон получаем:
  *
- * Для нестандартных windowHours берём ближайший из этих режимов.
+ *   1h  →  5 мин  (12 бакетов)
+ *   24h →  60 мин (24)
+ *   7d  → 360 мин / 6 ч (28)
+ *   30d → 1440 мин / 1 д (30)
+ *   14d → 720 мин / 12 ч (28)   ← нестандартное окно масштабируется
  */
+const NICE_BUCKET_MINUTES = [5, 10, 15, 30, 60, 120, 180, 360, 720, 1440, 2880, 4320, 10080];
+const TARGET_BUCKETS = 28;
+
 function pickBucketMinutes(windowHours: number): number {
-  if (windowHours <= 1) return 5;
-  if (windowHours <= 24) return 60;
-  if (windowHours <= 24 * 7) return 360;
-  return 1440;
+  const target = Math.max(5, (windowHours * 60) / TARGET_BUCKETS);
+  return NICE_BUCKET_MINUTES.find((m) => m >= target) ?? NICE_BUCKET_MINUTES[NICE_BUCKET_MINUTES.length - 1]!;
 }
 
 function emptySummary(windowHours: number): OperationalSummary {
@@ -1051,6 +1055,13 @@ class JobsRepo {
    * для всех разрезов (by_type / by_engine / by_tier) — отличается только
    * выражение группы (`groupExpr`) и FROM/JOIN (`from`). WHERE и params
    * приходят снаружи, чтобы window+scope-фильтр был тем же, что у totals.
+   *
+   * **Квалификация `j.*` обязательна только для by_tier** (LEFT JOIN
+   * document_types, у которого есть overlap: created_at, organization_id,
+   * updated_at). by_type/by_engine — без JOIN'а, ambiguity невозможна. Но
+   * держим `j.*` во всех трёх для единообразия и чтобы при добавлении новых
+   * JOIN'ов автор не наступил на тот же баг (был созревшим с UI-7, коммит
+   * `b4e3ca3`).
    *
    * `groupExpr` и `from` — статические литералы из вызывающего кода (не
    * user-input), параметризуется только window/scope через `params`.

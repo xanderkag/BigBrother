@@ -155,21 +155,33 @@ export default function TimeseriesChart({
           );
         })}
 
-        {/* Бары */}
+        {/* Бары — стек снизу вверх: done, needs_review, failed, «в работе».
+            Стеки заданы декларативно через SEGMENTS: (высота, цвет). Каждый
+            segment получает свой Y-offset как сумму предыдущих, без мутации
+            переменной в JSX (было `cursorY -= h` в связке — фрагильно при
+            перестановке сегментов). */}
         {buckets.map((b, i) => {
           const x = PAD_L + barStep * i + (barStep - barW) / 2;
-          const totalH = (b.total / yMax) * chartH;
-          const doneH = (b.done / yMax) * chartH;
-          const nrH = (b.needs_review / yMax) * chartH;
-          const failedH = (b.failed / yMax) * chartH;
-          // Оставшееся (pending + processing) = total - done - nr - failed
-          const restH = totalH - doneH - nrH - failedH;
-          let cursorY = PAD_T + chartH;
+          const scale = chartH / yMax;
+          const heights = [
+            b.done * scale,
+            b.needs_review * scale,
+            b.failed * scale,
+            // rest = «в очереди/обработке» = total - все остальные
+            (b.total - b.done - b.needs_review - b.failed) * scale,
+          ];
+          const colors = [
+            'fill-emerald-500 dark:fill-emerald-400',
+            'fill-amber-500 dark:fill-amber-400',
+            'fill-rose-500 dark:fill-rose-400',
+            'fill-slate-300 dark:fill-slate-600',
+          ];
+          const baseline = PAD_T + chartH;
           return (
             <g
               key={i}
               onMouseEnter={() => setHoverIdx(i)}
-              className={hoverIdx === i ? 'opacity-100' : hoverIdx === null ? 'opacity-100' : 'opacity-40'}
+              className={hoverIdx === i || hoverIdx === null ? 'opacity-100' : 'opacity-40'}
             >
               {/* невидимый ловец событий на всю высоту столбца */}
               <rect
@@ -179,46 +191,21 @@ export default function TimeseriesChart({
                 height={chartH}
                 fill="transparent"
               />
-              {/* done — самый низ (emerald-500) */}
-              {doneH > 0 && (
-                <rect
-                  x={x}
-                  y={(cursorY -= doneH)}
-                  width={barW}
-                  height={doneH}
-                  className="fill-emerald-500 dark:fill-emerald-400"
-                />
-              )}
-              {/* needs_review (amber-500) */}
-              {nrH > 0 && (
-                <rect
-                  x={x}
-                  y={(cursorY -= nrH)}
-                  width={barW}
-                  height={nrH}
-                  className="fill-amber-500 dark:fill-amber-400"
-                />
-              )}
-              {/* failed (rose-500) */}
-              {failedH > 0 && (
-                <rect
-                  x={x}
-                  y={(cursorY -= failedH)}
-                  width={barW}
-                  height={failedH}
-                  className="fill-rose-500 dark:fill-rose-400"
-                />
-              )}
-              {/* «в очереди/обработке» — серый сверху */}
-              {restH > 0 && (
-                <rect
-                  x={x}
-                  y={(cursorY -= restH)}
-                  width={barW}
-                  height={restH}
-                  className="fill-slate-300 dark:fill-slate-600"
-                />
-              )}
+              {heights.map((h, seg) => {
+                if (h <= 0) return null;
+                // Y = baseline - (сумма высот предыдущих сегментов) - h
+                const stacked = heights.slice(0, seg).reduce((a, v) => a + v, 0);
+                return (
+                  <rect
+                    key={seg}
+                    x={x}
+                    y={baseline - stacked - h}
+                    width={barW}
+                    height={h}
+                    className={colors[seg]}
+                  />
+                );
+              })}
             </g>
           );
         })}
