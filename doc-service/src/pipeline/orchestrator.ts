@@ -26,6 +26,11 @@ import { DocxEngine } from './ocr/docx.js';
 import { DocEngine } from './ocr/doc.js';
 import { XmlEngine } from './ocr/xml.js';
 import { selectOcrChain } from './router.js';
+import {
+  withJobLlmUsage,
+  currentJobLlmUsage,
+  isUsageComplete,
+} from './llm/usage-context.js';
 import { sanitizeText } from './text-sanitize.js';
 import { KeywordClassifier } from './classifier/keywords.js';
 import { LlmDocClassifier, type ClassificationMetadata } from './classifier/llm-classifier.js';
@@ -179,7 +184,34 @@ function roundConf(c: number | null | undefined): number | null {
  * pure functions (`runOcrChain`, `runDocumentPipeline`) are exported so
  * the smoke CLI and integration tests can reuse them without DB plumbing.
  */
+/**
+ * Обёртка учёта токенов. Внутри контекста `HttpLlmClient.post` складывает
+ * `usage` КАЖДОГО ответа inference-service — включая чанки multipass, которые
+ * идут с includeDebug:false и раньше не приносили расход вовсе. Итог пишется в
+ * `jobs.llm_usage` на обоих путях finalize (успех и падение).
+ */
 export async function processJob(
+  jobId: string,
+  log: Logger,
+  opts: { attempt?: number } = {},
+): Promise<void> {
+  const { usage } = await withJobLlmUsage(() => processJobBody(jobId, log, opts));
+  log.info(
+    {
+      job_id: jobId,
+      llm_calls: usage.calls,
+      prompt_tokens: usage.prompt_tokens,
+      output_tokens: usage.output_tokens,
+      // > 0 → суммы неполны (stub/qwen_vl не сообщают usage), и любая
+      // производная ₽/док по этой джобе — нижняя граница.
+      calls_without_usage: usage.calls_without_usage,
+      usage_complete: isUsageComplete(usage),
+    },
+    'job llm usage',
+  );
+}
+
+async function processJobBody(
   jobId: string,
   log: Logger,
   opts: { attempt?: number } = {},
@@ -646,6 +678,7 @@ async function processJobInner(
 
     const updated = await jobsRepo.finalize(jobId, {
       status,
+      llmUsage: currentJobLlmUsage(),
       documentType,
       ocrEngine: ocr.engine,
       rawText: ocr.text,
@@ -796,6 +829,8 @@ async function processJobInner(
     );
     await jobsRepo.finalize(jobId, {
       status: 'failed',
+      // Расход уже понесён — пишем его и на провале.
+      llmUsage: currentJobLlmUsage(),
       error: errMsg,
       ocrEngine: ocr?.engine ?? null,
       rawText: ocr?.text ?? null,

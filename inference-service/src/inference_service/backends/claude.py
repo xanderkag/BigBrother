@@ -32,6 +32,7 @@ from ..prompts.response import normalize_extract_response
 from ..schemas import (
     ClassifyResponse,
     ExtractDebug,
+    Usage,
     ExtractResponse,
     VerifyResponse,
     VisionResponse,
@@ -39,6 +40,13 @@ from ..schemas import (
 from .base import ModelBackend
 
 log = logging.getLogger("inference-service.claude")
+
+
+def _usage_of(u: dict[str, int] | None) -> Usage | None:
+    """Anthropic-usage → наш Usage (input_tokens/output_tokens). None = не сообщён."""
+    if not u:
+        return None
+    return Usage(prompt_tokens=u.get("input_tokens"), output_tokens=u.get("output_tokens"))
 
 
 class ClaudeBackend(ModelBackend):
@@ -100,11 +108,11 @@ class ClaudeBackend(ModelBackend):
         del model_override, reasoning_effort, catalog, file_name, keyword_hint, max_tokens
         async with self._admit():
             prompt = classify_prompts.build(text)
-            raw = await self._complete_text(prompt)
+            raw, usage = await self._complete_with_usage([{"role": "user", "content": prompt}])
             data = _parse_json(raw) or {}
             type_value = data.get("type") if isinstance(data.get("type"), str) else None
             confidence = float(data.get("confidence", 0.0) or 0.0)
-            return ClassifyResponse(type=type_value, confidence=_clamp01(confidence))  # type: ignore[arg-type]
+            return ClassifyResponse(type=type_value, confidence=_clamp01(confidence), usage=_usage_of(usage))  # type: ignore[arg-type]
 
     async def extract(
         self,
@@ -200,6 +208,8 @@ class ClaudeBackend(ModelBackend):
                 field_confidence=field_confidence,
                 issues=[str(i) for i in issues],
                 debug=debug,
+                # Токены — ВСЕГДА, не только при include_debug (см. Usage).
+                usage=_usage_of(usage),
             )
 
     async def vision_ocr(
@@ -232,11 +242,15 @@ class ClaudeBackend(ModelBackend):
         del model_override, reasoning_effort
         prompt = verify_prompts.build(extracted=extracted, raw_text=raw_text)
         async with self._admit():
-            raw = await self._complete_text(prompt)
+            raw, usage = await self._complete_with_usage([{"role": "user", "content": prompt}])
         data = _parse_json(raw) or {}
         normalized = data.get("extracted") if isinstance(data.get("extracted"), dict) else extracted
         issues = data.get("issues") if isinstance(data.get("issues"), list) else []
-        return VerifyResponse(extracted=normalized or extracted, issues=[str(i) for i in issues])
+        return VerifyResponse(
+            extracted=normalized or extracted,
+            issues=[str(i) for i in issues],
+            usage=_usage_of(usage),
+        )
 
     # --- Generation primitives ---
 

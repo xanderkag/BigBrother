@@ -43,6 +43,7 @@ from ..prompts.response import normalize_extract_response
 from ..schemas import (
     ClassifyResponse,
     ExtractDebug,
+    Usage,
     ExtractResponse,
     VerifyResponse,
     VisionResponse,
@@ -50,6 +51,13 @@ from ..schemas import (
 from .base import ModelBackend
 
 log = logging.getLogger("inference-service.openai-compat")
+
+
+def _usage_of(u: dict[str, int] | None) -> Usage | None:
+    """OpenAI-usage → наш Usage. None = сервер не вернул usage (не выдумываем нули)."""
+    if not u:
+        return None
+    return Usage(prompt_tokens=u.get("prompt_tokens"), output_tokens=u.get("completion_tokens"))
 
 
 class OpenAICompatibleBackend(ModelBackend):
@@ -196,7 +204,7 @@ class OpenAICompatibleBackend(ModelBackend):
                 keyword_hint=keyword_hint,
             )
             async with self._admit():
-                raw, _ = await self._complete_with_usage(
+                raw, usage = await self._complete_with_usage(
                     messages,
                     json_mode=False,
                     model_override=model_override,
@@ -208,11 +216,11 @@ class OpenAICompatibleBackend(ModelBackend):
             # выбрала тип (детерминированный temp=0 выбор), 0.0 на unknown/пусто.
             # doc-service всё равно валидирует slug по каталогу и решает финально.
             conf = 0.0 if (slug is None or slug == "unknown") else 1.0
-            return ClassifyResponse(type=slug, confidence=conf)
+            return ClassifyResponse(type=slug, confidence=conf, usage=_usage_of(usage))
 
         prompt = classify_prompts.build(text)
         async with self._admit():
-            raw = await self._complete_text(
+            raw, usage = await self._complete_text_with_usage(
                 prompt,
                 json_mode=True,
                 model_override=model_override,
@@ -221,7 +229,7 @@ class OpenAICompatibleBackend(ModelBackend):
         data = _parse_json(raw) or {}
         type_value = data.get("type") if isinstance(data.get("type"), str) else None
         confidence = _safe_float(data.get("confidence"))
-        return ClassifyResponse(type=type_value, confidence=_clamp01(confidence))  # type: ignore[arg-type]
+        return ClassifyResponse(type=type_value, confidence=_clamp01(confidence), usage=_usage_of(usage))  # type: ignore[arg-type]
 
     async def extract(
         self,
@@ -312,6 +320,9 @@ class OpenAICompatibleBackend(ModelBackend):
             field_confidence=field_confidence,
             issues=[str(i) for i in issues],
             debug=debug,
+            # Токены — ВСЕГДА, не только при include_debug: иначе чанки multipass
+            # (include_debug=False) невидимы и «токены/док» врут.
+            usage=_usage_of(usage),
         )
 
     async def vision_ocr(
@@ -375,7 +386,7 @@ class OpenAICompatibleBackend(ModelBackend):
     ) -> VerifyResponse:
         prompt = verify_prompts.build(extracted=extracted, raw_text=raw_text)
         async with self._admit():
-            raw = await self._complete_text(
+            raw, usage = await self._complete_text_with_usage(
                 prompt,
                 json_mode=True,
                 model_override=model_override,
@@ -384,7 +395,11 @@ class OpenAICompatibleBackend(ModelBackend):
         data = _parse_json(raw) or {}
         normalized = data.get("extracted") if isinstance(data.get("extracted"), dict) else extracted
         issues = data.get("issues") if isinstance(data.get("issues"), list) else []
-        return VerifyResponse(extracted=normalized or extracted, issues=[str(i) for i in issues])
+        return VerifyResponse(
+            extracted=normalized or extracted,
+            issues=[str(i) for i in issues],
+            usage=_usage_of(usage),
+        )
 
     # --- Generation primitives ---
 

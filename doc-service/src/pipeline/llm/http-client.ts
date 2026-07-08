@@ -11,6 +11,7 @@ import type {
 } from './types.js';
 import type { DocumentTypeSlug } from '../../types/documents.js';
 import { llmCallDurationSeconds, llmCallsTotal } from '../../metrics.js';
+import { addLlmUsage, type LlmCallUsage } from './usage-context.js';
 
 export type HttpLlmClientOptions = {
   baseUrl: string;
@@ -206,7 +207,14 @@ export class HttpLlmClient implements LlmClient {
         throw new Error(`LLM ${path} ${res.statusCode}: ${text.slice(0, 500)}`);
       }
       llmCallsTotal.inc({ endpoint: endpointLabel, outcome: 'success' });
-      return (await res.body.json()) as T;
+      const json = (await res.body.json()) as T & { usage?: LlmCallUsage | null };
+      // Учёт токенов джобы. Единственная точка, через которую проходят ВСЕ
+      // ответы inference-service — включая чанки multipass, которые идут с
+      // includeDebug:false и раньше не приносили расход вовсе. Вне контекста
+      // джобы (smoke-CLI, тесты) — no-op. Ответ без `usage` (stub/qwen_vl)
+      // помечается неизмеренным, а не нулевым.
+      addLlmUsage(json?.usage);
+      return json;
     } catch (err) {
       // Network / timeout — already counted above when the response came
       // back with a >=400 status. Here we only count the path where the

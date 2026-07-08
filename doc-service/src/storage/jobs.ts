@@ -2,6 +2,7 @@ import { db } from '../db.js';
 import { normalizeExtracted } from './normalize-extracted.js';
 import { normalizeSlugForApi } from '../types/slug-normalize.js';
 import { stripInlineCredentials } from '../pipeline/llm/inline-credentials.js';
+import type { JobLlmUsage } from '../pipeline/llm/usage-context.js';
 import type { ClassificationMetadata } from '../pipeline/classifier/llm-classifier.js';
 import type { DocumentTypeSlug, JobStatus, OcrEngineName } from '../types/documents.js';
 
@@ -194,6 +195,8 @@ export type JobRow = {
    */
   file_sha256: string | null;
   last_llm_call: LlmCallTrace | null;
+  /** Суммарный расход токенов за джобу (см. миграцию 20260708000001). */
+  llm_usage: JobLlmUsage | null;
   /** Tenant scope — заполняется при create, обязательное поле в БД. */
   organization_id: string;
   project_id: string;
@@ -277,6 +280,12 @@ export type ListFilters = {
 
 export type ProcessingUpdate = {
   status: JobStatus;
+  /**
+   * Суммарный расход токенов за джобу (все LLM-вызовы: classify + проходы
+   * extract + verify + vision). `undefined` = не трогать колонку.
+   * `calls_without_usage > 0` → суммы неполны, см. usage-context.ts.
+   */
+  llmUsage?: JobLlmUsage | null;
   documentType?: DocumentTypeSlug | null;
   ocrEngine?: OcrEngineName | null;
   rawText?: string | null;
@@ -431,6 +440,9 @@ class JobsRepo {
     // «обновлять ли поле вообще».
     const llmCallProvided = update.llmCall !== undefined;
     const llmCallJson = update.llmCall == null ? null : JSON.stringify(update.llmCall);
+    // Та же семантика для llm_usage: undefined → не трогать, null → очистить.
+    const llmUsageProvided = update.llmUsage !== undefined;
+    const llmUsageJson = update.llmUsage == null ? null : JSON.stringify(update.llmUsage);
     const { rows } = await db.query<JobRow>(
       `UPDATE jobs SET
          status        = $2,
@@ -441,6 +453,7 @@ class JobsRepo {
          extracted     = COALESCE($7::jsonb, extracted),
          error         = $8,
          last_llm_call = CASE WHEN $10::boolean THEN $9::jsonb ELSE last_llm_call END,
+         llm_usage     = CASE WHEN $12::boolean THEN $11::jsonb ELSE llm_usage END,
          finished_at   = now()
        WHERE id = $1
        RETURNING *`,
@@ -455,6 +468,8 @@ class JobsRepo {
         update.error ?? null,
         llmCallJson,
         llmCallProvided,
+        llmUsageJson,
+        llmUsageProvided,
       ],
     );
     return rows[0] ?? null;

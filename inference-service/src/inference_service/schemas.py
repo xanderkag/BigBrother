@@ -23,6 +23,27 @@ class BackendOverrideMixin(BaseModel):
     api_key: str | None = None
 
 
+class Usage(BaseModel):
+    """Токены ОДНОГО вызова модели.
+
+    Отдаётся ВСЕГДА, независимо от `include_debug`.
+
+    Зачем так: раньше токены жили только внутри `ExtractDebug`, а
+    `multipass-llm.ts` гонит Pass 1 (шапку) с `include_debug=True`, но все N
+    чанков с позициями — с `include_debug=False`. Их расход не возвращался
+    ВООБЩЕ, поэтому «токены на документ» показывали стоимость одной шапки, а
+    занижение росло с числом позиций. Инвойс на 53 позиции считался как один
+    небольшой запрос.
+
+    `None` = backend не сообщает usage (stub, qwen_vl). Потребитель обязан
+    считать такой вызов НЕИЗМЕРЕННЫМ, а не нулевым — иначе счётчик снова
+    начнёт врать, просто тише.
+    """
+
+    prompt_tokens: int | None = None
+    output_tokens: int | None = None
+
+
 # Six builtin types we have hardcoded prompts/schemas for. Used as a hint in
 # /v1/classify response (модель должна выбрать ровно один из них). На /v1/extract
 # hint — свободная строка (`DocumentTypeSlug`), потому что админ может через
@@ -69,6 +90,8 @@ class ClassifyResponse(BaseModel):
     # по-прежнему получают один из 6 literal'ов (все — валидные строки).
     type: DocumentTypeSlug | None
     confidence: float = Field(ge=0.0, le=1.0)
+    # Токены этого вызова; None = backend не сообщает (см. Usage).
+    usage: Usage | None = None
 
 
 # --- /v1/extract ---
@@ -135,6 +158,8 @@ class ExtractResponse(BaseModel):
     field_confidence: dict[str, float] = Field(default_factory=dict)
     issues: list[str] = Field(default_factory=list)
     debug: ExtractDebug | None = None
+    # Токены этого вызова — ВСЕГДА, не только при include_debug (см. Usage).
+    usage: Usage | None = None
 
 
 # --- /v1/vision-ocr ---
@@ -151,6 +176,7 @@ class VisionRequest(BackendOverrideMixin):
 class VisionResponse(BaseModel):
     text: str
     confidence: float = Field(ge=0.0, le=1.0)
+    usage: Usage | None = None
 
 
 # --- /v1/transcribe (ASR) ---
@@ -191,3 +217,4 @@ class VerifyRequest(BackendOverrideMixin):
 class VerifyResponse(BaseModel):
     extracted: dict[str, Any]
     issues: list[str] = Field(default_factory=list)
+    usage: Usage | None = None

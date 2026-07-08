@@ -91,6 +91,37 @@ PII-гард проверен в коде: `router.ts` `PII_DOCUMENT_TYPES={TTN,
 | **₽/мес экстраполяция** | _TBD_ |
 | Точка безубыточности vs L4 (58 500 ₽) | _TBD_ док/мес |
 
+### ✅ Блокер Ф3 ЗАКРЫТ (2026-07-08)
+
+`usage {prompt_tokens, output_tokens}` теперь возвращается в **каждом** ответе
+inference-service (classify / extract / verify / vision), независимо от
+`include_debug`. doc-service складывает расход по **всем** вызовам джобы через
+AsyncLocalStorage и пишет итог в `jobs.llm_usage`:
+
+```json
+{ "calls": 7, "prompt_tokens": 18432, "output_tokens": 2015, "calls_without_usage": 0 }
+```
+
+**Счётчик знает, чего не знает.** Backend без usage (`stub`, `qwen_vl`) попадает
+в `calls_without_usage`, а НЕ считается нулевым. `calls_without_usage > 0` →
+суммы неполны, и ₽/док по такой строке — **нижняя граница**.
+
+Ф3-замер теперь:
+
+```sql
+SELECT
+  count(*)                                                   AS docs,
+  avg((llm_usage->>'prompt_tokens')::bigint)                 AS avg_in,
+  avg((llm_usage->>'output_tokens')::bigint)                 AS avg_out,
+  count(*) FILTER (WHERE (llm_usage->>'calls_without_usage')::int > 0) AS incomplete
+FROM jobs
+WHERE llm_usage IS NOT NULL AND finished_at > now() - interval '7 days';
+```
+
+`incomplete > 0` — цифры считать нельзя, сначала разобраться с backend'ом.
+
+<details><summary>Что было сломано (история)</summary>
+
 ### 🔴 Блокер Ф3: токены multipass-документов сейчас НЕ измеримы
 
 Разобрано по коду 2026-07-07. Наивный источник даёт **систематический недосчёт**:
@@ -116,8 +147,12 @@ PII-гард проверен в коде: `router.ts` `PII_DOCUMENT_TYPES={TTN,
   (включая чанк-проходы);
 - Ф3: агрегировать структурированные логи по `job_id` → настоящие токены/док.
 
-Без этого Ф3 нельзя считать выполненным. Тариф Yandex — из актуального прайса
-AI Studio + Vision на момент замера (см. оговорку про CAPTCHA выше).
+Без этого Ф3 нельзя считать выполненным.
+
+</details>
+
+Тариф Yandex — из актуального прайса AI Studio + Vision на момент замера
+(см. оговорку про CAPTCHA выше).
 
 ---
 
