@@ -89,7 +89,13 @@ export const gatewayKeys = {
 export function useConnectors() {
   return useQuery({
     queryKey: gatewayKeys.connectors(),
-    queryFn: () => api.get<GatewayConnector[]>('/api/v1/gateway/connectors'),
+    // Эндпоинт отдаёт {items: [...]} (ConnectorsResponse в gateway-admin.ts), а
+    // api.get возвращает res.json() как есть — без разворачивания. Раньше это
+    // типизировалось как голый массив: `connectors.map(...)` падал с
+    // «map is not a function» и ронял весь раздел «Коннекторы». Разворачиваем
+    // здесь, чтобы хук возвращал массив, как ожидают все call-site'ы.
+    queryFn: async () =>
+      (await api.get<{ items: GatewayConnector[] }>('/api/v1/gateway/connectors')).items,
     staleTime: 30 * 1000,
   });
 }
@@ -123,9 +129,10 @@ export function usePatchConnector() {
 export function useBudgets(consumer?: string) {
   return useQuery({
     queryKey: gatewayKeys.budgets(consumer),
-    queryFn: () => {
+    // Та же история, что и у useConnectors: BudgetsResponse = {items: [...]}.
+    queryFn: async () => {
       const qs = consumer ? `?consumer=${encodeURIComponent(consumer)}` : '';
-      return api.get<ConsumerBudget[]>(`/api/v1/gateway/budgets${qs}`);
+      return (await api.get<{ items: ConsumerBudget[] }>(`/api/v1/gateway/budgets${qs}`)).items;
     },
     staleTime: 30 * 1000,
   });

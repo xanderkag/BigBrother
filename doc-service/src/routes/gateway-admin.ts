@@ -28,10 +28,9 @@ import { requireSuperAdmin } from '../authz.js';
 
 // Единицы расхода коннекторов. ВАЖНО: это response-схема GET /gateway/connectors —
 // любой коннектор в БД с unit_kind вне этого списка уронит валидацией ВЕСЬ экран
-// «Интеграции». Добавляя коннектор в gateway_connectors, добавь его единицу сюда.
-//   pages   — распознавание (OCR): страница скана
-//   minutes — речь (ASR): минута аудио
-const UnitKind = z.enum(['tokens', 'calls', 'geocodes', 'routes', 'pages', 'minutes']);
+// «Интеграции», а не только свою строку. Добавляя коннектор в gateway_connectors,
+// сначала добавь его единицу сюда.
+const UnitKind = z.enum(['tokens', 'calls', 'geocodes', 'routes']);
 
 const Connector = z.object({
   slug: z.string(),

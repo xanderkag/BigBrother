@@ -110,11 +110,13 @@ export default function IntegrationsPage() {
 function ConnectorsSection() {
   const { data, isLoading, error } = useConnectors();
   const connectors = data ?? [];
-  // Провайдеры нужны, чтобы показать И дать переключить исполнителя коннектора
-  // (например OCR: Tesseract ↔ Yandex Vision). Ошибку списка не роняем на экран —
-  // без него строка просто покажет «—» вместо селектора.
+  // Провайдеры нужны, чтобы показать И дать переключить исполнителя коннектора.
+  // Состояние загрузки прокидываем в строку: пока список не приехал, пустой
+  // массив выглядел бы как «провайдеров нет» и селектор врал бы «настраивается
+  // через окружение» во всех строках сразу.
   const providersQuery = useProviders();
   const providers = providersQuery.data?.items ?? [];
+  const providersLoading = providersQuery.isPending;
 
   return (
     <section className="space-y-3">
@@ -166,7 +168,12 @@ function ConnectorsSection() {
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
                 {connectors.map((c) => (
-                  <ConnectorRow key={c.slug} connector={c} providers={providers} />
+                  <ConnectorRow
+                    key={c.slug}
+                    connector={c}
+                    providers={providers}
+                    providersLoading={providersLoading}
+                  />
                 ))}
               </tbody>
             </table>
@@ -179,21 +186,29 @@ function ConnectorsSection() {
 
 /**
  * Переключатель исполнителя коннектора. Показывает активные provider_settings
- * того же `kind` и позволяет назначить дефолтного (`set-default`) — смена
- * применяется без перезапуска сервиса (VANGA-LLM-2).
+ * того же `kind` и назначает дефолтного (`set-default`) — смена применяется
+ * без перезапуска: `llm` читается через `findDefault('llm')` (VANGA-LLM-2),
+ * `dadata` и `yandex_maps` — через свои `findDefault`.
  *
- * Например у коннектора `ocr` это Tesseract ↔ Yandex Vision, у `llm` —
- * облако / локальная модель / GPU.
+ * ⚠ Не добавляй сюда коннектор, чей `provider_kind` НИКТО не читает через
+ * `findDefault(kind)` в рантайме. Иначе селектор запишет `is_default` в БД,
+ * вернёт 200 — и не изменит ничего. Так было с попыткой завести `ocr`:
+ * OCR-каскад собирается из env (`orchestrator.ts` + `router.ts`), а не из
+ * provider_settings, поэтому «переключение» было бы ложью — и, что хуже,
+ * читалось бы как отключение облачного OCR для ПДн-документов.
  *
- * Провайдеров такого kind нет (сейчас — `asr`, он настраивается через env
- * inference-service) → честно пишем это, а не рисуем пустой селектор.
+ * Нет активных провайдеров этого kind → пишем это прямо, а не рисуем пустой
+ * селектор. Пока список провайдеров грузится — показываем «…», иначе пустой
+ * массив выглядел бы как «провайдеров нет».
  */
 function ExecutorPicker({
   connector,
   providers,
+  providersLoading,
 }: {
   connector: GatewayConnector;
   providers: ProviderEntry[];
+  providersLoading: boolean;
 }) {
   const setDefault = useSetDefaultProvider();
   const [error, setError] = useState<string | null>(null);
@@ -204,10 +219,14 @@ function ExecutorPicker({
   );
   const current = candidates.find((p) => p.is_default) ?? null;
 
+  if (providersLoading) {
+    return <span className="text-xs text-slate-400 dark:text-slate-500">…</span>;
+  }
+
   if (candidates.length === 0) {
     return (
       <span className="text-xs text-slate-400 dark:text-slate-500">
-        настраивается через окружение
+        нет активных провайдеров
       </span>
     );
   }
@@ -246,9 +265,11 @@ function ExecutorPicker({
 function ConnectorRow({
   connector,
   providers,
+  providersLoading,
 }: {
   connector: GatewayConnector;
   providers: ProviderEntry[];
+  providersLoading: boolean;
 }) {
   const patch = usePatchConnector();
   const [editing, setEditing] = useState(false);
@@ -318,7 +339,11 @@ function ConnectorRow({
           </div>
         </td>
         <td className="px-4 py-2.5">
-          <ExecutorPicker connector={connector} providers={providers} />
+          <ExecutorPicker
+            connector={connector}
+            providers={providers}
+            providersLoading={providersLoading}
+          />
         </td>
         <td className="px-4 py-2.5 text-slate-600 dark:text-slate-400">
           {unitLabel(connector.unit_kind)}
