@@ -20,6 +20,7 @@ import {
   isYandexVisionAllowed,
   recordYandexVisionPages,
   pagesSentFrom,
+  resolveYandexVisionCredentials,
 } from './ocr/yandex-gate.js';
 import { XlsxEngine } from './ocr/xlsx.js';
 import { DocxEngine } from './ocr/docx.js';
@@ -875,17 +876,55 @@ export async function runOcrChain(
   log: Logger,
   options: { documentType?: string; disableExternalOcr?: boolean } = {},
 ): Promise<OcrResult> {
+  // Ключ+folder Yandex Vision резолвим из «Провайдеров» (provider_settings,
+  // api_key шифруется at rest) с откатом на env — секрет вводится в интерфейсе,
+  // без правки .env и рестарта. БД трогаем только для mime, которые движок
+  // вообще берёт (pdf/image); для docx/xlsx это лишний запрос, там Yandex не
+  // участвует. Модели/таймаут остаются из env (поведенческие тумблеры).
+  const mightUseYandex =
+    input.mimeType === 'application/pdf' || input.mimeType.startsWith('image/');
+  const yandexCreds = mightUseYandex
+    ? await resolveYandexVisionCredentials(log)
+    : { apiKey: config.yandex.apiKey, folderId: config.yandex.folderId };
+
+  // Пересобираем yandex-движок с резолвнутыми данными, чтобы UI-конфиг делал
+  // его доступным даже когда env пуст. Если оба поля совпали с env — не тратим
+  // аллокацию, гоняем статический массив.
+  const runEngines: readonly OcrEngine[] =
+    yandexCreds.apiKey === config.yandex.apiKey &&
+    yandexCreds.folderId === config.yandex.folderId
+      ? engines
+      : engines.map((e) =>
+          e.name === 'yandex'
+            ? new YandexVisionEngine({
+                ...config.yandex,
+                apiKey: yandexCreds.apiKey,
+                folderId: yandexCreds.folderId,
+              })
+            : e,
+        );
+
   // Рубильник коннектора `yandex_vision` из «Интеграций» + суточный лимит.
   // Спрашиваем БД только если Yandex вообще сконфигурирован (иначе лишний
   // запрос на каждом docx/xlsx). Гейт fail-closed: см. ocr/yandex-gate.ts.
-  const yandexConfigured = engines.some((e) => e.name === 'yandex' && e.isAvailable());
+  const yandexConfigured = runEngines.some((e) => e.name === 'yandex' && e.isAvailable());
+
+  // Ключ есть, но движок недоступен — значит нет folder id. НЕ молчим: иначе
+  // Yandex тихо выпадает из каскада (уходит на tesseract), а оператор не
+  // понимает почему. Fail-safe (наружу ничего не ушло), но требует внимания.
+  if (mightUseYandex && yandexCreds.apiKey && !yandexConfigured) {
+    log.warn(
+      'yandex vision api key resolved but engine unavailable (folder id missing) — cloud OCR skipped',
+    );
+  }
+
   const yandexVisionAllowed = yandexConfigured ? await isYandexVisionAllowed(log) : undefined;
 
   // I8: PII opt-out. Per-job флаг приходит из orchestrator (через metadata),
   // глобальный disableForPii — из env. selectOcrChain выкинет Yandex если
   // что-то из условий совпало. Все фильтры через AND: рубильник может только
   // убрать Yandex, но не вернуть его после PII-фильтра.
-  const chain = selectOcrChain(engines, input, {
+  const chain = selectOcrChain(runEngines, input, {
     documentType: options.documentType,
     disableExternalOcr: options.disableExternalOcr,
     disableYandexForPii: config.yandex.disableForPii,

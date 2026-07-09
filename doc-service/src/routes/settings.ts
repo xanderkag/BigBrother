@@ -4,6 +4,7 @@ import type { ZodTypeProvider } from 'fastify-type-provider-zod';
 import { z } from 'zod';
 import { config } from '../config.js';
 import { bearerAuthHook } from '../auth.js';
+import { resolveYandexVisionCredentials } from '../pipeline/ocr/yandex-gate.js';
 import { ErrorResponse } from '../types/api-schemas.js';
 
 /**
@@ -109,7 +110,12 @@ export async function settingsRoutes(app: FastifyInstance): Promise<void> {
         },
       },
     },
-    async () => ({
+    async (req) => {
+      // Резолвим реальный источник (провайдер в UI → env), а не только env:
+      // иначе панель покажет «выключено», пока UI-ключ уже гонит изображения в
+      // облако — враньё в egress-чувствительную сторону.
+      const yandexCreds = await resolveYandexVisionCredentials(req.log);
+      return {
       service: {
         name: 'doc-service' as const,
         version: '0.1.0',
@@ -140,7 +146,7 @@ export async function settingsRoutes(app: FastifyInstance): Promise<void> {
           url: config.llm.url ?? null,
         },
         yandex_vision: {
-          enabled: !!config.yandex.apiKey && !!config.yandex.folderId,
+          enabled: !!yandexCreds.apiKey && !!yandexCreds.folderId,
           pii_warning:
             'При активном движке изображения уходят в Yandex Cloud. Для документов с ПДн (паспорт водителя в ТТН и т.п.) — держите выключенным.',
         },
@@ -161,7 +167,8 @@ export async function settingsRoutes(app: FastifyInstance): Promise<void> {
         max_upload_mb: config.maxUploadMb,
         max_metadata_bytes: config.maxMetadataBytes,
       },
-    }),
+      };
+    },
   );
 
   r.get(
