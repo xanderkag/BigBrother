@@ -102,7 +102,7 @@ export default function LoginPage() {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="form-input"
-                  placeholder="operator@vanga.local"
+                  placeholder="you@taipit.ru"
                   required
                 />
               </div>
