@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useCurrentUser } from '@/queries/me';
 import {
   useConnectors,
@@ -167,13 +168,13 @@ function ConnectorsSection() {
             <table className="min-w-full text-sm">
               <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500 dark:bg-slate-900/40 dark:text-slate-400">
                 <tr>
-                  <th className="px-4 py-2">Сервис</th>
-                  <th className="px-4 py-2">Исполнитель</th>
-                  <th className="px-4 py-2">Считаем в</th>
-                  <th className="px-4 py-2">Статус</th>
-                  <th className="px-4 py-2">Лимит ключа в сутки</th>
-                  <th className="px-4 py-2">Лимит ключа в месяц</th>
-                  <th className="px-4 py-2"></th>
+                  <th className="px-3 py-2">Сервис</th>
+                  <th className="px-3 py-2">Исполнитель</th>
+                  <th className="px-3 py-2">Считаем&nbsp;в</th>
+                  <th className="px-3 py-2">Статус</th>
+                  <th className="whitespace-nowrap px-3 py-2" title="Суточный лимит расхода ключа">Лимит/сутки</th>
+                  <th className="whitespace-nowrap px-3 py-2" title="Месячный лимит расхода ключа">Лимит/месяц</th>
+                  <th className="px-3 py-2"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
@@ -243,6 +244,21 @@ function ExecutorPicker({
   // yandex_maps ничем не засеяны, а засеянные llm приходят is_active=false.
   // Это маскировало ровно ту misconfiguration, ради которой админ сюда и зашёл.
   if (!SELECTABLE_PROVIDER_KINDS.has(connector.provider_kind)) {
+    // yandex_vision: ключ живёт НЕ здесь, а в отдельной строке провайдера
+    // (вкладка «Провайдеры» → Yandex Vision). Ведём туда прямой ссылкой —
+    // иначе админ ищет поле ключа на этом экране и не находит (частая путаница:
+    // «Яндекс Vision» есть и тут как рубильник, и там как держатель ключа).
+    if (connector.slug === 'yandex_vision') {
+      return (
+        <Link
+          to="/settings/providers"
+          className="text-xs text-indigo-600 hover:underline dark:text-indigo-400"
+          title="Ключ Yandex Vision вводится в «Провайдерах» → Yandex Vision (поле API-ключ)"
+        >
+          ключ — в «Провайдерах» →
+        </Link>
+      );
+    }
     return (
       <span
         className="text-slate-400 dark:text-slate-500"
@@ -362,7 +378,7 @@ function ConnectorRow({
   return (
     <>
       <tr className="hover:bg-slate-50 dark:hover:bg-slate-900/40">
-        <td className="px-4 py-2.5">
+        <td className="px-3 py-2.5">
           <div className="font-medium text-slate-900 dark:text-slate-100">
             {connector.display_name}
           </div>
@@ -370,17 +386,17 @@ function ConnectorRow({
             {connector.slug}
           </div>
         </td>
-        <td className="px-4 py-2.5">
+        <td className="px-3 py-2.5">
           <ExecutorPicker
             connector={connector}
             providers={providers}
             providersLoading={providersLoading}
           />
         </td>
-        <td className="px-4 py-2.5 text-slate-600 dark:text-slate-400">
+        <td className="px-3 py-2.5 text-slate-600 dark:text-slate-400">
           {unitLabel(connector.unit_kind)}
         </td>
-        <td className="px-4 py-2.5">
+        <td className="px-3 py-2.5">
           <button
             type="button"
             onClick={toggleEnabled}
@@ -398,27 +414,27 @@ function ConnectorRow({
         </td>
         {editing ? (
           <>
-            <td className="px-4 py-2.5">
+            <td className="px-3 py-2.5">
               <input
                 type="number"
                 min={0}
-                className="form-input w-32 text-sm tabular-nums"
+                className="form-input w-28 text-sm tabular-nums"
                 value={daily}
                 onChange={(e) => setDaily(e.target.value)}
                 placeholder="без лимита"
               />
             </td>
-            <td className="px-4 py-2.5">
+            <td className="px-3 py-2.5">
               <input
                 type="number"
                 min={0}
-                className="form-input w-32 text-sm tabular-nums"
+                className="form-input w-28 text-sm tabular-nums"
                 value={monthly}
                 onChange={(e) => setMonthly(e.target.value)}
                 placeholder="без лимита"
               />
             </td>
-            <td className="px-4 py-2.5 text-right">
+            <td className="px-3 py-2.5 text-right">
               <div className="flex items-center justify-end gap-1">
                 <button
                   type="button"
@@ -441,13 +457,13 @@ function ConnectorRow({
           </>
         ) : (
           <>
-            <td className="px-4 py-2.5 text-slate-700 dark:text-slate-300">
+            <td className="px-3 py-2.5 text-slate-700 dark:text-slate-300">
               {capCell(connector.daily_cap)}
             </td>
-            <td className="px-4 py-2.5 text-slate-700 dark:text-slate-300">
+            <td className="px-3 py-2.5 text-slate-700 dark:text-slate-300">
               {capCell(connector.monthly_cap)}
             </td>
-            <td className="px-4 py-2.5 text-right">
+            <td className="px-3 py-2.5 text-right">
               <button
                 type="button"
                 className="btn-ghost"
@@ -608,7 +624,7 @@ function BudgetRow({ budget }: { budget: ConsumerBudget }) {
   return (
     <>
       <tr className="hover:bg-slate-50 dark:hover:bg-slate-900/40">
-        <td className="px-4 py-2.5">
+        <td className="px-3 py-2.5">
           {budget.consumer === null ? (
             <span className="font-mono text-xs text-slate-500 dark:text-slate-400" title="Трафик корневого ключа платформы">
               (root)
@@ -619,11 +635,11 @@ function BudgetRow({ budget }: { budget: ConsumerBudget }) {
             </span>
           )}
         </td>
-        <td className="px-4 py-2.5 font-mono text-xs text-slate-600 dark:text-slate-400">
+        <td className="px-3 py-2.5 font-mono text-xs text-slate-600 dark:text-slate-400">
           {budget.connector}
         </td>
         {editing ? (
-          <td className="px-4 py-2.5">
+          <td className="px-3 py-2.5">
             <input
               type="number"
               min={0}
@@ -634,7 +650,7 @@ function BudgetRow({ budget }: { budget: ConsumerBudget }) {
             />
           </td>
         ) : (
-          <td className="px-4 py-2.5 text-slate-700 dark:text-slate-300">
+          <td className="px-3 py-2.5 text-slate-700 dark:text-slate-300">
             {budget.daily_budget === null ? (
               <span className="text-slate-400 dark:text-slate-500">без лимита</span>
             ) : (
@@ -642,7 +658,7 @@ function BudgetRow({ budget }: { budget: ConsumerBudget }) {
             )}
           </td>
         )}
-        <td className="px-4 py-2.5">
+        <td className="px-3 py-2.5">
           <button
             type="button"
             onClick={toggleEnabled}
@@ -662,7 +678,7 @@ function BudgetRow({ budget }: { budget: ConsumerBudget }) {
             </span>
           </button>
         </td>
-        <td className="px-4 py-2.5 text-right">
+        <td className="px-3 py-2.5 text-right">
           {isRoot ? (
             <span className="text-xs text-slate-400 dark:text-slate-500">—</span>
           ) : editing ? (
@@ -1009,7 +1025,7 @@ function UsageSection() {
                       key={`${r.consumer ?? '∅'}::${r.connector}`}
                       className="hover:bg-slate-50 dark:hover:bg-slate-900/40"
                     >
-                      <td className="px-4 py-2.5">
+                      <td className="px-3 py-2.5">
                         {r.consumer === null ? (
                           <span className="font-mono text-xs text-slate-500 dark:text-slate-400" title="Трафик корневого ключа">
                             (root)
@@ -1020,13 +1036,13 @@ function UsageSection() {
                           </span>
                         )}
                       </td>
-                      <td className="px-4 py-2.5 font-mono text-xs text-slate-600 dark:text-slate-400">
+                      <td className="px-3 py-2.5 font-mono text-xs text-slate-600 dark:text-slate-400">
                         {r.connector}
                       </td>
-                      <td className="px-4 py-2.5 text-right tabular-nums text-slate-700 dark:text-slate-300">
+                      <td className="px-3 py-2.5 text-right tabular-nums text-slate-700 dark:text-slate-300">
                         {formatNumber(r.calls)}
                       </td>
-                      <td className="px-4 py-2.5 text-right tabular-nums text-slate-700 dark:text-slate-300">
+                      <td className="px-3 py-2.5 text-right tabular-nums text-slate-700 dark:text-slate-300">
                         {formatNumber(r.units)}
                       </td>
                       <td
