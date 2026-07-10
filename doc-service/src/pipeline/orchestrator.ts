@@ -36,7 +36,7 @@ import { sanitizeText } from './text-sanitize.js';
 import { KeywordClassifier } from './classifier/keywords.js';
 import { LlmDocClassifier, type ClassificationMetadata } from './classifier/llm-classifier.js';
 import { combineConfidence } from './quality.js';
-import { assessQuality, type QualityFactor } from './quality-assessment.js';
+import { assessQuality, countBusinessFields, type QualityFactor } from './quality-assessment.js';
 import { ParsersFactory } from './parsers/index.js';
 import { dynamicLlm } from './llm/provider-resolver.js';
 import type { LlmClient, LlmExtractDebug } from './llm/types.js';
@@ -662,16 +662,13 @@ async function processJobInner(
     } & Record<string, unknown>;
 
     // Empty-extract safety-net: когда auto-requality ВЫКЛЮЧЕН
-    // (config.requality.enabled=false), assessQuality не запускался — ловим
-    // «уверенно 0 полей» здесь, чтобы пустой разбор всё равно ушёл в
-    // needs_review, а не притворился готовым. Когда requality ВКЛЮЧЁН, фактор
-    // `empty_extract` уже в post.validationIssues (см. runDocumentPipeline),
-    // так что здесь не дублируем.
-    const businessFieldsCount = Object.keys(extractedClean).filter(
-      (k) => !k.startsWith('_') && extractedClean[k] !== null && extractedClean[k] !== '',
-    ).length;
+    // (config.requality.enabled=false), assessQuality в runDocumentPipeline не
+    // запускался → requalityFactors пуст. Ловим «уверенно 0 полей» здесь, чтобы
+    // пустой разбор всё равно ушёл в needs_review, а не притворился готовым.
+    // Когда requality ВКЛЮЧЁН, фактор `empty_extract` уже добавлен через
+    // requalityFactors (см. runDocumentPipeline перед return) — не дублируем.
     const emptyExtraction =
-      businessFieldsCount === 0 && !classifyOnly && !config.requality.enabled;
+      countBusinessFields(extractedClean) === 0 && !classifyOnly && !config.requality.enabled;
     if (emptyExtraction) {
       log.warn(
         { jobId, overall_confidence: overall, document_type: post.documentType },
@@ -1483,16 +1480,10 @@ export async function runDocumentPipeline(
       if (canRetry) {
         // Вторая попытка через fallback-провайдер. Fail-soft: если она упала
         // или дала ХУЖЕ (меньше полей) — оставляем оригинальный результат.
+        // `assessment` уже посчитан для original выше — переиспользуем его как
+        // origAssess (тот же `result`), не пересчитываем.
         try {
           const retry = await dynamicLlm.withForceProvider(fallbackId, runParse);
-          const origAssess = assessQuality({
-            extracted: result.extracted,
-            expectedFields: typeConfig!.expectedFields,
-            missing: result.missing,
-            confidence: result.confidence,
-            rawResponse: result.llmCall?.raw_response ?? null,
-            ocrText: rawText,
-          });
           const retryAssess = assessQuality({
             extracted: retry.extracted,
             expectedFields: typeConfig!.expectedFields,
@@ -1504,13 +1495,13 @@ export async function runDocumentPipeline(
           // Берём результат с меньшим score странности (лучше). При равенстве
           // предпочитаем retry только если у него строго больше missing-покрытия.
           const retryBetter =
-            retryAssess.score < origAssess.score ||
-            (retryAssess.score === origAssess.score &&
+            retryAssess.score < assessment.score ||
+            (retryAssess.score === assessment.score &&
               retry.missing.length < result.missing.length);
           log.info(
             {
               ...context,
-              orig_score: origAssess.score,
+              orig_score: assessment.score,
               retry_score: retryAssess.score,
               chosen: retryBetter ? 'retry' : 'original',
               fallback_provider: fallbackId,
@@ -1521,7 +1512,7 @@ export async function runDocumentPipeline(
             result = retry;
             requalityFactors.push(...retryAssess.factors);
           } else {
-            requalityFactors.push(...origAssess.factors);
+            requalityFactors.push(...assessment.factors);
           }
         } catch (err) {
           log.warn(

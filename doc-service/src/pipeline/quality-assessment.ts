@@ -58,12 +58,29 @@ export type QualityInput = {
   ocrText?: string | null;
 };
 
-/** Считает заполненные бизнес-поля верхнего уровня (без служебных `_*`). */
-function countBusinessFields(extracted: Record<string, unknown>): number {
+/**
+ * Считает заполненные бизнес-поля верхнего уровня в extracted, исключая
+ * служебные `_*` (match_signals/field_confidence/issues/...). Пустые значения
+ * (null/undefined/''/пустой массив) не считаются заполненными.
+ *
+ * Единый источник для трёх потребителей: (1) детектор странности здесь,
+ * (2) API-поле `extracted_fields_count` в storage/jobs.ts, (3) safety-net
+ * empty-guard в orchestrator.ts. Раньше было три расходящихся копии —
+ * с разной трактовкой пустых массивов, что давало нестыковку «поле есть в
+ * колонке, но триггерит empty_extract».
+ *
+ * `data`-обёртка ({ data: {...} }) разворачивается — некоторые типы отдают
+ * extracted в такой форме.
+ */
+export function countBusinessFields(extracted: Record<string, unknown>): number {
+  const target =
+    typeof extracted.data === 'object' && extracted.data !== null && !Array.isArray(extracted.data)
+      ? (extracted.data as Record<string, unknown>)
+      : extracted;
   let n = 0;
-  for (const key of Object.keys(extracted)) {
+  for (const key of Object.keys(target)) {
     if (key.startsWith('_')) continue;
-    const v = extracted[key];
+    const v = target[key];
     if (v === null || v === undefined || v === '') continue;
     if (Array.isArray(v) && v.length === 0) continue;
     n += 1;
