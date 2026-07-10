@@ -6,6 +6,7 @@ import {
   gatewayConnectorsRepo,
   consumerBudgetsRepo,
 } from '../storage/gateway-connectors.js';
+import { auditLogRepo } from '../storage/audit-log.js';
 import { ErrorResponse } from '../types/api-schemas.js';
 import { bearerAuthHook } from '../auth.js';
 import { requireSuperAdmin } from '../authz.js';
@@ -180,7 +181,19 @@ export async function gatewayAdminRoutes(app: FastifyInstance): Promise<void> {
     },
     async (req, reply) => {
       if (!requireSuperAdmin(req, reply)) return reply;
+      // before-state для diff (enabled/cap). null → строки не было (create).
+      const before = await gatewayConnectorsRepo.getBySlug(req.params.slug);
       const updated = await gatewayConnectorsRepo.upsert(req.params.slug, req.body);
+      // Аудит: смена рубильника/лимита теперь попадает в «Историю изменений»
+      // карточки. actor='admin' пока общий Bearer (как в provider-settings).
+      await auditLogRepo.append({
+        actor: 'admin',
+        entity: 'gateway_connector',
+        entity_id: req.params.slug,
+        action: before ? 'update' : 'create',
+        before: before as unknown as Record<string, unknown> | null,
+        after: updated as unknown as Record<string, unknown>,
+      });
       return updated;
     },
   );
@@ -230,9 +243,18 @@ export async function gatewayAdminRoutes(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       if (!requireSuperAdmin(req, reply)) return reply;
       const { consumer, connector, daily_budget, enabled } = req.body;
+      const before = await consumerBudgetsRepo.getBudget(consumer, connector);
       const updated = await consumerBudgetsRepo.upsert(consumer, connector, {
         ...(daily_budget !== undefined ? { daily_budget } : {}),
         ...(enabled !== undefined ? { enabled } : {}),
+      });
+      await auditLogRepo.append({
+        actor: 'admin',
+        entity: 'gateway_budget',
+        entity_id: `${consumer}::${connector}`,
+        action: before ? 'update' : 'create',
+        before: before as unknown as Record<string, unknown> | null,
+        after: updated as unknown as Record<string, unknown>,
       });
       return updated;
     },

@@ -11,7 +11,11 @@
 import { useQuery } from '@tanstack/react-query';
 import { api } from '@/lib/api';
 
-export type AuditEntity = 'document_type' | 'provider_setting';
+export type AuditEntity =
+  | 'document_type'
+  | 'provider_setting'
+  | 'gateway_connector'
+  | 'gateway_budget';
 export type AuditAction = 'create' | 'update' | 'delete';
 
 export interface AuditEntry {
@@ -37,7 +41,7 @@ export interface AuditFilters {
   offset?: number;
 }
 
-export function useAuditLog(filters: AuditFilters = {}) {
+export function useAuditLog(filters: AuditFilters = {}, opts: { enabled?: boolean } = {}) {
   const params = new URLSearchParams();
   for (const [k, v] of Object.entries(filters)) {
     if (v !== undefined && v !== null && v !== '') params.set(k, String(v));
@@ -48,5 +52,6 @@ export function useAuditLog(filters: AuditFilters = {}) {
     queryFn: () =>
       api.get<ListResponse>(`/api/v1/audit-log${qs ? '?' + qs : ''}`),
     staleTime: 30_000,
+    enabled: opts.enabled ?? true,
   });
 }

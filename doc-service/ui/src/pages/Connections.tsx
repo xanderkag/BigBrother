@@ -403,7 +403,7 @@ function CardDetails({ provider: p, connector }: { provider: ProviderEntry; conn
       }`}
     >
       {connector && <UsageBlock connector={connector} />}
-      <HistoryBlock provider={p} />
+      <HistoryBlock provider={p} connector={connector} />
     </div>
   );
 }
@@ -446,32 +446,50 @@ function UsageBlock({ connector }: { connector: GatewayConnector }) {
   );
 }
 
-function HistoryBlock({ provider: p }: { provider: ProviderEntry }) {
-  const history = useAuditLog({ entity: 'provider_setting', entity_id: p.id, limit: 5 });
+function HistoryBlock({ provider: p, connector }: { provider: ProviderEntry; connector?: GatewayConnector }) {
+  // Склеиваем два источника: правки провайдера (ключ/модель) и правки коннектора
+  // (рубильник/лимит — теперь логируются, P1). Мержим по времени.
+  const provHist = useAuditLog({ entity: 'provider_setting', entity_id: p.id, limit: 5 });
+  const connHist = useAuditLog(
+    { entity: 'gateway_connector', entity_id: connector?.slug ?? '', limit: 5 },
+    { enabled: !!connector },
+  );
+  const items = useMemo(() => {
+    const merged = [
+      ...(provHist.data?.items ?? []),
+      ...(connector ? connHist.data?.items ?? [] : []),
+    ];
+    return merged.sort((a, b) => (a.at < b.at ? 1 : -1)).slice(0, 6);
+  }, [provHist.data, connHist.data, connector]);
+  const loading = provHist.isLoading || (!!connector && connHist.isLoading);
+
+  const what = (e: (typeof items)[number]): string => {
+    const verb = e.action === 'create' ? 'создан' : e.action === 'delete' ? 'удалён' : 'изменён';
+    const scope = e.entity === 'gateway_connector' ? 'рубильник/лимит' : 'провайдер';
+    return `${scope} ${verb}`;
+  };
+
   return (
     <div>
-        <p className="mb-2 font-mono text-[10.5px] uppercase tracking-wider text-slate-400 dark:text-slate-500">
-          История изменений
-        </p>
-        {history.isLoading ? (
-          <p className="text-xs text-slate-400 dark:text-slate-500">…</p>
-        ) : (history.data?.items?.length ?? 0) === 0 ? (
-          <p className="text-xs text-slate-400 dark:text-slate-500">Изменений не записано.</p>
-        ) : (
-          <ul className="space-y-1 text-[12.5px] text-slate-600 dark:text-slate-300">
-            {history.data!.items.map((e) => (
-              <li key={String(e.id)}>
-                <span className="font-mono text-[11px] text-slate-400 dark:text-slate-500">
-                  {new Date(e.at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
-                </span>{' '}
-                · {e.actor} · {e.action === 'create' ? 'создан' : e.action === 'delete' ? 'удалён' : 'изменён'}
-              </li>
-            ))}
-          </ul>
-        )}
-        <p className="mt-1.5 text-[11px] leading-snug text-slate-400 dark:text-slate-500">
-          ⓘ смена рубильника/лимита пока не логируется
-        </p>
+      <p className="mb-2 font-mono text-[10.5px] uppercase tracking-wider text-slate-400 dark:text-slate-500">
+        История изменений
+      </p>
+      {loading ? (
+        <p className="text-xs text-slate-400 dark:text-slate-500">…</p>
+      ) : items.length === 0 ? (
+        <p className="text-xs text-slate-400 dark:text-slate-500">Изменений не записано.</p>
+      ) : (
+        <ul className="space-y-1 text-[12.5px] text-slate-600 dark:text-slate-300">
+          {items.map((e) => (
+            <li key={`${e.entity}-${String(e.id)}`}>
+              <span className="font-mono text-[11px] text-slate-400 dark:text-slate-500">
+                {new Date(e.at).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+              </span>{' '}
+              · {e.actor} · {what(e)}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

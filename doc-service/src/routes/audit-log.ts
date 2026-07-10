@@ -13,7 +13,12 @@ import { bearerAuthHook } from '../auth.js';
  * — здесь только чтение.
  */
 
-const Entity = z.enum(['document_type', 'provider_setting']);
+const Entity = z.enum([
+  'document_type',
+  'provider_setting',
+  'gateway_connector',
+  'gateway_budget',
+]);
 
 const AuditRow = z.object({
   id: z.number(),

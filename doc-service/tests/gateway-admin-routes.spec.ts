@@ -24,14 +24,22 @@ vi.mock('../src/auth.js', () => ({
 const connectorsRepo = {
   list: vi.fn(),
   upsert: vi.fn(),
+  getBySlug: vi.fn(),
 };
 const budgetsRepo = {
   listByConsumer: vi.fn(),
   upsert: vi.fn(),
+  getBudget: vi.fn(),
 };
 vi.mock('../src/storage/gateway-connectors.js', () => ({
   gatewayConnectorsRepo: connectorsRepo,
   consumerBudgetsRepo: budgetsRepo,
+}));
+
+// P1: PATCH коннектора/бюджета пишет в audit_log (before/after).
+const auditAppend = vi.fn();
+vi.mock('../src/storage/audit-log.js', () => ({
+  auditLogRepo: { append: (...a: unknown[]) => auditAppend(...a) },
 }));
 
 const queryMock = vi.fn();
@@ -169,6 +177,10 @@ describe('PATCH /api/v1/gateway/connectors/:slug', () => {
     });
     expect(r.json().daily_cap).toBe(5000);
     expect(r.json().enabled).toBe(true);
+    // P1: смена рубильника/лимита логируется в audit_log.
+    expect(auditAppend).toHaveBeenCalledWith(
+      expect.objectContaining({ entity: 'gateway_connector', entity_id: 'dadata' }),
+    );
   });
 
   it('daily_cap: null снимает лимит (явный null проброшен)', async () => {
@@ -181,6 +193,9 @@ describe('PATCH /api/v1/gateway/connectors/:slug', () => {
     });
     expect(r.statusCode).toBe(200);
     expect(connectorsRepo.upsert).toHaveBeenCalledWith('dadata', { daily_cap: null });
+    expect(auditAppend).toHaveBeenCalledWith(
+      expect.objectContaining({ entity: 'gateway_connector' }),
+    );
   });
 
   it('пустое тело → 400 (нужно хотя бы одно поле)', async () => {

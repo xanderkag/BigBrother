@@ -17,7 +17,11 @@ import { db } from '../db.js';
  * millisecond keep a stable order.
  */
 
-export type AuditEntity = 'document_type' | 'provider_setting';
+export type AuditEntity =
+  | 'document_type'
+  | 'provider_setting'
+  | 'gateway_connector'
+  | 'gateway_budget';
 export type AuditAction = 'create' | 'update' | 'delete';
 
 export type AuditLogRow = {
