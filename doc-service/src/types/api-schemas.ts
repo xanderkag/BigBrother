@@ -59,6 +59,14 @@ export const Job = z
       .record(z.unknown())
       .nullable()
       .describe('Структурированные данные по схеме типа документа'),
+    extracted_fields_count: z
+      .number()
+      .int()
+      .min(0)
+      .describe(
+        'Число заполненных бизнес-полей верхнего уровня в extracted (без служебных `_*`). ' +
+        'Помогает UI-таблице отличить «уверенно 0 полей» (extract-фейл) от «низкая уверенность но 20 полей».',
+      ),
     validation_issues: z
       .array(z.string())
       .describe(

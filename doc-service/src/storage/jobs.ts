@@ -1282,6 +1282,11 @@ class JobsRepo {
       ocr_engine: row.ocr_engine,
       raw_text: row.raw_text,
       extracted: normalized,
+      // Кол-во бизнес-полей верхнего уровня в extracted (без служебных `_*`).
+      // UI-таблица показывает как быстрый индикатор глубины разбора —
+      // помогает отличить «модель уверена но заполнено 0» от «уверена И
+      // с полями». Считается на границе toApi чтобы не хранить дубль в БД.
+      extracted_fields_count: countExtractedFields(normalized),
       validation_issues: issues,
       // EXT-B: вычищаем reserved-ключ _inline_llm_creds (encrypted BYO-envelope)
       // из любого outbound-представления job'а — он не должен светиться в API.
@@ -1347,6 +1352,32 @@ function splitExtractedAndIssues(
     ? _issues.filter((x): x is string => typeof x === 'string')
     : [];
   return { extracted: rest, issues };
+}
+
+/**
+ * Считает бизнес-поля (top-level keys) в extracted, исключая служебные
+ * `_match_signals`, `_field_confidence`, `_normalized_fields`, `_issues` и
+ * прочие с префиксом `_`. Поддерживает обе формы: (а) плоский `extracted`
+ * (традиция) и (б) обёртка `{ data: {...} }` (некоторые типы возвращают так).
+ *
+ * Полезно чтобы UI-таблица отличала «модель уверенно вернула 0 полей»
+ * (то есть extract-фейл — reasoning bleed или пустой JSON) от «уверенность
+ * низкая, но 20 полей заполнены». Просто по `confidence` это не видно.
+ */
+function countExtractedFields(extracted: Record<string, unknown> | null): number {
+  if (!extracted) return 0;
+  const data =
+    typeof extracted.data === 'object' && extracted.data !== null
+      ? (extracted.data as Record<string, unknown>)
+      : extracted;
+  let n = 0;
+  for (const key of Object.keys(data)) {
+    if (key.startsWith('_')) continue;
+    const v = data[key];
+    if (v === null || v === undefined || v === '') continue;
+    n += 1;
+  }
+  return n;
 }
 
 export const jobsRepo = new JobsRepo();

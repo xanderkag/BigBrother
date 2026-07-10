@@ -673,6 +673,12 @@ export default function JobsListPage() {
                   <th className="px-3 py-2 font-medium">Type</th>
                   <th className="px-3 py-2 font-medium">Status</th>
                   <th className="px-3 py-2 font-medium">Confidence</th>
+                  <th
+                    className="px-3 py-2 text-center font-medium"
+                    title="Кол-во заполненных бизнес-полей верхнего уровня. Помогает отличить «высокая уверенность но 0 полей» (extract-фейл) от реального разбора."
+                  >
+                    Полей
+                  </th>
                   <th className="px-3 py-2 text-center font-medium">Issues</th>
                   <th
                     className="hidden px-3 py-2 text-right font-medium lg:table-cell"
@@ -1272,6 +1278,12 @@ function JobRow({
         <ConfidenceBar value={job.confidence !== null ? Number(job.confidence) : null} />
       </td>
 
+      {/* FIELDS EXTRACTED — визуальный сигнал глубины разбора. 0 полей на
+          done-документе = extract-фейл (модель уверенно вернула пустоту). */}
+      <td className="px-3 py-2 text-center">
+        <FieldsCountChip count={job.extracted_fields_count ?? null} status={job.status} />
+      </td>
+
       {/* ISSUES */}
       <td className="px-3 py-2 text-center">
         {amounts.issuesCount > 0 ? (
@@ -1419,8 +1431,13 @@ function JobCard({
             )}
           </div>
 
-          {/* Confidence */}
-          <ConfidenceBar value={job.confidence !== null ? Number(job.confidence) : null} />
+          {/* Confidence + кол-во полей — читаются вместе */}
+          <div className="flex items-center gap-3">
+            <div className="flex-1">
+              <ConfidenceBar value={job.confidence !== null ? Number(job.confidence) : null} />
+            </div>
+            <FieldsCountChip count={job.extracted_fields_count ?? null} status={job.status} />
+          </div>
 
           {/* Метаданные: время разбора · движок · возраст */}
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11px] text-slate-500 dark:text-slate-400">
@@ -1651,5 +1668,43 @@ function BulkBar({
         ✕ Снять выбор
       </button>
     </div>
+  );
+}
+
+/**
+ * Кол-во заполненных бизнес-полей в extracted. Красный при 0 на терминальном
+ * done-документе (extract-фейл), янтарный при 1-5 (частичный), зелёный при 6+,
+ * тире для in-flight/pending. Дополняет ConfidenceBar: помогает поймать
+ * «уверенно 0» — модель ответила пустотой, а confidence всё равно 0.7+.
+ */
+function FieldsCountChip({
+  count,
+  status,
+}: {
+  count: number | null;
+  status: string;
+}): React.ReactElement {
+  if (count === null || status === 'pending' || status === 'processing') {
+    return <span className="text-slate-300 dark:text-slate-700">—</span>;
+  }
+  const terminal = status === 'done' || status === 'approved' || status === 'needs_review';
+  const cls =
+    !terminal
+      ? 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400'
+      : count === 0
+      ? 'bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-300'
+      : count <= 5
+      ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
+      : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300';
+  const title = count === 0
+    ? 'Модель отдала пустой JSON — extract-фейл. Проверьте raw_text или запустите reprocess.'
+    : `${count} полей извлечено`;
+  return (
+    <span
+      className={`inline-flex h-5 min-w-[24px] items-center justify-center rounded-sm px-1.5 font-mono text-xs font-medium ${cls}`}
+      title={title}
+    >
+      {count}
+    </span>
   );
 }

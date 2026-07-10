@@ -1410,11 +1410,16 @@ export async function runDocumentPipeline(
       });
 
     const tParser = Date.now();
-    // При hybrid-vision прогоняем extract через designated vision-провайдера
-    // (ALS-override). withForceProvider fail-soft'нет на default если id не
-    // резолвится — но мы уже проверили резолв выше, так что это безопасно.
-    const result = forceVisionProviderId
-      ? await dynamicLlm.withForceProvider(forceVisionProviderId, runParse)
+    // Adaptive-model routing (2026-07-09): per-type preferred_provider_id из
+    // document_types.metadata. Порядок приоритета для extract'а:
+    //   1. Vision path (hybrid + скан) — highest
+    //   2. Per-type preferred provider (например customs_declaration → Ollama
+    //      с 32k context для длинных items[]; лёгкие типы → vLLM 8k быстрый)
+    //   3. Default provider
+    // withForceProvider fail-soft'нет на default если id не резолвится.
+    const extractProviderId = forceVisionProviderId ?? typeConfig!.preferredProviderId;
+    const result = extractProviderId
+      ? await dynamicLlm.withForceProvider(extractProviderId, runParse)
       : await runParse();
     const parserMs = Date.now() - tParser;
     if (timings) timings.extract_ms = parserMs;

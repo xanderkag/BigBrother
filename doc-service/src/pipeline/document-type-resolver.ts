@@ -76,6 +76,14 @@ export type ResolvedTypeConfig = {
    * чистом text-слое. Fallback (row=null) → false. Гейтится HYBRID_ROUTING_ENABLED.
    */
   preferVision: boolean;
+  /**
+   * Adaptive-model routing (2026-07-09): id LLM-провайдера для extract'а
+   * этого типа документа. Читается из `metadata.preferred_provider_id`
+   * (JSONB). Use-case: тяжёлые ГТД с длинными items[] уходят на Ollama
+   * (context 32k), лёгкие BL/invoice — на vLLM (context 8k, но 40× быстрее).
+   * `null` = используем дефолтного провайдера (без override).
+   */
+  preferredProviderId: string | null;
   /** Whether this config was DB-sourced or fully built from fallbacks. */
   source: 'db' | 'fallback';
 };
@@ -292,6 +300,7 @@ export function resolveConfigFromRow(
       resolutionConfig: null,
       tier: 'experimental',
       preferVision: false,
+      preferredProviderId: null,
       source: 'fallback',
     };
   }
@@ -319,6 +328,19 @@ export function resolveConfigFromRow(
     // колонки — деградируем в 'experimental'.
     tier: (row.tier ?? 'experimental') as DocumentTypeTier,
     preferVision: row.prefer_vision === true,
+    preferredProviderId: readPreferredProviderId(row.metadata),
     source: 'db',
   };
+}
+
+/**
+ * Читает `preferred_provider_id` из document_types.metadata (JSONB).
+ * Возвращает id провайдера, если задан непустой строкой, иначе null.
+ * Валидность провайдера (существует ли, active?) проверяется на runtime
+ * в `dynamicLlm.probeForceProvider()` — тут мы просто извлекаем строку.
+ */
+function readPreferredProviderId(metadata: Record<string, unknown> | null | undefined): string | null {
+  if (!metadata) return null;
+  const v = metadata.preferred_provider_id;
+  return typeof v === 'string' && v.length > 0 ? v : null;
 }

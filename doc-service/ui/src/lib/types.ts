@@ -32,6 +32,8 @@ export interface Job {
   raw_text: string | null;
   confidence: number | null;
   extracted: Record<string, unknown> | null;
+  /** Кол-во заполненных бизнес-полей верхнего уровня (без `_*`). */
+  extracted_fields_count?: number;
   metadata: Record<string, unknown> | null;
   webhook_url: string | null;
   webhook_attempts: number;
