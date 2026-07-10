@@ -337,6 +337,21 @@ function ProviderEditor({
       return { ...d, extra: Object.keys(next).length > 0 ? next : null };
     });
 
+  // «Ты же знаешь адреса» — пресет Yandex AI Studio: заполняет всё, что
+  // одинаково для всех (бэкенд + upstream), модель — шаблон (folder/model свои).
+  // Base URL не трогаем: это адрес inference, берётся из env.
+  const applyYandexAiStudioPreset = () =>
+    setDraft((d) => ({
+      ...d,
+      display_name: d.display_name || 'Yandex AI Studio',
+      model: d.model || 'gpt://<folder-id>/<model-id>/latest',
+      extra: {
+        ...(d.extra ?? {}),
+        backend: 'openai_compat',
+        upstream_base_url: 'https://llm.api.cloud.yandex.net/v1',
+      },
+    }));
+
   const save = async () => {
     setError(null);
     try {
@@ -432,6 +447,14 @@ function ProviderEditor({
         </div>
 
         <div className="card-body grid flex-1 grid-cols-1 gap-4 overflow-auto sm:grid-cols-2">
+          {draft.kind === 'ocr' && (
+            <div className="sm:col-span-2 rounded-md bg-sky-50 px-3 py-2 text-xs text-sky-800 dark:bg-sky-950/40 dark:text-sky-200">
+              <b>Yandex Vision OCR.</b> Адрес (<code>ocr.api.cloud.yandex.net</code>) и
+              folder (env <code>YANDEX_FOLDER_ID</code>) задаёт платформа — тут ничего
+              вписывать не нужно. Достаточно вставить <b>API-ключ</b> и включить{' '}
+              <b>Активен</b>. Base URL и Модель для OCR не используются.
+            </div>
+          )}
           <div>
             <label className="form-label">ID</label>
             <input
@@ -485,16 +508,23 @@ function ProviderEditor({
             />
           </div>
 
-          <div className="sm:col-span-2">
-            <label className="form-label">Base URL</label>
-            <input
-              type="url"
-              className="form-input font-mono text-sm"
-              value={draft.base_url}
-              onChange={(e) => setDraft((d) => ({ ...d, base_url: e.target.value }))}
-              placeholder="https://api.anthropic.com"
-            />
-          </div>
+          {draft.kind !== 'ocr' && (
+            <div className="sm:col-span-2">
+              <label className="form-label">
+                Base URL{' '}
+                <span className="text-xs font-normal text-slate-500 dark:text-slate-400">
+                  (адрес inference — обычно пусто, берётся из env)
+                </span>
+              </label>
+              <input
+                type="url"
+                className="form-input font-mono text-sm"
+                value={draft.base_url}
+                onChange={(e) => setDraft((d) => ({ ...d, base_url: e.target.value }))}
+                placeholder="пусто = inference из env"
+              />
+            </div>
+          )}
 
           <div className="sm:col-span-2">
             <label className="form-label">
@@ -576,16 +606,22 @@ function ProviderEditor({
             </div>
           )}
 
-          <div>
-            <label className="form-label">Модель (для LLM)</label>
-            <input
-              type="text"
-              className="form-input font-mono text-sm"
-              value={draft.model}
-              onChange={(e) => setDraft((d) => ({ ...d, model: e.target.value }))}
-              placeholder="claude-sonnet-4-6"
-            />
-          </div>
+          {draft.kind !== 'ocr' && (
+            <div>
+              <label className="form-label">Модель (для LLM)</label>
+              <input
+                type="text"
+                className="form-input font-mono text-sm"
+                value={draft.model}
+                onChange={(e) => setDraft((d) => ({ ...d, model: e.target.value }))}
+                placeholder={
+                  extraStr('upstream_base_url').includes('yandex')
+                    ? 'gpt://<folder-id>/<model-id>/latest'
+                    : 'claude-sonnet-4-6'
+                }
+              />
+            </div>
+          )}
           <div className="flex items-end">
             <label className="flex items-center gap-2 text-sm">
               <input
@@ -602,6 +638,18 @@ function ProviderEditor({
 
           {draft.kind === 'llm' && (
             <>
+              <div className="sm:col-span-2 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  className="btn-ghost text-xs"
+                  onClick={applyYandexAiStudioPreset}
+                >
+                  ⚡ Подставить Yandex AI Studio
+                </button>
+                <span className="text-xs text-slate-500 dark:text-slate-400">
+                  заполнит бэкенд + upstream; впиши folder/model в «Модель» и ключ в «API key»
+                </span>
+              </div>
               <div>
                 <label className="form-label">Бэкенд (маршрут inference)</label>
                 <select
