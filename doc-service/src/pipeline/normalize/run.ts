@@ -38,6 +38,7 @@
  */
 import type { Logger } from 'pino';
 import { recoverPartyInnsFromText } from './inn-recovery.js';
+import { relocateOgrnFromInn } from './ogrn-relocate.js';
 import { recoverContainersFromText } from './container-recovery.js';
 import { normalizeExtractedFields } from './extracted-fields.js';
 import { recomputeTotalsFromItems, deriveHeaderTotals } from './totals.js';
@@ -55,6 +56,12 @@ export async function runPostExtractNormalization(
   if (!extracted) return extracted;
 
   let result: Record<string, unknown> | null = extracted;
+
+  // F0a: перенести 13/15-значный ОГРН из inn в ogrn. До F0-inn-recovery,
+  // чтобы recovery добивал inn в уже освобождённое поле, а не спотыкался о
+  // засевший там ОГРН. Детерминированно, по всем сторонам всех типов.
+  const ogrnFixed = relocateOgrnFromInn(result);
+  if (ogrnFixed && ogrnFixed !== result) result = ogrnFixed;
 
   // F0: добить ИНН сторон из raw_text по меткам, если модель их пропустила.
   // До F1 — чтобы F1 подхватил добитый ИНН в _normalized_fields.
