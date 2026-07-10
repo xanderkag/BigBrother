@@ -11,12 +11,13 @@ import { useCurrentUser } from '@/queries/me';
  *   /settings/audit        → Журнал аудита
  *   /settings/lab          → Тест-лаборатория
  */
+// P0 IA-пересборка: 5 табов → 3. «Провайдеры/модели» + «Интеграции» слиты в
+// «Подключения» (главный экран). «Журнал аудита» растворён в «Историю» внутри
+// карточек + демо-ссылку на «Инстансе». Старые URL остаются рабочими (fallback).
 const TABS: { to: string; label: string; end?: boolean; superAdmin?: boolean }[] = [
-  { to: '/settings', label: 'Общие', end: true },
-  { to: '/settings/providers', label: 'Провайдеры/модели' },
-  { to: '/settings/integrations', label: 'Интеграции', superAdmin: true },
-  { to: '/settings/audit', label: 'Журнал аудита' },
-  { to: '/settings/lab', label: 'Тест-лаборатория' },
+  { to: '/settings', label: 'Подключения', end: true },
+  { to: '/settings/instance', label: 'Инстанс' },
+  { to: '/settings/lab', label: 'Пробный разбор' },
 ];
 
 export default function SettingsHub() {

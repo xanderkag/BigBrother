@@ -55,7 +55,8 @@ export interface UsageGroup {
 }
 
 export interface UsageDailyRow {
-  date: string;
+  /** День (YYYY-MM-DD). Бэкенд отдаёт поле `day` (gateway-admin.ts). */
+  day: string;
   consumer?: string | null;
   connector?: string;
   status?: string;

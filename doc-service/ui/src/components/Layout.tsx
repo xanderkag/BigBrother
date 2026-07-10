@@ -545,10 +545,12 @@ function buildCrumbs(pathname: string): Crumb[] {
     access: 'Доступ',
     'reference-lists': 'Справочники',
     settings: 'Настройки',
+    instance: 'Инстанс',
+    connections: 'Подключения',
     providers: 'Провайдеры/модели',
     integrations: 'Интеграции',
-    audit: 'Журнал аудита',
-    lab: 'Тест-лаборатория',
+    audit: 'История изменений',
+    lab: 'Пробный разбор',
   };
   return parts.map((p, i) => {
     const isLast = i === parts.length - 1;

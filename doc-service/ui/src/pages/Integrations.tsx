@@ -1100,11 +1100,11 @@ function TotalCard({
 }
 
 /** Маленький столбчатый «спарклайн» по дням (units суммарно). */
-function DailySparkline({ daily }: { daily: { date: string; units?: number; calls?: number }[] }) {
+function DailySparkline({ daily }: { daily: { day: string; units?: number; calls?: number }[] }) {
   const byDate = useMemo(() => {
     const map = new Map<string, number>();
     for (const d of daily) {
-      map.set(d.date, (map.get(d.date) ?? 0) + (d.units ?? d.calls ?? 0));
+      map.set(d.day, (map.get(d.day) ?? 0) + (d.units ?? d.calls ?? 0));
     }
     return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   }, [daily]);

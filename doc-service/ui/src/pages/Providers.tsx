@@ -274,7 +274,7 @@ interface DraftForm {
   extra: Record<string, unknown> | null;
 }
 
-function ProviderEditor({
+export function ProviderEditor({
   initial,
   isNew,
   onClose,

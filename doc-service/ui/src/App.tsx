@@ -11,6 +11,7 @@ import ReviewQueuePage from '@/pages/ReviewQueue';
 import DocumentTypesPage from '@/pages/DocumentTypes';
 import ProvidersPage from '@/pages/Providers';
 import IntegrationsPage from '@/pages/Integrations';
+import ConnectionsPage from '@/pages/Connections';
 import AuditLogPage from '@/pages/AuditLog';
 import SettingsPage from '@/pages/Settings';
 import SettingsHub from '@/pages/SettingsHub';
@@ -106,7 +107,11 @@ export default function App() {
                     </RequireRole>
                   }
                 >
-                  <Route index element={<SettingsPage />} />
+                  {/* P0 IA: «Подключения» — новый главный экран (слияние
+                      Провайдеры + Интеграции). «Общие» → /instance. Старые
+                      страницы остаются по URL как fallback/power-view. */}
+                  <Route index element={<ConnectionsPage />} />
+                  <Route path="instance" element={<SettingsPage />} />
                   <Route path="providers" element={<ProvidersPage />} />
                   <Route path="integrations" element={<IntegrationsPage />} />
                   <Route path="audit" element={<AuditLogPage />} />
