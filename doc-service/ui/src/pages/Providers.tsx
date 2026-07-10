@@ -321,6 +321,22 @@ function ProviderEditor({
     return base;
   };
 
+  // Дружелюбные поля VANGA-LLM-2 (backend / upstream) пишут прямо в draft.extra
+  // — тот же объект, что и сырой JSON-редактор ниже. Поэтому save/buildExtra и
+  // детект изменений extra работают без правок: это просто удобный редактор
+  // двух ключей.
+  const extraStr = (key: string): string => {
+    const v = draft.extra?.[key];
+    return typeof v === 'string' ? v : '';
+  };
+  const setExtraKey = (key: string, val: string) =>
+    setDraft((d) => {
+      const next = { ...(d.extra ?? {}) };
+      if (val) next[key] = val;
+      else delete next[key]; // пусто → убираем ключ, не пишем ''
+      return { ...d, extra: Object.keys(next).length > 0 ? next : null };
+    });
+
   const save = async () => {
     setError(null);
     try {
@@ -584,12 +600,48 @@ function ProviderEditor({
             </label>
           </div>
 
+          {draft.kind === 'llm' && (
+            <>
+              <div>
+                <label className="form-label">Бэкенд (маршрут inference)</label>
+                <select
+                  className="form-select"
+                  value={extraStr('backend')}
+                  onChange={(e) => setExtraKey('backend', e.target.value)}
+                >
+                  <option value="">— как в inference (env-дефолт) —</option>
+                  <option value="openai_compat">openai_compat (Yandex AI Studio, vLLM, Ollama)</option>
+                  <option value="openai">openai (OpenAI API)</option>
+                  <option value="claude">claude (Anthropic)</option>
+                  <option value="qwen">qwen (локальный Qwen-VL)</option>
+                  <option value="stub">stub (без LLM)</option>
+                </select>
+              </div>
+              <div>
+                <label className="form-label">Upstream URL (для openai_compat)</label>
+                <input
+                  type="url"
+                  className="form-input font-mono text-sm"
+                  value={extraStr('upstream_base_url')}
+                  onChange={(e) => setExtraKey('upstream_base_url', e.target.value)}
+                  placeholder="https://llm.api.cloud.yandex.net/v1"
+                />
+              </div>
+              <p className="text-xs text-slate-500 dark:text-slate-400 sm:col-span-2">
+                VANGA-LLM-2: куда doc-service шлёт extract. Для <b>Yandex AI Studio</b> —
+                бэкенд <code>openai_compat</code>, upstream <code>https://llm.api.cloud.yandex.net/v1</code>,
+                модель <code>gpt://&lt;folder&gt;/&lt;model&gt;/latest</code>, ключ — в поле API&nbsp;key выше.
+                Пусто = inference берёт свой env-дефолт. Переключается без рестарта.
+              </p>
+            </>
+          )}
+
           <div className="sm:col-span-2">
             <JsonField
-              label="Extra"
+              label="Extra (сырой JSON — продвинутое)"
               value={draft.extra}
               onChange={(v) => setDraft((d) => ({ ...d, extra: v }))}
-              hint="Произвольный provider-specific config (timeout, headers и т.п.)"
+              hint="Произвольный provider-specific config. backend/upstream_base_url удобнее задать полями выше — они пишут сюда же."
             />
           </div>
 
