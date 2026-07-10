@@ -205,6 +205,26 @@ const ConfigSchema = z.object({
   }),
 
   /**
+   * Auto-requality (2026-07-10): после extract'а pipeline оценивает разбор
+   * детектором «странности» (quality-assessment.ts). Если сигналы сработали
+   * (пустое извлечение, обрыв JSON, reasoning-bleed, мусорный OCR) — extract
+   * автоматически переигрывается через `fallbackProviderId` (другая модель),
+   * и лучший из двух результатов сохраняется. Если и после этого странно —
+   * job уходит в needs_review с перечнем факторов.
+   *
+   *   - enabled: мастер-выключатель. false → ведём себя как раньше (без
+   *     авто-переразбора), guard на пустое извлечение остаётся.
+   *   - fallbackProviderId: id провайдера для второй попытки. Должен быть
+   *     ДРУГИМ бэкендом чем основной (напр. Ollama-32k если основной vLLM-8k):
+   *     разные модели ловят разные сбои. Пусто → авто-переразбор пропускается
+   *     (fail-soft, только детекция + needs_review).
+   */
+  requality: z.object({
+    enabled: booleanFromEnv(true),
+    fallbackProviderId: z.string().default(''),
+  }),
+
+  /**
    * Classifier tuning. Раньше эти числа были хардкодом в двух модулях
    * (filename-signal.ts + llm-classifier.ts) и подбирались руками; вынесены
    * сюда чтобы быть env-tunable в одном месте. Дефолты = прежние значения
@@ -635,6 +655,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       maxPasses: env.MULTIPASS_MAX_PASSES,
       maxItemsTotal: env.MULTIPASS_MAX_ITEMS_TOTAL,
       itemsParallelism: env.MULTIPASS_ITEMS_PARALLELISM,
+    },
+    requality: {
+      enabled: env.REQUALITY_ENABLED,
+      fallbackProviderId: env.REQUALITY_FALLBACK_PROVIDER_ID || '',
     },
     classifier: {
       filenameSignalWeight: env.FILENAME_SIGNAL_WEIGHT,

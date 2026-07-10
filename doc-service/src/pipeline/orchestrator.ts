@@ -36,6 +36,7 @@ import { sanitizeText } from './text-sanitize.js';
 import { KeywordClassifier } from './classifier/keywords.js';
 import { LlmDocClassifier, type ClassificationMetadata } from './classifier/llm-classifier.js';
 import { combineConfidence } from './quality.js';
+import { assessQuality, type QualityFactor } from './quality-assessment.js';
 import { ParsersFactory } from './parsers/index.js';
 import { dynamicLlm } from './llm/provider-resolver.js';
 import type { LlmClient, LlmExtractDebug } from './llm/types.js';
@@ -660,22 +661,21 @@ async function processJobInner(
       _issues?: unknown;
     } & Record<string, unknown>;
 
-    // Empty-extract guard (2026-07-10): модель может вернуть высокий overall
-    // confidence и при этом 0 бизнес-полей (пример: qwen3-vl:32b на длинной
-    // JSON-схеме исчерпывает 2048 output tokens на «thinking» и отдаёт
-    // response_chars=0; parser'у нечего заполнять, но confidence остаётся с
-    // classify-этапа). Считаем реальные top-level поля в extracted (без
-    // служебных `_*`) — если 0 при status=done, форсим needs_review и добавляем
-    // явный issue. SLAI-matcher увидит needs_review и не будет глотать пустоту
-    // как готовый разбор; оператор в UI попадёт в очередь ревью.
+    // Empty-extract safety-net: когда auto-requality ВЫКЛЮЧЕН
+    // (config.requality.enabled=false), assessQuality не запускался — ловим
+    // «уверенно 0 полей» здесь, чтобы пустой разбор всё равно ушёл в
+    // needs_review, а не притворился готовым. Когда requality ВКЛЮЧЁН, фактор
+    // `empty_extract` уже в post.validationIssues (см. runDocumentPipeline),
+    // так что здесь не дублируем.
     const businessFieldsCount = Object.keys(extractedClean).filter(
       (k) => !k.startsWith('_') && extractedClean[k] !== null && extractedClean[k] !== '',
     ).length;
-    const emptyExtraction = businessFieldsCount === 0 && !classifyOnly;
+    const emptyExtraction =
+      businessFieldsCount === 0 && !classifyOnly && !config.requality.enabled;
     if (emptyExtraction) {
       log.warn(
         { jobId, overall_confidence: overall, document_type: post.documentType },
-        'extract returned 0 business fields despite passing confidence — routing to needs_review',
+        'extract returned 0 business fields (requality disabled) — routing to needs_review',
       );
       post.validationIssues.push(
         'extract_empty: модель вернула 0 бизнес-полей (возможен reasoning-bleed vision-модели или обрезка контекста)',
@@ -683,7 +683,9 @@ async function processJobInner(
     }
 
     const status: 'done' | 'needs_review' =
-      lowConfidence || hasIssues || emptyExtraction ? 'needs_review' : 'done';
+      lowConfidence || post.validationIssues.length > 0 || emptyExtraction
+        ? 'needs_review'
+        : 'done';
 
     if (hasIssues) {
       log.info({ jobId, issues: post.validationIssues }, 'validation issues detected');
@@ -1308,6 +1310,8 @@ export async function runDocumentPipeline(
   let validationIssues: string[] = [];
   let typeConfig: ResolvedTypeConfig | null = null;
   let llmCall: LlmExtractDebug | undefined;
+  // Auto-requality: факторы «странности» разбора, доживающие до validationIssues.
+  const requalityFactors: QualityFactor[] = [];
   let extractMode: 'image' | 'text' | undefined;
   let routeReason: RouteReason | undefined;
 
@@ -1442,9 +1446,97 @@ export async function runDocumentPipeline(
     //   3. Default provider
     // withForceProvider fail-soft'нет на default если id не резолвится.
     const extractProviderId = forceVisionProviderId ?? typeConfig!.preferredProviderId;
-    const result = extractProviderId
+    let result = extractProviderId
       ? await dynamicLlm.withForceProvider(extractProviderId, runParse)
       : await runParse();
+
+    // ── Auto-requality (2026-07-10) ─────────────────────────────────────────
+    // Оцениваем разбор детектором «странности». Если сигналы сработали
+    // (пустое извлечение / обрыв JSON / reasoning-bleed / мусорный OCR) —
+    // переигрываем extract через fallback-провайдер (другая модель ловит
+    // другие сбои) и берём лучший результат. classify_only пропускаем —
+    // там extract не запускается. Гейтится config.requality.enabled.
+    if (config.requality.enabled && !options.classifyOnly) {
+      const assessment = assessQuality({
+        extracted: result.extracted,
+        expectedFields: typeConfig!.expectedFields,
+        missing: result.missing,
+        confidence: result.confidence,
+        rawResponse: result.llmCall?.raw_response ?? null,
+        ocrText: rawText,
+      });
+      const fallbackId = config.requality.fallbackProviderId;
+      const canRetry = assessment.shouldRequality && !!fallbackId && fallbackId !== extractProviderId;
+      if (assessment.shouldRequality) {
+        log.warn(
+          {
+            ...context,
+            type: documentType,
+            requality_score: assessment.score,
+            requality_factors: assessment.factors.map((f) => f.code),
+            will_retry: canRetry,
+            fallback_provider: canRetry ? fallbackId : null,
+          },
+          'quality assessment flagged strange extract',
+        );
+      }
+      if (canRetry) {
+        // Вторая попытка через fallback-провайдер. Fail-soft: если она упала
+        // или дала ХУЖЕ (меньше полей) — оставляем оригинальный результат.
+        try {
+          const retry = await dynamicLlm.withForceProvider(fallbackId, runParse);
+          const origAssess = assessQuality({
+            extracted: result.extracted,
+            expectedFields: typeConfig!.expectedFields,
+            missing: result.missing,
+            confidence: result.confidence,
+            rawResponse: result.llmCall?.raw_response ?? null,
+            ocrText: rawText,
+          });
+          const retryAssess = assessQuality({
+            extracted: retry.extracted,
+            expectedFields: typeConfig!.expectedFields,
+            missing: retry.missing,
+            confidence: retry.confidence,
+            rawResponse: retry.llmCall?.raw_response ?? null,
+            ocrText: rawText,
+          });
+          // Берём результат с меньшим score странности (лучше). При равенстве
+          // предпочитаем retry только если у него строго больше missing-покрытия.
+          const retryBetter =
+            retryAssess.score < origAssess.score ||
+            (retryAssess.score === origAssess.score &&
+              retry.missing.length < result.missing.length);
+          log.info(
+            {
+              ...context,
+              orig_score: origAssess.score,
+              retry_score: retryAssess.score,
+              chosen: retryBetter ? 'retry' : 'original',
+              fallback_provider: fallbackId,
+            },
+            'requality retry completed',
+          );
+          if (retryBetter) {
+            result = retry;
+            requalityFactors.push(...retryAssess.factors);
+          } else {
+            requalityFactors.push(...origAssess.factors);
+          }
+        } catch (err) {
+          log.warn(
+            { ...context, err: err instanceof Error ? err.message : String(err) },
+            'requality retry failed — keeping original extract',
+          );
+          requalityFactors.push(...assessment.factors);
+        }
+      } else if (assessment.shouldRequality) {
+        // Ретрай невозможен (нет fallback / тот же провайдер) — фиксируем
+        // факторы, чтобы job ушёл в needs_review ниже.
+        requalityFactors.push(...assessment.factors);
+      }
+    }
+
     const parserMs = Date.now() - tParser;
     if (timings) timings.extract_ms = parserMs;
     extracted = result.extracted;
@@ -1504,6 +1596,16 @@ export async function runDocumentPipeline(
     const tValidate = Date.now();
     validationIssues = await validateExtractedWithResolver(extracted, documentType, log);
     if (timings) timings.validate_ms = Date.now() - tValidate;
+  }
+
+  // Auto-requality: если разбор остался «странным» (после fallback-ретрая или
+  // без него — нет провайдера), добавляем факторы как validation issues. Это
+  // (а) переводит job в needs_review, (б) показывает оператору конкретную
+  // причину, (в) уходит в webhook как _issues для SLAI-matcher'а.
+  if (requalityFactors.length > 0) {
+    validationIssues.push(
+      ...requalityFactors.map((f) => `requality:${f.code}: ${f.message}`),
+    );
   }
 
   return {
