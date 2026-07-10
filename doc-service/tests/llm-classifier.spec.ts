@@ -119,6 +119,43 @@ describe('LlmDocClassifier — production LLM classifier', () => {
     expect((llm.classifyWithCatalog as ReturnType<typeof vi.fn>)).toHaveBeenCalledOnce();
   });
 
+  // Уверенность как СОГЛАСИЕ двух источников (keyword-prior + LLM). Раньше любой
+  // LLM-выбор давал 0.9 — расхождение маскировалось; теперь низкое число доходит
+  // до needs_review-гейта в оркестраторе.
+  it('уверенность: keyword и LLM согласны → высокая (≥0.9)', async () => {
+    const prior = priorStub({ type: 'commercial_invoice', confidence: 0.7, source: 'keyword' });
+    const llm = llmStub({ slug: 'commercial_invoice' });
+    const out = await new LlmDocClassifier(prior, llm).classify(
+      { text: 'COMMERCIAL INVOICE', organizationId: null },
+      validatorFor(CATALOG_SLUGS),
+      log,
+    );
+    expect(out.metadata.confidence).toBeGreaterThanOrEqual(0.9);
+  });
+
+  it('уверенность: keyword молчит, LLM выбрал → средняя (0.7, единственный источник)', async () => {
+    const prior = priorStub({ type: null, confidence: 0, source: 'keyword' });
+    const llm = llmStub({ slug: 'commercial_invoice' });
+    const out = await new LlmDocClassifier(prior, llm).classify(
+      { text: 'какой-то незнакомый keyword-у текст', organizationId: null },
+      validatorFor(CATALOG_SLUGS),
+      log,
+    );
+    expect(out.metadata.confidence).toBe(0.7);
+  });
+
+  it('уверенность: keyword и LLM РАСХОДЯТСЯ → низкая (0.5), а не 0.9', async () => {
+    const prior = priorStub({ type: 'invoice', confidence: 0.6, source: 'keyword' });
+    const llm = llmStub({ slug: 'commercial_invoice' });
+    const out = await new LlmDocClassifier(prior, llm).classify(
+      { text: 'COMMERCIAL INVOICE No. CI-1', organizationId: null },
+      validatorFor(CATALOG_SLUGS),
+      log,
+    );
+    expect(out.documentType).toBe('commercial_invoice'); // тип берём от LLM
+    expect(out.metadata.confidence).toBe(0.5); // но уверенность честно низкая (конфликт)
+  });
+
   it('candidates[] carries real top-N runners-up from prior ranked score-map', async () => {
     // prior возвращает ranked score-map (winner + 2 runners-up). candidates[]
     // должен отразить top-3 c их score'ами, а не единственного победителя.

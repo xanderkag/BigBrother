@@ -251,6 +251,10 @@ const ConfigSchema = z.object({
     priorConfidentThreshold: confidence01FromEnv(0.5),
     llmTextChars: numberFromEnv(2500),
     classifyTimeoutMs: numberFromEnv(18_000),
+    // Ниже этой уверенности классификации документ уходит в needs_review
+    // (тип мог быть определён неверно). 0.5 = расхождение keyword↔LLM (см.
+    // llm-classifier.llmConfidence); 0.7 = LLM-only проходит; 0.9 = согласие.
+    classifyReviewThreshold: confidence01FromEnv(0.6),
   }),
 
   tesseractLangs: z.string().default('rus+eng'),
@@ -670,6 +674,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       priorConfidentThreshold: env.CLASSIFY_PRIOR_CONFIDENT_THRESHOLD,
       llmTextChars: env.CLASSIFY_TEXT_CHARS,
       classifyTimeoutMs: env.CLASSIFY_TIMEOUT_MS,
+      classifyReviewThreshold: env.CLASSIFY_REVIEW_THRESHOLD,
     },
     tesseractLangs: env.TESSERACT_LANGS,
     officeImageFallback: {

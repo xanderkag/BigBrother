@@ -679,6 +679,30 @@ async function processJobInner(
       );
     }
 
+    // Classify-uncertainty gate: уверенность классификации раньше НЕ влияла на
+    // needs_review (в overall только OCR+extract). Итог: уверенно-неверный тип
+    // (синтетические 0.9) проходил как `done`, а null-тип при включённом
+    // requality мог финализироваться пустым. Теперь низкая уверенность типа ИЛИ
+    // «не опознан» → на ревью. hint (оператор задал тип вручную) не гейтим.
+    // Гейт работает и в classify_only (там классификация — сам выхлоп, потому
+    // не исключаем этот режим, в отличие от empty-extract guard выше).
+    const classifyConfidence = post.classification?.confidence ?? 1;
+    if (
+      post.classification?.method !== 'hint' &&
+      (post.documentType === null ||
+        classifyConfidence < config.classifier.classifyReviewThreshold)
+    ) {
+      const why =
+        post.documentType === null
+          ? 'тип не опознан'
+          : `тип «${post.documentType}» определён с низкой уверенностью (${classifyConfidence})`;
+      log.info(
+        { jobId, classify_confidence: classifyConfidence, method: post.classification?.method, type: post.documentType },
+        'classification uncertain — routing to needs_review',
+      );
+      post.validationIssues.push(`classify_uncertain: ${why} — проверьте тип документа`);
+    }
+
     const status: 'done' | 'needs_review' =
       lowConfidence || post.validationIssues.length > 0 || emptyExtraction
         ? 'needs_review'

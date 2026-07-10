@@ -305,17 +305,22 @@ export class LlmDocClassifier {
 }
 
 /**
- * Уверенность для LLM-выбора. Голый slug не несёт числа, поэтому:
- *   - если LLM согласился с prior'ом — берём confidence prior'а (агрегат
- *     сигналов), но не ниже 0.9 (LLM подтвердил → высокая уверенность);
- *   - если разошёлся — 0.9 (детерминированный temp=0 выбор LLM'а).
- * Число информационное для UI; финальный needs_review-порог считается отдельно.
+ * Уверенность для LLM-выбора как СОГЛАСИЕ ДВУХ ИСТОЧНИКОВ (keyword-prior + LLM).
+ * Голый slug числа не несёт, поэтому сигнал строим из совпадения:
+ *   - оба согласны (prior.type === LLM) → confidence prior'а, но не ниже 0.9
+ *     (LLM подтвердил быстрый сигнал — максимальная уверенность);
+ *   - keyword ничего не нашёл (prior.type === null) → 0.7 (LLM единственный
+ *     источник, подтверждения нет — средняя);
+ *   - keyword нашёл ДРУГОЙ тип → 0.5 (источники РАСХОДЯТСЯ, реальная
+ *     неопределённость).
+ * Раньше расхождение возвращало 0.9 — конфликт маскировался под уверенность, и
+ * уверенно-неверный тип проходил как `done`. Теперь низкое число доходит до
+ * needs_review-гейта (см. orchestrator: classify_uncertain).
  */
 function llmConfidence(prior: ClassificationResult, llmSlug: string): number {
-  if (prior.type && prior.type === llmSlug) {
-    return Math.max(0.9, prior.confidence);
-  }
-  return 0.9;
+  if (prior.type && prior.type === llmSlug) return Math.max(0.9, prior.confidence);
+  if (prior.type === null) return 0.7;
+  return 0.5;
 }
 
 function round3(c: number): number {
