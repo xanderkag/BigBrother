@@ -27,7 +27,9 @@
 import { normalizePlate } from './identifiers.js';
 import { normalizeSlugForApi } from '../../types/slug-normalize.js';
 
-export const MATCH_SIGNALS_SCHEMA_VERSION = '1.1';
+// 1.2 (SLAI 2026-07-10): + container_details[] (пер-контейнерный вес/объём/
+// места). Аддитивно — MINOR-bump по политике Q17 (SLAI логирует, не гейтит).
+export const MATCH_SIGNALS_SCHEMA_VERSION = '1.2';
 
 interface Party {
   name?: string;
@@ -40,9 +42,28 @@ interface Vehicle {
   trailer?: string;
 }
 
+/** Пер-контейнерная разбивка веса/объёма/мест (SLAI 2026-07-10). */
+export interface ContainerDetail {
+  number: string;
+  gross_weight_kg?: number;
+  net_weight_kg?: number;
+  volume_m3?: number;
+  packages?: number;
+}
+
 export interface MatchSignals {
   schema_version: string;
   containers?: string[];
+  /**
+   * Богатая пер-контейнерная разбивка (SLAI 2026-07-10): вес/объём/места
+   * по КАЖДОМУ контейнеру, когда в документе есть табличка «по контейнерам»
+   * (пакинг-лист / контейнерная разбивка коносамента). Аддитивно к
+   * `containers` (тот остаётся string[] для back-compat). Present-only:
+   * эмитим только если хотя бы у одного контейнера есть вес/объём/места —
+   * иначе SLAI берёт номера из `containers`. Нужно для сверки
+   * «Σ по контейнерам = итог заказа = итог ГТД».
+   */
+  container_details?: ContainerDetail[];
   bl_number?: string;
   cmr_number?: string;
   ttn_number?: string;
@@ -258,6 +279,52 @@ function collectContainers(ex: Extracted): string[] | undefined {
   return uniqStrings(matched);
 }
 
+/** Извлекает ISO-6346 номер контейнера как подстроку (та же логика, что в
+ * collectContainers, но для одного значения). null если валидного нет. */
+function extractIso6346(raw: unknown): string | null {
+  const s = str(raw);
+  if (!s) return null;
+  const hit = s.toUpperCase().match(/[A-Z]{4}\s?\d{7}/)?.[0];
+  return hit ? hit.replace(/\s/g, '') : null;
+}
+
+/**
+ * Пер-контейнерная разбивка (SLAI 2026-07-10): собирает вес/объём/места
+ * ПО КАЖДОМУ контейнеру из `containers[]`, когда модель заполнила их
+ * (табличка «по контейнерам» в пакинге/коносаменте). Present-only:
+ * возвращает undefined если ни у одного контейнера нет ни веса, ни объёма,
+ * ни мест — в этом случае SLAI берёт номера из плоского `containers`.
+ *
+ * Дедуп по номеру: если один контейнер встретился дважды, берём первую
+ * запись с непустыми метриками.
+ */
+function collectContainerDetails(ex: Extracted): ContainerDetail[] | undefined {
+  const byNumber = new Map<string, ContainerDetail>();
+  for (const c of arr(ex.containers) ?? []) {
+    const o = obj(c);
+    if (!o) continue;
+    const number = extractIso6346(o.number) ?? extractIso6346(o.container_number);
+    if (!number) continue;
+    const gross = num(o.gross_weight_kg) ?? num(o.gross_weight) ?? num(o.weight_gross);
+    const net = num(o.net_weight_kg) ?? num(o.net_weight) ?? num(o.weight_net);
+    const volume = num(o.volume_m3) ?? num(o.volume);
+    const packages = num(o.packages) ?? num(o.places) ?? num(o.packages_count);
+    // Пропускаем контейнеры без единой метрики — они уже в плоском containers.
+    if (gross === undefined && net === undefined && volume === undefined && packages === undefined) {
+      continue;
+    }
+    if (byNumber.has(number)) continue; // первая запись с метриками выигрывает
+    byNumber.set(number, {
+      number,
+      ...(gross !== undefined ? { gross_weight_kg: gross } : {}),
+      ...(net !== undefined ? { net_weight_kg: net } : {}),
+      ...(volume !== undefined ? { volume_m3: volume } : {}),
+      ...(packages !== undefined ? { packages } : {}),
+    });
+  }
+  return byNumber.size > 0 ? [...byNumber.values()] : undefined;
+}
+
 /**
  * order_refs из всех источников (PD-CONTRACT-1 Q2): новый top-level
  * `order_refs[]` (массив строк, который модель заполняет по schema-описанию),
@@ -281,6 +348,20 @@ function collectOrderRefs(ex: Extracted): string[] | undefined {
 
 type Projector = (ctx: Ctx) => void;
 
+/**
+ * Проецирует контейнеры в оба сигнала: плоский `containers` (string[],
+ * back-compat) и богатый `container_details[]` (present-only, только когда
+ * есть пер-контейнерный вес/объём/места). Единый хелпер для всех типов с
+ * контейнерами (BL/TTN/CMR/AKT/commercial_invoice/packing_list) — чтобы
+ * пер-контейнерная разбивка не разъезжалась между проекторами.
+ */
+function setContainerSignals(ctx: Ctx, ex: Extracted): void {
+  const containers = collectContainers(ex);
+  if (containers) ctx.out.containers = containers;
+  const details = collectContainerDetails(ex);
+  if (details) ctx.out.container_details = details;
+}
+
 function genericFallback(ctx: Ctx): void {
   const { ex } = ctx;
   setParty(ctx, 'seller', ex.seller);
@@ -299,8 +380,7 @@ const PROJECTORS: Record<string, Projector> = {
     // 20260604000001 и не эмитится ни схемой, ни pipeline (PD-CONTRACT-1).
     const blNumber = str(ex.number);
     if (blNumber) ctx.out.bl_number = blNumber;
-    const containers = collectContainers(ex);
-    if (containers) ctx.out.containers = containers;
+    setContainerSignals(ctx, ex);
     setParty(ctx, 'shipper', ex.shipper);
     setParty(ctx, 'consignee', ex.consignee);
     setParty(ctx, 'notify_party', ex.notify_party);
@@ -337,8 +417,7 @@ const PROJECTORS: Record<string, Projector> = {
     setParty(ctx, 'consignee', ex.consignee);
     setParty(ctx, 'carrier', ex.carrier);
     setDate(ctx, 'document', ex.date);
-    const containers = collectContainers(ex);
-    if (containers) ctx.out.containers = containers;
+    setContainerSignals(ctx, ex);
   },
 
   transport_invoice: (ctx) => {
@@ -365,8 +444,7 @@ const PROJECTORS: Record<string, Projector> = {
     setParty(ctx, 'consignee', ex.consignee ?? ex.recipient);
     setParty(ctx, 'carrier', ex.carrier);
     setDate(ctx, 'document', ex.date);
-    const containers = collectContainers(ex);
-    if (containers) ctx.out.containers = containers;
+    setContainerSignals(ctx, ex);
   },
 
   invoice: (ctx) => {
@@ -379,6 +457,21 @@ const PROJECTORS: Record<string, Projector> = {
     if (orderRefs) ctx.out.order_refs = orderRefs;
     const vehicle = obj(ex.vehicle);
     if (vehicle) setVehicle(ctx, vehicle.plate, vehicle.trailer);
+  },
+
+  // packing_list — главный источник пер-контейнерной разбивки (SLAI
+  // 2026-07-10): вес/объём/места по контейнерам. Проецируем containers +
+  // container_details (если модель заполнила разбивку по containers[]).
+  // container_number (одиночный, top-level) тоже подхватывается через
+  // collectContainers внутри helper'а.
+  packing_list: (ctx) => {
+    const { ex } = ctx;
+    setParty(ctx, 'seller', ex.exporter ?? ex.seller);
+    setParty(ctx, 'buyer', ex.consignee ?? ex.buyer);
+    setDate(ctx, 'document', ex.date);
+    const orderRefs = collectOrderRefs(ex);
+    if (orderRefs) ctx.out.order_refs = orderRefs;
+    setContainerSignals(ctx, ex);
   },
 
   // commercial_invoice — логика invoice + контейнеры (Q16). У КИ есть
@@ -395,8 +488,7 @@ const PROJECTORS: Record<string, Projector> = {
     if (orderRefs) ctx.out.order_refs = orderRefs;
     const vehicle = obj(ex.vehicle);
     if (vehicle) setVehicle(ctx, vehicle.plate, vehicle.trailer);
-    const containers = collectContainers(ex);
-    if (containers) ctx.out.containers = containers;
+    setContainerSignals(ctx, ex);
   },
 
   wire_transfer_application: (ctx) => {
@@ -433,8 +525,7 @@ const PROJECTORS: Record<string, Projector> = {
 
   weighing_act: (ctx) => {
     const { ex } = ctx;
-    const containers = collectContainers(ex);
-    if (containers) ctx.out.containers = containers;
+    setContainerSignals(ctx, ex);
     setDate(ctx, 'document', ex.date);
   },
 
@@ -448,8 +539,7 @@ const PROJECTORS: Record<string, Projector> = {
     setParty(ctx, 'executor', ex.party_a ?? ex.executor);
     setParty(ctx, 'customer', ex.party_b ?? ex.customer);
     setDate(ctx, 'document', ex.date);
-    const containers = collectContainers(ex);
-    if (containers) ctx.out.containers = containers;
+    setContainerSignals(ctx, ex);
   },
 };
 

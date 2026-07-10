@@ -15,9 +15,9 @@ import {
 } from '../src/pipeline/normalize/match-signals.js';
 
 describe('buildMatchSignals — общий контракт', () => {
-  it('schema_version теперь 1.1', () => {
-    expect(MATCH_SIGNALS_SCHEMA_VERSION).toBe('1.1');
-    expect(buildMatchSignals(null, null).schema_version).toBe('1.1');
+  it('schema_version теперь 1.2', () => {
+    expect(MATCH_SIGNALS_SCHEMA_VERSION).toBe('1.2');
+    expect(buildMatchSignals(null, null).schema_version).toBe('1.2');
     expect(buildMatchSignals('invoice', {}).schema_version).toBe(MATCH_SIGNALS_SCHEMA_VERSION);
   });
 
@@ -102,6 +102,67 @@ describe('buildMatchSignals — bill_of_lading', () => {
       ],
     });
     expect(s.containers).toEqual(['MRKU1234567', 'GESU7654321', 'TCLU7654321']);
+  });
+});
+
+describe('buildMatchSignals — container_details (SLAI 2026-07-10)', () => {
+  it('пер-контейнерный вес/объём/места → container_details[]', () => {
+    const s = buildMatchSignals('bill_of_lading', {
+      number: 'BL-1',
+      containers: [
+        { number: 'CAIU7958712', gross_weight_kg: 14000, net_weight_kg: 12000, volume_m3: 33.1, packages: 679 },
+        { number: 'FESU5360805', gross_weight_kg: 8000, net_weight_kg: 6800, volume_m3: 25.9, packages: 361 },
+      ],
+    });
+    // Плоский containers остаётся (back-compat)
+    expect(s.containers).toEqual(['CAIU7958712', 'FESU5360805']);
+    // Богатая разбивка
+    expect(s.container_details).toEqual([
+      { number: 'CAIU7958712', gross_weight_kg: 14000, net_weight_kg: 12000, volume_m3: 33.1, packages: 679 },
+      { number: 'FESU5360805', gross_weight_kg: 8000, net_weight_kg: 6800, volume_m3: 25.9, packages: 361 },
+    ]);
+  });
+
+  it('present-only: только номера без метрик → container_details опущен', () => {
+    const s = buildMatchSignals('bill_of_lading', {
+      number: 'BL-1',
+      containers: [{ number: 'CAIU7958712' }, { number: 'FESU5360805' }],
+    });
+    expect(s.containers).toEqual(['CAIU7958712', 'FESU5360805']);
+    expect(s.container_details).toBeUndefined();
+  });
+
+  it('частичные метрики: только у одного контейнера вес → он попадает, пустой опускается', () => {
+    const s = buildMatchSignals('packing_list', {
+      containers: [
+        { number: 'CAIU7958712', gross_weight_kg: 14000 },
+        { number: 'FESU5360805' }, // нет метрик → не в details
+      ],
+    });
+    expect(s.container_details).toEqual([{ number: 'CAIU7958712', gross_weight_kg: 14000 }]);
+  });
+
+  it('альтернативные имена весов (gross_weight/weight_gross/volume) распознаются', () => {
+    const s = buildMatchSignals('packing_list', {
+      containers: [{ number: 'CAIU7958712', gross_weight: 14000, weight_net: 12000, volume: 33.1, places: 679 }],
+    });
+    expect(s.container_details).toEqual([
+      { number: 'CAIU7958712', gross_weight_kg: 14000, net_weight_kg: 12000, volume_m3: 33.1, packages: 679 },
+    ]);
+  });
+
+  it('packing_list проектор эмитит containers + parties + container_details', () => {
+    const s = buildMatchSignals('packing_list', {
+      date: '2026-06-03',
+      exporter: { name: 'Anji Mingpai', inn: '7728168971' },
+      consignee: { name: 'EWL' },
+      containers: [{ number: 'CAIU7958712', gross_weight_kg: 14000 }],
+    });
+    expect(s.containers).toEqual(['CAIU7958712']);
+    expect(s.container_details).toEqual([{ number: 'CAIU7958712', gross_weight_kg: 14000 }]);
+    expect(s.parties?.seller?.inn).toBe('7728168971');
+    expect(s.parties?.buyer).toEqual({ name: 'EWL' });
+    expect(s.dates?.document).toBe('2026-06-03');
   });
 });
 
@@ -227,7 +288,7 @@ describe('buildMatchSignals — commercial_invoice (Q16)', () => {
     expect(s.parties?.buyer?.inn).toBe('7707083893');
     expect(s.totals).toEqual({ amount: 16280.0, currency: 'USD' });
     expect(s.dates?.document).toBe('2026-06-03');
-    expect(s.schema_version).toBe('1.1');
+    expect(s.schema_version).toBe('1.2');
   });
 
   it('containers из items[].container_no и скаляра container_number', () => {
