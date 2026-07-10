@@ -29,6 +29,20 @@ type YandexConfig = {
 
 const OCR_ENDPOINT = 'https://ocr.api.cloud.yandex.net/ocr/v1/recognizeText';
 
+// Транзиентные статусы Yandex OCR, на которых имеет смысл повторить, а не сразу
+// падать на tesseract: 429 (rate limit — бывает при всплеске пачки на trial/
+// новом аккаунте) и 5xx. 4xx-остальные (400 битая картинка, 401/403 auth/
+// billing) — НЕ ретраим: повтор в рамках запроса их не вылечит.
+const RETRYABLE_OCR_STATUS = new Set([429, 500, 502, 503, 504]);
+// Всего попыток на один page-вызов (1 основная + 3 повтора). Бэкофф
+// экспоненциальный с джиттером — заодно растягивает нагрузку и снижает 429.
+const OCR_MAX_ATTEMPTS = 4;
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+function ocrBackoffMs(attempt: number): number {
+  return 400 * 2 ** (attempt - 1) + Math.floor(Math.random() * 250); // 0.4s, 0.8s, 1.6s (+jitter)
+}
+
 /**
  * Yandex Cloud OCR — last-resort engine. Only used when other engines fall
  * through their thresholds, and only if API key + folder are configured.
@@ -182,27 +196,48 @@ export class YandexVisionEngine implements OcrEngine {
       model,
     };
 
-    const res = await request(OCR_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        authorization: `Api-Key ${this.cfg.apiKey}`,
-        'x-folder-id': this.cfg.folderId ?? '',
-        // PII-safety: opt out of Yandex retaining our document data.
-        'x-data-logging-enabled': 'false',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify(body),
-      headersTimeout: this.cfg.timeoutMs,
-      bodyTimeout: this.cfg.timeoutMs,
-    });
+    // Retry-с-бэкоффом на транзиентных ошибках (429/5xx/сеть). Без этого
+    // единичный 429 под всплеск ронял страницу на tesseract; повтор возвращает
+    // её на Vision. Постранично, поэтому каждая страница ретраится сама по себе.
+    for (let attempt = 1; attempt <= OCR_MAX_ATTEMPTS; attempt += 1) {
+      let res: Awaited<ReturnType<typeof request>>;
+      try {
+        res = await request(OCR_ENDPOINT, {
+          method: 'POST',
+          headers: {
+            authorization: `Api-Key ${this.cfg.apiKey}`,
+            'x-folder-id': this.cfg.folderId ?? '',
+            // PII-safety: opt out of Yandex retaining our document data.
+            'x-data-logging-enabled': 'false',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify(body),
+          headersTimeout: this.cfg.timeoutMs,
+          bodyTimeout: this.cfg.timeoutMs,
+        });
+      } catch (err) {
+        // Сетевая/timeout-ошибка undici — транзиентна, повторяем пока есть попытки.
+        if (attempt < OCR_MAX_ATTEMPTS) {
+          await sleep(ocrBackoffMs(attempt));
+          continue;
+        }
+        throw err;
+      }
 
-    if (res.statusCode >= 400) {
-      const errText = await res.body.text();
-      throw new Error(`Yandex OCR ${res.statusCode}: ${errText.slice(0, 500)}`);
+      if (res.statusCode >= 400) {
+        const errText = await res.body.text();
+        if (RETRYABLE_OCR_STATUS.has(res.statusCode) && attempt < OCR_MAX_ATTEMPTS) {
+          await sleep(ocrBackoffMs(attempt));
+          continue;
+        }
+        throw new Error(`Yandex OCR ${res.statusCode}: ${errText.slice(0, 500)}`);
+      }
+
+      const data = (await res.body.json()) as YandexOcrResponse;
+      return { text: extractText(data), confidence: estimateConfidence(data) };
     }
-
-    const data = (await res.body.json()) as YandexOcrResponse;
-    return { text: extractText(data), confidence: estimateConfidence(data) };
+    // Недостижимо: цикл либо вернул результат, либо бросил на последней попытке.
+    throw new Error('Yandex OCR: retries exhausted');
   }
 }
 

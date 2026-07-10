@@ -160,6 +160,29 @@ describe('YandexVisionEngine — recognizeText contract', () => {
     );
   });
 
+  it('HTTP 429 (rate limit) → ретраит и добивается успеха вместо падения на tesseract', async () => {
+    requestMock
+      .mockResolvedValueOnce(reply({ statusCode: 429, text: 'too many requests' }))
+      .mockResolvedValueOnce(reply({ statusCode: 200, json: OK_RESPONSE }));
+    const filePath = await makePng('img.png');
+
+    const res = await engine().run({ filePath, mimeType: 'image/png' });
+
+    expect(requestMock).toHaveBeenCalledTimes(2); // 429 → повтор → 200
+    expect(res.engine).toBe('yandex');
+    expect(res.text).toBe('ИНН 7707083893\nИтого 1200.00');
+  });
+
+  it('HTTP 403 (auth/billing) НЕ ретраится — падает сразу (повтор в запросе не лечит)', async () => {
+    requestMock.mockResolvedValue(reply({ statusCode: 403, text: 'permission denied' }));
+    const filePath = await makePng('img.png');
+
+    await expect(engine().run({ filePath, mimeType: 'image/png' })).rejects.toThrow(
+      /Yandex OCR 403/,
+    );
+    expect(requestMock).toHaveBeenCalledTimes(1); // без повторов
+  });
+
   it('isAvailable() false when key or folder missing', () => {
     expect(new YandexVisionEngine({ timeoutMs: 30000, model: 'page' }).isAvailable()).toBe(false);
     expect(
@@ -186,7 +209,9 @@ describe('YandexVisionEngine — pagesSent при падении посреди 
     requestMock
       .mockResolvedValueOnce(ok())
       .mockResolvedValueOnce(ok())
-      .mockResolvedValueOnce(reply({ statusCode: 429, text: 'rate limited' }));
+      // 400 — hard-падение (non-retryable): retry не вмешивается, движок падает
+      // сразу и сообщает pagesSent. (429/5xx теперь ретраятся — см. кейсы выше.)
+      .mockResolvedValueOnce(reply({ statusCode: 400, text: 'bad page' }));
 
     const pages = [
       await makePng('p1.png'),
@@ -208,7 +233,7 @@ describe('YandexVisionEngine — pagesSent при падении посреди 
   });
 
   it('падение на первой странице → pagesSent = 0', async () => {
-    requestMock.mockResolvedValueOnce(reply({ statusCode: 500, text: 'boom' }));
+    requestMock.mockResolvedValueOnce(reply({ statusCode: 400, text: 'bad page' }));
     const pages = [await makePng('only.png')];
 
     const err = await engine()
