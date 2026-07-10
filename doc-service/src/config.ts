@@ -56,7 +56,7 @@ const ConfigSchema = z.object({
     secretAccessKey: z.string().optional(),
     // MinIO требует path-style (bucket в пути, не в hostname).
     // AWS S3 принимает оба; default=true безопаснее (работает везде).
-    forcePathStyle: z.coerce.boolean().default(true),
+    forcePathStyle: booleanFromEnv(true),
   }),
 
   // Empty string disables auth — used for local dev. In production set a strong key.
@@ -79,7 +79,7 @@ const ConfigSchema = z.object({
   // пустые, сервис отказывается стартовать — кроме случая когда allowNoAuth=true
   // (loud warn). Default false → fail-closed. См. assertAuthConfigured() ниже
   // и bearerAuthHook (defense in depth).
-  allowNoAuth: z.coerce.boolean().default(false),
+  allowNoAuth: booleanFromEnv(false),
 
   // Master key для envelope-шифрования секретов в БД (api_key провайдеров).
   // Формат: 64-символьная hex-строка (= 32 байта). Сгенерировать:
@@ -307,7 +307,7 @@ const ConfigSchema = z.object({
    *   - language: опц. ISO 639-1 подсказка ('ru'), уходит в /v1/transcribe.
    */
   asr: z.object({
-    enabled: z.coerce.boolean().default(false),
+    enabled: booleanFromEnv(false),
     timeoutMs: numberFromEnv(300_000),
     confidenceDefault: confidence01FromEnv(0.8),
     language: z.string().optional(),
@@ -329,7 +329,7 @@ const ConfigSchema = z.object({
    * и расшифровывается только в воркере в hot-path (см.
    * pipeline/llm/inline-credentials.ts).
    */
-  byoLlmEnabled: z.coerce.boolean().default(false),
+  byoLlmEnabled: booleanFromEnv(false),
 
   /**
    * Hybrid-routing (SLAI backlog Sequencing #3) — главный рычаг по latency.
@@ -348,7 +348,7 @@ const ConfigSchema = z.object({
    *     Пусто → роутер сам ищет активную vision-строку (findActiveVision()).
    */
   hybridRouting: z.object({
-    enabled: z.coerce.boolean().default(false),
+    enabled: booleanFromEnv(false),
     visionConfThreshold: confidence01FromEnv(0.7),
     visionProviderId: z.string().optional(),
     /**
@@ -380,7 +380,7 @@ const ConfigSchema = z.object({
    *   - timeout.
    */
   fileUrlIngest: z.object({
-    enabled: z.coerce.boolean().default(false),
+    enabled: booleanFromEnv(false),
     // CSV-список разрешённых хостов (case-insensitive). Пусто = любой
     // публичный хост (private/internal всё равно блокируются IP-проверкой).
     allowedHosts: z
@@ -428,13 +428,13 @@ const ConfigSchema = z.object({
      * _disable_external_ocr Yandex по-прежнему выкидывается из цепочки.
      * Default false → порядок цепочки не меняется (Yandex — last-resort).
      */
-    preferForScans: z.coerce.boolean().default(false),
+    preferForScans: booleanFromEnv(false),
     /**
      * I8: глобальный флаг выключения Yandex для PII-документов (TTN, CMR).
      * Per-job opt-out также доступен через `metadata._disable_external_ocr=true`.
      * См. router.ts ChainOptions.
      */
-    disableForPii: z.coerce.boolean().default(false),
+    disableForPii: booleanFromEnv(false),
   }),
 
   /**
@@ -493,7 +493,7 @@ const ConfigSchema = z.object({
    *   - timeoutMs: таймаут одного chat/embeddings-вызова к Ollama.
    */
   llmGateway: z.object({
-    enabled: z.coerce.boolean().default(false),
+    enabled: booleanFromEnv(false),
     /**
      * INTEGRATION_HUB (Ф1): enforcement суточных квот потребителей в шлюзе.
      * Перед upstream-вызовом каждого коннектора (llm/dadata/yandex_maps) шлюз
@@ -506,7 +506,7 @@ const ConfigSchema = z.object({
      * нет cap/budget ИЛИ ошибка проверки → запрос ПРОПУСКАЕТСЯ (никогда не
      * блокируем из-за сбоя). См. src/routes/llm-gateway.ts.
      */
-    quotaEnabled: z.coerce.boolean().default(false),
+    quotaEnabled: booleanFromEnv(false),
     /**
      * EXT-LLM-GATEWAY-ANTHROPIC (2026-06-XX): backend selector. По умолчанию
      * 'openai_compat' — старое поведение (passthrough в Ollama / vLLM /
@@ -551,7 +551,7 @@ const ConfigSchema = z.object({
      * OPENAI_API_KEY и хотя бы один алиас в EMBEDDINGS_MODELS_JSON.
      */
     embeddings: z.object({
-      enabled: z.coerce.boolean().default(false),
+      enabled: booleanFromEnv(false),
       provider: z.enum(['openai']).default('openai'),
       baseUrl: z.string().default('https://api.openai.com/v1'),
       apiKey: z.string().optional(),
@@ -580,7 +580,7 @@ const ConfigSchema = z.object({
      * в enrichment pipeline).
      */
     dadata: z.object({
-      enabled: z.coerce.boolean().default(false),
+      enabled: booleanFromEnv(false),
       baseUrl: z.string().default('https://suggestions.dadata.ru'),
       apiKey: z.string().optional(),
       timeoutMs: numberFromEnv(15_000),
@@ -594,7 +594,7 @@ const ConfigSchema = z.object({
      * .kind='yandex_maps' (через UI Providers). Коннектор спит за enabled=false.
      */
     yandexMaps: z.object({
-      enabled: z.coerce.boolean().default(false),
+      enabled: booleanFromEnv(false),
       geocoderBaseUrl: z.string().default('https://geocode-maps.yandex.ru'),
       routerBaseUrl: z.string().default('https://api.routing.yandex.net'),
       apiKey: z.string().optional(),

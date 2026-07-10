@@ -89,6 +89,26 @@ describe('booleanFromEnv: OFFICE_IMAGE_FALLBACK_ENABLED — выключаемы
   });
 });
 
+// Регресс: раньше 13 булевых флагов сидели на z.coerce.boolean() → "false"
+// давало true, и, напр., YANDEX_DISABLE_FOR_PII=false НЕ выключал PII-гард
+// (CMR/ТТН упорно не шли в Yandex Vision). Мигрированы на booleanFromEnv.
+describe('booleanFromEnv migration: yandex-флаги честно читают "false"', () => {
+  it('YANDEX_DISABLE_FOR_PII="false" → disableForPii=false (гард выключается)', () => {
+    const cfg = configMod.loadConfig({ ...BASE_ENV, YANDEX_DISABLE_FOR_PII: 'false' });
+    expect(cfg.yandex.disableForPii).toBe(false);
+  });
+
+  it('YANDEX_DISABLE_FOR_PII="true" → disableForPii=true', () => {
+    const cfg = configMod.loadConfig({ ...BASE_ENV, YANDEX_DISABLE_FOR_PII: 'true' });
+    expect(cfg.yandex.disableForPii).toBe(true);
+  });
+
+  it('YANDEX_PREFER_FOR_SCANS="false" → preferForScans=false', () => {
+    const cfg = configMod.loadConfig({ ...BASE_ENV, YANDEX_PREFER_FOR_SCANS: 'false' });
+    expect(cfg.yandex.preferForScans).toBe(false);
+  });
+});
+
 describe('H1: assertRuntimeConfig fail-closed cross-validation', () => {
   const base = {
     byoLlmEnabled: false,
