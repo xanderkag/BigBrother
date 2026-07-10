@@ -13,7 +13,11 @@ const numberFromEnv = (def: number) =>
 const booleanFromEnv = (def: boolean) =>
   z
     .preprocess((v) => {
-      if (v === undefined || v === '') return undefined;
+      // Пусто/не задан → сразу дефолт. ВАЖНО: возвращаем `def`, а НЕ undefined:
+      // `.default()` ловит только undefined-ВХОД схемы, а не undefined из
+      // preprocess, поэтому "" (пустой env-var) с `return undefined` ронял
+      // z.boolean() на boot'е (Required). Дефолт-возврат закрывает и "".
+      if (v === undefined || v === '') return def;
       if (typeof v === 'boolean') return v;
       const s = String(v).trim().toLowerCase();
       return !(s === 'false' || s === '0' || s === 'no' || s === 'off');

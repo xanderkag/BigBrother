@@ -107,6 +107,16 @@ describe('booleanFromEnv migration: yandex-флаги честно читают 
     const cfg = configMod.loadConfig({ ...BASE_ENV, YANDEX_PREFER_FOR_SCANS: 'false' });
     expect(cfg.yandex.preferForScans).toBe(false);
   });
+
+  // Крэш-регресс: пустой env-var ("") ронял boot (preprocess→undefined мимо
+  // .default() → z.boolean() Required). Теперь "" → дефолт, конфиг грузится.
+  it('пустая строка ("") → дефолт, а не крэш z.boolean Required', () => {
+    expect(() =>
+      configMod.loadConfig({ ...BASE_ENV, YANDEX_DISABLE_FOR_PII: '', ALLOW_NO_AUTH: '' }),
+    ).not.toThrow();
+    const cfg = configMod.loadConfig({ ...BASE_ENV, YANDEX_DISABLE_FOR_PII: '' });
+    expect(cfg.yandex.disableForPii).toBe(false); // дефолт
+  });
 });
 
 describe('H1: assertRuntimeConfig fail-closed cross-validation', () => {
