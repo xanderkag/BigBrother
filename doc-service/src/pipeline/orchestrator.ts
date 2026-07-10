@@ -651,11 +651,6 @@ async function processJobInner(
     // should always be reviewed by a human, regardless of OCR confidence.
     const lowConfidence = overall < confidenceThreshold;
     const hasIssues = post.validationIssues.length > 0;
-    const status: 'done' | 'needs_review' = lowConfidence || hasIssues ? 'needs_review' : 'done';
-
-    if (hasIssues) {
-      log.info({ jobId, issues: post.validationIssues }, 'validation issues detected');
-    }
 
     // Persist issues alongside the structured data. `_issues` is a reserved
     // key inside extracted; `toApi` lifts it back into a top-level field.
@@ -664,6 +659,35 @@ async function processJobInner(
     const { _issues: _ignore, ...extractedClean } = post.extracted as {
       _issues?: unknown;
     } & Record<string, unknown>;
+
+    // Empty-extract guard (2026-07-10): модель может вернуть высокий overall
+    // confidence и при этом 0 бизнес-полей (пример: qwen3-vl:32b на длинной
+    // JSON-схеме исчерпывает 2048 output tokens на «thinking» и отдаёт
+    // response_chars=0; parser'у нечего заполнять, но confidence остаётся с
+    // classify-этапа). Считаем реальные top-level поля в extracted (без
+    // служебных `_*`) — если 0 при status=done, форсим needs_review и добавляем
+    // явный issue. SLAI-matcher увидит needs_review и не будет глотать пустоту
+    // как готовый разбор; оператор в UI попадёт в очередь ревью.
+    const businessFieldsCount = Object.keys(extractedClean).filter(
+      (k) => !k.startsWith('_') && extractedClean[k] !== null && extractedClean[k] !== '',
+    ).length;
+    const emptyExtraction = businessFieldsCount === 0 && !classifyOnly;
+    if (emptyExtraction) {
+      log.warn(
+        { jobId, overall_confidence: overall, document_type: post.documentType },
+        'extract returned 0 business fields despite passing confidence — routing to needs_review',
+      );
+      post.validationIssues.push(
+        'extract_empty: модель вернула 0 бизнес-полей (возможен reasoning-bleed vision-модели или обрезка контекста)',
+      );
+    }
+
+    const status: 'done' | 'needs_review' =
+      lowConfidence || hasIssues || emptyExtraction ? 'needs_review' : 'done';
+
+    if (hasIssues) {
+      log.info({ jobId, issues: post.validationIssues }, 'validation issues detected');
+    }
     const extractedToStore: Record<string, unknown> = { ...extractedClean };
     if (post.validationIssues.length > 0) {
       extractedToStore._issues = post.validationIssues;
