@@ -14,6 +14,7 @@ import { OpenAiEmbeddingsClient } from '../pipeline/llm/openai-embeddings-client
 import { DaDataClient } from '../pipeline/llm/dadata-client.js';
 import { YandexMapsClient } from '../pipeline/llm/yandex-maps-client.js';
 import { providerSettingsRepo } from '../storage/provider-settings.js';
+import { GATEWAY_CHAT_PROVIDER_ID } from '../storage/gateway-channel-keys.js';
 import { llmGatewayUsageRepo, type GatewayUsageStatus } from '../storage/llm-usage.js';
 import { checkConsumerQuota } from '../storage/gateway-connectors.js';
 
@@ -96,11 +97,20 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
     if (config.llmGateway.backend === 'anthropic') {
       const baseUrl = config.llmGateway.baseUrl || 'https://api.anthropic.com';
       let apiKey: string | undefined = config.llmGateway.apiKey;
-      // env пуст → fallback на provider_settings(is_default=true LLM)
+      // env пуст → сначала ВЫДЕЛЕННЫЙ ключ канала (id='gateway-anthropic',
+      // owner вносит его сам в UI «Подключения → Ключи каналов шлюза»),
+      // потом legacy-fallback на default LLM-модель разбора. Развязка:
+      // Anthropic-ключ SLAI-канала больше не требует делать Anthropic
+      // дефолтом извлечения (что ломало локальный qwen-путь).
       if (!apiKey) {
         try {
-          const provider = await providerSettingsRepo.findDefault('llm');
-          if (provider?.api_key) apiKey = provider.api_key;
+          const dedicated = await providerSettingsRepo.findById(GATEWAY_CHAT_PROVIDER_ID);
+          if (dedicated?.is_active && dedicated.api_key) {
+            apiKey = dedicated.api_key;
+          } else {
+            const provider = await providerSettingsRepo.findDefault('llm');
+            if (provider?.api_key) apiKey = provider.api_key;
+          }
         } catch {
           /* fail-soft — БД недоступна → клиент null → 503 */
         }
@@ -365,7 +375,7 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
         // ANTHROPIC_API_KEY, что путало в openai_compat-режиме.
         const hint =
           config.llmGateway.backend === 'anthropic'
-            ? 'Set ANTHROPIC_API_KEY in env OR add an Anthropic provider in UI Providers (is_default=true).'
+            ? 'Set ANTHROPIC_API_KEY in env OR enter the key in UI: Подключения → Ключи каналов шлюза → Чат (stored as provider id="gateway-anthropic").'
             : 'Set LLM_GATEWAY_BASE_URL (or LLM_INFERENCE_URL) to an OpenAI-compatible upstream.';
         return reply
           .code(503)
@@ -473,7 +483,7 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
           .code(503)
           .send(
             openAiError(
-              'Embeddings gateway is not configured. Set LLM_GATEWAY_EMBEDDINGS_ENABLED=true + OPENAI_API_KEY in env OR add OpenAI provider (id="openai", is_active=true) in UI Providers.',
+              'Embeddings gateway is not configured. Set LLM_GATEWAY_EMBEDDINGS_ENABLED=true + OPENAI_API_KEY in env OR enter the key in UI: Подключения → Ключи каналов шлюза → Embeddings (provider id="openai").',
               'server_error',
               'embeddings_unconfigured',
             ),

@@ -7,6 +7,11 @@ import {
   consumerBudgetsRepo,
 } from '../storage/gateway-connectors.js';
 import { auditLogRepo } from '../storage/audit-log.js';
+import {
+  GATEWAY_CHANNELS,
+  getGatewayChannelKeyStates,
+  putGatewayChannelKey,
+} from '../storage/gateway-channel-keys.js';
 import { ErrorResponse } from '../types/api-schemas.js';
 import { bearerAuthHook } from '../auth.js';
 import { requireSuperAdmin } from '../authz.js';
@@ -25,6 +30,8 @@ import { requireSuperAdmin } from '../authz.js';
  *   GET   /api/v1/gateway/budgets?consumer=  — бюджеты (все или по потребителю).
  *   PATCH /api/v1/gateway/budgets           — upsert бюджета потребитель×коннектор.
  *   GET   /api/v1/gateway/usage?from=&to=... — агрегаты usage за период.
+ *   GET   /api/v1/gateway/keys              — состояние ключей каналов шлюза.
+ *   PUT   /api/v1/gateway/keys/:channel     — внести/очистить ключ канала из UI.
  */
 
 // Единицы расхода коннекторов. ВАЖНО: это response-схема GET /gateway/connectors —
@@ -123,6 +130,35 @@ const UsageResponse = z.object({
   groups: z.array(UsageGroup),
   // Присутствует только при by_day=true.
   daily: z.array(UsageDailyGroup).optional(),
+});
+
+// ── Ключи каналов шлюза ───────────────────────────────────────────────
+// «Пользователь вносит ключ сам в UI» — вместо передачи plaintext через
+// чат или ручного провиженинга в .env. Хранение — provider_settings
+// (envelope AES-256-GCM); наружу только маска. См. storage/gateway-channel-keys.ts.
+const ChannelParam = z.object({
+  channel: z.enum(GATEWAY_CHANNELS),
+});
+
+const ChannelKeyState = z.object({
+  channel: z.enum(GATEWAY_CHANNELS),
+  title: z.string(),
+  vendor: z.string(),
+  provider_id: z.string(),
+  channel_enabled: z.boolean(),
+  backend: z.string().optional(),
+  env_configured: z.boolean(),
+  ui_configured: z.boolean(),
+  api_key_masked: z.string().nullable(),
+  active_source: z.enum(['env', 'ui']).nullable(),
+});
+
+const ChannelKeysResponse = z.object({ items: z.array(ChannelKeyState) });
+
+const ChannelKeyPutBody = z.object({
+  // null = очистить ключ. Минимальная длина отсекает случайную вставку
+  // огрызка; форматы у вендоров разные, глубже не валидируем.
+  api_key: z.string().min(8).max(4000).nullable(),
 });
 
 type UsageGroupRow = {
@@ -358,6 +394,71 @@ export async function gatewayAdminRoutes(app: FastifyInstance): Promise<void> {
       }
 
       return out;
+    },
+  );
+
+  r.get(
+    '/gateway/keys',
+    {
+      schema: {
+        tags: ['gateway'],
+        summary: 'Состояние ключей каналов шлюза (chat/embeddings/dadata)',
+        description:
+          'Для каждого канала: включён ли фича-флаг, задан ли ключ в env хоста (env ' +
+          'побеждает БД), внесён ли ключ через UI (маска), и какой источник сработает ' +
+          'на ближайшем запросе. Plaintext-ключи не возвращаются. super_admin only.',
+        security: [{ bearerAuth: [] }],
+        response: { 200: ChannelKeysResponse, 401: ErrorResponse, 403: ErrorResponse },
+      },
+    },
+    async (req, reply) => {
+      if (!requireSuperAdmin(req, reply)) return reply;
+      const items = await getGatewayChannelKeyStates();
+      return { items };
+    },
+  );
+
+  r.put(
+    '/gateway/keys/:channel',
+    {
+      schema: {
+        tags: ['gateway'],
+        summary: 'Внести (или очистить) ключ канала шлюза из UI',
+        description:
+          'Пишет ключ в well-known строку provider_settings канала (chat → ' +
+          '"gateway-anthropic", embeddings → "openai", dadata → default-провайдер kind=dadata; ' +
+          'отсутствующая строка создаётся). Ключ шифруется at-rest (AES-256-GCM), в ответе ' +
+          'только маска. api_key=null очищает ключ. Шлюз подхватывает новый ключ в течение ' +
+          '~60 сек (кэш ключа на request-path). super_admin only.',
+        security: [{ bearerAuth: [] }],
+        params: ChannelParam,
+        body: ChannelKeyPutBody,
+        response: {
+          200: ChannelKeyState,
+          400: ErrorResponse,
+          401: ErrorResponse,
+          403: ErrorResponse,
+        },
+      },
+    },
+    async (req, reply) => {
+      if (!requireSuperAdmin(req, reply)) return reply;
+      const { state, before, after, created } = await putGatewayChannelKey(
+        req.params.channel,
+        req.body.api_key,
+      );
+      // Аудит на provider_setting (snapshot'ы уже маскированы toApi) — история
+      // видна и в карточке провайдера, и в общем логе. actor='admin' как в
+      // остальных платформенных ручках.
+      await auditLogRepo.append({
+        actor: 'admin',
+        entity: 'provider_setting',
+        entity_id: after.id,
+        action: created ? 'create' : 'update',
+        before: before as unknown as Record<string, unknown> | null,
+        after: after as unknown as Record<string, unknown>,
+      });
+      return state;
     },
   );
 }

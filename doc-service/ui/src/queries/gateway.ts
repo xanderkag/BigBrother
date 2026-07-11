@@ -77,10 +77,31 @@ export interface UsageQuery {
   byDay?: boolean;
 }
 
+/** Каналы шлюза, у которых есть внешний ключ (см. gateway-channel-keys.ts). */
+export type GatewayChannel = 'chat' | 'embeddings' | 'dadata';
+
+export interface GatewayChannelKeyState {
+  channel: GatewayChannel;
+  title: string;
+  vendor: string;
+  provider_id: string;
+  /** Фича-флаг канала в env: выключен → эндпоинт отвечает 503. */
+  channel_enabled: boolean;
+  /** Только chat: 'anthropic' | 'openai_compat' (в openai_compat ключ не нужен). */
+  backend?: string;
+  /** Ключ задан в env хоста — он побеждает внесённый через UI. */
+  env_configured: boolean;
+  /** Ключ внесён через UI (лежит шифрованно в БД). */
+  ui_configured: boolean;
+  api_key_masked: string | null;
+  active_source: 'env' | 'ui' | null;
+}
+
 export const gatewayKeys = {
   all: ['gateway'] as const,
   connectors: () => ['gateway', 'connectors'] as const,
   budgets: (consumer?: string) => ['gateway', 'budgets', consumer ?? null] as const,
+  channelKeys: () => ['gateway', 'channel-keys'] as const,
   usage: (q: UsageQuery) =>
     ['gateway', 'usage', q.from ?? null, q.to ?? null, q.consumer ?? null, q.connector ?? null, !!q.byDay] as const,
 };
@@ -155,6 +176,38 @@ export function usePatchBudget() {
     onSuccess: () => {
       // префикс ['gateway','budgets'] обновляет и общий список, и фильтры.
       qc.invalidateQueries({ queryKey: ['gateway', 'budgets'] });
+    },
+  });
+}
+
+/* ─── Ключи каналов шлюза ────────────────────────────────────────── */
+
+export function useGatewayChannelKeys(opts?: { enabled?: boolean }) {
+  return useQuery({
+    queryKey: gatewayKeys.channelKeys(),
+    queryFn: async () =>
+      (await api.get<{ items: GatewayChannelKeyState[] }>('/api/v1/gateway/keys')).items,
+    staleTime: 30 * 1000,
+    enabled: opts?.enabled ?? true,
+  });
+}
+
+export interface PutChannelKeyInput {
+  channel: GatewayChannel;
+  /** null = очистить ключ. */
+  api_key: string | null;
+}
+
+export function usePutGatewayChannelKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ channel, api_key }: PutChannelKeyInput) =>
+      api.put<GatewayChannelKeyState>(`/api/v1/gateway/keys/${channel}`, { api_key }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: gatewayKeys.channelKeys() });
+      // PUT мог создать/изменить строку provider_settings → карточки экрана
+      // «Подключения» (список провайдеров) тоже обновляем.
+      qc.invalidateQueries({ queryKey: ['provider-settings'] });
     },
   });
 }

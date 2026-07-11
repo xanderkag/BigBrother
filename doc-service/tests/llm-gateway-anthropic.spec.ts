@@ -3,7 +3,8 @@
  *
  * /v1/chat/completions транслируется в Anthropic native /v1/messages и
  * обратно в OpenAI chat.completion shape. Проверяем: выбор backend, ключ
- * env→provider_settings(findDefault llm), URL /v1/messages, заголовки
+ * env → provider_settings id='gateway-anthropic' (выделенный ключ канала,
+ * вносится из UI) → findDefault('llm') (legacy), URL /v1/messages, заголовки
  * x-api-key + anthropic-version (не Authorization), трансляцию запроса
  * (system top-level, max_tokens default), трансляцию ответа (content[]→
  * choices[].message, usage input/output→prompt/completion), эхо алиаса,
@@ -181,8 +182,26 @@ describe('anthropic backend — happy path', () => {
 });
 
 describe('anthropic backend — key resolution', () => {
-  it('env пуст → findDefault("llm")', async () => {
+  it('env пуст → выделенный ключ канала (id="gateway-anthropic") побеждает, findDefault не зовётся', async () => {
     cfg.llmGateway.apiKey = undefined;
+    providerMock.findById.mockResolvedValueOnce({ api_key: 'sk-ant-channel', is_active: true });
+    requestMock.mockResolvedValueOnce(upstream(200, anthropicMessage('claude-3-5-sonnet-20241022')));
+    const app = await makeApp();
+    const r = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: AUTH,
+      payload: { messages: [{ role: 'user', content: 'hi' }] },
+    });
+    expect(r.statusCode).toBe(200);
+    expect(providerMock.findById).toHaveBeenCalledWith('gateway-anthropic');
+    expect(providerMock.findDefault).not.toHaveBeenCalled();
+    expect(lastUpstream()[1].headers['x-api-key']).toBe('sk-ant-channel');
+  });
+
+  it('env пуст, выделенная строка неактивна → legacy-fallback findDefault("llm")', async () => {
+    cfg.llmGateway.apiKey = undefined;
+    providerMock.findById.mockResolvedValueOnce({ api_key: 'sk-ant-channel', is_active: false });
     providerMock.findDefault.mockResolvedValueOnce({ api_key: 'sk-ant-ui' });
     requestMock.mockResolvedValueOnce(upstream(200, anthropicMessage('claude-3-5-sonnet-20241022')));
     const app = await makeApp();
@@ -197,8 +216,42 @@ describe('anthropic backend — key resolution', () => {
     expect(lastUpstream()[1].headers['x-api-key']).toBe('sk-ant-ui');
   });
 
+  it('env пуст, выделенной строки нет → legacy-fallback findDefault("llm")', async () => {
+    cfg.llmGateway.apiKey = undefined;
+    providerMock.findById.mockResolvedValueOnce(null);
+    providerMock.findDefault.mockResolvedValueOnce({ api_key: 'sk-ant-ui' });
+    requestMock.mockResolvedValueOnce(upstream(200, anthropicMessage('claude-3-5-sonnet-20241022')));
+    const app = await makeApp();
+    const r = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: AUTH,
+      payload: { messages: [{ role: 'user', content: 'hi' }] },
+    });
+    expect(r.statusCode).toBe(200);
+    expect(providerMock.findDefault).toHaveBeenCalledWith('llm');
+    expect(lastUpstream()[1].headers['x-api-key']).toBe('sk-ant-ui');
+  });
+
+  it('env задан → БД вообще не трогаем (env побеждает)', async () => {
+    cfg.llmGateway.apiKey = 'sk-ant-env';
+    requestMock.mockResolvedValueOnce(upstream(200, anthropicMessage('claude-3-5-sonnet-20241022')));
+    const app = await makeApp();
+    const r = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: AUTH,
+      payload: { messages: [{ role: 'user', content: 'hi' }] },
+    });
+    expect(r.statusCode).toBe(200);
+    expect(providerMock.findById).not.toHaveBeenCalled();
+    expect(providerMock.findDefault).not.toHaveBeenCalled();
+    expect(lastUpstream()[1].headers['x-api-key']).toBe('sk-ant-env');
+  });
+
   it('env пуст и provider не найден → 503 gateway_unconfigured', async () => {
     cfg.llmGateway.apiKey = undefined;
+    providerMock.findById.mockResolvedValueOnce(null);
     providerMock.findDefault.mockResolvedValueOnce(null);
     const app = await makeApp();
     const r = await app.inject({
@@ -212,9 +265,9 @@ describe('anthropic backend — key resolution', () => {
     expect(requestMock).not.toHaveBeenCalled();
   });
 
-  it('БД недоступна (findDefault бросил) → fail-soft → 503', async () => {
+  it('БД недоступна (findById бросил) → fail-soft → 503', async () => {
     cfg.llmGateway.apiKey = undefined;
-    providerMock.findDefault.mockRejectedValueOnce(new Error('db down'));
+    providerMock.findById.mockRejectedValueOnce(new Error('db down'));
     const app = await makeApp();
     const r = await app.inject({
       method: 'POST',

@@ -34,7 +34,10 @@ import {
   useConnectors,
   useGatewayUsage,
   usePatchConnector,
+  useGatewayChannelKeys,
+  usePutGatewayChannelKey,
   type GatewayConnector,
+  type GatewayChannelKeyState,
 } from '@/queries/gateway';
 import { useAuditLog } from '@/queries/auditLog';
 import { ProviderEditor } from '@/pages/Providers';
@@ -222,6 +225,9 @@ export default function ConnectionsPage() {
           );
         })}
 
+      {/* Ключи каналов шлюза — только super_admin (ручки 403 для остальных). */}
+      {!loading && isSuperAdmin && <GatewayKeysSection />}
+
       {editing && (
         <ProviderEditor
           initial={editing.isNew ? null : editing.provider}
@@ -229,6 +235,189 @@ export default function ConnectionsPage() {
           onClose={() => setEditing(null)}
         />
       )}
+    </div>
+  );
+}
+
+/* ─────────────────── ключи каналов шлюза (SLAI) ─────────────────── */
+
+/**
+ * «Пользователь вносит ключ сам»: Anthropic (chat) / OpenAI (embeddings) /
+ * DaData — ключи внешних каналов LLM-шлюза вводятся здесь, хранятся
+ * шифрованно в БД и НЕ передаются через чат/почту. env-ключ хоста, если
+ * задан, побеждает — секция это честно показывает.
+ */
+function GatewayKeysSection() {
+  const keysQ = useGatewayChannelKeys();
+  const [editing, setEditing] = useState<GatewayChannelKeyState | null>(null);
+
+  return (
+    <section className="space-y-3">
+      <div className="px-0.5">
+        <h2 className="font-mono text-[11px] uppercase tracking-wider text-slate-500 dark:text-slate-400">
+          Ключи каналов шлюза · SLAI
+        </h2>
+        <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+          Внешние ключи каналов /v1/* (chat · embeddings · DaData). Вносите ключ прямо здесь —
+          он шифруется при хранении (AES-256-GCM) и никогда не отображается целиком.
+          Шлюз подхватывает новый ключ в течение ~минуты.
+        </p>
+      </div>
+
+      {keysQ.isLoading && (
+        <div className="text-sm text-slate-500 dark:text-slate-400">Загрузка…</div>
+      )}
+      {keysQ.error && (
+        <div className="error-banner">
+          Ошибка загрузки ключей: {keysQ.error instanceof Error ? keysQ.error.message : String(keysQ.error)}
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+        {(keysQ.data ?? []).map((k) => (
+          <ChannelKeyCard key={k.channel} state={k} onEdit={() => setEditing(k)} />
+        ))}
+      </div>
+
+      {editing && <ChannelKeyModal state={editing} onClose={() => setEditing(null)} />}
+    </section>
+  );
+}
+
+function ChannelKeyCard({ state: k, onEdit }: { state: GatewayChannelKeyState; onEdit: () => void }) {
+  // chat в режиме openai_compat (kb-docker, локальный Ollama) ключа не требует —
+  // честно говорим об этом вместо «ключ не задан».
+  const keylessBackend = k.channel === 'chat' && k.backend === 'openai_compat';
+
+  return (
+    <div className="card space-y-2.5 p-4">
+      <div className="flex items-start justify-between gap-2">
+        <span className="font-semibold text-slate-900 dark:text-slate-100">{k.vendor}</span>
+        <span className={`badge ${k.channel_enabled ? 'badge-emerald' : 'badge-slate'}`}>
+          {k.channel_enabled ? 'канал вкл' : 'канал выкл'}
+        </span>
+      </div>
+
+      <div className="text-[13px] text-slate-600 dark:text-slate-400">{k.title}</div>
+
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11.5px]">
+        {keylessBackend ? (
+          <span className="text-slate-400 dark:text-slate-500">
+            backend openai_compat — ключ не используется
+          </span>
+        ) : k.active_source === 'env' ? (
+          <span className="text-sky-600 dark:text-sky-400">ключ из env хоста</span>
+        ) : k.active_source === 'ui' ? (
+          <span className="text-emerald-600 dark:text-emerald-400">
+            внесён через UI {k.api_key_masked}
+          </span>
+        ) : (
+          <span className="text-amber-600 dark:text-amber-400">ключ не задан</span>
+        )}
+      </div>
+
+      {k.env_configured && k.ui_configured && (
+        <p className="text-[11.5px] leading-snug text-slate-500 dark:text-slate-400">
+          В env хоста тоже задан ключ — он имеет приоритет над внесённым здесь.
+        </p>
+      )}
+
+      {!keylessBackend && (
+        <div className="flex justify-end pt-0.5">
+          <button type="button" className="btn-ghost text-xs" onClick={onEdit}>
+            {k.ui_configured ? 'Заменить ключ' : 'Внести ключ'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ChannelKeyModal({ state: k, onClose }: { state: GatewayChannelKeyState; onClose: () => void }) {
+  const put = usePutGatewayChannelKey();
+  const [value, setValue] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const save = async (apiKey: string | null) => {
+    setError(null);
+    try {
+      await put.mutateAsync({ channel: k.channel, api_key: apiKey });
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-30 flex items-center justify-center bg-slate-900/40 p-4"
+      onClick={onClose}
+    >
+      <div className="card w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+        <div className="card-header">
+          <h3 className="card-title">
+            {k.vendor} — ключ канала {k.channel}
+          </h3>
+          <button type="button" className="btn-ghost" onClick={onClose}>
+            ✕
+          </button>
+        </div>
+
+        <div className="card-body space-y-3">
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Вставьте ключ {k.vendor}. Он будет зашифрован при сохранении
+            (провайдер <code className="font-mono">{k.provider_id}</code>) и больше
+            никогда не отобразится целиком — только маска.
+          </p>
+          {k.env_configured && (
+            <p className="rounded-md bg-sky-50 px-3 py-2 text-xs text-sky-800 dark:bg-sky-950/40 dark:text-sky-200">
+              На этом хосте ключ задан в env — он останется приоритетным, пока его
+              не уберут из env. Внесённый здесь ключ станет активным после этого.
+            </p>
+          )}
+          <div>
+            <label className="form-label">API-ключ</label>
+            <input
+              type="password"
+              className="form-input font-mono text-sm"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              placeholder={k.vendor === 'Anthropic' ? 'sk-ant-…' : k.vendor === 'OpenAI' ? 'sk-…' : 'токен DaData'}
+              autoFocus
+              autoComplete="off"
+            />
+          </div>
+          {error && <div className="error-banner">{error}</div>}
+        </div>
+
+        <div className="flex shrink-0 items-center justify-between gap-2 border-t border-slate-200 bg-slate-50 px-5 py-3 dark:border-slate-800 dark:bg-slate-900/40">
+          {k.ui_configured ? (
+            <button
+              type="button"
+              className="btn-ghost text-xs text-rose-600 dark:text-rose-400"
+              disabled={put.isPending}
+              onClick={() => save(null)}
+            >
+              Очистить ключ
+            </button>
+          ) : (
+            <span />
+          )}
+          <div className="flex items-center gap-2">
+            <button type="button" className="btn-secondary" onClick={onClose}>
+              Отмена
+            </button>
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={put.isPending || value.trim().length < 8}
+              onClick={() => save(value.trim())}
+            >
+              {put.isPending ? 'Сохраняю…' : 'Сохранить'}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
