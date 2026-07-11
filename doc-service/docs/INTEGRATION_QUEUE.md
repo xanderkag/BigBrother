@@ -48,6 +48,57 @@
 
 ## Active Questions
 
+### Q-GATEWAY-KEYS-1. Ключи каналов шлюза — owner вносит сам через UI
+
+- **Status:** `RESOLVED` 2026-07-11 (код: commit `5a34d40`; осталось задеплоить на Asha в пакете cutover'а — см. Q-CUTOVER-1)
+- **Asked:** 2026-07-11 (SLAI reply §4: «ключи не шлём plaintext в чат»; решение Александра — окно в UI, пользователь вносит сам)
+- **From:** SLAI_DEV / USER
+- **To:** PARSDOCS_DEV
+- **Связано:** Q-CUTOVER-1 (активация chat+embeddings+dadata пакетом), Q-DADATA-1.
+
+#### Решение
+Вместо передачи ключей секрет-каналом / ручной правки `.env` owner'ом —
+**UI-окно**: экран «Подключения → Ключи каналов шлюза · SLAI» (super_admin).
+Три канала: chat (Anthropic), embeddings (OpenAI), dadata. Ключ вносится в
+модалке, шифруется at-rest (AES-256-GCM envelope, существующая схема
+provider_settings), наружу только маска `••••1234`; аудит на `provider_setting`.
+
+Техническая развязка: chat-ключ шлюза теперь живёт в выделенной строке
+`provider_settings.id='gateway-anthropic'` (резолв `env → gateway-anthropic →
+findDefault('llm')`), т.е. внесение Anthropic-ключа для SLAI-канала больше НЕ
+требует делать Anthropic дефолтной моделью разбора. Embeddings — magic-id
+`openai` (как читал `/v1/embeddings`), dadata — default-провайдер kind=dadata.
+env-ключ хоста, если задан, побеждает — UI это честно показывает
+(`active_source: env|ui`).
+
+#### Ответ SLAI (что им сообщить)
+Их предпочтительный вариант «заведите ВАШИ собственные ключи в .env Asha»
+закрыт этой фичей чище: ключи вносятся через UI (не в чат, не в git, не в
+переписку), ротация/очистка — тоже из UI. Секрет-канал и имя env-переменной
+не нужны.
+
+---
+
+### Q-SANDBOX-PAT-1. Sandbox-PAT `slai-sandbox` + rate-limit 600/мин (пилот)
+
+- **Status:** `OPEN` (To: PARSDOCS_DEV/USER — ops-действия на Asha, из кода не делаются)
+- **Asked:** 2026-07-11 (SLAI reply §1/§3/§4)
+- **From:** SLAI_DEV
+- **To:** PARSDOCS_DEV / USER
+- **Что нужно:**
+  1. Провиженить отдельный sandbox-тенант/PAT `slai-sandbox` для smoke
+     `/v1/chat` + `/v1/embeddings` (изоляция от прод-демо; по образцу
+     Q-NEG-1 / `provision:sandbox`).
+  2. Поднять global rate-limit до **600/мин** на пилот (SLAI подтвердил §3/§4).
+  3. Per-PAT bucket устраивает SLAI; ручной per-org override (UPDATE в БД)
+     до MTI-1 — принят.
+  4. Мониторить P95 latency chat/embeddings после активации — если упрёмся,
+     сделать override.
+- **Что сделать:** при ближайшем доступе к Asha — provision + env/конфиг
+  rate-limit; plain-token отдать SLAI (как для Q-NEG-1). После — пинг SLAI.
+
+---
+
 ### Q-REDELIVER-1. Переотдача 30 «пустых» инвойсов webhook'ом (Q16 branch)
 
 - **Status:** `OPEN` (To: PARSDOCS_DEV — реализовать batch-переотдачу; SLAI ack получен).
@@ -658,3 +709,4 @@ A-record), no-redirect, mid-stream byte-ceiling, опц. allowlist
 | 2026-07-01 | Переработка классификации (имя файла как сигнал + фикс regex АКТ, миграция `20260701000001` + LLM-классификатор qwen3.6:27b на каждом доке, fallback на keyword). Заведён **Q19** (OPEN, To: SLAI_DEV): новое состояние `unrecognized` — неопознанный док приходит как `document_type: null` + опц. top-level поле `unrecognized: true` (present-only), bump `schema_version 1.0→1.1` (аддитивно/back-compat, MINOR по Q17). Просим SLAI подтвердить приём `null` + чтение флага (hold-for-manual, не fail). **Blocked-on-deploy** (webhook-поле реализуется, не в проде). Метаданные классификации (method/duration/candidates/confidence в `jobs.classification`) — внутренние, НЕ в payload. Note-док `PARSDOCS_TO_SLAI_2026-07-01_CLASSIFICATION.md`. Drafting-only, прод-код/схемы не трогали. |
 | 2026-06-23 | Чистка устаревших фактов после merge+деплой `6532be5`. **EXT-CLASS:** создание всех 8 типов выполнено и в проде (миграции `20260621000002/3/4`, каталог = 38 типов) — `Q-EXT-CLASS` переписан с «очередь будущих типов» на «создание сделано, осталась доводка `waybill`/`commercial_invoice`»; «30/30» → 38. `Q-CLASS-MATRIX` освежён: зарегистрировано 38 типов, из gap-листа создано всё кроме `TN`, §(c) split `booking_request` отмечен сделанным. **Merge+deploy:** формулировки «код влит в main, НЕ задеплоено» исправлены на «задеплоен на прод, спит за флагами (503)» в `Q-DADATA-1`. Реально открытые вопросы (§(d) TN vs TTN, полная матрица типов, образцы для калибровки, Q-PERMIT-1 ждёт PDF) сохранены. |
 | 2026-07-02 | 4 новых типа задеплоены (миграция `20260702000001`): `insurance_policy` + `safety_data_sheet` (реальные), `export_declaration` + `quality_certificate` (beta). SLAI heads-up **свёрнут в §4 ноты** `PARSDOCS_TO_SLAI_2026-07-01_CLASSIFICATION.md` (обновлены заголовок/дата/summary + резюме-таблица), отдельного Q-блока не заводили — это новые значения строки `document_type`, аддитивно, конверт и `schema_version` (`1.1`) не меняются. В Q19 добавлена note-only заметка. Drafting-only, прод-код/схемы не трогали. |
+| 2026-07-11 | SLAI reply по §1-§5 (тайминг/rate-limit/ключи/embeddings-контракт/smoke). Решение Александра по ключам: **не секрет-канал и не env, а UI-окно** — заведён и сразу закрыт **Q-GATEWAY-KEYS-1** (commit `5a34d40`): экран «Подключения → Ключи каналов шлюза · SLAI» (chat/embeddings/dadata), шифрование at-rest, маска, аудит; chat-ключ развязан с default-моделью разбора (выделенная строка `gateway-anthropic`). Заведён **Q-SANDBOX-PAT-1** (OPEN, ops на Asha): PAT `slai-sandbox` + global rate-limit 600/мин + P95-мониторинг. Embeddings-контракт принят SLAI (text-embedding-3-small, 1536 dim, пересчёт не нужен). |
