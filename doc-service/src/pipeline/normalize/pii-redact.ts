@@ -183,6 +183,32 @@ function redactStringFields(obj: unknown, redacted: string[]): unknown {
   return obj;
 }
 
+/**
+ * §8.1 (CLASSIFIER-PACKET-V2): точечный скраб паспортных паттернов (MRZ +
+ * иностранный паспорт + LV-персональный код) в СЫРОЙ строке. Для маскирования
+ * `raw_text` ID-страниц перед персистом — belt-and-suspenders поверх
+ * постраничной маскировки (ловит паспортную страницу, если сегментация её
+ * не выделила). НЕ трогает phone/email — их в raw_text для аудита оставляем.
+ */
+export function scrubPassportPatterns(text: string): string {
+  if (!text) return text;
+  let out = text;
+  for (const { name, re, replace } of PII_PATTERNS) {
+    if (
+      name === 'mrz_line1' ||
+      name === 'mrz_line2' ||
+      name === 'passport_foreign' ||
+      name === 'passport_rf' ||
+      name === 'personal_code_lv'
+    ) {
+      re.lastIndex = 0;
+      out = out.replace(re, replace);
+      re.lastIndex = 0;
+    }
+  }
+  return out;
+}
+
 export function redactPii(
   extracted: Record<string, unknown> | null,
 ): Record<string, unknown> | null {

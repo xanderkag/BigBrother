@@ -622,7 +622,11 @@ class JobsRepo {
   }
 
   async markFileDeleted(id: string): Promise<void> {
-    await db.query(`UPDATE jobs SET file_path = NULL WHERE id = $1`, [id]);
+    // §8.1 (ПДн-блокер): NULL-им и raw_text вместе с file_path. F27
+    // delete_after_processing раньше чистил только файл, а OCR-текст (вкл.
+    // паспортные страницы) оставался в jobs.raw_text и отдавался наружу.
+    // После удаления файла reprocess из raw_text всё равно недоступен.
+    await db.query(`UPDATE jobs SET file_path = NULL, raw_text = NULL WHERE id = $1`, [id]);
   }
 
   /**

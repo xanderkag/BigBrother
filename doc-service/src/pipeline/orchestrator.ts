@@ -61,6 +61,7 @@ import {
 import { runResolutionPipeline } from '../resolution/pipeline.js';
 import { tryMultiDoc } from './multidoc/runner.js';
 import { processFieldConfidence } from './normalize/field-confidence.js';
+import { maskIdContentInRawText } from './normalize/id-raw-mask.js';
 import { fileStorage } from '../storage/files.js';
 import { organizationSettingsRepo } from '../storage/organization-settings.js';
 import { DadataClient } from './enrich/dadata.js';
@@ -729,7 +730,10 @@ async function processJobInner(
       llmUsage: currentJobLlmUsage(),
       documentType,
       ocrEngine: ocr.engine,
-      rawText: ocr.text,
+      // §8.1 (ПДн-блокер): маскируем паспортные/ID-страницы в raw_text до
+      // персиста — иначе MRZ/ФИО/номер сохранятся в jobs.raw_text и уйдут
+      // наружу (GET /jobs/:id/raw_text, reprocess). Для не-ID доков no-op.
+      rawText: maskIdContentInRawText(ocr.text, ocr.pages, documentType, multiDocResult),
       confidence: overall,
       llmCall: post.llmCall ?? null,
       extracted: extractedToStore,
