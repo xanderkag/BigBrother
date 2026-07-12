@@ -255,6 +255,11 @@ const ConfigSchema = z.object({
     // (тип мог быть определён неверно). 0.5 = расхождение keyword↔LLM (см.
     // llm-classifier.llmConfidence); 0.7 = LLM-only проходит; 0.9 = согласие.
     classifyReviewThreshold: confidence01FromEnv(0.6),
+    // §P0-2/P0-3 (CLASSIFIER-PACKET-V2): сегментация композитов.
+    segmentMinConf: confidence01FromEnv(0.4), // порог открытия сегмента по классификатору
+    segmentTypedConf: confidence01FromEnv(0.5), // порог "typed" в isMultiDocument
+    segmentBoundaryFloor: confidence01FromEnv(0.6), // floor уверенности boundary-сегмента
+    segmentHardBoundary: booleanFromEnv(true), // kill-switch детектора границ
   }),
 
   tesseractLangs: z.string().default('rus+eng'),
@@ -675,6 +680,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       llmTextChars: env.CLASSIFY_TEXT_CHARS,
       classifyTimeoutMs: env.CLASSIFY_TIMEOUT_MS,
       classifyReviewThreshold: env.CLASSIFY_REVIEW_THRESHOLD,
+      segmentMinConf: env.SEGMENT_MIN_CONF,
+      segmentTypedConf: env.SEGMENT_TYPED_CONF,
+      segmentBoundaryFloor: env.SEGMENT_BOUNDARY_FLOOR,
+      segmentHardBoundary: env.SEGMENT_HARD_BOUNDARY,
     },
     tesseractLangs: env.TESSERACT_LANGS,
     officeImageFallback: {

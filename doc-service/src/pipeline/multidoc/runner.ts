@@ -26,6 +26,7 @@ import type {
   PageClassification,
 } from './types.js';
 import { splitPagesIntoSegments, isMultiDocument } from './splitter.js';
+import { config } from '../../config.js';
 
 export interface MultiDocRunnerDeps {
   classifier: Classifier;
@@ -82,14 +83,20 @@ export async function tryMultiDoc(
     });
   }
 
-  // Splitter превращает page-by-page classify в segments
+  // Splitter превращает page-by-page classify в segments.
+  // §P0-3: пороги/floor/kill-switch — из config.classifier.segment*.
   const segments = splitPagesIntoSegments(
     pageClassifications,
     ocr.pages.map((p) => p.text),
+    {
+      minConfidenceForNewSegment: config.classifier.segmentMinConf,
+      boundaryConfidenceFloor: config.classifier.segmentBoundaryFloor,
+      useBoundaries: config.classifier.segmentHardBoundary,
+    },
   );
 
   // Heuristic: реально ли multi-doc или один тип на все страницы?
-  if (!isMultiDocument(segments)) {
+  if (!isMultiDocument(segments, config.classifier.segmentTypedConf)) {
     log.info(
       { sheets: ocr.pages.length, distinctSegments: segments.length },
       'multi-doc not detected — falling back to single-doc',

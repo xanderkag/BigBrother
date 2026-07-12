@@ -210,6 +210,15 @@ describe('splitPagesIntoSegments — boundary-aware (§P0-2)', () => {
     expect(segs[1]!.document_type).toBe('driver_passport');
     expect(segs[1]!.boundary).toBe('driver_passport');
   });
+
+  it('useBoundaries=false (kill-switch) → чистое keyword-поведение, границы игнорируются', () => {
+    const pages = [pg(1, null, 0.2), pg(2, null, 0.2)];
+    const texts = [pad('AUSFUHRBEGLEITDOKUMENT MRN 23HR030228018557B5'), pad('PACKING LIST')];
+    const segs = splitPagesIntoSegments(pages, texts, { useBoundaries: false });
+    expect(segs).toHaveLength(1); // без границ null+low-conf сливаются
+    expect(segs[0]!.document_type).toBeNull();
+    expect(segs[0]!.boundary == null).toBe(true);
+  });
 });
 
 describe('isMultiDocument', () => {

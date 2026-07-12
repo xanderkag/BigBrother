@@ -19,7 +19,13 @@
  *     предыдущему сегменту
  */
 import type { PageClassification, DocumentSegment, DocIdentity } from './types.js';
-import { detectDocumentStart, extractPageIdentity, identityConflicts } from './boundaries.js';
+import type { DocumentTypeSlug } from '../../types/documents.js';
+import {
+  detectDocumentStart,
+  extractPageIdentity,
+  identityConflicts,
+  type BoundaryHit,
+} from './boundaries.js';
 
 export interface SplitOptions {
   /**
@@ -37,6 +43,11 @@ export interface SplitOptions {
    * (перезапись low-conf классификатора). По умолчанию 0.6.
    */
   boundaryConfidenceFloor?: number;
+  /**
+   * §P0-3: kill-switch детектора границ (SEGMENT_HARD_BOUNDARY). false →
+   * чистое keyword-поведение (как до v2). По умолчанию true.
+   */
+  useBoundaries?: boolean;
 }
 
 const DEFAULT_MIN_CONF = 0.4;
@@ -55,6 +66,7 @@ export function splitPagesIntoSegments(
   const minConf = opts.minConfidenceForNewSegment ?? DEFAULT_MIN_CONF;
   const minText = opts.minTextLengthForClassification ?? DEFAULT_MIN_TEXT;
   const boundaryFloor = opts.boundaryConfidenceFloor ?? DEFAULT_BOUNDARY_FLOOR;
+  const useBoundaries = opts.useBoundaries ?? true;
 
   if (pages.length === 0) return [];
   // Sanity: pageTexts должен быть параллелен pages по индексам (0..N-1)
@@ -103,11 +115,14 @@ export function splitPagesIntoSegments(
     const text = pageTexts[i] ?? '';
 
     // §P0-2: hard-boundary детектор поверх keyword-классификации.
-    const prevSummary = current
-      ? { slug: current.document_type, identity: current.identity }
+    // useBoundaries=false (SEGMENT_HARD_BOUNDARY) → чистое keyword-поведение.
+    const prevSummary: { slug: DocumentTypeSlug | null; identity: DocIdentity | undefined } | null =
+      current ? { slug: current.document_type, identity: current.identity } : null;
+    const boundary: BoundaryHit | null = useBoundaries
+      ? detectDocumentStart(text, prevSummary)
       : null;
-    const boundary = detectDocumentStart(text, prevSummary);
-    const identity = boundary?.identity ?? extractPageIdentity(text);
+    const identity: DocIdentity =
+      boundary?.identity ?? (useBoundaries ? extractPageIdentity(text) : {});
 
     // Пустая / низко-уверенная / без типа — кандидаты на присоединение
     const isEmpty = text.trim().length < minText;
