@@ -270,6 +270,9 @@ const ConfigSchema = z.object({
     // §P0-0: восстанавливать постраничность склеенного OCR (pages≤1) из текста,
     // чтобы сегментация запустилась. Default false — эвристика, включать по eval.
     segmentForcePageSplit: booleanFromEnv(false),
+    // §P2-2: VLM-классификация по изображению для плохих фото (пустой/мусорный
+    // OCR-текст). Default false — vision дороже; локальная модель (не облако).
+    vlmClassify: booleanFromEnv(false),
   }),
 
   tesseractLangs: z.string().default('rus+eng'),
@@ -697,6 +700,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       multidocLlmClassify: env.MULTIDOC_LLM_CLASSIFY,
       classifyProviderId: env.CLASSIFY_PROVIDER_ID || '',
       segmentForcePageSplit: env.SEGMENT_FORCE_PAGE_SPLIT,
+      vlmClassify: env.VLM_CLASSIFY,
     },
     tesseractLangs: env.TESSERACT_LANGS,
     officeImageFallback: {

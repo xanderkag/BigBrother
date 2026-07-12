@@ -19,6 +19,7 @@
 import type { Logger } from 'pino';
 import type { Classifier, ClassificationResult } from './types.js';
 import type { LlmDocClassifier } from './llm-classifier.js';
+// (P0-1 adapter — без изменений; VLM-classify живёт в vlm-classify.ts)
 
 export class LlmPageClassifierAdapter implements Classifier {
   constructor(

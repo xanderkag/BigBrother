@@ -37,6 +37,8 @@ import { KeywordClassifier } from './classifier/keywords.js';
 import { LlmDocClassifier, type ClassificationMetadata } from './classifier/llm-classifier.js';
 import { LlmPageClassifierAdapter } from './classifier/llm-page-adapter.js';
 import type { Classifier } from './classifier/types.js';
+import { classifyImageViaVlm } from './classifier/vlm-classify.js';
+import { getCatalogForOrg } from './classifier/catalog.js';
 import { combineConfidence } from './quality.js';
 import { assessQuality, countBusinessFields, type QualityFactor } from './quality-assessment.js';
 import { ParsersFactory } from './parsers/index.js';
@@ -596,6 +598,43 @@ async function processJobInner(
       { jobId },
       timings,
     );
+    // §P2-2: VLM-фолбэк по изображению для плохих фото. Если text-классификатор
+    // не определил тип И текста мало И есть картинка — спрашиваем локальную
+    // vision-модель. ДО cleanupArtifacts (картинка ещё на диске). Гейтится
+    // VLM_CLASSIFY (default off). Паспорт → downstream allowlist/§8.5b всё
+    // равно не дадут извлечь ПДн; vision локальный, не облако.
+    if (
+      config.classifier.vlmClassify &&
+      !classifyOnly &&
+      !post.documentType &&
+      firstPageImage.imagePath &&
+      ocr.text.trim().length < 200
+    ) {
+      const { text: catalog } = await getCatalogForOrg(job.organization_id);
+      if (catalog) {
+        const isCatalogSlug = await makeCatalogSlugValidator(job.organization_id);
+        const vlmSlug = await classifyImageViaVlm(
+          firstPageImage.imagePath,
+          catalog,
+          {
+            visionOcr: (i) => llm.visionOcr(i),
+            isCatalogSlug,
+            withVisionProvider: (fn) => dynamicLlm.withVisionProvider(fn),
+          },
+          log,
+        );
+        if (vlmSlug) {
+          post.documentType = vlmSlug as typeof post.documentType;
+          if (post.classification) {
+            post.classification.type = vlmSlug as typeof post.classification.type;
+            post.classification.unknown = false;
+            post.classification.method = 'vlm';
+          }
+          log.info({ jobId, vlmSlug }, '§P2-2: тип определён по изображению (VLM)');
+        }
+      }
+    }
+
     // item A: image первой страницы больше не нужен (parse завершён) — чистим
     // tmp PNG + materialized-файл сразу. Не ждём конца processJob.
     await cleanupArtifacts();
