@@ -106,6 +106,16 @@ export async function deliverFinalizedJobWebhook(
   const extractedOut = shouldRedact ? redactPii(extractedNoMultidoc) : extractedNoMultidoc;
   const metadataOut = shouldRedact ? redactPii(meta) : meta;
 
+  // §8.2 (ПДн-блокер, CLASSIFIER-PACKET-V2): раньше redactPii применялся
+  // только к основному extractedNoMultidoc, а `documents[]` композита
+  // (в т.ч. паспортные сегменты) уходили в webhook СЫРЫМИ, даже когда
+  // клиент выставил redact_pii=true. Применяем redact к extracted КАЖДОГО
+  // сегмента. Идемпотентно; при !shouldRedact поведение прежнее.
+  const documentsOut =
+    documents && shouldRedact
+      ? documents.map((d) => ({ ...d, extracted: redactPii(d.extracted) ?? d.extracted }))
+      : documents;
+
   const targetUrl = override?.url ?? updated.webhook_url!;
   // SLAI 2026-06-03 DF-2: для per-job webhook (job.webhook_url set ИЛИ при
   // manual redeliver) orchestrator не подставляет per-org HMAC secret —
@@ -130,8 +140,9 @@ export async function deliverFinalizedJobWebhook(
       metadata: metadataOut,
       fieldConfidence,
       // F5: массив найденных документов если xlsx/PDF был multi-doc.
-      // При single-doc отсутствует (backwards compat).
-      documents,
+      // При single-doc отсутствует (backwards compat). §8.2: PII-redact
+      // применён к каждому сегменту (documentsOut) при redact_pii=true.
+      documents: documentsOut,
       // EXT-HINT-1: hint для SLAI matcher что счёт перевозочный (есть хоть
       // один транспортный сигнал: order_ref/permit_no/vehicle.plate/route).
       // На редактированном extractedOut, не на raw — чтобы PII-redact не

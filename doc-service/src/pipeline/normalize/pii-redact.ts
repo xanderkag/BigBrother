@@ -47,6 +47,44 @@ const PII_PATTERNS: ReadonlyArray<{ name: string; re: RegExp; replace: string }>
     replace: '$1 [REDACTED]',
   },
   {
+    // §8.5а: MRZ строка 1 паспорта (TD3 name-line): `P<UTOERIKSSON<<ANNA...`.
+    // Несёт тип, страну и ФИО. Корпус БКТ мультиязычный (BY/KGZ/LV) —
+    // российский passport_rf её не ловит. `<`-заполнители = сильный якорь.
+    name: 'mrz_line1',
+    re: /P<[A-Z]{3}[A-Z0-9<]{5,}/g,
+    replace: REDACTED,
+  },
+  {
+    // §8.5а: MRZ строка 2 (TD3 data-line): номер паспорта + гражданство +
+    // дата рождения + пол + срок. Очень специфичная структура — FP крайне
+    // маловероятен. `L898902C36UTO7408122F1204159ZE184226B<<<10`.
+    name: 'mrz_line2',
+    re: /[A-Z0-9<]{9}\d[A-Z]{3}\d{6}\d[MFX<]\d{6}\d[A-Z0-9<]{2,}/g,
+    replace: REDACTED,
+  },
+  {
+    // §8.5а: иностранный/загранпаспорт по контексту — «Passport No AB123456»,
+    // «паспорт № 1234567». Редактируем номер (6–9 цифр, опц. 2 буквы серии),
+    // слово-контекст сохраняем.
+    name: 'passport_foreign',
+    re: /((?:passport|pass\.|паспорт)[^\d\n]{0,15})([A-Z]{0,2}\s?\d{6,9})\b/gi,
+    replace: '$1[REDACTED]',
+  },
+  {
+    // §8.5а: латвийский персональный код `220367-11114` (6-5 через дефис) —
+    // распространён в LV-документах корпуса, отличим от ИНН/ОГРН по дефису.
+    name: 'personal_code_lv',
+    re: /\b\d{6}-\d{5}\b/g,
+    replace: REDACTED,
+  },
+  {
+    // §8.5а: персональный код по контексту (LT asmens kodas / EE isikukood /
+    // «личный/персональный номер»). Контекст-якорь против FP на прочих числах.
+    name: 'personal_code_ctx',
+    re: /((?:asmens\s+kodas|isikukood|personal\s+(?:code|number)|персональн\w*\s+(?:код|номер)|личн\w*\s+номер)[^\d\n]{0,10})(\d{6,11})\b/gi,
+    replace: '$1[REDACTED]',
+  },
+  {
     name: 'phone_ru',
     // +7 или 8 + 10 цифр в типичных форматах. Требуем явный prefix чтобы
     // не задеть ИНН/счёт. Разделители между группами: пробел, дефис или ничего.
@@ -78,6 +116,24 @@ const PII_FIELD_PATHS: ReadonlyArray<readonly string[]> = [
   ['signatory_name'],
   ['executor_name'],
   ['recipient_name_individual'],
+  // §8.5а: поля удостоверений личности (паспорт водителя, СТС-холдер и т.п.).
+  // Корпус ВЭД-пакетов постоянно несёт driver_passport/vehicle_registration.
+  // Только leaf-пути — не затираем объект целиком, чтобы не менять форму
+  // payload'а (SLAI парсит holder как объект).
+  ['holder', 'name'],
+  ['driver'],
+  ['driver_name'],
+  ['full_name'],
+  ['surname'],
+  ['given_names'],
+  ['name_individual'],
+  ['date_of_birth'],
+  ['dob'],
+  ['passport_number'],
+  ['passport_no'],
+  ['personal_number'],
+  ['personal_code'],
+  ['mrz'],
 ];
 
 function setByPath(obj: Record<string, unknown>, path: readonly string[], value: unknown): boolean {

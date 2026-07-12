@@ -39,6 +39,7 @@
 import type { Logger } from 'pino';
 import { recoverPartyInnsFromText } from './inn-recovery.js';
 import { relocateOgrnFromInn } from './ogrn-relocate.js';
+import { applyIdAllowlist } from './id-allowlist.js';
 import { recoverContainersFromText } from './container-recovery.js';
 import { normalizeExtractedFields } from './extracted-fields.js';
 import { recomputeTotalsFromItems, deriveHeaderTotals } from './totals.js';
@@ -56,6 +57,13 @@ export async function runPostExtractNormalization(
   if (!extracted) return extracted;
 
   let result: Record<string, unknown> | null = extracted;
+
+  // F0-ПДн (§8.3, CLASSIFIER-PACKET-V2): для документов-удостоверений
+  // (driver_passport / doc_kind='id') жёстко срезаем extract до allowlist
+  // {doc_kind,country,present}. ПЕРВЫМ шагом — чтобы никакие персональные
+  // поля не попали ни в один последующий шаг, ни в match_signals, ни в БД.
+  const idFiltered = applyIdAllowlist(result, documentType);
+  if (idFiltered && idFiltered !== result) result = idFiltered;
 
   // F0a: перенести 13/15-значный ОГРН из inn в ogrn. До F0-inn-recovery,
   // чтобы recovery добивал inn в уже освобождённое поле, а не спотыкался о
