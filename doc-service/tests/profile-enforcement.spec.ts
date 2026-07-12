@@ -372,7 +372,7 @@ describe('C. deliverFinalizedJobWebhook passes override url/secret to deliverWeb
 
     const payload = deliverWebhookMock.mock.calls[0]![2] as Record<string, unknown>;
     expect(payload.document_type).toBe('unknown');
-    expect(payload.schema_version).toBe('1.2');
+    expect(payload.schema_version).toBe('1.3');
     expect(payload.version).toBe('v1');
     expect(payload).not.toHaveProperty('unrecognized');
   });
@@ -385,7 +385,7 @@ describe('C. deliverFinalizedJobWebhook passes override url/secret to deliverWeb
 
     const payload = deliverWebhookMock.mock.calls[0]![2] as Record<string, unknown>;
     expect(payload.document_type).toBe('invoice');
-    expect(payload.schema_version).toBe('1.2');
+    expect(payload.schema_version).toBe('1.3');
     expect(payload).not.toHaveProperty('unrecognized');
     // schema 1.2: file_sha256 сурфейсится из JobRow (null здесь — makeJob не задал).
     expect(payload).toHaveProperty('file_sha256');

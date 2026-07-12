@@ -35,6 +35,7 @@ import { jobsRepo, type JobRow } from '../storage/jobs.js';
 import { removeStoredFile } from '../storage/files.js';
 import { redactPii } from './normalize/pii-redact.js';
 import { processFieldConfidence } from './normalize/field-confidence.js';
+import { countBusinessFields } from './quality-assessment.js';
 import { normalizeSlugForApi } from '../types/slug-normalize.js';
 import { stripInlineCredentials } from './llm/inline-credentials.js';
 import { organizationSettingsRepo } from '../storage/organization-settings.js';
@@ -106,15 +107,39 @@ export async function deliverFinalizedJobWebhook(
   const extractedOut = shouldRedact ? redactPii(extractedNoMultidoc) : extractedNoMultidoc;
   const metadataOut = shouldRedact ? redactPii(meta) : meta;
 
-  // §8.2 (ПДн-блокер, CLASSIFIER-PACKET-V2): раньше redactPii применялся
-  // только к основному extractedNoMultidoc, а `documents[]` композита
-  // (в т.ч. паспортные сегменты) уходили в webhook СЫРЫМИ, даже когда
-  // клиент выставил redact_pii=true. Применяем redact к extracted КАЖДОГО
-  // сегмента. Идемпотентно; при !shouldRedact поведение прежнее.
-  const documentsOut =
-    documents && shouldRedact
-      ? documents.map((d) => ({ ...d, extracted: redactPii(d.extracted) ?? d.extracted }))
-      : documents;
+  // §8.2 (ПДн-блокер) + SLAI 2026-07-12 контракт композитов (Q-CLSF-CONTRACT-1):
+  //  - redactPii на extracted КАЖДОГО сегмента при redact_pii=true (раньше
+  //    сегменты, вкл. паспортные, уходили в webhook СЫРЫМИ);
+  //  - per-segment: стабильный `segment_id` (job_id#index) для дедупа,
+  //    `needs_review`/`status` (спорный сегмент не тормозит весь файл),
+  //    эхо `metadata.order_hint` на каждый сегмент (якорь «папка → заказ»).
+  // Per-segment гейт ревью: низкая уверенность (< classifyReviewThreshold 0.6)
+  // ИЛИ пустой extract (0 бизнес-полей).
+  const segmentNeedsReview = (d: { confidence: number; extracted: Record<string, unknown> }): boolean =>
+    (typeof d.confidence === 'number' && d.confidence < 0.6) ||
+    countBusinessFields(d.extracted) === 0;
+  const orderHint = meta && meta.order_hint !== undefined ? meta.order_hint : undefined;
+  const documentsOut = documents
+    ? documents.map((d, idx) => {
+        const needsReview = segmentNeedsReview(d);
+        return {
+          ...d,
+          extracted: shouldRedact ? redactPii(d.extracted) ?? d.extracted : d.extracted,
+          segment_id: `${updated.id}#${idx}`,
+          needs_review: needsReview,
+          status: needsReview ? 'needs_review' : 'done',
+          ...(orderHint !== undefined ? { order_hint: orderHint } : {}),
+        };
+      })
+    : undefined;
+
+  // Composite-маркеры: файл стал multi-doc (≥2 сегмента). dominant_index —
+  // индекс сегмента, чей тип совпал с top-level document_type (иначе 0).
+  const isComposite = !!documentsOut && documentsOut.length >= 2;
+  const dominantSlug = normalizeSlugForApi(updated.document_type ?? null);
+  const dominantIndex = isComposite
+    ? Math.max(0, documentsOut!.findIndex((d) => d.document_type === dominantSlug))
+    : undefined;
 
   const targetUrl = override?.url ?? updated.webhook_url!;
   // SLAI 2026-06-03 DF-2: для per-job webhook (job.webhook_url set ИЛИ при
@@ -142,7 +167,10 @@ export async function deliverFinalizedJobWebhook(
       // F5: массив найденных документов если xlsx/PDF был multi-doc.
       // При single-doc отсутствует (backwards compat). §8.2: PII-redact
       // применён к каждому сегменту (documentsOut) при redact_pii=true.
+      // SLAI 2026-07-12: + segment_id/needs_review/status/order_hint per-segment.
       documents: documentsOut,
+      isComposite,
+      dominantIndex,
       // EXT-HINT-1: hint для SLAI matcher что счёт перевозочный (есть хоть
       // один транспортный сигнал: order_ref/permit_no/vehicle.plate/route).
       // На редактированном extractedOut, не на raw — чтобы PII-redact не

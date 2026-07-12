@@ -130,11 +130,11 @@ describe('buildWebhookPayload — единый билдер для всех пу
     error: null,
   };
 
-  it('нормальный job → v1 / schema_version 1.2 / нормализованный slug', async () => {
+  it('нормальный job → v1 / schema_version 1.3 / нормализованный slug', async () => {
     const { buildWebhookPayload } = await import('../src/webhooks/deliver.js');
     const p = buildWebhookPayload(src, { extracted: { number: '5' }, metadata: null });
     expect(p.version).toBe('v1');
-    expect(p.schema_version).toBe('1.2');
+    expect(p.schema_version).toBe('1.3');
     // TTN → ttn (outbound normalize).
     expect(p.document_type).toBe('ttn');
     expect(p.confidence).toBe(0.87);
@@ -174,14 +174,38 @@ describe('buildWebhookPayload — единый билдер для всех пу
     expect(parsed).not.toHaveProperty('target_entity_hint');
     // Общий envelope тот же самый, что и на finalize-пути.
     expect(parsed.version).toBe('v1');
-    expect(parsed.schema_version).toBe('1.2');
+    expect(parsed.schema_version).toBe('1.3');
+  });
+
+  it('composite (SLAI 2026-07-12): is_composite + dominant_index; single-doc — оба отсутствуют', async () => {
+    const { buildWebhookPayload } = await import('../src/webhooks/deliver.js');
+    // single-doc: composite-маркеров нет (byte-identical с прежним payload).
+    const single = JSON.parse(
+      JSON.stringify(buildWebhookPayload(src, { extracted: {}, metadata: null })),
+    ) as Record<string, unknown>;
+    expect(single).not.toHaveProperty('is_composite');
+    expect(single).not.toHaveProperty('dominant_index');
+    // composite: маркеры + per-segment segment_id проброшены.
+    const comp = buildWebhookPayload(src, {
+      extracted: {},
+      metadata: null,
+      documents: [
+        { page_range: '1', document_type: 'customs_export_ead', confidence: 0.6, extracted: {}, segment_id: 'j#0' },
+        { page_range: '2', document_type: 'cmr', confidence: 0.7, extracted: {}, segment_id: 'j#1' },
+      ],
+      isComposite: true,
+      dominantIndex: 1,
+    });
+    expect(comp.is_composite).toBe(true);
+    expect(comp.dominant_index).toBe(1);
+    expect(comp.documents?.[0]?.segment_id).toBe('j#0');
   });
 });
 
 describe('webhook payload — top-level schema_version drift marker (SLAI)', () => {
-  it('доставленный body несёт schema_version: "1.2" и version: "v1" не тронут', async () => {
+  it('доставленный body несёт schema_version: "1.3" и version: "v1" не тронут', async () => {
     const { WEBHOOK_SCHEMA_VERSION } = await import('../src/webhooks/deliver.js');
-    expect(WEBHOOK_SCHEMA_VERSION).toBe('1.2');
+    expect(WEBHOOK_SCHEMA_VERSION).toBe('1.3');
 
     await deliverWebhook('job-sv', 'https://consumer.test/hook', payload({ job_id: 'job-sv' }), log);
 

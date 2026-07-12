@@ -15,7 +15,7 @@ import type { Logger } from 'pino';
  * НЕ путать с `extracted._match_signals.schema_version` (тот скоупит
  * проекцию match-сигналов, не общий контракт).
  */
-export const WEBHOOK_SCHEMA_VERSION = '1.2';
+export const WEBHOOK_SCHEMA_VERSION = '1.3';
 
 export type WebhookPayload = {
   /**
@@ -71,7 +71,27 @@ export type WebhookPayload = {
     confidence: number;
     extracted: Record<string, unknown>;
     field_confidence?: Record<string, number>;
+    // SLAI 2026-07-12 (Q-CLSF-CONTRACT-1) — контракт композитов. Все поля
+    // аддитивны (schema_version 1.2→1.3, minor-бамп по Q17).
+    /** Стабильный id сегмента (`job_id#index`) — идемпотентность/дедуп у SLAI. */
+    segment_id?: string;
+    /** Per-segment гейт ревью — спорный сегмент не тормозит весь файл. */
+    needs_review?: boolean;
+    /** Per-segment статус: `'done'` | `'needs_review'`. */
+    status?: string;
+    /** Эхо `metadata.order_hint` на каждый сегмент (якорь «папка → заказ»). */
+    order_hint?: unknown;
+    /** Двойные доки: вторая роль — slug из того же каталога. */
+    secondary_role?: string | null;
   }>;
+  /**
+   * SLAI 2026-07-12 (Q-CLSF-CONTRACT-1): файл-стопка стал multi-doc.
+   * `is_composite=true`, когда `documents[]` несёт ≥2 сегмента; `dominant_index`
+   * — индекс сегмента, чей extracted продублирован в top-level `extracted`.
+   * Для single-doc отсутствуют (payload byte-identical как раньше).
+   */
+  is_composite?: boolean;
+  dominant_index?: number;
   /**
    * EXT-HINT-1 (SLAI 2026-06-03): подсказка к целевой сущности на стороне
    * SLAI matcher. Проставляется парсдоксом если в extracted найден хоть
@@ -138,6 +158,8 @@ export type WebhookPayloadContent = {
   fieldConfidence?: Record<string, number>;
   documents?: WebhookPayload['documents'];
   targetEntityHint?: WebhookPayload['target_entity_hint'];
+  isComposite?: boolean;
+  dominantIndex?: number;
 };
 
 /**
@@ -180,6 +202,10 @@ export function buildWebhookPayload(
         ? content.fieldConfidence
         : undefined,
     documents: content.documents,
+    // SLAI 2026-07-12: composite-маркеры. undefined для single-doc →
+    // JSON.stringify пропускает → body byte-identical на не-композитном пути.
+    is_composite: content.isComposite ? true : undefined,
+    dominant_index: content.dominantIndex,
     target_entity_hint: content.targetEntityHint,
   };
 }
