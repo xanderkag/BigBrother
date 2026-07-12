@@ -42,6 +42,20 @@ export function isIdDocument(
 }
 
 /**
+ * §8.5b (ПДн-блокер): детерминированный extract ID-сегмента из MRZ —
+ * БЕЗ отправки паспортного текста в LLM (в т.ч. облачный). Возвращает
+ * allowlist `{doc_kind:'id', country?, present:true}`. Страна — 3-буквенный
+ * ICAO-код из MRZ (`P<BLR…` → `BLR`), если распознан; персональные поля
+ * не извлекаются.
+ */
+export function buildIdSegmentExtract(text: string): Record<string, unknown> {
+  const out: Record<string, unknown> = { doc_kind: 'id', present: true };
+  const m = text.match(/P<([A-Z]{3})/);
+  if (m) out.country = m[1];
+  return out;
+}
+
+/**
  * Для ID-документа оставить только allowlist-поля. Для прочих — вернуть
  * `extracted` без изменений (тождественно). Не мутирует вход.
  */

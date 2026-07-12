@@ -4,7 +4,11 @@
  * даже если LLM вернула их сверх схемы.
  */
 import { describe, expect, it } from 'vitest';
-import { applyIdAllowlist, isIdDocument } from '../src/pipeline/normalize/id-allowlist.js';
+import {
+  applyIdAllowlist,
+  isIdDocument,
+  buildIdSegmentExtract,
+} from '../src/pipeline/normalize/id-allowlist.js';
 
 describe('applyIdAllowlist — срез ПДн у ID-документа', () => {
   it('оставляет только {doc_kind,country,present} при driver_passport', () => {
@@ -49,6 +53,20 @@ describe('applyIdAllowlist — срез ПДн у ID-документа', () => 
 
   it('null на вход — null на выход', () => {
     expect(applyIdAllowlist(null, 'driver_passport')).toBe(null);
+  });
+});
+
+describe('buildIdSegmentExtract — §8.5b (без LLM)', () => {
+  it('извлекает страну из MRZ (P<BLR → BLR), персональные поля НЕ трогает', () => {
+    const out = buildIdSegmentExtract('P<BLRAUSIYEVICH<<PIOTR<<<<<\nAB12345678BLR...');
+    expect(out).toEqual({ doc_kind: 'id', present: true, country: 'BLR' });
+  });
+
+  it('без MRZ → {doc_kind,present} без country', () => {
+    expect(buildIdSegmentExtract('фото паспорта без OCR-MRZ')).toEqual({
+      doc_kind: 'id',
+      present: true,
+    });
   });
 });
 

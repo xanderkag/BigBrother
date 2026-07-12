@@ -62,6 +62,7 @@ import { runResolutionPipeline } from '../resolution/pipeline.js';
 import { tryMultiDoc } from './multidoc/runner.js';
 import { processFieldConfidence } from './normalize/field-confidence.js';
 import { maskIdContentInRawText } from './normalize/id-raw-mask.js';
+import { isIdDocument, buildIdSegmentExtract } from './normalize/id-allowlist.js';
 import { fileStorage } from '../storage/files.js';
 import { organizationSettingsRepo } from '../storage/organization-settings.js';
 import { DadataClient } from './enrich/dadata.js';
@@ -488,6 +489,14 @@ async function processJobInner(
         classifier,
         organizationId: job.organization_id,
         extractSegment: async (text, type, segLog) => {
+          // §8.5b (ПДн-блокер): паспорт/ID-сегмент НЕ отправляем в LLM (тем
+          // более облачный). Extract строим детерминированно из MRZ по
+          // allowlist {doc_kind,country,present} — персональные поля не
+          // извлекаются, паспортный текст не покидает контур.
+          if (isIdDocument(type, null)) {
+            segLog.info({ jobId, segment: type }, '§8.5b: ID-сегмент — extract без LLM (allowlist из MRZ)');
+            return { extracted: buildIdSegmentExtract(text), fieldConfidence: {} };
+          }
           const segPipeline = await runDocumentPipeline(
             text,
             { hint: type, promptOverride, organizationId: job.organization_id },
