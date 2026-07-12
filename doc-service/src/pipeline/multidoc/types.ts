@@ -21,6 +21,20 @@
  */
 import type { DocumentTypeSlug } from '../../types/documents.js';
 
+/**
+ * §P0-2 (CLASSIFIER-PACKET-V2): «личность» страницы/сегмента — набор
+ * идентификаторов из первых ~500 символов. Нужен для:
+ *   - continuation-rule (та же identity → та же стопка, не открывать сегмент);
+ *   - anti-over-split многостраничного одиночного дока (инвойс на 4 стр.);
+ *   - back-reference suppression (тот же MRN/ARC на инвойсе — ссылка, не граница).
+ */
+export interface DocIdentity {
+  invoice_no?: string;
+  mrn?: string;
+  arc?: string;
+  order_no?: string;
+}
+
 export interface ExtractedDocumentEntry {
   /**
    * Диапазон страниц где найден этот документ. 1-indexed для совместимости
@@ -57,6 +71,13 @@ export interface PageClassification {
   confidence: number;
   /** Первые ~500 символов raw OCR (для debug) */
   text_preview: string;
+  /**
+   * §P0-2: slug, назначенный hard-boundary детектором (перезаписывает
+   * тип классификатора). null — граница не сработала на этой странице.
+   */
+  boundary?: DocumentTypeSlug | null;
+  /** §P0-2: identity страницы (invoice_no/mrn/arc) для continuation-rule. */
+  identity?: DocIdentity;
 }
 
 /**
@@ -72,6 +93,14 @@ export interface DocumentSegment {
   confidence: number;
   /** raw OCR-текст всех страниц сегмента (для extract) */
   combined_text: string;
+  /**
+   * §P0-2: slug hard-boundary, открывшей сегмент (если открыт границей, а
+   * не классификатором). boundary-открытый сегмент считается typed
+   * безусловно (см. isMultiDocument).
+   */
+  boundary?: DocumentTypeSlug | null;
+  /** §P0-2: identity открытия сегмента — для 2nd-pass retro-split. */
+  identity?: DocIdentity;
 }
 
 /**
