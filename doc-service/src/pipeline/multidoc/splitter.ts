@@ -18,7 +18,8 @@
  *   - Пустые страницы (text_preview короткий) → присоединяем к
  *     предыдущему сегменту
  */
-import type { PageClassification, DocumentSegment } from './types.js';
+import type { PageClassification, DocumentSegment, DocIdentity } from './types.js';
+import { detectDocumentStart, extractPageIdentity, identityConflicts } from './boundaries.js';
 
 export interface SplitOptions {
   /**
@@ -31,10 +32,20 @@ export interface SplitOptions {
    * Пустые страницы (короткие) присоединяются к предыдущему сегменту.
    */
   minTextLengthForClassification?: number;
+  /**
+   * §P0-2: floor уверенности для сегмента, открытого hard-boundary
+   * (перезапись low-conf классификатора). По умолчанию 0.6.
+   */
+  boundaryConfidenceFloor?: number;
 }
 
 const DEFAULT_MIN_CONF = 0.4;
 const DEFAULT_MIN_TEXT = 100; // символов
+const DEFAULT_BOUNDARY_FLOOR = 0.6;
+
+function isEmptyIdentity(id: DocIdentity | undefined): boolean {
+  return !id || (!id.invoice_no && !id.mrn && !id.arc && !id.order_no);
+}
 
 export function splitPagesIntoSegments(
   pages: PageClassification[],
@@ -43,6 +54,7 @@ export function splitPagesIntoSegments(
 ): DocumentSegment[] {
   const minConf = opts.minConfidenceForNewSegment ?? DEFAULT_MIN_CONF;
   const minText = opts.minTextLengthForClassification ?? DEFAULT_MIN_TEXT;
+  const boundaryFloor = opts.boundaryConfidenceFloor ?? DEFAULT_BOUNDARY_FLOOR;
 
   if (pages.length === 0) return [];
   // Sanity: pageTexts должен быть параллелен pages по индексам (0..N-1)
@@ -55,56 +67,105 @@ export function splitPagesIntoSegments(
   const segments: DocumentSegment[] = [];
   let current: DocumentSegment | null = null;
 
+  /** Открыть сегмент по hard-boundary (перезапись типа классификатора). */
+  const openBoundary = (
+    page: PageClassification,
+    text: string,
+    slug: DocumentSegment['document_type'],
+    identity: DocIdentity,
+  ): DocumentSegment => ({
+    document_type: slug,
+    page_from: page.page,
+    page_to: page.page,
+    confidence: Math.max(page.confidence, boundaryFloor),
+    combined_text: text,
+    boundary: slug,
+    identity,
+  });
+
+  /** Открыть сегмент по классификатору (историческое поведение). */
+  const openKeyword = (
+    page: PageClassification,
+    text: string,
+    identity: DocIdentity,
+  ): DocumentSegment => ({
+    document_type: page.document_type,
+    page_from: page.page,
+    page_to: page.page,
+    confidence: page.confidence,
+    combined_text: text,
+    boundary: null,
+    identity,
+  });
+
   for (let i = 0; i < pages.length; i++) {
     const page = pages[i]!;
     const text = pageTexts[i] ?? '';
 
-    // Пустая страница (или почти пустая) — присоединяем к текущему сегменту
+    // §P0-2: hard-boundary детектор поверх keyword-классификации.
+    const prevSummary = current
+      ? { slug: current.document_type, identity: current.identity }
+      : null;
+    const boundary = detectDocumentStart(text, prevSummary);
+    const identity = boundary?.identity ?? extractPageIdentity(text);
+
+    // Пустая / низко-уверенная / без типа — кандидаты на присоединение
     const isEmpty = text.trim().length < minText;
-    // Низкая уверенность — то же
     const isLowConf = page.confidence < minConf;
-    // Отсутствие type → не можем открыть новый сегмент
     const noType = page.document_type === null;
 
     if (current === null) {
-      // Первая страница — открываем сегмент даже если low-conf (нет
-      // куда присоединить)
-      current = {
-        document_type: page.document_type,
-        page_from: page.page,
-        page_to: page.page,
-        confidence: page.confidence,
-        combined_text: text,
-      };
+      current = boundary
+        ? openBoundary(page, text, boundary.slug, identity)
+        : openKeyword(page, text, identity);
       continue;
     }
+
+    // 1. Сработала hard-boundary → всегда новый сегмент (detectDocumentStart
+    //    уже вернул null для continuation/back-reference того же документа).
+    if (boundary) {
+      segments.push(current);
+      current = openBoundary(page, text, boundary.slug, identity);
+      continue;
+    }
+
+    // 2. Inline retro-split: mid-страница несёт invoice_no/mrn, отличный от
+    //    identity открытия сегмента → это новый документ, чей заголовок OCR
+    //    не поймал якорем. Закрываем сегмент, открываем keyword-сегмент.
+    if (identityConflicts(identity, current.identity)) {
+      segments.push(current);
+      current = openKeyword(page, text, identity);
+      continue;
+    }
+
+    // 3. Continuation-rule: сегмент, открытый hard-boundary, поглощает
+    //    последующие безъякорные страницы ДАЖЕ при смене типа классификатором
+    //    (стр. 2-4 инвойса теряют «Invoice No» и выглядят как packing/spec).
+    //    Для keyword-открытых сегментов (xlsx-листы) — историческое поведение.
+    const attachByContinuation = current.boundary != null;
 
     const shouldAttach =
       isEmpty ||
       isLowConf ||
       noType ||
-      page.document_type === current.document_type;
+      page.document_type === current.document_type ||
+      attachByContinuation;
 
     if (shouldAttach) {
-      // Продлеваем текущий сегмент
       current.page_to = page.page;
       current.combined_text = current.combined_text + '\n\n' + text;
-      // confidence: пересчёт как «running average» с весом каждой страницы
       const pageCount = page.page - current.page_from + 1;
       const prevAvg = current.confidence;
       current.confidence =
         (prevAvg * (pageCount - 1) + (isEmpty || isLowConf ? prevAvg : page.confidence)) /
         pageCount;
+      // Накапливаем identity сегмента, если открытие было без неё.
+      if (isEmptyIdentity(current.identity) && !isEmptyIdentity(identity)) {
+        current.identity = identity;
+      }
     } else {
-      // Смена типа с высокой уверенностью → закрываем сегмент, открываем новый
       segments.push(current);
-      current = {
-        document_type: page.document_type,
-        page_from: page.page,
-        page_to: page.page,
-        confidence: page.confidence,
-        combined_text: text,
-      };
+      current = openKeyword(page, text, identity);
     }
   }
 
@@ -136,7 +197,7 @@ export function splitPagesIntoSegments(
  * known типом и одним unknown считаем multi-doc если оба нужно
  * обработать через LLM.
  */
-export function isMultiDocument(segments: DocumentSegment[]): boolean {
+export function isMultiDocument(segments: DocumentSegment[], typedConf = 0.5): boolean {
   if (segments.length < 2) return false;
   // Триггерим multi-doc когда хотя бы один сегмент имеет confident type.
   // Остальные segments runner попробует extract'ить как unknown (через
@@ -145,9 +206,16 @@ export function isMultiDocument(segments: DocumentSegment[]): boolean {
   //
   // Раньше требовали ≥2 distinct types с high conf — это бракoвало
   // valid CI+PL кейсы где classifier неуверен на одном из листов.
+  //
+  // §P0-2: сегмент, открытый hard-boundary, считается typed БЕЗУСЛОВНО
+  // (граница = сильный сигнал реального документа), независимо от порога.
   let typedCount = 0;
   for (const s of segments) {
-    if (s.document_type && s.confidence >= 0.5) typedCount += 1;
+    if (s.boundary) {
+      typedCount += 1;
+      continue;
+    }
+    if (s.document_type && s.confidence >= typedConf) typedCount += 1;
   }
   // Multi-doc если ≥1 segment classified + ≥2 segments total. Runner
   // решит что делать с unclassified в своём loop'е.

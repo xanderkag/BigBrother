@@ -139,6 +139,23 @@ const INVOICE_HEADER: RegExp[] = [
   /СЧЕТ-ФАКТУРА/,
 ];
 
+/** Публичный хелпер: identity страницы по её raw-тексту (для splitter). */
+export function extractPageIdentity(text: string): DocIdentity {
+  return extractIdentity(fold(text.slice(0, HEAD_CHARS)));
+}
+
+/**
+ * Конфликт identity двух страниц/сегментов: обе несут invoice_no (или mrn)
+ * и они РАЗНЫЕ. Пустая identity ни с чем не конфликтует. Используется
+ * splitter'ом для inline retro-split (mid-страница с другим номером = новый док).
+ */
+export function identityConflicts(a: DocIdentity, b: DocIdentity | undefined): boolean {
+  if (!b) return false;
+  if (a.invoice_no && b.invoice_no && a.invoice_no !== b.invoice_no) return true;
+  if (a.mrn && b.mrn && a.mrn !== b.mrn) return true;
+  return false;
+}
+
 /** Извлечь identity из fold-текста шапки. */
 function extractIdentity(folded: string): DocIdentity {
   const id: DocIdentity = {};
