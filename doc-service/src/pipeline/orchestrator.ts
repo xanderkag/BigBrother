@@ -65,6 +65,7 @@ import { tryMultiDoc } from './multidoc/runner.js';
 import { processFieldConfidence } from './normalize/field-confidence.js';
 import { maskIdContentInRawText } from './normalize/id-raw-mask.js';
 import { isIdDocument, buildIdSegmentExtract } from './normalize/id-allowlist.js';
+import { splitCollapsedText } from './multidoc/collapsed-pages.js';
 import { fileStorage } from '../storage/files.js';
 import { organizationSettingsRepo } from '../storage/organization-settings.js';
 import { DadataClient } from './enrich/dadata.js';
@@ -485,17 +486,41 @@ async function processJobInner(
     // Phase 3 (CP7): в classify_only мульти-doc extract не запускаем вовсе
     // (per-segment extract — это как раз LLM-стадия, которую потребитель
     // явно не хочет). Single-doc classify ниже всё равно даст primary type.
+    // §P0-0: если многостраничный скан склеился в 1 blob (pages≤1) — по флагу
+    // SEGMENT_FORCE_PAGE_SPLIT восстанавливаем постраничность из текста, чтобы
+    // сегментация запустилась. Иначе mdOcr === ocr (поведение не меняется).
+    let mdOcr = ocr;
+    if (config.classifier.segmentForcePageSplit && (!ocr.pages || ocr.pages.length <= 1)) {
+      const pseudo = splitCollapsedText(ocr.text);
+      if (pseudo.length >= 2) {
+        const conf = ocr.confidence;
+        mdOcr = { ...ocr, pages: pseudo.map((t) => ({ text: t, confidence: conf })) };
+        log.info({ jobId, pseudoPages: pseudo.length }, '§P0-0: восстановлена постраничность склеенного скана');
+      }
+    }
+
     let multiDocResult: Awaited<ReturnType<typeof tryMultiDoc>> = null;
-    if (!classifyOnly && ocr.pages && ocr.pages.length > 1) {
+    if (!classifyOnly && mdOcr.pages && mdOcr.pages.length > 1) {
       // §P0-1: per-page классификатор. По умолчанию keyword (границы уже
       // типизируют boundary-страницы). За флагом MULTIDOC_LLM_CLASSIFY —
       // LLM-catalog адаптер для безъякорных иноязычных страниц.
       let pageClassifier: Classifier = classifier;
       if (config.classifier.multidocLlmClassify) {
         const isCatalogSlug = await makeCatalogSlugValidator(job.organization_id);
-        pageClassifier = new LlmPageClassifierAdapter(llmDocClassifier, isCatalogSlug, log);
+        // §P2-3: если CLASSIFY_PROVIDER_ID выставлен — per-page classify идёт
+        // на A/B-провайдер через forceProvider; иначе default (no-op).
+        const forcedId = config.classifier.classifyProviderId;
+        const wrapProvider = forcedId
+          ? <T>(fn: () => Promise<T>) => dynamicLlm.withForceProvider(forcedId, fn)
+          : undefined;
+        pageClassifier = new LlmPageClassifierAdapter(
+          llmDocClassifier,
+          isCatalogSlug,
+          log,
+          wrapProvider,
+        );
       }
-      multiDocResult = await tryMultiDoc(ocr, {
+      multiDocResult = await tryMultiDoc(mdOcr, {
         classifier: pageClassifier,
         organizationId: job.organization_id,
         extractSegment: async (text, type, segLog) => {
@@ -524,7 +549,7 @@ async function processJobInner(
       if (multiDocResult) {
         await stepEvent('multidoc.detected', 'done', {
           details: {
-            sheets: ocr.pages.length,
+            sheets: mdOcr.pages.length,
             segments: multiDocResult.length,
             types: multiDocResult.map((d) => d.document_type),
           },

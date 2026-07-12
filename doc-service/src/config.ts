@@ -264,6 +264,12 @@ const ConfigSchema = z.object({
     // false — границы уже типизируют boundary-страницы; включать по eval-bctt
     // (стоимость: N вызовов на N-стр композит).
     multidocLlmClassify: booleanFromEnv(false),
+    // §P2-3: форс-провайдер для per-page classify (A/B qwen3.6 vs yandexgpt-5).
+    // '' = default-провайдер (no-op). Действует только с multidocLlmClassify=true.
+    classifyProviderId: z.string().default(''),
+    // §P0-0: восстанавливать постраничность склеенного OCR (pages≤1) из текста,
+    // чтобы сегментация запустилась. Default false — эвристика, включать по eval.
+    segmentForcePageSplit: booleanFromEnv(false),
   }),
 
   tesseractLangs: z.string().default('rus+eng'),
@@ -689,6 +695,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       segmentBoundaryFloor: env.SEGMENT_BOUNDARY_FLOOR,
       segmentHardBoundary: env.SEGMENT_HARD_BOUNDARY,
       multidocLlmClassify: env.MULTIDOC_LLM_CLASSIFY,
+      classifyProviderId: env.CLASSIFY_PROVIDER_ID || '',
+      segmentForcePageSplit: env.SEGMENT_FORCE_PAGE_SPLIT,
     },
     tesseractLangs: env.TESSERACT_LANGS,
     officeImageFallback: {

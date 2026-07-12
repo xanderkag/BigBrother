@@ -25,6 +25,12 @@ export class LlmPageClassifierAdapter implements Classifier {
     private readonly llmDoc: LlmDocClassifier,
     private readonly isCatalogSlug: (slug: string) => Promise<boolean>,
     private readonly log: Logger,
+    /**
+     * §P2-3: опц. обёртка форс-провайдера (`dynamicLlm.withForceProvider(id, …)`).
+     * Задаётся, когда CLASSIFY_PROVIDER_ID выставлен — тогда per-page classify
+     * идёт на A/B-провайдер. undefined → default-провайдер (no-op).
+     */
+    private readonly wrapProvider?: <T>(fn: () => Promise<T>) => Promise<T>,
   ) {}
 
   async classify(
@@ -32,12 +38,14 @@ export class LlmPageClassifierAdapter implements Classifier {
     organizationId?: string | null,
     fileName?: string | null,
   ): Promise<ClassificationResult> {
-    const outcome = await this.llmDoc.classify(
-      { text, fileName: fileName ?? null, organizationId: organizationId ?? null },
-      this.isCatalogSlug,
-      this.log,
-      { source: 'multidoc-page' },
-    );
+    const run = () =>
+      this.llmDoc.classify(
+        { text, fileName: fileName ?? null, organizationId: organizationId ?? null },
+        this.isCatalogSlug,
+        this.log,
+        { source: 'multidoc-page' },
+      );
+    const outcome = this.wrapProvider ? await this.wrapProvider(run) : await run();
     const method = outcome.metadata.method;
     const source: ClassificationResult['source'] =
       method === 'llm' ? 'llm' : method === 'hint' ? 'hint' : 'keyword';

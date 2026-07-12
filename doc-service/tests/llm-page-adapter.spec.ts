@@ -58,6 +58,22 @@ describe('LlmPageClassifierAdapter', () => {
     expect(r.type).toBeNull();
   });
 
+  it('§P2-3: wrapProvider оборачивает classify (forceProvider A/B)', async () => {
+    const doc = fakeLlmDoc(outcome('cmr', 'llm'));
+    const calls: string[] = [];
+    const wrap = async <T>(fn: () => Promise<T>): Promise<T> => {
+      calls.push('start');
+      const r = await fn();
+      calls.push('end');
+      return r;
+    };
+    const adapter = new LlmPageClassifierAdapter(doc, isCatalogSlug, log, wrap);
+    const r = await adapter.classify('t');
+    expect(r.type).toBe('cmr');
+    expect(calls).toEqual(['start', 'end']); // classify выполнен ВНУТРИ обёртки
+    expect(doc.classify).toHaveBeenCalledOnce();
+  });
+
   it('пробрасывает text/fileName/orgId в LlmDocClassifier', async () => {
     const doc = fakeLlmDoc(outcome('ttn', 'llm'));
     const adapter = new LlmPageClassifierAdapter(doc, isCatalogSlug, log);
