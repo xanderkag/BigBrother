@@ -35,6 +35,8 @@ import {
 import { sanitizeText } from './text-sanitize.js';
 import { KeywordClassifier } from './classifier/keywords.js';
 import { LlmDocClassifier, type ClassificationMetadata } from './classifier/llm-classifier.js';
+import { LlmPageClassifierAdapter } from './classifier/llm-page-adapter.js';
+import type { Classifier } from './classifier/types.js';
 import { combineConfidence } from './quality.js';
 import { assessQuality, countBusinessFields, type QualityFactor } from './quality-assessment.js';
 import { ParsersFactory } from './parsers/index.js';
@@ -485,8 +487,16 @@ async function processJobInner(
     // явно не хочет). Single-doc classify ниже всё равно даст primary type.
     let multiDocResult: Awaited<ReturnType<typeof tryMultiDoc>> = null;
     if (!classifyOnly && ocr.pages && ocr.pages.length > 1) {
+      // §P0-1: per-page классификатор. По умолчанию keyword (границы уже
+      // типизируют boundary-страницы). За флагом MULTIDOC_LLM_CLASSIFY —
+      // LLM-catalog адаптер для безъякорных иноязычных страниц.
+      let pageClassifier: Classifier = classifier;
+      if (config.classifier.multidocLlmClassify) {
+        const isCatalogSlug = await makeCatalogSlugValidator(job.organization_id);
+        pageClassifier = new LlmPageClassifierAdapter(llmDocClassifier, isCatalogSlug, log);
+      }
       multiDocResult = await tryMultiDoc(ocr, {
-        classifier,
+        classifier: pageClassifier,
         organizationId: job.organization_id,
         extractSegment: async (text, type, segLog) => {
           // §8.5b (ПДн-блокер): паспорт/ID-сегмент НЕ отправляем в LLM (тем

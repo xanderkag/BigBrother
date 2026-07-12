@@ -260,6 +260,10 @@ const ConfigSchema = z.object({
     segmentTypedConf: confidence01FromEnv(0.5), // порог "typed" в isMultiDocument
     segmentBoundaryFloor: confidence01FromEnv(0.6), // floor уверенности boundary-сегмента
     segmentHardBoundary: booleanFromEnv(true), // kill-switch детектора границ
+    // §P0-1: per-page classify через LLM-catalog вместо keyword-only. Default
+    // false — границы уже типизируют boundary-страницы; включать по eval-bctt
+    // (стоимость: N вызовов на N-стр композит).
+    multidocLlmClassify: booleanFromEnv(false),
   }),
 
   tesseractLangs: z.string().default('rus+eng'),
@@ -684,6 +688,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       segmentTypedConf: env.SEGMENT_TYPED_CONF,
       segmentBoundaryFloor: env.SEGMENT_BOUNDARY_FLOOR,
       segmentHardBoundary: env.SEGMENT_HARD_BOUNDARY,
+      multidocLlmClassify: env.MULTIDOC_LLM_CLASSIFY,
     },
     tesseractLangs: env.TESSERACT_LANGS,
     officeImageFallback: {
