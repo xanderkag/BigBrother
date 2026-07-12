@@ -1,9 +1,11 @@
 """Prompt template for /v1/classify."""
 
 # The model is asked for strict JSON. We give it a closed enum, examples,
-# and explicit instructions to refuse when uncertain. Tuned for short
-# Russian document headers.
-TEMPLATE = """Ты классифицируешь типы транспортных и бухгалтерских документов на русском языке.
+# and explicit instructions to refuse when uncertain. Язык-агностик
+# (CLASSIFIER-PACKET-V2 §6 P2-1): корпус БКТ мультиязычный (RU/EN/DE/LV/LT/
+# ES/FR/HU/HR/PL/BY) — классифицируем по содержанию и структуре, не по языку.
+TEMPLATE = """Ты классифицируешь типы транспортных и бухгалтерских документов.
+Документ может быть на ЛЮБОМ языке — определяй тип по СОДЕРЖАНИЮ и структуре, не по языку.
 Прочитай текст ниже и выбери ОДИН из типов:
 
 - invoice       — счёт на оплату
@@ -41,8 +43,10 @@ def build(text: str) -> str:
 # по каталогу.
 
 _CATALOG_SYSTEM = (
-    "Ты классифицируешь документы ВЭД. Выбери РОВНО ОДИН тип из списка по "
-    "содержимому и имени файла. Если ни один не подходит — верни `unknown`. "
+    "Ты классифицируешь документы ВЭД. Документ может быть на ЛЮБОМ языке "
+    "(RU/EN/DE/LV/LT/ES/FR/HU/HR/PL/BY) — классифицируй по СОДЕРЖАНИЮ и "
+    "структуре, а не по языку. Выбери РОВНО ОДИН тип из списка по содержимому "
+    "и имени файла. Если ни один не подходит — верни `unknown`. "
     "Верни ТОЛЬКО slug.\nТипы:\n{catalog}"
 )
 
