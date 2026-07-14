@@ -52,6 +52,7 @@ import { organizationSettingsRepo } from '../storage/organization-settings.js';
 import { normalizeSlugForApi } from '../types/slug-normalize.js';
 import {
   getEffectiveScope,
+  hasProjectAccess,
   requireProjectAccess,
   requireProjectWrite,
 } from '../authz.js';
@@ -260,7 +261,11 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
       }
       if (idempotencyKey) {
         const existing = await jobsRepo.findByIdempotencyKey(idempotencyKey);
-        if (existing) {
+        // audit #1: не отдавать чужой job_id/status. Возвращаем короткий ответ
+        // только если у вызывающего есть доступ к проекту найденной задачи;
+        // иначе трактуем ключ как отсутствующий и создаём новую (per-tenant
+        // unique index не даст коллизии с чужой орг).
+        if (existing && (await hasProjectAccess(req, existing.project_id))) {
           // 200 (not 202) signals "you already have this".
           reply.code(200);
           reply.header('idempotency-replayed', '1');
@@ -684,7 +689,9 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         // resolve by returning the row the other request created and
         // discarding the file we just saved (now redundant).
         if (idempotencyKey && isUniqueViolation(err)) {
-          const existing = await jobsRepo.findByIdempotencyKey(idempotencyKey);
+          // audit #1: unique теперь per-tenant (organization_id, key) → 23505
+          // означает легитимный ретрай ТОЙ ЖЕ орг. Ищем в её scope.
+          const existing = await jobsRepo.findByIdempotencyKey(idempotencyKey, scopeOrgId);
           if (existing) {
             await unlink(savedFile.absolutePath).catch(() => undefined);
             reply.code(200);

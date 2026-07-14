@@ -126,6 +126,20 @@ export async function requireProjectAccess(
   return true;
 }
 
+/**
+ * audit #1: НЕ-бросающая проверка доступа к проекту (для idempotency
+ * short-circuit — там нельзя слать 403, надо тихо трактовать ключ как чужой).
+ * super_admin → true; иначе роль в проекте ≠ null.
+ */
+export async function hasProjectAccess(req: FastifyRequest, projectId: string): Promise<boolean> {
+  const user = req.user;
+  if (!user) return false;
+  if (user.isSuperAdmin) return true;
+  if (!user.row) return false;
+  const role = await usersRepo.getProjectRole(user.row, projectId);
+  return role !== null;
+}
+
 /** Write-доступ к проекту (manager/admin, не viewer). */
 export async function requireProjectWrite(
   req: FastifyRequest,

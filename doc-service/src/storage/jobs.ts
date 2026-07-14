@@ -407,11 +407,16 @@ class JobsRepo {
    * present and we already have a job for it, return that one instead
    * of creating a duplicate.
    */
-  async findByIdempotencyKey(key: string): Promise<JobRow | null> {
-    const { rows } = await db.query<JobRow>(
-      `SELECT * FROM jobs WHERE idempotency_key = $1 LIMIT 1`,
-      [key],
-    );
+  async findByIdempotencyKey(key: string, orgId?: string): Promise<JobRow | null> {
+    // audit #1: при передаче orgId — tenant-scoped lookup (ключ уникален в
+    // рамках орг). Без orgId — глобальный (для short-circuit до резолва орг;
+    // там дополнительно проверяется доступ к проекту найденной задачи).
+    const { rows } = orgId
+      ? await db.query<JobRow>(
+          `SELECT * FROM jobs WHERE idempotency_key = $1 AND organization_id = $2 LIMIT 1`,
+          [key, orgId],
+        )
+      : await db.query<JobRow>(`SELECT * FROM jobs WHERE idempotency_key = $1 LIMIT 1`, [key]);
     return rows[0] ?? null;
   }
 
