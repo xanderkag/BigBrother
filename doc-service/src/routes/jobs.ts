@@ -39,6 +39,7 @@ import { validateExtractedWithResolver } from '../pipeline/validation/index.js';
 import { runDocumentPipeline, persistClassification } from '../pipeline/orchestrator.js';
 import { combineConfidence } from '../pipeline/quality.js';
 import { projectsRepo } from '../storage/projects.js';
+import { checkOrgOverride } from './tenant-scope.js';
 import { sanitizeMetadata } from '../storage/metadata-sanitizer.js';
 import { SYSTEM_DEFAULT_ORG_ID, SYSTEM_DEFAULT_PROJECT_ID } from '../auth.js';
 import {
@@ -473,7 +474,22 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
           reply.code(400);
           return { error: `project ${projectId} not found` };
         }
-        scopeOrgId = organizationId ?? project.organization_id;
+        // audit #3: орг задачи ОДНОЗНАЧНО определяется проектом. Клиентский
+        // organization_id её НЕ переопределяет (иначе caller с доступом только
+        // к проекту P мог бы записать job в выбранную им орг Y → чужой
+        // webhook-routing / SHA-кэш). Противоречащий override → 400.
+        const ovr = checkOrgOverride({
+          clientOrgId: organizationId,
+          isSuperAdmin: req.user?.isSuperAdmin ?? false,
+          userOrgId: req.user?.organization_id,
+          projectOrgId: project.organization_id,
+        });
+        if (!ovr.ok) {
+          await unlink(savedFile.absolutePath).catch(() => undefined);
+          reply.code(ovr.code);
+          return { error: ovr.error };
+        }
+        scopeOrgId = project.organization_id;
         scopeProjectId = project.id;
       } else {
         scopeProjectId = req.user?.default_project_id ?? SYSTEM_DEFAULT_PROJECT_ID;
@@ -489,6 +505,19 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         //      grant'ом на чужой проект);
         //   4) SYSTEM_ORG как последний fallback (root API_KEY без org).
         if (organizationId) {
+          // audit #3: явный organization_id принимаем ТОЛЬКО от super_admin или
+          // члена этой орг. Иначе tenant org X мог бы записать job в орг Y и
+          // увести результат на её webhook / отравить её SHA-кэш.
+          const ovr = checkOrgOverride({
+            clientOrgId: organizationId,
+            isSuperAdmin: req.user?.isSuperAdmin ?? false,
+            userOrgId: req.user?.organization_id,
+          });
+          if (!ovr.ok) {
+            await unlink(savedFile.absolutePath).catch(() => undefined);
+            reply.code(ovr.code);
+            return { error: ovr.error };
+          }
           scopeOrgId = organizationId;
         } else if (req.user?.organization_id) {
           scopeOrgId = req.user.organization_id;
