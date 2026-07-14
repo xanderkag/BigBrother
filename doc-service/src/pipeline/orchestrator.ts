@@ -850,6 +850,9 @@ async function processJobInner(
     const updated = await jobsRepo.finalize(jobId, {
       status,
       llmUsage: currentJobLlmUsage(),
+      // Число OCR-страниц для оценки ₽/док (Yandex Vision — ₽/страница).
+      // ocr.pages есть у multi-page; одиночный док = 1 страница.
+      ocrPages: ocr.pages?.length ?? 1,
       documentType,
       ocrEngine: ocr.engine,
       // §8.1 (ПДн-блокер): маскируем паспортные/ID-страницы в raw_text до

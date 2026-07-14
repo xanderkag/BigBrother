@@ -72,6 +72,17 @@ export const Job = z
       .describe(
         'Доменные проблемы, найденные в extracted: невалидный ИНН/КПП, нестыковка НДС, неправдоподобная дата, неверный госномер и т.п. Пустой массив = всё ок.',
       ),
+    cost_rub: z
+      .number()
+      .min(0)
+      .describe(
+        'Оценка стоимости разбора в ₽ (Yandex Vision ₽/стр + AI Studio ₽/1k токенов). 0 для локальных движков.',
+      ),
+    cost_estimate: z
+      .boolean()
+      .describe(
+        'true → сумма неполна (нижняя граница): часть LLM-вызовов без usage или неизвестно число OCR-страниц. UI показывает «≥».',
+      ),
     metadata: z
       .record(z.unknown())
       .nullable()

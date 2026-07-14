@@ -679,6 +679,12 @@ export default function JobsListPage() {
                   >
                     Полей
                   </th>
+                  <th
+                    className="hidden px-3 py-2 text-right font-medium lg:table-cell"
+                    title="Оценка стоимости разбора в ₽ (Yandex Vision ₽/стр + AI Studio ₽/1k токенов). «≥» — сумма неполна (часть расхода не измерена). 0/— для локальных движков."
+                  >
+                    Стоимость
+                  </th>
                   <th className="px-3 py-2 text-center font-medium">Issues</th>
                   <th
                     className="hidden px-3 py-2 text-right font-medium lg:table-cell"
@@ -1282,6 +1288,22 @@ function JobRow({
           done-документе = extract-фейл (модель уверенно вернула пустоту). */}
       <td className="px-3 py-2 text-center">
         <FieldsCountChip count={job.extracted_fields_count ?? null} status={job.status} />
+      </td>
+
+      {/* СТОИМОСТЬ ₽ — оценка расхода Yandex (Vision + AI Studio) */}
+      <td
+        className="hidden px-3 py-2 text-right font-mono text-xs tabular-nums text-slate-600 lg:table-cell dark:text-slate-400"
+        title={
+          job.cost_estimate
+            ? 'Нижняя граница — часть расхода не измерена'
+            : 'Оценка по фактическому расходу'
+        }
+      >
+        {typeof job.cost_rub === 'number' && job.cost_rub > 0 ? (
+          `${job.cost_estimate ? '≥' : ''}${job.cost_rub.toFixed(2)} ₽`
+        ) : (
+          <span className="text-slate-300 dark:text-slate-700">—</span>
+        )}
       </td>
 
       {/* ISSUES */}

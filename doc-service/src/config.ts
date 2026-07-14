@@ -278,6 +278,18 @@ const ConfigSchema = z.object({
   tesseractLangs: z.string().default('rus+eng'),
 
   /**
+   * Стоимость ₽/док (owner-запрос 2026-07-13). Ставки Yandex — факты в
+   * docs/INFERENCE_COST_ANALYSIS_ASHA.md (прайс 2026-07-09, с НДС). Локальные
+   * движки per-doc не стоят — стоимость считается только для yandex.
+   */
+  cost: z.object({
+    ocrPageRub: numberFromEnv(0.13), // Vision печатный ₽/стр
+    ocrTableRub: numberFromEnv(1.22), // Vision таблицы ₽/стр (счёт/УПД)
+    llmInputPer1kRub: numberFromEnv(0.2), // AI Studio Qwen3.6-35B вход ₽/1k
+    llmOutputPer1kRub: numberFromEnv(0.3), // AI Studio Qwen3.6-35B выход ₽/1k
+  }),
+
+  /**
    * P1-B (OFFICE_FILES_V2 §3): vision-fallback для картиночных офисных файлов.
    * Docx-обёртка вокруг скана даёт почти пустой текст → LLM извлекает из
    * огрызка. Когда извлечённого текста < minTextChars И есть крупные картинки
@@ -703,6 +715,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       vlmClassify: env.VLM_CLASSIFY,
     },
     tesseractLangs: env.TESSERACT_LANGS,
+    cost: {
+      ocrPageRub: env.COST_OCR_PAGE_RUB,
+      ocrTableRub: env.COST_OCR_TABLE_RUB,
+      llmInputPer1kRub: env.COST_LLM_INPUT_PER1K_RUB,
+      llmOutputPer1kRub: env.COST_LLM_OUTPUT_PER1K_RUB,
+    },
     officeImageFallback: {
       enabled: env.OFFICE_IMAGE_FALLBACK_ENABLED,
       minTextChars: env.OFFICE_MIN_TEXT_CHARS,

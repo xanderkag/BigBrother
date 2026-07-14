@@ -3,9 +3,14 @@ import { normalizeExtracted } from './normalize-extracted.js';
 import { normalizeSlugForApi } from '../types/slug-normalize.js';
 import { stripInlineCredentials } from '../pipeline/llm/inline-credentials.js';
 import { countBusinessFields } from '../pipeline/quality-assessment.js';
+import { computeJobCost } from '../pipeline/cost.js';
+import { config } from '../config.js';
 import type { JobLlmUsage } from '../pipeline/llm/usage-context.js';
 import type { ClassificationMetadata } from '../pipeline/classifier/llm-classifier.js';
 import type { DocumentTypeSlug, JobStatus, OcrEngineName } from '../types/documents.js';
+
+/** Slug'и (UPPER-case) через табличную OCR-модель — дороже (оценка ₽/док, cost.ts). */
+const COST_TABLE_TYPES = new Set((config.yandex.tableModelTypes ?? []).map((t) => t.toUpperCase()));
 
 /**
  * Сводный operational-результат, отдаваемый в /api/v1/metrics/operational.
@@ -198,6 +203,11 @@ export type JobRow = {
   last_llm_call: LlmCallTrace | null;
   /** Суммарный расход токенов за джобу (см. миграцию 20260708000001). */
   llm_usage: JobLlmUsage | null;
+  /**
+   * Число OCR-страниц (для оценки стоимости ₽/док, миграция 20260713000001).
+   * Заполняется на finalize из ocr.pages.length. NULL для legacy / до миграции.
+   */
+  ocr_pages: number | null;
   /** Tenant scope — заполняется при create, обязательное поле в БД. */
   organization_id: string;
   project_id: string;
@@ -287,6 +297,8 @@ export type ProcessingUpdate = {
    * `calls_without_usage > 0` → суммы неполны, см. usage-context.ts.
    */
   llmUsage?: JobLlmUsage | null;
+  /** Число OCR-страниц (для оценки ₽/док). `undefined` = не трогать колонку. */
+  ocrPages?: number | null;
   documentType?: DocumentTypeSlug | null;
   ocrEngine?: OcrEngineName | null;
   rawText?: string | null;
@@ -455,6 +467,7 @@ class JobsRepo {
          error         = $8,
          last_llm_call = CASE WHEN $10::boolean THEN $9::jsonb ELSE last_llm_call END,
          llm_usage     = CASE WHEN $12::boolean THEN $11::jsonb ELSE llm_usage END,
+         ocr_pages     = COALESCE($13, ocr_pages),
          finished_at   = now()
        WHERE id = $1
        RETURNING *`,
@@ -471,6 +484,7 @@ class JobsRepo {
         llmCallProvided,
         llmUsageJson,
         llmUsageProvided,
+        update.ocrPages ?? null,
       ],
     );
     return rows[0] ?? null;
@@ -1273,6 +1287,16 @@ class JobsRepo {
     // Старые job'ы написанные до миграции получают унифицированную форму
     // без перезаписи в БД.
     const normalized = normalizeExtracted(extracted);
+    const cost = computeJobCost(
+      {
+        llmUsage: row.llm_usage,
+        ocrEngine: row.ocr_engine,
+        ocrPages: row.ocr_pages,
+        documentType: row.document_type,
+      },
+      config.cost,
+      COST_TABLE_TYPES,
+    );
     return {
       job_id: row.id,
       status: row.status,
@@ -1292,6 +1316,11 @@ class JobsRepo {
       // помогает отличить «модель уверена но заполнено 0» от «уверена И
       // с полями». Считается на границе toApi чтобы не хранить дубль в БД.
       extracted_fields_count: normalized ? countBusinessFields(normalized) : 0,
+      // Оценка стоимости разбора ₽ (owner-запрос 2026-07-13). Считается на
+      // границе toApi из фактического расхода (llm_usage + ocr_pages) × ставки
+      // config.cost. cost_estimate=true → неполно, UI показывает «≥».
+      cost_rub: cost.rub,
+      cost_estimate: cost.estimate,
       validation_issues: issues,
       // EXT-B: вычищаем reserved-ключ _inline_llm_creds (encrypted BYO-envelope)
       // из любого outbound-представления job'а — он не должен светиться в API.

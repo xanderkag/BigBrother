@@ -34,6 +34,10 @@ export interface Job {
   extracted: Record<string, unknown> | null;
   /** Кол-во заполненных бизнес-полей верхнего уровня (без `_*`). */
   extracted_fields_count?: number;
+  /** Оценка стоимости разбора ₽ (Yandex Vision + AI Studio). 0 для локальных движков. */
+  cost_rub?: number;
+  /** true → сумма неполна (нижняя граница), UI показывает «≥». */
+  cost_estimate?: boolean;
   metadata: Record<string, unknown> | null;
   webhook_url: string | null;
   webhook_attempts: number;
