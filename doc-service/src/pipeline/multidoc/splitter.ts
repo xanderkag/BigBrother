@@ -118,9 +118,13 @@ export function splitPagesIntoSegments(
     // useBoundaries=false (SEGMENT_HARD_BOUNDARY) → чистое keyword-поведение.
     const prevSummary: { slug: DocumentTypeSlug | null; identity: DocIdentity | undefined } | null =
       current ? { slug: current.document_type, identity: current.identity } : null;
-    const boundary: BoundaryHit | null = useBoundaries
-      ? detectDocumentStart(text, prevSummary)
-      : null;
+    // §FIX-1: пред-установленная граница страницы (VLM по картинке, напр. СТС,
+    // которую текст не поймал) — жёсткий приоритет над текстовым детектором.
+    const boundary: BoundaryHit | null = page.boundary
+      ? { slug: page.boundary, identity: page.identity ?? extractPageIdentity(text) }
+      : useBoundaries
+        ? detectDocumentStart(text, prevSummary)
+        : null;
     const identity: DocIdentity =
       boundary?.identity ?? (useBoundaries ? extractPageIdentity(text) : {});
 

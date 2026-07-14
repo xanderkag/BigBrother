@@ -522,8 +522,44 @@ async function processJobInner(
           wrapProvider,
         );
       }
+      // §FIX-1: VLM по картинке для скудных ХВОСТОВЫХ страниц (бледная СТС,
+      // чей OCR-текст якорь не поймал). Рендерим страницу PDF по требованию →
+      // classifyImageViaVlm через vision-провайдер (на asha направлен на Yandex
+      // per «все картинки через Yandex»). Гейт VLM_CLASSIFY; только для PDF.
+      let classifyPageImage: ((pageNo: number) => Promise<string | null>) | undefined;
+      if (config.classifier.vlmClassify && job.mime_type === 'application/pdf') {
+        const { text: vlmCatalog } = await getCatalogForOrg(job.organization_id);
+        if (vlmCatalog) {
+          const isCatalogSlug = await makeCatalogSlugValidator(job.organization_id);
+          classifyPageImage = async (pageNo: number): Promise<string | null> => {
+            const rendered = await prepareFirstPageImage(
+              materialized.absolutePath,
+              job.mime_type,
+              log,
+              pageNo,
+            );
+            if (!rendered.imagePath) return null;
+            try {
+              return await classifyImageViaVlm(
+                rendered.imagePath,
+                vlmCatalog,
+                {
+                  visionOcr: (i) => llm.visionOcr(i),
+                  isCatalogSlug,
+                  withVisionProvider: (fn) => dynamicLlm.withVisionProvider(fn),
+                },
+                log,
+              );
+            } finally {
+              await rendered.cleanup();
+            }
+          };
+        }
+      }
+
       multiDocResult = await tryMultiDoc(mdOcr, {
         classifier: pageClassifier,
+        classifyPageImage,
         organizationId: job.organization_id,
         extractSegment: async (text, type, segLog) => {
           // §8.5b (ПДн-блокер): паспорт/ID-сегмент НЕ отправляем в LLM (тем
@@ -1194,9 +1230,11 @@ async function prepareFirstPageImage(
   filePath: string,
   mimeType: string,
   log: Logger,
+  pageNo = 1,
 ): Promise<{ imagePath: string | undefined; cleanup: () => Promise<void> }> {
   const noop = { imagePath: undefined, cleanup: async () => {} };
   if (mimeType.startsWith('image/')) {
+    // Одиночное изображение = одна страница; pageNo>1 не применим — отдаём как есть.
     return { imagePath: filePath, cleanup: async () => {} };
   }
   if (mimeType !== 'application/pdf') {
@@ -1206,8 +1244,9 @@ async function prepareFirstPageImage(
   try {
     dir = await mkdtemp(join(tmpdir(), 'docsvc-extract-img-'));
     const prefix = join(dir, 'page');
-    // -f 1 -l 1 — только первая страница; -r 200 совпадает с OCR-растеризацией.
-    await execP(`pdftoppm -png -r 200 -f 1 -l 1 "${filePath}" "${prefix}"`, { timeout: 120_000 });
+    // -f N -l N — только страница pageNo (§FIX-1: VLM по хвостовой странице);
+    // -r 200 совпадает с OCR-растеризацией.
+    await execP(`pdftoppm -png -r 200 -f ${pageNo} -l ${pageNo} "${filePath}" "${prefix}"`, { timeout: 120_000 });
     const pages = (await readdir(dir))
       .filter((f) => f.startsWith('page') && f.endsWith('.png'))
       .sort();

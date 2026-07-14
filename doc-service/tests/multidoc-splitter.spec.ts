@@ -211,6 +211,21 @@ describe('splitPagesIntoSegments — boundary-aware (§P0-2)', () => {
     expect(segs[1]!.boundary).toBe('driver_passport');
   });
 
+  it('§FIX-1: пред-установленная page.boundary (VLM) открывает новый сегмент вопреки continuation', () => {
+    // page 1 — cmr (boundary-открыт), page 2 — скудный текст без якоря, но VLM
+    // по картинке поставил boundary=vehicle_registration (бледная СТС).
+    const pages: PageClassification[] = [
+      pg(1, null, 0.9),
+      { page: 2, document_type: null, confidence: 0.2, text_preview: 'short', boundary: 'vehicle_registration' },
+    ];
+    const texts = [pad('CMR\nМеждународная накладная'), 'скудный текст СТС'];
+    const segs = splitPagesIntoSegments(pages, texts);
+    expect(segs).toHaveLength(2);
+    expect(segs[0]!.document_type).toBe('cmr'); // page 1 по тексту
+    expect(segs[1]!.document_type).toBe('vehicle_registration'); // page 2 по VLM-границе
+    expect(segs[1]!.boundary).toBe('vehicle_registration');
+  });
+
   it('useBoundaries=false (kill-switch) → чистое keyword-поведение, границы игнорируются', () => {
     const pages = [pg(1, null, 0.2), pg(2, null, 0.2)];
     const texts = [pad('AUSFUHRBEGLEITDOKUMENT MRN 23HR030228018557B5'), pad('PACKING LIST')];

@@ -50,6 +50,14 @@ export interface MultiDocRunnerDeps {
     extracted: Record<string, unknown>;
     fieldConfidence?: Record<string, number>;
   }>;
+  /**
+   * §FIX-1: классификация страницы ПО ИЗОБРАЖЕНИЮ (VLM, напр. Yandex). Зовётся
+   * только для скудных не-первых страниц со слабым keyword (бледная СТС, чей
+   * текст якорь не поймал). Возвращает slug или null. undefined → VLM выключен.
+   */
+  classifyPageImage?: (pageNo: number) => Promise<string | null>;
+  /** §FIX-1: порог «скудного» текста страницы (симв.), ниже — кандидат на VLM. */
+  vlmMinText?: number;
   log: Logger;
 }
 
@@ -71,16 +79,39 @@ export async function tryMultiDoc(
   if (!ocr.pages || ocr.pages.length < 2) return null;
 
   // Classify each page (sheet) отдельно
+  const scantMin = deps.vlmMinText ?? 120;
   const pageClassifications: PageClassification[] = [];
   for (let i = 0; i < ocr.pages.length; i += 1) {
     const page = ocr.pages[i]!;
     const cls = await classifier.classify(page.text, organizationId ?? null);
-    pageClassifications.push({
+    const entry: PageClassification = {
       page: i + 1, // 1-indexed
       document_type: cls.type,
       confidence: cls.confidence,
       text_preview: page.text.slice(0, 500),
-    });
+    };
+    // §FIX-1: скудная НЕ-первая страница со слабым keyword → VLM по картинке
+    // (бледная СТС/паспорт, чей текст якорь не поймал). VLM-тип ставим ЖЁСТКОЙ
+    // границей (boundary), чтобы splitter открыл новый сегмент, а не приклеил.
+    if (
+      deps.classifyPageImage &&
+      i > 0 &&
+      page.text.trim().length < scantMin &&
+      (cls.type === null || cls.confidence < 0.5)
+    ) {
+      try {
+        const vlmSlug = await deps.classifyPageImage(i + 1);
+        if (vlmSlug) {
+          entry.document_type = vlmSlug as DocumentTypeSlug;
+          entry.confidence = Math.max(cls.confidence, 0.6);
+          entry.boundary = vlmSlug as DocumentTypeSlug;
+          deps.log.info({ page: i + 1, vlmSlug }, '§FIX-1: страница классифицирована по картинке (VLM)');
+        }
+      } catch (err) {
+        deps.log.warn({ err, page: i + 1 }, '§FIX-1: VLM-classify страницы упал, игнор');
+      }
+    }
+    pageClassifications.push(entry);
   }
 
   // Splitter превращает page-by-page classify в segments.
