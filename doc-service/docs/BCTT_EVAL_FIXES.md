@@ -72,3 +72,21 @@
 появляется `vehicle_registration` сегмент; FIX-3 → viber_259 = `contract_specification`; FIX-4 → pac_2/3 не
 `price_list`/`invoice`. Все прогоны — под тестовым org без webhook (`webhook_url=null`), ПДн-паспорта не
 включать до Q-VANGA-ID-1.
+
+## ✅ Реализация (агент, 2026-07-13)
+Все FIX-1..4 реализованы + покрыты юнит-тестами (1423 теста зелёных, 0 регрессий). Коммиты:
+- **FIX-1** (`a5829f6`): хвостовая СТС → VLM по картинке. splitter уважает VLM-границу; runner для
+  скудной не-первой страницы зовёт `classifyPageImage(pageNo)` (рендер страницы PDF → VLM); тип ставится
+  жёсткой границей. **На asha включить `VLM_CLASSIFY=true` + vision-провайдер = Yandex** («все картинки
+  через Yandex»). Гейт: только PDF.
+- **FIX-3** (`ce7b2d2`): `correctSpecVsInvoice` — спец-якорь в шапке + нет цен → `contract_specification`.
+  Детерминированно, проверено локально, работает **без флагов**.
+- **FIX-2** (`4a55bf6`): per-page LLM экономно (keyword-prior gate) — `classifyPageLlm` зовётся только
+  для слабых страниц. **На asha `MULTIDOC_LLM_CLASSIFY=true`** → LAROCHE packing возвращается, LLM не на
+  каждой странице.
+- **FIX-4** (`bc73afc`): `correctWeightPageToPacking` — price_list/invoice с весом/паллетами без цен →
+  `packing_list` (слабый сигнал, без флагов). Основной фикс FIX-4 — подавать многостраничный ОДНИМ файлом.
+
+**Что чинить НЕ нужно** (закрыто кодом): FIX-1..4. **Осталось на asha:** включить флаги (`VLM_CLASSIFY`,
+`MULTIDOC_LLM_CLASSIFY`) + vision-провайдер Yandex, перегнать 51 через `eval-bctt` (или `POST /jobs`),
+сверить M1. Пробел viber_251/319 (dual-content) и ПДн-паспорт (Q-VANGA-ID-1) — по-прежнему открыты.
