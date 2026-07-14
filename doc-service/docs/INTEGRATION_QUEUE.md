@@ -48,6 +48,26 @@
 
 ## Active Questions
 
+### Q-VANGA-ID-1. Извлечение ПДн паспорта водителя через Yandex — пере-согласование с SLAI
+
+- **Status:** `OPEN` (To: SLAI_DEV — переигрываем условие «local-only» из Q-CLSF-PII-1; до ОК SLAI НЕ включаем, флаг OFF)
+- **Asked:** 2026-07-12
+- **From:** USER (владелец, решение) → SLAI_DEV
+- **Что нужно:** SLAI подтверждает: (а) приём паспорт-ПДн (ФИО/номер/MRZ) в `payload.documents[]`; (б) канал **Yandex** (облако, RF-контур reg.РФ) для ПДн-извлечения вместо оговорённого ранее local-only; (в) нужен ли отдельный HMAC/redaction-режим для ID-содержащих доставок.
+- **Что сделать когда подтвердят:** реализовать за флагом `ID_EXTRACT_ENABLED` (default OFF, включаем ТОЛЬКО после ОК SLAI): (1) расширить `driver_passport` llm_schema — surname, given_names, passport_no, nationality, date_of_birth, mrz; (2) снять/огейтить §8.3 allowlist (`id-allowlist.ts`) для driver_passport под флагом; (3) §8.5b — ID-сегмент прогонять через LLM-extract (сейчас MRZ-only, `orchestrator.ts:534`); (4) §8.1 raw_text ID-страниц — не маскировать под флагом, если нужен исходник; (5) VLM для ID направить на **Yandex** (сейчас `vlm-classify.ts` — локальная qwen-vl).
+
+#### Question / Context
+Q-CLSF-PII-1 (RESOLVED) зафиксировал согласие SLAI на **не-извлечение** ПДн и условие: если извлекать driver-данные (VANGA-ID-1) — «**только локальной моделью, не в облако; с решения владельца; сейчас не нужно**». Владелец 2026-07-12 **принял решение извлекать** (брокеру БКТ нужен водитель для транзитных деклараций); канал — **Yandex (RF-контур)**, а не локальная модель → это осознанный **разворот условия SLAI**. Прогон 10 БКТ-доков подтвердил: текущий §8-гейт работает штатно (паспорт → `{doc_kind,country,present}`, ПДн не течёт ни в extract, ни в raw_text, ни в вебхук — все 10 `webhook_url=null`) — т.е. включение extract это продуманный разворот, не фикс бага.
+До ОК SLAI флаг `ID_EXTRACT_ENABLED` — **OFF**. SLAI обновляет свою 152-ФЗ-позицию (будут получать паспорт-ПДн).
+
+#### Answer
+<пусто>
+
+#### Resolution
+<пусто>
+
+---
+
 ### Q-GATEWAY-KEYS-1. Ключи каналов шлюза — owner вносит сам через UI
 
 - **Status:** `RESOLVED` 2026-07-11 (код: commit `5a34d40`; осталось задеплоить на Asha в пакете cutover'а — см. Q-CUTOVER-1)
@@ -808,3 +828,4 @@ A-record), no-redirect, mid-stream byte-ceiling, опц. allowlist
 | 2026-07-02 | 4 новых типа задеплоены (миграция `20260702000001`): `insurance_policy` + `safety_data_sheet` (реальные), `export_declaration` + `quality_certificate` (beta). SLAI heads-up **свёрнут в §4 ноты** `PARSDOCS_TO_SLAI_2026-07-01_CLASSIFICATION.md` (обновлены заголовок/дата/summary + резюме-таблица), отдельного Q-блока не заводили — это новые значения строки `document_type`, аддитивно, конверт и `schema_version` (`1.1`) не меняются. В Q19 добавлена note-only заметка. Drafting-only, прод-код/схемы не трогали. |
 | 2026-07-11 | SLAI reply по §1-§5 (тайминг/rate-limit/ключи/embeddings-контракт/smoke). Решение Александра по ключам: **не секрет-канал и не env, а UI-окно** — заведён и сразу закрыт **Q-GATEWAY-KEYS-1** (commit `5a34d40`): экран «Подключения → Ключи каналов шлюза · SLAI» (chat/embeddings/dadata), шифрование at-rest, маска, аудит; chat-ключ развязан с default-моделью разбора (выделенная строка `gateway-anthropic`). Заведён **Q-SANDBOX-PAT-1** (OPEN, ops на Asha): PAT `slai-sandbox` + global rate-limit 600/мин + P95-мониторинг. Embeddings-контракт принят SLAI (text-embedding-3-small, 1536 dim, пересчёт не нужен). |
 | 2026-07-12 | Разбор всех 51 док. БКТ Транзит (`BCTT_GROUNDTRUTH.md`, 51/51 прочитано вручную) + ТЗ `TZ_CLASSIFIER_PACKET_V2.md` (классификатор v2: сегментация композитов, 6 новых ВЭД-типов, ПДн-гейт; прошло адверсариал-ревью в 4 линзы, claim'ы сверены с кодом). Заведены **Q-CLSF-ONTO-1**, **Q-CLSF-PII-1** (prod-блокер: паспорта текут в `raw_text`/`documents[]`/облако — фиксы в ТЗ §8), **Q-CLSF-CONTRACT-1** (все OPEN, To: SLAI_DEV). Drafting-only, прод-код не трогали. |
+| 2026-07-12 | **Классификатор v2 задеплоен на asha** (`0999058`, миграция 6 типов применена) + прогон 10 сложных БКТ-доков через живой пайплайн (Yandex Vision OCR + AI Studio extract; все `webhook_url=null` — SLAI ничего не получил). Сегментация композитов РАБОТАЕТ (SKMBT «ТТН»→EAD+cmr+invoice; viber_448→`contract_specification`; 632→`certificate_register`; oskar→`driver_passport`), ПДн-гейт §8 подтверждён (паспорт→`{doc_kind,country,present}`, ФИО/MRZ нет). Пробел: СТС (vehicle_registration) хвостовой страницей липнет к соседу — per-page LLM (`MULTIDOC_LLM_CLASSIFY`) НЕ помог (откачен в false), рычаг = VLM→Yandex (агенту). **Владелец решил извлекать ПДн паспорта через Yandex** → заведён **Q-VANGA-ID-1** (OPEN, To: SLAI — пере-согласовать «local-only», флаг `ID_EXTRACT_ENABLED` OFF до ОК). |
