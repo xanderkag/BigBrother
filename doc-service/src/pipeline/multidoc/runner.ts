@@ -56,7 +56,13 @@ export interface MultiDocRunnerDeps {
    * текст якорь не поймал). Возвращает slug или null. undefined → VLM выключен.
    */
   classifyPageImage?: (pageNo: number) => Promise<string | null>;
-  /** §FIX-1: порог «скудного» текста страницы (симв.), ниже — кандидат на VLM. */
+  /**
+   * §FIX-2: per-page classify через LLM ПО ТЕКСТУ для страниц с достаточным
+   * текстом, но слабым keyword (напр. packing без чёткого якоря). Keyword-prior
+   * gate — зовётся только для слабых страниц (экономно). undefined → выключен.
+   */
+  classifyPageLlm?: (text: string) => Promise<string | null>;
+  /** §FIX-1: порог «скудного» текста страницы (симв.), ниже — картинка (VLM), выше — текст-LLM. */
   vlmMinText?: number;
   log: Logger;
 }
@@ -90,25 +96,28 @@ export async function tryMultiDoc(
       confidence: cls.confidence,
       text_preview: page.text.slice(0, 500),
     };
-    // §FIX-1: скудная НЕ-первая страница со слабым keyword → VLM по картинке
-    // (бледная СТС/паспорт, чей текст якорь не поймал). VLM-тип ставим ЖЁСТКОЙ
-    // границей (boundary), чтобы splitter открыл новый сегмент, а не приклеил.
-    if (
-      deps.classifyPageImage &&
-      i > 0 &&
-      page.text.trim().length < scantMin &&
-      (cls.type === null || cls.confidence < 0.5)
-    ) {
+    // Keyword-prior gate: для слабой (null/low) НЕ-первой страницы зовём
+    // per-page fallback — §FIX-1 картинку (VLM), если текст скуден (бледная
+    // СТС/паспорт), иначе §FIX-2 текст-LLM (packing без чёткого якоря).
+    // Результат ставим ЖЁСТКОЙ границей, чтобы splitter открыл новый сегмент.
+    const weak = cls.type === null || cls.confidence < 0.5;
+    if (weak && i > 0 && (deps.classifyPageImage || deps.classifyPageLlm)) {
+      const scant = page.text.trim().length < scantMin;
+      let override: string | null = null;
       try {
-        const vlmSlug = await deps.classifyPageImage(i + 1);
-        if (vlmSlug) {
-          entry.document_type = vlmSlug as DocumentTypeSlug;
-          entry.confidence = Math.max(cls.confidence, 0.6);
-          entry.boundary = vlmSlug as DocumentTypeSlug;
-          deps.log.info({ page: i + 1, vlmSlug }, '§FIX-1: страница классифицирована по картинке (VLM)');
+        if (scant && deps.classifyPageImage) {
+          override = await deps.classifyPageImage(i + 1);
+        } else if (deps.classifyPageLlm) {
+          override = await deps.classifyPageLlm(page.text);
         }
       } catch (err) {
-        deps.log.warn({ err, page: i + 1 }, '§FIX-1: VLM-classify страницы упал, игнор');
+        deps.log.warn({ err, page: i + 1 }, 'per-page VLM/LLM classify упал, игнор');
+      }
+      if (override) {
+        entry.document_type = override as DocumentTypeSlug;
+        entry.confidence = Math.max(cls.confidence, 0.6);
+        entry.boundary = override as DocumentTypeSlug;
+        deps.log.info({ page: i + 1, override, mode: scant ? 'vlm' : 'llm' }, 'страница переклассифицирована');
       }
     }
     pageClassifications.push(entry);

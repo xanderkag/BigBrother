@@ -75,6 +75,38 @@ describe('tryMultiDoc — §FIX-1 VLM хвостовой СТС', () => {
     expect(docs?.map((d) => d.document_type)).not.toContain('vehicle_registration');
   });
 
+  it('§FIX-2: страница с текстом но слабым keyword → classifyPageLlm → сегмент packing_list', async () => {
+    const classifyPageLlm = vi.fn().mockResolvedValue('packing_list');
+    const withText = [
+      'CMR International накладная '.padEnd(200, 'x'),
+      'Weight net gross packages pallets '.padEnd(200, 'y'), // текст есть, keyword null
+    ];
+    const docs = await tryMultiDoc(ocrOf(withText), {
+      classifier,
+      organizationId: null,
+      extractSegment: noopExtract,
+      classifyPageLlm,
+      log,
+    });
+    expect(classifyPageLlm).toHaveBeenCalledTimes(1); // только слабая page 2 (keyword-prior gate)
+    expect(docs?.map((d) => d.document_type)).toContain('packing_list');
+  });
+
+  it('оба хука: скудная страница → картинка (VLM), не текст-LLM', async () => {
+    const classifyPageImage = vi.fn().mockResolvedValue('vehicle_registration');
+    const classifyPageLlm = vi.fn().mockResolvedValue('packing_list');
+    await tryMultiDoc(ocrOf(['CMR '.padEnd(200, 'x'), 'скудно']), {
+      classifier,
+      organizationId: null,
+      extractSegment: noopExtract,
+      classifyPageImage,
+      classifyPageLlm,
+      log,
+    });
+    expect(classifyPageImage).toHaveBeenCalledWith(2); // скудная → картинка
+    expect(classifyPageLlm).not.toHaveBeenCalled(); // текст-LLM не зовём для скудной
+  });
+
   it('первую страницу VLM не трогает даже если скудная', async () => {
     const classifyPageImage = vi.fn().mockResolvedValue('vehicle_registration');
     await tryMultiDoc(ocrOf(['скудно', 'CMR '.padEnd(200, 'x')]), {

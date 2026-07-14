@@ -36,7 +36,6 @@ import { sanitizeText } from './text-sanitize.js';
 import { KeywordClassifier } from './classifier/keywords.js';
 import { LlmDocClassifier, type ClassificationMetadata } from './classifier/llm-classifier.js';
 import { LlmPageClassifierAdapter } from './classifier/llm-page-adapter.js';
-import type { Classifier } from './classifier/types.js';
 import { classifyImageViaVlm } from './classifier/vlm-classify.js';
 import { getCatalogForOrg } from './classifier/catalog.js';
 import { correctSpecVsInvoice } from './classifier/spec-invoice-correction.js';
@@ -504,24 +503,26 @@ async function processJobInner(
 
     let multiDocResult: Awaited<ReturnType<typeof tryMultiDoc>> = null;
     if (!classifyOnly && mdOcr.pages && mdOcr.pages.length > 1) {
-      // §P0-1: per-page классификатор. По умолчанию keyword (границы уже
-      // типизируют boundary-страницы). За флагом MULTIDOC_LLM_CLASSIFY —
-      // LLM-catalog адаптер для безъякорных иноязычных страниц.
-      let pageClassifier: Classifier = classifier;
+      // §P0-1/§FIX-2: keyword — основной per-page классификатор (границы уже
+      // типизируют boundary-страницы). За флагом MULTIDOC_LLM_CLASSIFY — LLM
+      // как keyword-prior-GATED хук: runner зовёт его ТОЛЬКО для слабых страниц
+      // (economical). Восстанавливает безъякорный packing (LAROCHE, FIX-2).
+      let classifyPageLlm: ((text: string) => Promise<string | null>) | undefined;
       if (config.classifier.multidocLlmClassify) {
         const isCatalogSlug = await makeCatalogSlugValidator(job.organization_id);
-        // §P2-3: если CLASSIFY_PROVIDER_ID выставлен — per-page classify идёт
-        // на A/B-провайдер через forceProvider; иначе default (no-op).
+        // §P2-3: CLASSIFY_PROVIDER_ID → per-page classify на A/B-провайдер.
         const forcedId = config.classifier.classifyProviderId;
         const wrapProvider = forcedId
           ? <T>(fn: () => Promise<T>) => dynamicLlm.withForceProvider(forcedId, fn)
           : undefined;
-        pageClassifier = new LlmPageClassifierAdapter(
+        const adapter = new LlmPageClassifierAdapter(
           llmDocClassifier,
           isCatalogSlug,
           log,
           wrapProvider,
         );
+        classifyPageLlm = async (text: string) =>
+          (await adapter.classify(text, job.organization_id)).type;
       }
       // §FIX-1: VLM по картинке для скудных ХВОСТОВЫХ страниц (бледная СТС,
       // чей OCR-текст якорь не поймал). Рендерим страницу PDF по требованию →
@@ -559,8 +560,9 @@ async function processJobInner(
       }
 
       multiDocResult = await tryMultiDoc(mdOcr, {
-        classifier: pageClassifier,
+        classifier,
         classifyPageImage,
+        classifyPageLlm,
         organizationId: job.organization_id,
         extractSegment: async (text, type, segLog) => {
           // §8.5b (ПДн-блокер): паспорт/ID-сегмент НЕ отправляем в LLM (тем
