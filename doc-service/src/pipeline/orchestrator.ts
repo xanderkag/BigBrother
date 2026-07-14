@@ -39,6 +39,7 @@ import { LlmPageClassifierAdapter } from './classifier/llm-page-adapter.js';
 import type { Classifier } from './classifier/types.js';
 import { classifyImageViaVlm } from './classifier/vlm-classify.js';
 import { getCatalogForOrg } from './classifier/catalog.js';
+import { correctSpecVsInvoice } from './classifier/spec-invoice-correction.js';
 import { combineConfidence } from './quality.js';
 import { assessQuality, countBusinessFields, type QualityFactor } from './quality-assessment.js';
 import { ParsersFactory } from './parsers/index.js';
@@ -1449,6 +1450,19 @@ export async function runDocumentPipeline(
       candidates: [],
       unknown: false,
     };
+  }
+
+  // §FIX-3: спец со ссылкой «Invoice no.» (без цен) ошибочно уходит в
+  // commercial_invoice. Детерминированная коррекция по тексту ДО extract —
+  // чтобы дальше использовалась спец-схема. No-op для не-инвойсов и настоящих
+  // инвойсов (есть цены/валюта).
+  {
+    const corrected = correctSpecVsInvoice(documentType, rawText);
+    if (corrected !== documentType) {
+      log.info({ ...context, from: documentType, to: corrected }, '§FIX-3: спец→contract_specification');
+      documentType = corrected;
+      if (classification) classification.type = corrected;
+    }
   }
 
   let extracted: Record<string, unknown> = {};
