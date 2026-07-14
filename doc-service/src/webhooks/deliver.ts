@@ -5,6 +5,7 @@ import { config } from '../config.js';
 import { jobsRepo } from '../storage/jobs.js';
 import { webhookAttemptsTotal } from '../metrics.js';
 import { normalizeSlugForApi } from '../types/slug-normalize.js';
+import { assertWebhookUrlSafe } from './ssrf-guard.js';
 import type { Logger } from 'pino';
 
 /**
@@ -228,6 +229,27 @@ export async function deliverWebhook(
    */
   hmacSecret: string = config.webhook.hmacSecret,
 ): Promise<void> {
+  // audit #4 (SSRF): не доставляем на внутренний адрес (облачная метадата /
+  // loopback). Единая точка — ловит DNS-rebind после accept-time, а также
+  // org-level webhook_url и ручной redeliver, которые accept-time не проходят.
+  if (config.webhook.ssrfCheck) {
+    try {
+      await assertWebhookUrlSafe(url, { blockAllPrivate: config.webhook.blockAllPrivate });
+    } catch (err) {
+      let host = url;
+      try {
+        host = new URL(url).host;
+      } catch {
+        /* keep raw */
+      }
+      log.warn(
+        { jobId, host, err: err instanceof Error ? err.message : String(err) },
+        'webhook delivery blocked by SSRF guard (target internal)',
+      );
+      return;
+    }
+  }
+
   const body = JSON.stringify(payload);
   const signature = sign(body, hmacSecret);
 

@@ -40,6 +40,7 @@ import { runDocumentPipeline, persistClassification } from '../pipeline/orchestr
 import { combineConfidence } from '../pipeline/quality.js';
 import { projectsRepo } from '../storage/projects.js';
 import { checkOrgOverride } from './tenant-scope.js';
+import { assertWebhookUrlSafe, WebhookSsrfError } from '../webhooks/ssrf-guard.js';
 import { sanitizeMetadata } from '../storage/metadata-sanitizer.js';
 import { SYSTEM_DEFAULT_ORG_ID, SYSTEM_DEFAULT_PROJECT_ID } from '../auth.js';
 import {
@@ -445,8 +446,22 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
       }
 
       if (webhookUrl && !isValidWebhookUrl(webhookUrl)) {
+        if (savedFile) await unlink(savedFile.absolutePath).catch(() => undefined);
         reply.code(400);
         return { error: 'webhook_url must be http(s) URL' };
+      }
+      // audit #4 (SSRF): webhook_url не должен указывать на внутренний адрес
+      // (облачная метадата / loopback). Гейт config.webhook.ssrfCheck (default on).
+      if (webhookUrl && config.webhook.ssrfCheck) {
+        try {
+          await assertWebhookUrlSafe(webhookUrl, {
+            blockAllPrivate: config.webhook.blockAllPrivate,
+          });
+        } catch (e) {
+          if (savedFile) await unlink(savedFile.absolutePath).catch(() => undefined);
+          reply.code(400);
+          return { error: e instanceof WebhookSsrfError ? e.message : 'invalid webhook_url' };
+        }
       }
 
       // Хинт от клиента может быть любым slug'ом — builtin (один из шести)

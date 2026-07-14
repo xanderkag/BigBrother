@@ -491,6 +491,11 @@ const ConfigSchema = z.object({
     hmacSecret: z.string().min(1),
     timeoutMs: numberFromEnv(10000),
     maxAttempts: numberFromEnv(5),
+    // audit #4 (SSRF): проверять webhook_url на внутренние адреса. Kill-switch
+    // ssrfCheck (default on) блокирует loopback/link-local/metadata. blockAllPrivate
+    // (default off) — ещё и RFC1918 (осторожно: SLAI может быть на корп-сети).
+    ssrfCheck: booleanFromEnv(true),
+    blockAllPrivate: booleanFromEnv(false),
   }),
 
   /**
@@ -771,6 +776,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       hmacSecret: env.WEBHOOK_HMAC_SECRET ?? '',
       timeoutMs: env.WEBHOOK_TIMEOUT_MS,
       maxAttempts: env.WEBHOOK_MAX_ATTEMPTS,
+      ssrfCheck: env.WEBHOOK_SSRF_CHECK,
+      blockAllPrivate: env.WEBHOOK_BLOCK_ALL_PRIVATE,
     },
     slai: {
       toParsdocsHmacSecret: env.SLAI_TO_PARSDOCS_HMAC_SECRET || undefined,
