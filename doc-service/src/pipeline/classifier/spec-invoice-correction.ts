@@ -49,3 +49,25 @@ export function correctSpecVsInvoice<T extends DocumentTypeSlug | null>(
   if (hasRealPrices(text)) return documentType; // настоящий инвойс с ценами
   return 'contract_specification' as DocumentTypeSlug;
 }
+
+// §FIX-4: сигналы упаковочного (вес/паллеты/места). Packing-специфичны.
+const PACKING_SIGNALS = /(нетто|брутто|net\s*weight|gross\s*weight|паллет|pallet|packages|грузовых\s*мест|мест\b)/i;
+
+/**
+ * §FIX-4: страница-ПРОДОЛЖЕНИЕ упаковочного (headerless: «товар + число», подана
+ * отдельным файлом без шапки) ошибочно уходит в price_list / commercial_invoice.
+ * Если тип price_list/commercial_invoice И есть вес/паллеты И НЕТ цен → packing_list.
+ *
+ * ВНИМАНИЕ: это СЛАБЫЙ сигнал. Основной фикс FIX-4 — подавать многостраничный
+ * документ ОДНИМ файлом (тогда сегментация держит его как единый packing_list).
+ * Guard `hasRealPrices` защищает настоящие инвойсы/прайс-листы (у них есть цены).
+ */
+export function correctWeightPageToPacking<T extends DocumentTypeSlug | null>(
+  documentType: T,
+  text: string,
+): T | DocumentTypeSlug {
+  if (documentType !== 'price_list' && documentType !== 'commercial_invoice') return documentType;
+  if (hasRealPrices(text)) return documentType; // есть цены → это реально прайс/инвойс
+  if (!PACKING_SIGNALS.test(text)) return documentType; // нет веса/паллет → не трогаем
+  return 'packing_list' as DocumentTypeSlug;
+}
