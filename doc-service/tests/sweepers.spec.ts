@@ -192,8 +192,30 @@ describe('file-cleanup sweeper', () => {
     expect(cleaned).toBe(2);
     expect(removeFile).toHaveBeenNthCalledWith(1, '/tmp/u/1/a.pdf');
     expect(removeFile).toHaveBeenNthCalledWith(2, '/tmp/u/2/b.pdf');
-    expect(markFileDeleted).toHaveBeenNthCalledWith(1, 'old-1');
-    expect(markFileDeleted).toHaveBeenNthCalledWith(2, 'old-2');
+    // audit #9: done/failed → clearRawText=true (чистим и raw_text, ПДн).
+    expect(markFileDeleted).toHaveBeenNthCalledWith(1, 'old-1', true);
+    expect(markFileDeleted).toHaveBeenNthCalledWith(2, 'old-2', true);
+    sweeper.stop();
+  });
+
+  it('audit #9: needs_review сохраняет raw_text (clearRawText=false), файл всё равно удаляется', async () => {
+    const rows = [
+      fakeRow({ id: 'nr-1', status: 'needs_review', file_path: '/tmp/u/3/c.pdf' }),
+      fakeRow({ id: 'done-1', status: 'done', file_path: '/tmp/u/4/d.pdf' }),
+    ];
+    const removeFile = vi.fn().mockResolvedValue(true);
+    const markFileDeleted = vi.fn().mockResolvedValue(undefined);
+    const sweeper = startFileCleanupSweeper({
+      log,
+      jobsRepo: { findFinishedWithFileOlderThan: async () => rows, markFileDeleted },
+      removeFile,
+      intervalMs: 1_000_000,
+    });
+    await sweeper.runOnce();
+    // Файл удаляется у обоих; raw_text чистится только у done, не у needs_review.
+    expect(removeFile).toHaveBeenNthCalledWith(1, '/tmp/u/3/c.pdf');
+    expect(markFileDeleted).toHaveBeenNthCalledWith(1, 'nr-1', false);
+    expect(markFileDeleted).toHaveBeenNthCalledWith(2, 'done-1', true);
     sweeper.stop();
   });
 

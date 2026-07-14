@@ -53,8 +53,12 @@ export function maskIdContentInRawText(
   }
   const wholeIsId = primaryType != null && ID_DOC_SLUGS.has(primaryType);
 
-  // Нет никакого признака ID → raw_text не трогаем (аудит).
-  if (idRanges.length === 0 && !wholeIsId) return rawText;
+  // Нет явного ID-сегмента/типа → всё равно прогоняем безусловный скраб
+  // паспортных паттернов (audit #6: паспорт при misclass/unknown/одностраничном
+  // иначе сохранялся ОТКРЫТЫМ — маскирование зависело от угадывания типа,
+  // fail-open). scrubPassportPatterns консервативен (MRZ + контекст-слово
+  // «паспорт»/«серия»), FP на обычных доках маловероятен.
+  if (idRanges.length === 0 && !wholeIsId) return scrubPassportPatterns(rawText);
 
   // Одиночный ID-документ (паспорт-фото без мультидока) — вырезаем всё.
   if (wholeIsId && idRanges.length === 0) return ID_PAGE_PLACEHOLDER;

@@ -62,7 +62,10 @@ export function startFileCleanupSweeper(
         if (!row.file_path) continue; // safety, query already filters
         try {
           await remove(row.file_path);
-          await repo.markFileDeleted(row.id);
+          // audit #9: needs_review ещё ждёт оператора — сохраняем raw_text
+          // (нужен для reprocess + просмотра OCR в очереди ревью). Файл удаляем
+          // по retention в любом случае; для done/failed чистим и raw_text (ПДн).
+          await repo.markFileDeleted(row.id, row.status !== 'needs_review');
           cleaned += 1;
         } catch (err) {
           // Don't mark as deleted if the unlink failed — try again next sweep.

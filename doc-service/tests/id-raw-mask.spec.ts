@@ -46,11 +46,29 @@ describe('maskIdContentInRawText', () => {
     expect(out).toContain('EAD text');
   });
 
-  it('не-ID документ → raw_text не тронут (аудит)', () => {
+  it('не-ID документ без ПДн → raw_text не тронут (аудит)', () => {
     const out = maskIdContentInRawText('обычный счёт текст', [{ text: 'обычный счёт текст' }], 'commercial_invoice', [
       { page_range: '1', document_type: 'commercial_invoice' },
     ]);
     expect(out).toBe('обычный счёт текст');
+  });
+
+  it('audit #6: паспорт при misclass (тип НЕ ID) → MRZ всё равно вырезается', () => {
+    // Классификатор ошибся: паспорт определён как cmr. Раньше raw_text уходил
+    // открытым; теперь безусловный скраб паспортных паттернов срабатывает.
+    const out = maskIdContentInRawText(
+      'P<BLRAUSIYEVICH<<PIOTR<<<<<<<<<<<<<<<<<<<',
+      undefined,
+      'cmr', // не-ID тип (мискласс)
+      null,
+    );
+    expect(out).not.toContain('AUSIYEVICH');
+    expect(out).toContain('[REDACTED]');
+  });
+
+  it('audit #6: одностраничный паспорт как unknown (тип null) → MRZ вырезается', () => {
+    const out = maskIdContentInRawText('AB12345678BLR7501012M3001019<<<<<<<<<<<<<<', undefined, null, null);
+    expect(out).not.toContain('AB1234567');
   });
 
   it('нет сегментов, не-ID тип → raw_text не тронут', () => {

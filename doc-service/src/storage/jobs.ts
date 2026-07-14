@@ -635,12 +635,18 @@ class JobsRepo {
     return rows;
   }
 
-  async markFileDeleted(id: string): Promise<void> {
-    // §8.1 (ПДн-блокер): NULL-им и raw_text вместе с file_path. F27
-    // delete_after_processing раньше чистил только файл, а OCR-текст (вкл.
-    // паспортные страницы) оставался в jobs.raw_text и отдавался наружу.
-    // После удаления файла reprocess из raw_text всё равно недоступен.
-    await db.query(`UPDATE jobs SET file_path = NULL, raw_text = NULL WHERE id = $1`, [id]);
+  async markFileDeleted(id: string, clearRawText = true): Promise<void> {
+    // §8.1 (ПДн-блокер): NULL-им file_path; raw_text — по флагу.
+    // clearRawText=true (F27 delete_after_processing): клиент просит уничтожить
+    // ПДн → чистим и OCR-текст (иначе паспортные страницы утекали наружу).
+    // clearRawText=false (audit #9): retention-sweeper для needs_review НЕ трогает
+    // raw_text — он ещё нужен оператору (reprocess под новый промпт + просмотр OCR
+    // в очереди ревью); зануление ломало эти сценарии. Файл удаляется в обоих.
+    if (clearRawText) {
+      await db.query(`UPDATE jobs SET file_path = NULL, raw_text = NULL WHERE id = $1`, [id]);
+    } else {
+      await db.query(`UPDATE jobs SET file_path = NULL WHERE id = $1`, [id]);
+    }
   }
 
   /**

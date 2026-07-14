@@ -66,6 +66,7 @@ import { runResolutionPipeline } from '../resolution/pipeline.js';
 import { tryMultiDoc } from './multidoc/runner.js';
 import { processFieldConfidence } from './normalize/field-confidence.js';
 import { maskIdContentInRawText } from './normalize/id-raw-mask.js';
+import { scrubPassportPatterns } from './normalize/pii-redact.js';
 import { isIdDocument, buildIdSegmentExtract } from './normalize/id-allowlist.js';
 import { splitCollapsedText } from './multidoc/collapsed-pages.js';
 import { fileStorage } from '../storage/files.js';
@@ -1010,7 +1011,11 @@ async function processJobInner(
       llmUsage: currentJobLlmUsage(),
       error: errMsg,
       ocrEngine: ocr?.engine ?? null,
-      rawText: ocr?.text ?? null,
+      // audit #5: на error-пути §8.1-маскирование не применялось — паспортный
+      // OCR-текст упавшего job'а сохранялся открытым и утекал через
+      // GET /jobs/:id/raw_text. Прогоняем безусловный скраб паспортных паттернов
+      // (тип на момент падения мог быть не определён).
+      rawText: ocr ? scrubPassportPatterns(ocr.text) : null,
       confidence: ocr?.confidence ?? null,
       documentType,
     });
