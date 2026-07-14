@@ -78,10 +78,17 @@ describe('evalCorpus — M1/M2/M4', () => {
 describe('BCTT_GOLDEN — целостность', () => {
   it('4 флагмана (M2): SKMBT, noreply, 448, 632', () => {
     const flags = BCTT_GOLDEN.filter((g) => g.flagship).map((g) => g.fileMatch);
-    expect(flags).toEqual(expect.arrayContaining(['SKMBT', 'noreply', '16-448', '632']));
+    expect(flags).toEqual(expect.arrayContaining(['SKMBT', 'noreply', '16-448', '57-632']));
     expect(flags).toHaveLength(4);
   });
   it('все кейсы имеют непустой набор типов', () => {
     expect(BCTT_GOLDEN.every((g) => g.types.length > 0)).toBe(true);
+  });
+  it('golden покрывает ≥38 named-файлов корпуса', () => {
+    expect(BCTT_GOLDEN.length).toBeGreaterThanOrEqual(38);
+  });
+  it('fileMatch уникальны', () => {
+    const fm = BCTT_GOLDEN.map((g) => g.fileMatch);
+    expect(new Set(fm).size).toBe(fm.length);
   });
 });
