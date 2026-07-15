@@ -1,13 +1,14 @@
-import { exec } from 'node:child_process';
+import { exec, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import tesseract from 'node-tesseract-ocr';
 import type { OcrEngine, OcrInput, OcrResult } from './types.js';
 import { normalizeTesseractConfidence } from '../quality.js';
+import { config } from '../../config.js';
 
 const execP = promisify(exec);
+const execFileP = promisify(execFile);
 
 const PDF_MIMES = new Set(['application/pdf']);
 const IMAGE_MIMES = new Set([
@@ -21,10 +22,11 @@ const IMAGE_MIMES = new Set([
 /**
  * Local OCR via the system `tesseract` binary (with poppler-utils' `pdftoppm`
  * for rasterizing PDFs page-by-page). Both binaries are installed in the
- * Docker image. Confidence is heuristic: tesseract.js exposes per-word
- * confidence, but node-tesseract-ocr returns plain text — so we approximate
- * via output length + recognized-character density. Replace with a finer
- * signal when we move off this wrapper.
+ * Docker image. The binary is invoked directly (see recognizePage) with a
+ * hard timeout+SIGKILL so a pathological scan can't hang the cascade.
+ * Confidence is heuristic: we read plain `stdout` text (no per-word signal),
+ * so we approximate via output length + recognized-character density. Switch
+ * to TSV mode for per-word confidence when we need a finer signal.
  *
  * A5: if the orchestrator pre-rasterized the PDF (`input.rasterizedPages`),
  * we skip our own pdftoppm call and use those pages directly.
@@ -57,19 +59,41 @@ export class TesseractEngine implements OcrEngine {
   }
 
   private async runOnImage(filePath: string, started: number, langs: string): Promise<OcrResult> {
-    const text = (
-      await tesseract.recognize(filePath, {
-        lang: langs,
-        oem: 1,
-        psm: 3,
-      })
-    ).trim();
+    const text = await this.recognizePage(filePath, langs);
     return {
       engine: this.name,
       text,
       confidence: this.scoreText(text),
       durationMs: Date.now() - started,
     };
+  }
+
+  /**
+   * Один вызов бинаря tesseract на страницу — НАПРЯМУ, с timeout+SIGKILL.
+   *
+   * Раньше здесь стоял node-tesseract-ocr, обёртка вызывала `exec` без опции
+   * timeout: на шумном/крупном растровом скане (или редком language-pak)
+   * процесс мог висеть минуты. Каскад OCR последовательный, так что зависший
+   * tesseract блокировал переход на vision-llm/yandex, держал слот воркера и
+   * жёг память — под пачкой сканов ТАЙПИТ это и давало «периодические» падения.
+   *
+   * Теперь по срабатыванию timeout процесс убивается SIGKILL, вызов бросает
+   * ошибку → штатный per-engine catch в каскаде переключается на следующий
+   * движок (graceful-деградация). OMP_THREAD_LIMIT не даёт OpenMP занять все
+   * ядра при concurrency>1.
+   */
+  private async recognizePage(imagePath: string, langs: string): Promise<string> {
+    const { stdout } = await execFileP(
+      'tesseract',
+      [imagePath, 'stdout', '-l', langs, '--oem', '1', '--psm', '3'],
+      {
+        timeout: config.tesseractTimeoutMs,
+        killSignal: 'SIGKILL',
+        maxBuffer: 64 * 1024 * 1024,
+        env: { ...process.env, OMP_THREAD_LIMIT: String(config.tesseractOmpThreads) },
+      },
+    );
+    return stdout.trim();
   }
 
   private async runOnPdf(input: OcrInput, started: number, langs: string): Promise<OcrResult> {
@@ -101,15 +125,15 @@ export class TesseractEngine implements OcrEngine {
 
   /** Run tesseract on an already-rasterized list of page PNG paths. */
   private async processPages(pageFiles: string[], started: number, langs: string): Promise<OcrResult> {
+    // audit растровых падений: потолок страниц — тяжёлый многостраничный скан не
+    // должен молотиться неограниченно (0 = без лимита). Timeout выше защищает
+    // каждую страницу, cap — документ целиком.
+    const cap = config.tesseractMaxPages;
+    const files = cap > 0 ? pageFiles.slice(0, cap) : pageFiles;
+
     const pages: Array<{ text: string; confidence: number }> = [];
-    for (const pf of pageFiles) {
-      const pageText = (
-        await tesseract.recognize(pf, {
-          lang: langs,
-          oem: 1,
-          psm: 3,
-        })
-      ).trim();
+    for (const pf of files) {
+      const pageText = await this.recognizePage(pf, langs);
       pages.push({ text: pageText, confidence: this.scoreText(pageText) });
     }
 

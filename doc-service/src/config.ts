@@ -278,6 +278,17 @@ const ConfigSchema = z.object({
   tesseractLangs: z.string().default('rus+eng'),
 
   /**
+   * Устойчивость tesseract к тяжёлым/патологическим сканам (audit растровых
+   * падений). Обёртка node-tesseract-ocr вызывала бинарь БЕЗ таймаута → на
+   * шумном/крупном скане процесс мог висеть минуты, держал слот воркера и жёг
+   * память → под пачкой сканов ТАЙПИТ «периодические» падения. Теперь бинарь
+   * зовётся напрямую с timeout+SIGKILL, OMP-лимитом и потолком страниц.
+   */
+  tesseractTimeoutMs: numberFromEnv(90_000), // per-page timeout, по срабатыванию — SIGKILL
+  tesseractMaxPages: numberFromEnv(0), // потолок страниц на документ (0 = без лимита)
+  tesseractOmpThreads: numberFromEnv(2), // OMP_THREAD_LIMIT — не переподписывать CPU под concurrency
+
+  /**
    * Стоимость ₽/док (owner-запрос 2026-07-13). Ставки Yandex — факты в
    * docs/INFERENCE_COST_ANALYSIS_ASHA.md (прайс 2026-07-09, с НДС). Локальные
    * движки per-doc не стоят — стоимость считается только для yandex.
@@ -720,6 +731,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       vlmClassify: env.VLM_CLASSIFY,
     },
     tesseractLangs: env.TESSERACT_LANGS,
+    tesseractTimeoutMs: env.TESSERACT_TIMEOUT_MS,
+    tesseractMaxPages: env.TESSERACT_MAX_PAGES,
+    tesseractOmpThreads: env.TESSERACT_OMP_THREADS,
     cost: {
       ocrPageRub: env.COST_OCR_PAGE_RUB,
       ocrTableRub: env.COST_OCR_TABLE_RUB,

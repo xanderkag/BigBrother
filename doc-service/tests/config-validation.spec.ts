@@ -119,6 +119,30 @@ describe('booleanFromEnv migration: yandex-флаги честно читают 
   });
 });
 
+// audit растровых падений: tesseract зовётся напрямую с timeout+SIGKILL, OMP-
+// лимитом и потолком страниц, чтобы зависший скан не держал слот воркера. Здесь
+// фиксируем дефолты и то, что env их переопределяет.
+describe('tesseract robustness knobs (audit растровых падений)', () => {
+  it('дефолты: 90с timeout, без потолка страниц (0), 2 OMP-потока', () => {
+    const cfg = configMod.loadConfig({ ...BASE_ENV });
+    expect(cfg.tesseractTimeoutMs).toBe(90_000);
+    expect(cfg.tesseractMaxPages).toBe(0);
+    expect(cfg.tesseractOmpThreads).toBe(2);
+  });
+
+  it('env переопределяет timeout / потолок страниц / OMP-потоки', () => {
+    const cfg = configMod.loadConfig({
+      ...BASE_ENV,
+      TESSERACT_TIMEOUT_MS: '45000',
+      TESSERACT_MAX_PAGES: '20',
+      TESSERACT_OMP_THREADS: '1',
+    });
+    expect(cfg.tesseractTimeoutMs).toBe(45_000);
+    expect(cfg.tesseractMaxPages).toBe(20);
+    expect(cfg.tesseractOmpThreads).toBe(1);
+  });
+});
+
 describe('H1: assertRuntimeConfig fail-closed cross-validation', () => {
   const base = {
     byoLlmEnabled: false,
