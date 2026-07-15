@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { OcrEngine, OcrInput, OcrResult } from './types.js';
 import type { LlmClient } from '../llm/types.js';
+import { config } from '../../config.js';
 
 const execP = promisify(exec);
 
@@ -89,10 +90,17 @@ export class VisionLlmEngine implements OcrEngine {
 
   /** Run vision-OCR on an already-rasterized list of page PNG paths. */
   private async processPages(pageFiles: string[], started: number): Promise<OcrResult> {
-    const pages: Array<{ text: string; confidence: number }> = [];
-    for (const pf of pageFiles) {
-      const r = await this.visionOcr({ imagePath: pf });
-      pages.push({ text: r.text.trim(), confidence: r.confidence });
+    // Страницы распознаём батчами по config.visionPageParallelism. Порядок
+    // сохраняется (индексная запись). Дефолт 1 = прежнее последовательное
+    // поведение; на vLLM поднять knob → многостраничные сканы в разы быстрее.
+    const parallelism = Math.max(1, config.visionPageParallelism);
+    const pages: Array<{ text: string; confidence: number }> = new Array(pageFiles.length);
+    for (let i = 0; i < pageFiles.length; i += parallelism) {
+      const batch = pageFiles.slice(i, i + parallelism);
+      const results = await Promise.all(batch.map((pf) => this.visionOcr({ imagePath: pf })));
+      results.forEach((r, j) => {
+        pages[i + j] = { text: r.text.trim(), confidence: r.confidence };
+      });
     }
 
     const text = pages.map((p) => p.text).join('\n\n');

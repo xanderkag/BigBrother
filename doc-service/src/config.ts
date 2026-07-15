@@ -299,6 +299,14 @@ const ConfigSchema = z.object({
   tesseractMaxPages: numberFromEnv(0), // потолок страниц на документ (0 = без лимита)
   tesseractOmpThreads: numberFromEnv(2), // OMP_THREAD_LIMIT — не переподписывать CPU под concurrency
 
+  // Vision-OCR: сколько страниц скана распознавать ПАРАЛЛЕЛЬНО (vision-llm.ts).
+  // Раньше страницы шли строго по одной (for...await) — многостраничный скан
+  // = N×timeout последовательно. На Ollama модель serial'ит запросы, поэтому
+  // дефолт 1 (как было) — параллелизм там не ускорит, только займёт backend-
+  // семафор. На vLLM (параллельный KV-cache) поднять до 3-4 → многостраничные
+  // сканы распознаются в разы быстрее. Порядок страниц сохраняется.
+  visionPageParallelism: numberFromEnv(1),
+
   /**
    * Стоимость ₽/док (owner-запрос 2026-07-13). Ставки Yandex — факты в
    * docs/INFERENCE_COST_ANALYSIS_ASHA.md (прайс 2026-07-09, с НДС). Локальные
@@ -750,6 +758,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     tesseractTimeoutMs: env.TESSERACT_TIMEOUT_MS,
     tesseractMaxPages: env.TESSERACT_MAX_PAGES,
     tesseractOmpThreads: env.TESSERACT_OMP_THREADS,
+    visionPageParallelism: env.VISION_PAGE_PARALLELISM,
     cost: {
       ocrPageRub: env.COST_OCR_PAGE_RUB,
       ocrTableRub: env.COST_OCR_TABLE_RUB,

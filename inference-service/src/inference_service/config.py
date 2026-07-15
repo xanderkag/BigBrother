@@ -74,6 +74,17 @@ class Settings(BaseSettings):
     openai_max_tokens: int = Field(default=2048, ge=64, le=16384)
     openai_timeout_seconds: float = Field(default=120.0, ge=5.0)
 
+    # Vision-latency: даунскейл картинки перед отправкой в vision-модель.
+    # doc-service рендерит страницы pdftoppm при 200 DPI (A4 ≈ 1654x2339) и
+    # НЕ сжимает — раньше сервис перекодировал в JPEG q90 без ресайза (см.
+    # _image_to_data_url). Число vision-токенов (а значит и latency) растёт с
+    # площадью картинки, поэтому большой скан молотится дольше без выигрыша в
+    # точности. Ограничиваем ДЛИННУЮ сторону: только уменьшаем, апскейла нет.
+    # 0 = выключить ресайз. 1600 ≈ ~136 DPI для A4 — печатный текст читаем,
+    # площадь ~0.47x → заметно быстрее. Плотные ВЭД-таблицы с мелким шрифтом —
+    # поднять до 1800-2000, если точность просела.
+    vision_max_image_px: int = Field(default=1600, ge=0)
+
     # --- Qwen-VL specific. Read only by the qwen backend. ---
     # Tip: для локального инференса лучше использовать `backend=openai_compat`
     # + Ollama (см. docker-compose.local-models.yml). Этот путь оставлен для

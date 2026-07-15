@@ -36,6 +36,7 @@ from typing import Any
 
 from PIL import Image
 
+from ..config import settings
 from ..prompts import classify as classify_prompts
 from ..prompts import extract as extract_prompts
 from ..prompts import verify as verify_prompts
@@ -556,12 +557,33 @@ def _looks_like_reasoning_effort_not_supported(err: Exception) -> bool:
     return "reasoning_effort" in msg or "reasoning effort" in msg
 
 
+def _downscale_for_vision(image: Image.Image) -> Image.Image:
+    """Ужать длинную сторону картинки до settings.vision_max_image_px.
+
+    Vision-latency прямо пропорциональна числу vision-токенов, а оно — площади
+    картинки. Полноразмерный 200-DPI скан (A4 ≈ 1654x2339) молотится дольше без
+    выигрыша в точности. Только УМЕНЬШАЕМ (апскейла нет); 0/выключено или уже
+    меньше лимита → возвращаем как есть. LANCZOS — качество ресайза для текста.
+    """
+    max_px = settings.vision_max_image_px
+    if max_px <= 0:
+        return image
+    longest = max(image.width, image.height)
+    if longest <= max_px:
+        return image
+    scale = max_px / longest
+    new_size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
+    return image.resize(new_size, Image.LANCZOS)
+
+
 def _image_to_data_url(image: Image.Image) -> str:
     """Encode PIL image as a data URL (base64). JPEG for size.
 
     OpenAI vision API принимает либо публичный URL, либо data URL. Локальные
-    серверы (Ollama, vLLM) поддерживают тот же формат.
+    серверы (Ollama, vLLM) поддерживают тот же формат. Картинка даунскейлится
+    до vision_max_image_px (см. _downscale_for_vision) — снижает vision-latency.
     """
+    image = _downscale_for_vision(image)
     buf = io.BytesIO()
     image.save(buf, format="JPEG", quality=90, optimize=True)
     b64 = base64.b64encode(buf.getvalue()).decode("ascii")

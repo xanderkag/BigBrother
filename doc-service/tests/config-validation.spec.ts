@@ -141,6 +141,13 @@ describe('tesseract robustness knobs (audit растровых падений)',
     expect(cfg.tesseractMaxPages).toBe(20);
     expect(cfg.tesseractOmpThreads).toBe(1);
   });
+
+  it('visionPageParallelism: дефолт 1 (последовательно), env поднимает под vLLM', () => {
+    expect(configMod.loadConfig({ ...BASE_ENV }).visionPageParallelism).toBe(1);
+    expect(
+      configMod.loadConfig({ ...BASE_ENV, VISION_PAGE_PARALLELISM: '4' }).visionPageParallelism,
+    ).toBe(4);
+  });
 });
 
 // DEEP-PASS (docs/DEEP-PASS-SPEC.md): второй ярус выключен по умолчанию —
