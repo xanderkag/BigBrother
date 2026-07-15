@@ -1285,6 +1285,14 @@ function JobRow({
           <StatusBadge status={job.status} />
           <WebhookChip job={job} />
         </span>
+        {job.status === 'failed' && job.error && (
+          <span
+            className="mt-0.5 block max-w-[220px] truncate text-[11px] text-rose-500 dark:text-rose-400"
+            title={job.error}
+          >
+            {job.error}
+          </span>
+        )}
       </td>
 
       {/* CONFIDENCE — горизонтальная полоска */}
