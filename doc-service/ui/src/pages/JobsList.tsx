@@ -669,6 +669,9 @@ export default function JobsListPage() {
                     />
                   </th>
                   <th className="px-3 py-2 font-medium">File</th>
+                  <th className="hidden px-3 py-2 text-right font-medium lg:table-cell" title="Размер исходного файла">
+                    Размер
+                  </th>
                   <th className="hidden px-3 py-2 font-medium xl:table-cell">ID</th>
                   <th className="px-3 py-2 font-medium">Type</th>
                   <th className="px-3 py-2 font-medium">Status</th>
@@ -1249,6 +1252,11 @@ function JobRow({
         </Link>
       </td>
 
+      {/* РАЗМЕР ФАЙЛА */}
+      <td className="hidden px-3 py-2 text-right font-mono text-xs tabular-nums text-slate-500 lg:table-cell dark:text-slate-400">
+        {formatBytes(job.file_size)}
+      </td>
+
       {/* ID — split */}
       <td className="hidden px-3 py-2 font-mono text-xs text-slate-500 xl:table-cell dark:text-slate-400" title={job.id}>
         {shortIdSplit(job.id)}
@@ -1691,6 +1699,15 @@ function BulkBar({
       </button>
     </div>
   );
+}
+
+/** Размер файла в человекочитаемом виде (B/KB/MB). '—' для пустого/неизвестного. */
+function formatBytes(size: string | number | undefined): string {
+  const n = typeof size === 'string' ? Number(size) : size;
+  if (n == null || !Number.isFinite(n) || n <= 0) return '—';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 /**
