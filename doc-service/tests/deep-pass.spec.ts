@@ -45,7 +45,13 @@ describe('broad-catalog', () => {
   it('slug\'и уникальны и есть обязательные категории', () => {
     const slugs = BROAD_TYPES.map((t) => t.slug);
     expect(new Set(slugs).size).toBe(slugs.length);
-    for (const required of ['not_a_document', 'other', 'id_document', 'correspondence_screenshot']) {
+    for (const required of [
+      'not_a_document',
+      'other',
+      'id_document',
+      'correspondence_screenshot',
+      'cargo_photo', // SLAI 2026-07-15: фото погрузки — отдельная сущность, не product_photo
+    ]) {
       expect(slugs).toContain(required);
     }
   });
