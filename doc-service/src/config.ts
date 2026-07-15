@@ -275,6 +275,17 @@ const ConfigSchema = z.object({
     vlmClassify: booleanFromEnv(false),
   }),
 
+  /**
+   * DEEP-PASS (docs/DEEP-PASS-SPEC.md): второй ярус для нераспознанного
+   * остатка — широкая категория + резюме + возврат в конвейер. Default off:
+   * дополнительный LLM/VL-вызов на каждый unknown-док, включает владелец.
+   */
+  deepPass: z.object({
+    enabled: booleanFromEnv(false),
+    textChars: numberFromEnv(8000), // сколько текста уходит в text-путь (classify видит только 2500)
+    minTextForTextPath: numberFromEnv(300), // меньше → vision по картинке первой страницы
+  }),
+
   tesseractLangs: z.string().default('rus+eng'),
 
   /**
@@ -729,6 +740,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       classifyProviderId: env.CLASSIFY_PROVIDER_ID || '',
       segmentForcePageSplit: env.SEGMENT_FORCE_PAGE_SPLIT,
       vlmClassify: env.VLM_CLASSIFY,
+    },
+    deepPass: {
+      enabled: env.DEEP_PASS_ENABLED,
+      textChars: env.DEEP_PASS_TEXT_CHARS,
+      minTextForTextPath: env.DEEP_PASS_MIN_TEXT,
     },
     tesseractLangs: env.TESSERACT_LANGS,
     tesseractTimeoutMs: env.TESSERACT_TIMEOUT_MS,

@@ -40,7 +40,7 @@ export type ClassificationMetadata = {
   /** Уверенность: LLM'а (1.0 на выбор) либо prior'а при fallback. */
   confidence: number;
   /** Как выбран финальный тип. */
-  method: 'llm' | 'keyword' | 'filename' | 'fallback' | 'hint' | 'vlm';
+  method: 'llm' | 'keyword' | 'filename' | 'fallback' | 'hint' | 'vlm' | 'deep_pass';
   /** Время именно LLM-вызова классификации (мс). null если LLM не звали. */
   duration_ms: number | null;
   /** Сырой ответ LLM (включая `unknown` / невалидный slug). null если не звали. */

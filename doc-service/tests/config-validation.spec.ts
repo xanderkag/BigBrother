@@ -143,6 +143,29 @@ describe('tesseract robustness knobs (audit растровых падений)',
   });
 });
 
+// DEEP-PASS (docs/DEEP-PASS-SPEC.md): второй ярус выключен по умолчанию —
+// дополнительный LLM/VL-вызов на каждый unknown-док включает владелец.
+describe('deepPass config', () => {
+  it('дефолты: выключен, 8000 символов текста, порог vision 300', () => {
+    const cfg = configMod.loadConfig({ ...BASE_ENV });
+    expect(cfg.deepPass.enabled).toBe(false);
+    expect(cfg.deepPass.textChars).toBe(8000);
+    expect(cfg.deepPass.minTextForTextPath).toBe(300);
+  });
+
+  it('env включает и переопределяет', () => {
+    const cfg = configMod.loadConfig({
+      ...BASE_ENV,
+      DEEP_PASS_ENABLED: 'true',
+      DEEP_PASS_TEXT_CHARS: '4000',
+      DEEP_PASS_MIN_TEXT: '100',
+    });
+    expect(cfg.deepPass.enabled).toBe(true);
+    expect(cfg.deepPass.textChars).toBe(4000);
+    expect(cfg.deepPass.minTextForTextPath).toBe(100);
+  });
+});
+
 describe('H1: assertRuntimeConfig fail-closed cross-validation', () => {
   const base = {
     byoLlmEnabled: false,

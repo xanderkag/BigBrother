@@ -1182,6 +1182,7 @@ function JobRow({
   navState: JobNavState;
 }) {
   const amounts = extractAmounts(job.extracted);
+  const deep = deepPassInfo(job.extracted);
   const fullDate = formatDateTime(job.created_at);
   const age = formatAge(job.created_at, now);
   const duration = computeDuration(job, now);
@@ -1270,6 +1271,8 @@ function JobRow({
             <TierBadge tier={tier} size="xs" />
             <ClassifyMethodChip classification={job.classification} />
           </span>
+        ) : deep ? (
+          <DeepPassBadge deep={deep} />
         ) : job.document_hint ? (
           <span className="badge-slate uppercase" title="hint от клиента">
             {job.document_hint}
@@ -1394,6 +1397,7 @@ function JobCard({
   navState: JobNavState;
 }) {
   const amounts = extractAmounts(job.extracted);
+  const deep = deepPassInfo(job.extracted);
   const fullDate = formatDateTime(job.created_at);
   const age = formatAge(job.created_at, now);
   const duration = computeDuration(job, now);
@@ -1454,6 +1458,8 @@ function JobCard({
                 <TierBadge tier={tier} size="xs" />
                 <ClassifyMethodChip classification={job.classification} />
               </span>
+            ) : deep ? (
+              <DeepPassBadge deep={deep} />
             ) : job.document_hint ? (
               <span className="badge-slate uppercase" title="hint от клиента">
                 {job.document_hint}
@@ -1630,7 +1636,45 @@ const CLASSIFY_METHOD_META: Record<
   filename: { short: 'И', label: 'имя файла' },
   fallback: { short: 'О', label: 'откат' },
   hint: { short: 'П', label: 'подсказка' },
+  vlm: { short: 'V', label: 'по изображению (VLM)' },
+  deep_pass: { short: 'Г', label: 'глубокий разбор' },
 };
+
+/**
+ * DEEP-PASS (docs/DEEP-PASS-SPEC.md): след второго яруса в extracted._deep.
+ * Для документов без рабочего типа рисуем бейдж широкой категории
+ * («Скриншот переписки», «Сертификат», «Не документ»…), tooltip — резюме.
+ */
+function deepPassInfo(
+  extracted: unknown,
+): { label: string; summary: string; notDoc: boolean } | null {
+  if (!extracted || typeof extracted !== 'object') return null;
+  const d = (extracted as Record<string, unknown>)._deep;
+  if (!d || typeof d !== 'object') return null;
+  const r = d as Record<string, unknown>;
+  if (typeof r.broad_label !== 'string' || r.broad_label.length === 0) return null;
+  return {
+    label: r.broad_label,
+    summary: typeof r.summary === 'string' ? r.summary : '',
+    notDoc: r.verdict === 'not_a_document',
+  };
+}
+
+/** Бейдж широкой категории deep-pass (amber) / «Не документ» (slate). */
+function DeepPassBadge({ deep }: { deep: NonNullable<ReturnType<typeof deepPassInfo>> }) {
+  return (
+    <span
+      className={
+        deep.notDoc
+          ? 'inline-flex items-center rounded-sm bg-slate-200 px-1.5 py-0.5 text-[11px] font-medium text-slate-600 dark:bg-slate-700 dark:text-slate-300'
+          : 'inline-flex items-center rounded-sm bg-amber-100 px-1.5 py-0.5 text-[11px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
+      }
+      title={deep.summary || 'Глубокий разбор: широкая категория (вне рабочего каталога)'}
+    >
+      {deep.notDoc ? 'Не документ' : deep.label}
+    </span>
+  );
+}
 
 function ClassifyMethodChip({
   classification,

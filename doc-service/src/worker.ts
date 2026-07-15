@@ -3,7 +3,7 @@ import pino from 'pino';
 import { config, assertRuntimeConfig } from './config.js';
 import { QUEUE_NAME, redisConnection, type DocJobPayload, closeQueue } from './queue.js';
 import { closeDb } from './db.js';
-import { processJob } from './pipeline/orchestrator.js';
+import { processJob, isDeterministicJobError } from './pipeline/orchestrator.js';
 import { startPendingJobSweeper } from './workers/pending-job-sweeper.js';
 import { startFileCleanupSweeper } from './workers/file-cleanup.js';
 import { startAuditLogSweeper } from './workers/audit-log-sweeper.js';
@@ -61,7 +61,21 @@ const worker = new Worker<DocJobPayload>(
       jobLog.info('job received');
     }
 
-    await processJob(job.data.jobId, jobLog, { attempt });
+    try {
+      await processJob(job.data.jobId, jobLog, { attempt });
+    } catch (err) {
+      // Детерминированные ошибки (OCR-refusal, неподдерживаемый тип файла) не
+      // ретраим: тот же файл → тот же результат, 3 прогона OCR-цепочки впустую.
+      // Job уже финализирован failed с текстом ошибки в orchestrator catch.
+      if (isDeterministicJobError(err)) {
+        jobLog.warn(
+          { err_message: err instanceof Error ? err.message : String(err) },
+          'deterministic failure — dropping without retry',
+        );
+        throw new UnrecoverableError(err instanceof Error ? err.message : String(err));
+      }
+      throw err;
+    }
   },
   {
     connection: redisConnection,

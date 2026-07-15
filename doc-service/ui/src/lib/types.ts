@@ -62,7 +62,7 @@ export interface Job {
 export interface Classification {
   type: DocumentTypeSlug | null;
   confidence: number;
-  method: 'llm' | 'keyword' | 'filename' | 'fallback' | 'hint';
+  method: 'llm' | 'keyword' | 'filename' | 'fallback' | 'hint' | 'vlm' | 'deep_pass';
   duration_ms: number | null;
   llm_said: string | null;
   keyword_said: { type: DocumentTypeSlug; score: number } | null;

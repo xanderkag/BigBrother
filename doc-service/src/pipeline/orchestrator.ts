@@ -37,6 +37,7 @@ import { KeywordClassifier } from './classifier/keywords.js';
 import { LlmDocClassifier, type ClassificationMetadata } from './classifier/llm-classifier.js';
 import { LlmPageClassifierAdapter } from './classifier/llm-page-adapter.js';
 import { classifyImageViaVlm } from './classifier/vlm-classify.js';
+import { runDeepPass } from './deep-pass/run.js';
 import { getCatalogForOrg } from './classifier/catalog.js';
 import { correctSpecVsInvoice, correctWeightPageToPacking } from './classifier/spec-invoice-correction.js';
 import { combineConfidence } from './quality.js';
@@ -195,6 +196,19 @@ function roundConf(c: number | null | undefined): number | null {
  * the smoke CLI and integration tests can reuse them without DB plumbing.
  */
 /**
+ * Детерминированная ошибка: тот же файл даст тот же результат, ретраи BullMQ
+ * только жгут OCR/GPU впустую (worker оборачивает такие в UnrecoverableError).
+ * Сюда попадают: отказ vision-модели читать изображение (OcrRefusedError, при
+ * выключенном deep-pass) и неподдерживаемый тип файла. «all OCR engines
+ * failed» сознательно НЕ здесь — движки падают и транзиентно (таймаут vision
+ * под нагрузкой), ретрай оправдан.
+ */
+export function isDeterministicJobError(err: unknown): boolean {
+  if (err instanceof OcrRefusedError) return true;
+  return err instanceof Error && err.message.startsWith('no OCR engine available for mime type');
+}
+
+/**
  * Обёртка учёта токенов. Внутри контекста `HttpLlmClient.post` складывает
  * `usage` КАЖДОГО ответа inference-service — включая чанки multipass, которые
  * идут с includeDebug:false и раньше не приносили расход вовсе. Итог пишется в
@@ -313,6 +327,9 @@ async function processJobInner(
 
   let ocr: OcrResult | null = null;
   let documentType: DocumentTypeSlug | null = job.document_hint ?? null;
+  // DEEP-PASS: почему (если) запустится второй ярус. 'ocr_refused' выставляет
+  // refusal-ветка ниже; 'classify_unknown' — дефолт для unknown-триггера.
+  let deepPassReason: 'classify_unknown' | 'ocr_refused' = 'classify_unknown';
 
   // Phase 3 (CP7): per-org consumer profile. Грузим один раз. Дефолт-профиль
   // (extract / pull / no secret) возвращается когда орг нет или строки нет —
@@ -465,19 +482,43 @@ async function processJobInner(
     // ручной разбор.
     const refusal = detectOcrRefusal(ocr.text);
     if (refusal.isRefusal) {
-      log.warn(
-        { jobId, engine: ocr.engine, coverage: refusal.coverage, preview: refusal.preview },
-        'OCR engine returned refusal sentence — bailing out',
-      );
-      await stepEvent('ocr.refusal', 'failed', {
-        details: {
-          engine: ocr.engine,
-          coverage_percent: Math.round((refusal.coverage ?? 0) * 100),
-          preview: refusal.preview,
-          pattern: refusal.pattern,
-        },
-      });
-      throw new OcrRefusedError(ocr.engine, refusal);
+      // DEEP-PASS Фаза 1: при включённом втором ярусе refusal — не приговор.
+      // Обнуляем мусорный «текст» отказа (и постраничность — там тот же
+      // мусор) и идём дальше: классификатор даст unknown, и unknown-ветка
+      // deep-pass ниже посмотрит на документ VL-моделью по картинке. Job
+      // финализируется честным needs_review с широкой категорией вместо
+      // failed + 3 бессмысленных ретрая той же картинки.
+      if (config.deepPass.enabled && !classifyOnly && !audioInput) {
+        log.warn(
+          { jobId, engine: ocr.engine, preview: refusal.preview },
+          'OCR refusal — передаём документ в deep-pass вместо fail',
+        );
+        await stepEvent('ocr.refusal', 'done', {
+          details: {
+            engine: ocr.engine,
+            coverage_percent: Math.round((refusal.coverage ?? 0) * 100),
+            deferred_to_deep_pass: true,
+          },
+        });
+        ocr.text = '';
+        ocr.pages = undefined;
+        ocr.confidence = 0;
+        deepPassReason = 'ocr_refused';
+      } else {
+        log.warn(
+          { jobId, engine: ocr.engine, coverage: refusal.coverage, preview: refusal.preview },
+          'OCR engine returned refusal sentence — bailing out',
+        );
+        await stepEvent('ocr.refusal', 'failed', {
+          details: {
+            engine: ocr.engine,
+            coverage_percent: Math.round((refusal.coverage ?? 0) * 100),
+            preview: refusal.preview,
+            pattern: refusal.pattern,
+          },
+        });
+        throw new OcrRefusedError(ocr.engine, refusal);
+      }
     }
 
     // ── F5 Multi-doc detection (xlsx multi-sheet, MVP) ──────────────────
@@ -608,7 +649,7 @@ async function processJobInner(
     // primary document_type + extracted для job row (backwards compat).
     // documents[] из multi-doc идёт в extracted._multidoc_documents и
     // потом в webhook payload.documents.
-    const post = await runDocumentPipeline(
+    let post = await runDocumentPipeline(
       ocr.text,
       {
         hint: documentType ?? undefined,
@@ -672,6 +713,80 @@ async function processJobInner(
           }
           log.info({ jobId, vlmSlug }, '§P2-2: тип определён по изображению (VLM)');
         }
+      }
+    }
+
+    // ── DEEP-PASS Фаза 1 (docs/DEEP-PASS-SPEC.md) ──────────────────────────
+    // Второй ярус для нераспознанного остатка: рабочий классификатор (включая
+    // §P2-2 выше) типа не дал → широкая категория + резюме, и если модель
+    // уверенно узнала РАБОЧИЙ тип — возврат в конвейер (обычное извлечение по
+    // схеме). Multidoc-композиты не трогаем (сегменты уже типизированы, фаза 2).
+    // ДО cleanupArtifacts — vision-путь читает картинку первой страницы.
+    if (config.deepPass.enabled && !classifyOnly && !post.documentType && !multiDocResult) {
+      const dpStart = Date.now();
+      const { text: workingCatalog } = await getCatalogForOrg(job.organization_id);
+      const isCatalogSlug = await makeCatalogSlugValidator(job.organization_id);
+      const dp = await runDeepPass(
+        {
+          text: ocr.text,
+          imagePath: firstPageImage.imagePath,
+          workingCatalog: workingCatalog ?? '',
+          textChars: config.deepPass.textChars,
+          minTextForTextPath: config.deepPass.minTextForTextPath,
+          reason: deepPassReason,
+        },
+        {
+          extract: (i) => llm.extract(i),
+          visionOcr: (i) => llm.visionOcr(i),
+          withVisionProvider: (fn) => dynamicLlm.withVisionProvider(fn),
+          isCatalogSlug,
+        },
+        log,
+      );
+      if (dp) {
+        if (dp.catalog_slug) {
+          // Возврат в конвейер: обычный extract по схеме опознанного типа.
+          // Метод честно deep_pass с conf 0.7 (не hint!) — classify_uncertain
+          // гейт применяется к этой уверенности, а не обходится.
+          post = await runDocumentPipeline(
+            ocr.text,
+            {
+              hint: dp.catalog_slug as DocumentTypeSlug,
+              promptOverride,
+              organizationId: job.organization_id,
+              fileName: job.file_name,
+              imagePath: firstPageImage.imagePath,
+              forceExtractFromImage,
+            },
+            log,
+            { jobId },
+            timings,
+          );
+          if (post.classification) {
+            post.classification.method = 'deep_pass';
+            post.classification.confidence = 0.7;
+            post.classification.unknown = false;
+          }
+          log.info(
+            { jobId, catalog_slug: dp.catalog_slug, broad_type: dp.broad_type },
+            'deep-pass: тип опознан — документ возвращён в конвейер',
+          );
+        }
+        // След второго яруса — в служебном ключе extracted (паттерн _issues/
+        // _enrichment): UI рисует бейдж, webhook доставляет потребителю.
+        post.extracted._deep = dp;
+        await stepEvent('deep_pass', 'done', {
+          duration_ms: Date.now() - dpStart,
+          details: {
+            broad_type: dp.broad_type,
+            verdict: dp.verdict,
+            catalog_slug: dp.catalog_slug,
+            via: dp.via,
+            reason: dp.reason,
+          },
+        });
+      } else {
+        await stepEvent('deep_pass', 'failed', { duration_ms: Date.now() - dpStart });
       }
     }
 

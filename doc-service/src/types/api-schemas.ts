@@ -120,7 +120,7 @@ export const Job = z
       .object({
         type: DocumentTypeSlugSchema.nullable(),
         confidence: z.number().min(0).max(1),
-        method: z.enum(['llm', 'keyword', 'filename', 'fallback', 'hint', 'vlm']),
+        method: z.enum(['llm', 'keyword', 'filename', 'fallback', 'hint', 'vlm', 'deep_pass']),
         duration_ms: z.number().int().nonnegative().nullable(),
         llm_said: z.string().nullable(),
         keyword_said: z

@@ -902,6 +902,8 @@ const CLASSIFY_METHOD_LABELS: Record<Classification['method'], string> = {
   filename: 'имя файла',
   fallback: 'откат',
   hint: 'подсказка',
+  vlm: 'по изображению (VLM)',
+  deep_pass: 'глубокий разбор',
 };
 
 function ClassificationCard({
