@@ -12,6 +12,13 @@ import BulkResultBanner from '@/components/BulkResultBanner';
 import { runBulk, type BulkResult } from '@/lib/bulk';
 import { extractAmounts } from '@/lib/extracted-summary';
 import {
+  getDeepPass,
+  DEEP_VERDICT_META,
+  DEEP_VIA_LABELS,
+  DEEP_REASON_LABELS,
+  type DeepPassData,
+} from '@/lib/deep-pass';
+import {
   formatAge,
   formatDateTime,
   formatDuration,
@@ -1182,7 +1189,11 @@ function JobRow({
   navState: JobNavState;
 }) {
   const amounts = extractAmounts(job.extracted);
-  const deep = deepPassInfo(job.extracted);
+  const deep = getDeepPass(job.extracted);
+  // Разворот глубокого разбора (deep-pass): клик по бейджу категории открывает
+  // панель с резюме под строкой. Состояние локальное — не переживает
+  // перерисовку списка, и это ок (панель — быстрый взгляд, не рабочий режим).
+  const [deepOpen, setDeepOpen] = useState(false);
   const fullDate = formatDateTime(job.created_at);
   const age = formatAge(job.created_at, now);
   const duration = computeDuration(job, now);
@@ -1203,6 +1214,7 @@ function JobRow({
   };
 
   return (
+    <>
     <tr
       onClick={handleRowClick}
       className={`group cursor-pointer ${
@@ -1272,7 +1284,7 @@ function JobRow({
             <ClassifyMethodChip classification={job.classification} />
           </span>
         ) : deep ? (
-          <DeepPassBadge deep={deep} />
+          <DeepPassBadge deep={deep} expanded={deepOpen} onToggle={() => setDeepOpen((v) => !v)} />
         ) : job.document_hint ? (
           <span className="badge-slate uppercase" title="hint от клиента">
             {job.document_hint}
@@ -1373,6 +1385,16 @@ function JobRow({
         {age}
       </td>
     </tr>
+    {/* DEEP-PASS разворот: полная информация второго яруса под строкой */}
+    {deep && deepOpen && (
+      <tr className="bg-white dark:bg-slate-900">
+        <td />
+        <td colSpan={12} className="px-3 pb-3">
+          <DeepPassPanel deep={deep} />
+        </td>
+      </tr>
+    )}
+    </>
   );
 }
 
@@ -1397,7 +1419,7 @@ function JobCard({
   navState: JobNavState;
 }) {
   const amounts = extractAmounts(job.extracted);
-  const deep = deepPassInfo(job.extracted);
+  const deep = getDeepPass(job.extracted);
   const fullDate = formatDateTime(job.created_at);
   const age = formatAge(job.created_at, now);
   const duration = computeDuration(job, now);
@@ -1459,7 +1481,10 @@ function JobCard({
                 <ClassifyMethodChip classification={job.classification} />
               </span>
             ) : deep ? (
-              <DeepPassBadge deep={deep} />
+              <span className="inline-flex items-center gap-1">
+                <DeepPassBadge deep={deep} />
+                <DeepVerdictChip verdict={deep.verdict} />
+              </span>
             ) : job.document_hint ? (
               <span className="badge-slate uppercase" title="hint от клиента">
                 {job.document_hint}
@@ -1474,6 +1499,13 @@ function JobCard({
               </span>
             )}
           </div>
+
+          {/* DEEP-PASS: резюме второго яруса — на карточке всегда видно */}
+          {deep?.summary && (
+            <p className="line-clamp-2 text-xs text-slate-500 dark:text-slate-400" title={deep.summary}>
+              {deep.summary}
+            </p>
+          )}
 
           {/* Confidence + кол-во полей — читаются вместе */}
           <div className="flex items-center gap-3">
@@ -1641,38 +1673,102 @@ const CLASSIFY_METHOD_META: Record<
 };
 
 /**
- * DEEP-PASS (docs/DEEP-PASS-SPEC.md): след второго яруса в extracted._deep.
- * Для документов без рабочего типа рисуем бейдж широкой категории
- * («Скриншот переписки», «Сертификат», «Не документ»…), tooltip — резюме.
+ * DEEP-PASS (docs/DEEP-PASS-SPEC.md): бейдж широкой категории для документов
+ * без рабочего типа. Кликабелен, когда есть onToggle — разворачивает под
+ * строкой панель с полной информацией второго яруса (см. DeepPassPanel).
  */
-function deepPassInfo(
-  extracted: unknown,
-): { label: string; summary: string; notDoc: boolean } | null {
-  if (!extracted || typeof extracted !== 'object') return null;
-  const d = (extracted as Record<string, unknown>)._deep;
-  if (!d || typeof d !== 'object') return null;
-  const r = d as Record<string, unknown>;
-  if (typeof r.broad_label !== 'string' || r.broad_label.length === 0) return null;
-  return {
-    label: r.broad_label,
-    summary: typeof r.summary === 'string' ? r.summary : '',
-    notDoc: r.verdict === 'not_a_document',
-  };
+function DeepPassBadge({
+  deep,
+  expanded,
+  onToggle,
+}: {
+  deep: DeepPassData;
+  expanded?: boolean;
+  onToggle?: () => void;
+}) {
+  const notDoc = deep.verdict === 'not_a_document';
+  const cls = notDoc
+    ? 'inline-flex items-center gap-1 rounded-sm bg-slate-200 px-1.5 py-0.5 text-[11px] font-medium text-slate-600 dark:bg-slate-700 dark:text-slate-300'
+    : 'inline-flex items-center gap-1 rounded-sm bg-amber-100 px-1.5 py-0.5 text-[11px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300';
+  const label = notDoc ? 'Не документ' : deep.broad_label;
+  if (!onToggle) {
+    return (
+      <span className={cls} title={deep.summary || 'Глубокий разбор: широкая категория'}>
+        {label}
+      </span>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className={`${cls} cursor-pointer select-none`}
+      title={expanded ? 'Свернуть глубокий разбор' : deep.summary || 'Показать глубокий разбор'}
+      aria-expanded={expanded}
+    >
+      {label}
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 20 20"
+        fill="currentColor"
+        className={`h-3 w-3 transition-transform ${expanded ? 'rotate-180' : ''}`}
+        aria-hidden="true"
+      >
+        <path
+          fillRule="evenodd"
+          d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z"
+          clipRule="evenodd"
+        />
+      </svg>
+    </button>
+  );
 }
 
-/** Бейдж широкой категории deep-pass (amber) / «Не документ» (slate). */
-function DeepPassBadge({ deep }: { deep: NonNullable<ReturnType<typeof deepPassInfo>> }) {
+/** Чип вердикта deep-pass — общий для панели-разворота и мобильной карточки. */
+function DeepVerdictChip({ verdict }: { verdict: DeepPassData['verdict'] }) {
+  const meta = DEEP_VERDICT_META[verdict];
+  const tone =
+    meta.tone === 'emerald'
+      ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
+      : meta.tone === 'amber'
+        ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
+        : 'bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300';
   return (
-    <span
-      className={
-        deep.notDoc
-          ? 'inline-flex items-center rounded-sm bg-slate-200 px-1.5 py-0.5 text-[11px] font-medium text-slate-600 dark:bg-slate-700 dark:text-slate-300'
-          : 'inline-flex items-center rounded-sm bg-amber-100 px-1.5 py-0.5 text-[11px] font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
-      }
-      title={deep.summary || 'Глубокий разбор: широкая категория (вне рабочего каталога)'}
-    >
-      {deep.notDoc ? 'Не документ' : deep.label}
+    <span className={`inline-flex items-center rounded-sm px-1.5 py-0.5 text-[11px] font-medium ${tone}`}>
+      {meta.label}
     </span>
+  );
+}
+
+/**
+ * Панель-разворот глубокого разбора под строкой таблицы: категория + вердикт,
+ * язык, как читали, причина запуска, полное резюме, рабочий тип при mapped.
+ */
+function DeepPassPanel({ deep }: { deep: DeepPassData }) {
+  return (
+    <div className="flex flex-col gap-2 rounded-md bg-slate-50 p-3 text-xs dark:bg-slate-800/60">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-medium text-slate-700 dark:text-slate-200">Глубокий разбор:</span>
+        <span className="font-medium text-slate-900 dark:text-slate-100">{deep.broad_label}</span>
+        <span className="font-mono text-[10px] text-slate-400 dark:text-slate-500">{deep.broad_type}</span>
+        <DeepVerdictChip verdict={deep.verdict} />
+        {deep.catalog_slug && (
+          <span className="badge-indigo uppercase" title="Опознан рабочий тип — извлечение выполнено по его схеме">
+            {deep.catalog_slug}
+          </span>
+        )}
+      </div>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-slate-500 dark:text-slate-400">
+        <span>
+          Язык: <span className="font-mono">{deep.language ?? '—'}</span>
+        </span>
+        <span>Чтение: {DEEP_VIA_LABELS[deep.via]}</span>
+        <span>Причина: {DEEP_REASON_LABELS[deep.reason]}</span>
+      </div>
+      {deep.summary && (
+        <p className="max-w-3xl whitespace-pre-wrap text-slate-700 dark:text-slate-300">{deep.summary}</p>
+      )}
+    </div>
   );
 }
 

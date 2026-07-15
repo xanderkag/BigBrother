@@ -130,11 +130,11 @@ describe('buildWebhookPayload — единый билдер для всех пу
     error: null,
   };
 
-  it('нормальный job → v1 / schema_version 1.3 / нормализованный slug', async () => {
+  it('нормальный job → v1 / schema_version 1.4 / нормализованный slug', async () => {
     const { buildWebhookPayload } = await import('../src/webhooks/deliver.js');
     const p = buildWebhookPayload(src, { extracted: { number: '5' }, metadata: null });
     expect(p.version).toBe('v1');
-    expect(p.schema_version).toBe('1.3');
+    expect(p.schema_version).toBe('1.4');
     // TTN → ttn (outbound normalize).
     expect(p.document_type).toBe('ttn');
     expect(p.confidence).toBe(0.87);
@@ -174,7 +174,7 @@ describe('buildWebhookPayload — единый билдер для всех пу
     expect(parsed).not.toHaveProperty('target_entity_hint');
     // Общий envelope тот же самый, что и на finalize-пути.
     expect(parsed.version).toBe('v1');
-    expect(parsed.schema_version).toBe('1.3');
+    expect(parsed.schema_version).toBe('1.4');
   });
 
   it('composite (SLAI 2026-07-12): is_composite + dominant_index; single-doc — оба отсутствуют', async () => {
@@ -203,9 +203,10 @@ describe('buildWebhookPayload — единый билдер для всех пу
 });
 
 describe('webhook payload — top-level schema_version drift marker (SLAI)', () => {
-  it('доставленный body несёт schema_version: "1.3" и version: "v1" не тронут', async () => {
+  it('доставленный body несёт schema_version: "1.4" и version: "v1" не тронут', async () => {
     const { WEBHOOK_SCHEMA_VERSION } = await import('../src/webhooks/deliver.js');
-    expect(WEBHOOK_SCHEMA_VERSION).toBe('1.3');
+    // 1.4 = + extracted._deep (DEEP-PASS, additive; см. deliver.ts)
+    expect(WEBHOOK_SCHEMA_VERSION).toBe('1.4');
 
     await deliverWebhook('job-sv', 'https://consumer.test/hook', payload({ job_id: 'job-sv' }), log);
 

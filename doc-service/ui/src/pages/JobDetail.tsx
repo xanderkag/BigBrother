@@ -24,6 +24,12 @@ import { SkeletonBlock } from '@/components/Skeleton';
 import { useHotkeys } from '@/lib/useHotkeys';
 import { readJobNav, neighborsOf } from '@/lib/job-nav';
 import {
+  getDeepPass,
+  DEEP_VERDICT_META,
+  DEEP_VIA_LABELS,
+  DEEP_REASON_LABELS,
+} from '@/lib/deep-pass';
+import {
   confidenceBarClass,
   confidenceTextClass,
   confidenceValueClass,
@@ -536,6 +542,8 @@ export default function JobDetailPage() {
             displayName={(slug) => typeInfoBySlug.get(slug)?.display_name ?? slug}
           />
 
+          <DeepPassCard extracted={job.extracted} />
+
           <EnrichmentCard enrichment={enrichment} />
 
           {classifyOnly ? (
@@ -905,6 +913,75 @@ const CLASSIFY_METHOD_LABELS: Record<Classification['method'], string> = {
   vlm: 'по изображению (VLM)',
   deep_pass: 'глубокий разбор',
 };
+
+/**
+ * DEEP-PASS (docs/DEEP-PASS-SPEC.md): карточка второго яруса разбора. Рисуется
+ * только когда в extracted есть след _deep — то есть рабочий классификатор
+ * тип не дал (или OCR отказался) и документ читала глубокая обработка.
+ * Оператор видит: широкую категорию, вердикт, как читали, причину и резюме.
+ */
+function DeepPassCard({ extracted }: { extracted: unknown }) {
+  const deep = getDeepPass(extracted);
+  if (!deep) return null;
+  const meta = DEEP_VERDICT_META[deep.verdict];
+  const tone =
+    meta.tone === 'emerald'
+      ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
+      : meta.tone === 'amber'
+        ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
+        : 'bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300';
+
+  return (
+    <div className="card">
+      <div className="card-header flex items-center justify-between">
+        <h3 className="card-title">Глубокий разбор</h3>
+        <span className={`inline-flex items-center rounded-sm px-1.5 py-0.5 text-[11px] font-medium ${tone}`}>
+          {meta.label}
+        </span>
+      </div>
+      <div className="card-body space-y-3 text-sm">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-medium text-slate-900 dark:text-slate-100">{deep.broad_label}</span>
+          <span className="font-mono text-xs text-slate-400 dark:text-slate-500">{deep.broad_type}</span>
+          {deep.catalog_slug && (
+            <span
+              className="badge-indigo uppercase"
+              title="На втором ярусе опознан рабочий тип — извлечение выполнено по его схеме"
+            >
+              {deep.catalog_slug}
+            </span>
+          )}
+        </div>
+
+        {deep.verdict === 'not_a_document' && (
+          <div className="rounded-md border-l-4 border-slate-400 bg-slate-50 px-3 py-2 text-xs text-slate-600 dark:bg-slate-800/60 dark:text-slate-300">
+            Это не рабочий документ (скриншот, случайное фото, мусорная страница) —
+            ручной разбор, скорее всего, не нужен.
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-500 dark:text-slate-400 sm:grid-cols-3">
+          <div>
+            <div className="text-[10px] uppercase tracking-wider">Язык</div>
+            <div className="font-mono text-slate-700 dark:text-slate-300">{deep.language ?? '—'}</div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-wider">Чтение</div>
+            <div className="text-slate-700 dark:text-slate-300">{DEEP_VIA_LABELS[deep.via]}</div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-wider">Причина</div>
+            <div className="text-slate-700 dark:text-slate-300">{DEEP_REASON_LABELS[deep.reason]}</div>
+          </div>
+        </div>
+
+        {deep.summary && (
+          <p className="whitespace-pre-wrap text-sm text-slate-700 dark:text-slate-300">{deep.summary}</p>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function ClassificationCard({
   classification,

@@ -15,8 +15,13 @@ import type { Logger } from 'pino';
  * `extracted`. Конвенция — semver-строка "MAJOR.MINOR".
  * НЕ путать с `extracted._match_signals.schema_version` (тот скоупит
  * проекцию match-сигналов, не общий контракт).
+ *
+ * 1.4 (2026-07-15): + extracted._deep — след второго яруса разбора
+ * (DEEP-PASS, docs/DEEP-PASS-SPEC.md): broad_type/broad_label/language/
+ * summary/catalog_slug/verdict/via/reason. Additive, приходит только у
+ * документов, которые рабочий классификатор не опознал.
  */
-export const WEBHOOK_SCHEMA_VERSION = '1.3';
+export const WEBHOOK_SCHEMA_VERSION = '1.4';
 
 export type WebhookPayload = {
   /**
