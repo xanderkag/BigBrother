@@ -120,3 +120,95 @@ describe('tryMultiDoc — §FIX-1 VLM хвостовой СТС', () => {
     expect(classifyPageImage).not.toHaveBeenCalledWith(1);
   });
 });
+
+/**
+ * §FIX-1 (ПЕРЕДЕЛКА после приёмки на asha 2026-07-14).
+ *
+ * Регрессия: на боевом прогоне SICHEL хвостовая СТС (стр.15) осталась склеена с
+ * паспортом — отдельного `vehicle_registration` не появилось. Причина: выбор
+ * vlm/llm решался ТОЛЬКО длиной текста. Эстонская/литовская СТС (Transpordiamet /
+ * Registracijos liudijimas) даёт >vlmMinText символов РАСПОЗНАННОЙ КАШИ → scant=false
+ * → страница уходила в текст-LLM (который на ней уже был проверен и не помог), а
+ * при MULTIDOC_LLM_CLASSIFY=false (дефолт asha) не срабатывало вообще ничего.
+ * classifyPageImage не звался НИКОГДА → страница молча липла к предыдущему сегменту.
+ *
+ * Фикс: картинка — последний рычаг, если текстовый путь типа не дал.
+ */
+describe('tryMultiDoc — §FIX-1 переделка: VLM как последний рычаг', () => {
+  // Не-первая страница: текста МНОГО (>vlmMinText=120), но keyword типа не даёт —
+  // ровно профиль мусорного OCR прибалтийской СТС.
+  const garbledCts = 'Registreerimistunnistus Transpordiamet '.padEnd(220, 'q');
+  const pages = ['CMR International накладная '.padEnd(200, 'x'), garbledCts];
+
+  it('НЕ-скудная слабая страница + VLM, без текст-LLM (дефолт asha) → VLM зовётся → сегмент СТС', async () => {
+    const classifyPageImage = vi.fn().mockResolvedValue('vehicle_registration');
+    const docs = await tryMultiDoc(ocrOf(pages), {
+      classifier,
+      organizationId: null,
+      extractSegment: noopExtract,
+      classifyPageImage,
+      log,
+    });
+    // Было: не scant + нет classifyPageLlm → не вызывалось НИЧЕГО, страница склеивалась.
+    expect(classifyPageImage).toHaveBeenCalledWith(2);
+    expect(docs?.map((d) => d.document_type)).toContain('vehicle_registration');
+  });
+
+  it('текст-LLM вернул null → откат на картинку → сегмент СТС', async () => {
+    const classifyPageLlm = vi.fn().mockResolvedValue(null);
+    const classifyPageImage = vi.fn().mockResolvedValue('vehicle_registration');
+    const docs = await tryMultiDoc(ocrOf(pages), {
+      classifier,
+      organizationId: null,
+      extractSegment: noopExtract,
+      classifyPageImage,
+      classifyPageLlm,
+      log,
+    });
+    expect(classifyPageLlm).toHaveBeenCalledTimes(1); // текст пробуем первым
+    expect(classifyPageImage).toHaveBeenCalledWith(2); // не дал типа → картинка
+    expect(docs?.map((d) => d.document_type)).toContain('vehicle_registration');
+  });
+
+  it('текст-LLM дал тип → картинку НЕ зовём (цена ограничена)', async () => {
+    const classifyPageLlm = vi.fn().mockResolvedValue('packing_list');
+    const classifyPageImage = vi.fn().mockResolvedValue('vehicle_registration');
+    await tryMultiDoc(ocrOf(pages), {
+      classifier,
+      organizationId: null,
+      extractSegment: noopExtract,
+      classifyPageImage,
+      classifyPageLlm,
+      log,
+    });
+    expect(classifyPageLlm).toHaveBeenCalledTimes(1);
+    expect(classifyPageImage).not.toHaveBeenCalled();
+  });
+
+  it('скудная страница: VLM зовётся РОВНО один раз (откат не дублирует вызов)', async () => {
+    const classifyPageImage = vi.fn().mockResolvedValue(null); // null → соблазн позвать повторно
+    await tryMultiDoc(ocrOf(['CMR '.padEnd(200, 'x'), 'скудно']), {
+      classifier,
+      organizationId: null,
+      extractSegment: noopExtract,
+      classifyPageImage,
+      log,
+    });
+    expect(classifyPageImage).toHaveBeenCalledTimes(1);
+  });
+
+  it('сильный keyword → ни текст-LLM, ни картинка не зовутся', async () => {
+    const classifyPageLlm = vi.fn().mockResolvedValue('packing_list');
+    const classifyPageImage = vi.fn().mockResolvedValue('vehicle_registration');
+    await tryMultiDoc(ocrOf(['CMR '.padEnd(200, 'x'), 'Invoice No INV-1 '.padEnd(200, 'x')]), {
+      classifier,
+      organizationId: null,
+      extractSegment: noopExtract,
+      classifyPageImage,
+      classifyPageLlm,
+      log,
+    });
+    expect(classifyPageLlm).not.toHaveBeenCalled();
+    expect(classifyPageImage).not.toHaveBeenCalled();
+  });
+});

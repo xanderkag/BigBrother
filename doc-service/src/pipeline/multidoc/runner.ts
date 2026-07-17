@@ -104,11 +104,30 @@ export async function tryMultiDoc(
     if (weak && i > 0 && (deps.classifyPageImage || deps.classifyPageLlm)) {
       const scant = page.text.trim().length < scantMin;
       let override: string | null = null;
+      let mode = 'none';
       try {
         if (scant && deps.classifyPageImage) {
           override = await deps.classifyPageImage(i + 1);
+          mode = 'vlm';
         } else if (deps.classifyPageLlm) {
           override = await deps.classifyPageLlm(page.text);
+          mode = 'llm';
+        }
+        // FIX-1 (переделка, приёмка на asha 2026-07-14): картинка — ПОСЛЕДНИЙ
+        // рычаг, когда текстовый путь типа не дал. Раньше выбор vlm/llm решался
+        // ТОЛЬКО длиной текста: страница с обильным, но мусорным OCR (эст./лит.
+        // СТС — Transpordiamet/Registracijos: >vlmMinText символов распознанной
+        // каши) не считалась scant → уходила в текст-LLM → тот тоже отдавал null
+        // (проверено: MULTIDOC_LLM_CLASSIFY не помог) → classifyPageImage не
+        // звался НИКОГДА, и страница молча липла к предыдущему сегменту. Так
+        // терялась хвостовая СТС во ВСЕХ 6 root-композитах БКТ.
+        // Тот же путь спасает дефолт asha (MULTIDOC_LLM_CLASSIFY=false): без
+        // текст-LLM не-scant слабая страница раньше не обрабатывалась вообще.
+        // Цена ограничена: VLM только для слабой не-первой страницы, которую
+        // текст не смог типизировать.
+        if (!override && deps.classifyPageImage && mode !== 'vlm') {
+          override = await deps.classifyPageImage(i + 1);
+          mode = 'vlm-fallback';
         }
       } catch (err) {
         deps.log.warn({ err, page: i + 1 }, 'per-page VLM/LLM classify упал, игнор');
@@ -117,7 +136,7 @@ export async function tryMultiDoc(
         entry.document_type = override as DocumentTypeSlug;
         entry.confidence = Math.max(cls.confidence, 0.6);
         entry.boundary = override as DocumentTypeSlug;
-        deps.log.info({ page: i + 1, override, mode: scant ? 'vlm' : 'llm' }, 'страница переклассифицирована');
+        deps.log.info({ page: i + 1, override, mode }, 'страница переклассифицирована');
       }
     }
     pageClassifications.push(entry);
