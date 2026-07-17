@@ -94,3 +94,69 @@ describe('recoverPartyInnsFromText (F0)', () => {
     expect(recoverPartyInnsFromText(null, 'Поставщик: ИНН 7722753969')).toBeNull();
   });
 });
+
+/**
+ * FIX-B (находки SLAI 2026-07-16, docs/BCTT_EXTRACT_FIXES.md).
+ *
+ * Регрессия (заказ #5 БКТ): `inv_1.jpeg` + `pac_1.jpeg` → seller.inn = 7707083893
+ * = ИНН ПАО «Сбербанк», при том что продавец — SIA BALTEREX (Латвия), у которой
+ * российского ИНН быть не может. ИНН взят из БЛОКА ПЛАТЁЖНЫХ РЕКВИЗИТОВ: он
+ * настоящий и проходит checksum, поэтому «первый ИНН в окне» его принимал.
+ *
+ * Цена ошибки: оба документа дают ОДНО значение → кросс-документная сверка SLAI
+ * красит поле зелёным. Хуже явного промаха — ЕГРЮЛ и контрольная сумма проходят.
+ */
+const SBER_INN = '7707083893'; // ПАО «Сбербанк» — настоящий ИНН, checksum валиден
+
+describe('recoverPartyInnsFromText — FIX-B: ИНН банка не выдаём за сторону', () => {
+  it('банковский блок в окне стороны → ИНН Сбербанка НЕ попадает в seller', () => {
+    const text = [
+      'Поставщик: SIA BALTEREX, Латвия',
+      'Банк получателя: ПАО СБЕРБАНК г. Москва',
+      `ИНН ${SBER_INN}  КПП 773643001  БИК 044525225`,
+    ].join('\n');
+    const out = recoverPartyInnsFromText({ seller: { inn: 'не указан' } }, text) as any;
+    // Лучше пусто, чем чужой ИНН: ложно-зелёная сверка дороже явного промаха.
+    expect(out.seller?.inn).not.toBe(SBER_INN);
+    expect(out._inn_recovered ?? {}).not.toHaveProperty('seller.inn');
+  });
+
+  it('свой ИНН до банковского блока → добивается корректно (банк не мешает)', () => {
+    const text = [
+      `Поставщик: ООО «Ромашка», ИНН ${SELLER_INN}, КПП 997750001`,
+      'Банк получателя: ПАО СБЕРБАНК',
+      `ИНН ${SBER_INN}  БИК 044525225`,
+    ].join('\n');
+    const out = recoverPartyInnsFromText({ seller: { inn: 'не указан' } }, text) as any;
+    expect(out.seller.inn).toBe(SELLER_INN);
+  });
+
+  it('обе стороны: свои ИНН берём, банковский игнорим', () => {
+    const text = [
+      `Поставщик: ООО «А», ИНН ${SELLER_INN}`,
+      'Банк получателя: ПАО СБЕРБАНК ИНН ' + SBER_INN + ' БИК 044525225',
+      `Покупатель: ООО «Б», ИНН ${BUYER_INN}`,
+    ].join('\n');
+    const out = recoverPartyInnsFromText({}, text) as any;
+    expect(out.seller.inn).toBe(SELLER_INN);
+    expect(out.buyer.inn).toBe(BUYER_INN);
+  });
+
+  it('иностранной стороне (country != RU) российский ИНН не подставляем', () => {
+    const text = `Поставщик: SIA BALTEREX, ИНН ${SELLER_INN}`;
+    const out = recoverPartyInnsFromText({ seller: { name: 'SIA BALTEREX', country: 'LV' } }, text) as any;
+    expect(out.seller.inn).toBeUndefined();
+  });
+
+  it('country=RU → добиваем как обычно', () => {
+    const text = `Поставщик: ООО «Ромашка», ИНН ${SELLER_INN}`;
+    const out = recoverPartyInnsFromText({ seller: { name: 'ООО Ромашка', country: 'RU' } }, text) as any;
+    expect(out.seller.inn).toBe(SELLER_INN);
+  });
+
+  it('country не задан → поведение прежнее (добиваем)', () => {
+    const text = `Поставщик: ООО «Ромашка», ИНН ${SELLER_INN}`;
+    const out = recoverPartyInnsFromText({ seller: {} }, text) as any;
+    expect(out.seller.inn).toBe(SELLER_INN);
+  });
+});
