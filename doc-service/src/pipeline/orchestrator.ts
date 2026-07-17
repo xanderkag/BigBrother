@@ -741,7 +741,13 @@ async function processJobInner(
       imageBasedDoc &&
       !!post.documentType &&
       post.classification?.method !== 'hint' &&
-      post.classification?.method !== 'vlm';
+      post.classification?.method !== 'vlm' &&
+      // ПДн (§8.1/§8.5b): удостоверения личности НЕ трогаем гейтом — у них своё
+      // русло (целиковая маска raw_text по типу + allowlist-extract {doc_kind,
+      // country,present}). Сброс driver_passport→null сломал бы whole-page mask
+      // (осталась бы «мягкая» scrub-ветка, печатную фамилию не вырезает) и потерял
+      // бы present-сигнал для комплектности шофёрского пакета у SLAI.
+      !isIdDocument(post.documentType, post.extracted);
     if (
       config.deepPass.enabled &&
       !classifyOnly &&
@@ -832,6 +838,15 @@ async function processJobInner(
           // _multidoc_documents → webhook documents[]. Реальные композиты (≥2
           // сегментов) сюда не попадают — гейт закрыт условием realComposite.
           multiDocResult = null;
+        }
+        // ПДн (§8.1): deep-pass опознал удостоверение личности (нетипизированное
+        // фото паспорта, до конвейера тип не дошёл). Тип остаётся NULL, поэтому
+        // whole-page маска raw_text по типу НЕ сработает, а «мягкий» scrub печатную
+        // фамилию не вырезает. Глушим OCR-текст здесь: содержимое удостоверения не
+        // должно осесть в jobs.raw_text (отдаётся через GET /jobs/:id/raw-text).
+        if (dp.broad_type === 'id_document') {
+          ocr.text = '';
+          ocr.pages = undefined;
         }
         // След второго яруса — в служебном ключе extracted (паттерн _issues/
         // _enrichment): UI рисует бейдж, webhook доставляет потребителю.
