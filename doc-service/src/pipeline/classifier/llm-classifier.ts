@@ -165,7 +165,18 @@ export class LlmDocClassifier {
     if (normalized === 'unknown' || normalized === 'null' || normalized === null) {
       // LLM явно сказал unknown (или пусто). Если prior уверенный — берём его
       // тип (fallback), иначе документ «не опознан».
-      const priorConfident = prior.type !== null && prior.confidence >= PRIOR_CONFIDENT_THRESHOLD;
+      //
+      // ВАЖНО (2026-07-17): при включённом deep-pass keyword НЕ перебивает явный
+      // «unknown» модели. Модель ЧИТАЛА документ — её «не знаю» надёжнее случайного
+      // совпадения слов (фото мешков DAIKIN со строкой «COUNTRY OF ORIGIN» →
+      // keyword ошибочно давал cert_of_origin). Уводим в null → агрессивный
+      // vision-проход/deep-pass посмотрит на картинку и решит (реальный тип
+      // вернётся обратно verdict=mapped — потерь нет). При выключенном deep-pass
+      // остаётся прежний keyword-fallback (чтобы unknown не был тупиком).
+      const priorConfident =
+        !config.deepPass.enabled &&
+        prior.type !== null &&
+        prior.confidence >= PRIOR_CONFIDENT_THRESHOLD;
       if (priorConfident) {
         log.info(
           { ...context, llm_said: llmSaid, keyword_type: prior.type, classify_duration_ms: durationMs },

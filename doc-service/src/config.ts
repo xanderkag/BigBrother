@@ -284,6 +284,12 @@ const ConfigSchema = z.object({
     enabled: booleanFromEnv(false),
     textChars: numberFromEnv(8000), // сколько текста уходит в text-путь (classify видит только 2500)
     minTextForTextPath: numberFromEnv(300), // меньше → vision по картинке первой страницы
+    // Картинка/скан с типом ниже этого порога уверенности → агрессивный vision-
+    // проход (фото коробок текстовый классификатор путает с packing_list ~0.72;
+    // фото мешков → cert_of_origin). Vision решает: реальный тип или это фото →
+    // сброс ложного типа + извлечение не запускается. 0.85: уверенные (согласие
+    // keyword+LLM даёт ≥0.9) проходят мимо; одиночный текст-LLM (0.7) — в проход.
+    imageUncertainConf: confidence01FromEnv(0.85),
   }),
 
   tesseractLangs: z.string().default('rus+eng'),
@@ -753,6 +759,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       enabled: env.DEEP_PASS_ENABLED,
       textChars: env.DEEP_PASS_TEXT_CHARS,
       minTextForTextPath: env.DEEP_PASS_MIN_TEXT,
+      imageUncertainConf: env.DEEP_PASS_IMAGE_UNCERTAIN_CONF,
     },
     tesseractLangs: env.TESSERACT_LANGS,
     tesseractTimeoutMs: env.TESSERACT_TIMEOUT_MS,

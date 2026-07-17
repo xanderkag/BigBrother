@@ -225,7 +225,7 @@ describe('LlmDocClassifier — production LLM classifier', () => {
     expect(out.metadata.method).toBe('llm');
   });
 
-  it('unknown + prior CONFIDENT → fallback to prior type (method=fallback), llm_said kept', async () => {
+  it('unknown + prior CONFIDENT (deep-pass OFF) → fallback to prior type (method=fallback)', async () => {
     const prior = priorStub({ type: 'AKT', confidence: 0.95, source: 'keyword', matched: 'акт' });
     const llm = llmStub({ slug: 'unknown' });
     const c = new LlmDocClassifier(prior, llm);
@@ -240,6 +240,35 @@ describe('LlmDocClassifier — production LLM classifier', () => {
     expect(out.metadata.method).toBe('fallback');
     expect(out.metadata.unknown).toBe(false);
     expect(out.metadata.llm_said).toBe('unknown');
+  });
+
+  // 2026-07-17: при ВКЛючённом deep-pass keyword НЕ перебивает явный «unknown»
+  // модели — уводим в null, дальше агрессивный vision-проход/deep-pass решит
+  // (фото мешков со строкой «COUNTRY OF ORIGIN» больше не станет cert_of_origin).
+  it('unknown + prior CONFIDENT (deep-pass ON) → NULL, keyword НЕ перебивает', async () => {
+    const { config } = await import('../src/config.js');
+    const prev = config.deepPass.enabled;
+    config.deepPass.enabled = true;
+    try {
+      const prior = priorStub({ type: 'AKT', confidence: 0.95, source: 'keyword', matched: 'акт' });
+      const llm = llmStub({ slug: 'unknown' });
+      const c = new LlmDocClassifier(prior, llm);
+
+      const out = await c.classify(
+        { text: 'фото с надписью АКТ', fileName: 'photo.jpg' },
+        validatorFor(CATALOG_SLUGS),
+        log,
+      );
+
+      expect(out.documentType).toBeNull(); // unknown сохранён
+      expect(out.metadata.unknown).toBe(true);
+      expect(out.metadata.method).toBe('llm');
+      expect(out.metadata.llm_said).toBe('unknown');
+      // keyword_said всё равно записан (для UI/аудита), просто не решает
+      expect(out.metadata.keyword_said).toEqual({ type: 'AKT', score: 0.95 });
+    } finally {
+      config.deepPass.enabled = prev;
+    }
   });
 
   it('fallback on LLM error → keyword prior, method=keyword, never throws', async () => {

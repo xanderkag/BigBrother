@@ -118,6 +118,33 @@ describe('runDeepPass: выбор пути', () => {
     await runDeepPass({ ...baseInput, text: '', imagePath: '/tmp/p1.png' }, deps, log);
     expect(wrapped).toHaveBeenCalledOnce();
   });
+
+  // 2026-07-17: для картинок OCR-текст обманчив (надписи на мешках/коробках →
+  // text-путь примет фото за документ). forceVision смотрит на изображение,
+  // даже когда текста хватило бы на text-путь.
+  it('forceVision + картинка → vision, даже когда текста хватает (фото коробок)', async () => {
+    const deps = makeDeps();
+    const res = await runDeepPass(
+      { ...baseInput, text: 'x'.repeat(500), imagePath: '/tmp/p1.png', forceVision: true },
+      deps,
+      log,
+    );
+    expect(res?.via).toBe('vision');
+    expect(deps.extract).not.toHaveBeenCalled();
+    expect(deps.visionOcr).toHaveBeenCalledOnce();
+  });
+
+  it('forceVision БЕЗ картинки → остаётся text-путь (не роняем)', async () => {
+    const deps = makeDeps();
+    const res = await runDeepPass(
+      { ...baseInput, text: 'x'.repeat(500), forceVision: true },
+      deps,
+      log,
+    );
+    expect(res?.via).toBe('text');
+    expect(deps.extract).toHaveBeenCalledOnce();
+    expect(deps.visionOcr).not.toHaveBeenCalled();
+  });
 });
 
 describe('runDeepPass: маппинг на рабочий каталог', () => {

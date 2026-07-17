@@ -716,13 +716,31 @@ async function processJobInner(
       }
     }
 
-    // ── DEEP-PASS Фаза 1 (docs/DEEP-PASS-SPEC.md) ──────────────────────────
-    // Второй ярус для нераспознанного остатка: рабочий классификатор (включая
-    // §P2-2 выше) типа не дал → широкая категория + резюме, и если модель
-    // уверенно узнала РАБОЧИЙ тип — возврат в конвейер (обычное извлечение по
-    // схеме). Multidoc-композиты не трогаем (сегменты уже типизированы, фаза 2).
+    // ── DEEP-PASS Фаза 1 + агрессивный vision-гейт (docs/DEEP-PASS-SPEC.md) ──
+    // Второй ярус для нераспознанного остатка И для картинок, которым текст-
+    // классификатор дал НЕуверенный тип. Принцип (2026-07-17): «сначала понять
+    // ЧТО это, потом извлекать». Триггеры:
+    //   1. тип не дал вовсе (unknown / OCR-refusal) — как раньше;
+    //   2. КАРТИНКА/скан с типом, но уверенность < deepPass.imageUncertainConf —
+    //      фото коробок текст-классификатор путает с packing_list (~0.72), фото
+    //      мешков → cert_of_origin. Vision смотрит на изображение и решает:
+    //      реальный тип → извлекаем; фото/не-документ → сброс ложного типа,
+    //      извлечение отменяем (на фото полей нет).
+    // Реальный композит (≥2 сегмента) не трогаем; 1-сегментный «композит» из
+    // фото-набора композитом НЕ считаем — он проходит гейт как одиночный.
     // ДО cleanupArtifacts — vision-путь читает картинку первой страницы.
-    if (config.deepPass.enabled && !classifyOnly && !post.documentType && !multiDocResult) {
+    const realComposite = (multiDocResult?.length ?? 0) >= 2;
+    const imageBasedDoc = isImageInput || ocr.engine === 'vision-llm';
+    const imageUncertain =
+      imageBasedDoc &&
+      !!post.documentType &&
+      (post.classification?.confidence ?? 1) < config.deepPass.imageUncertainConf;
+    if (
+      config.deepPass.enabled &&
+      !classifyOnly &&
+      (!post.documentType || imageUncertain) &&
+      !realComposite
+    ) {
       const dpStart = Date.now();
       const { text: workingCatalog } = await getCatalogForOrg(job.organization_id);
       const isCatalogSlug = await makeCatalogSlugValidator(job.organization_id);
@@ -733,6 +751,8 @@ async function processJobInner(
           workingCatalog: workingCatalog ?? '',
           textChars: config.deepPass.textChars,
           minTextForTextPath: config.deepPass.minTextForTextPath,
+          // Картинка → смотрим на изображение, а не на обманчивый OCR-текст.
+          forceVision: imageBasedDoc && !!firstPageImage.imagePath,
           reason: deepPassReason,
         },
         {
@@ -745,23 +765,26 @@ async function processJobInner(
       );
       if (dp) {
         if (dp.catalog_slug) {
-          // Возврат в конвейер: обычный extract по схеме опознанного типа.
-          // Метод честно deep_pass с conf 0.7 (не hint!) — classify_uncertain
-          // гейт применяется к этой уверенности, а не обходится.
-          post = await runDocumentPipeline(
-            ocr.text,
-            {
-              hint: dp.catalog_slug as DocumentTypeSlug,
-              promptOverride,
-              organizationId: job.organization_id,
-              fileName: job.file_name,
-              imagePath: firstPageImage.imagePath,
-              forceExtractFromImage,
-            },
-            log,
-            { jobId },
-            timings,
-          );
+          // Vision подтвердил РАБОЧИЙ тип. Извлекаем по схеме — но если тип тот
+          // же, что уже дал текст-классификатор, извлечение выше уже сделано,
+          // не дублируем (экономим на подтверждениях). Метод честно deep_pass
+          // с conf 0.7 — classify_uncertain гейт применяется, а не обходится.
+          if (dp.catalog_slug !== post.documentType) {
+            post = await runDocumentPipeline(
+              ocr.text,
+              {
+                hint: dp.catalog_slug as DocumentTypeSlug,
+                promptOverride,
+                organizationId: job.organization_id,
+                fileName: job.file_name,
+                imagePath: firstPageImage.imagePath,
+                forceExtractFromImage,
+              },
+              log,
+              { jobId },
+              timings,
+            );
+          }
           if (post.classification) {
             post.classification.method = 'deep_pass';
             post.classification.confidence = 0.7;
@@ -769,8 +792,33 @@ async function processJobInner(
           }
           log.info(
             { jobId, catalog_slug: dp.catalog_slug, broad_type: dp.broad_type },
-            'deep-pass: тип опознан — документ возвращён в конвейер',
+            'deep-pass: тип опознан — документ в конвейере',
           );
+        } else if (post.documentType) {
+          // Агрессивный проход: это НЕ рабочий документ (фото/скриншот/мусор), а
+          // текст-классификатор ошибочно присвоил тип. Сбрасываем ложный тип и
+          // «извлечённые» поля — на фото их нет. Фейковый 1-сегментный multidoc
+          // тоже убираем, чтобы бракованный сегмент не уехал в documents[].
+          log.info(
+            {
+              jobId,
+              dropped_type: post.documentType,
+              broad_type: dp.broad_type,
+              verdict: dp.verdict,
+            },
+            'deep-pass: картинка — не рабочий документ, сброс ложного типа и извлечения',
+          );
+          post.documentType = null;
+          post.extracted = {};
+          post.parserConfidence = 0;
+          post.parserMissing = [];
+          if (post.classification) {
+            post.classification.type = null;
+            post.classification.unknown = true;
+            post.classification.method = 'deep_pass';
+            post.classification.confidence = 0;
+          }
+          multiDocResult = null;
         }
         // След второго яруса — в служебном ключе extracted (паттерн _issues/
         // _enrichment): UI рисует бейдж, webhook доставляет потребителю.

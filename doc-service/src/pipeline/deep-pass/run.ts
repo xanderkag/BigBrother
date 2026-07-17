@@ -59,6 +59,13 @@ export interface DeepPassInput {
   textChars: number;
   /** Меньше этого — text-пути не верим, идём в vision по картинке. */
   minTextForTextPath: number;
+  /**
+   * Форс vision-пути даже когда текста хватает. Для картинок/фото OCR-текст
+   * обманчив (надписи на мешках/коробках → текст-путь примет фото за документ);
+   * истина — само изображение. Оркестратор ставит для image-input. Без картинки
+   * (imagePath пуст) флаг игнорируется — deep-pass вернёт null.
+   */
+  forceVision?: boolean;
   reason: DeepPassResult['reason'];
 }
 
@@ -185,7 +192,10 @@ export async function runDeepPass(
   log: Logger,
 ): Promise<DeepPassResult | null> {
   const text = input.text.trim();
-  const useText = text.length >= input.minTextForTextPath;
+  // forceVision (image-input) обходит text-путь: фото коробок/мешков имеет
+  // достаточно OCR-текста (>300), но текст обманывает — смотрим на картинку.
+  // Если картинки нет — text-путь остаётся (иначе вернём null ниже).
+  const useText = (!input.forceVision || !input.imagePath) && text.length >= input.minTextForTextPath;
 
   try {
     if (useText) {

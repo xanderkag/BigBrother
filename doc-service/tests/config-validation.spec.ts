@@ -153,11 +153,12 @@ describe('tesseract robustness knobs (audit растровых падений)',
 // DEEP-PASS (docs/DEEP-PASS-SPEC.md): второй ярус выключен по умолчанию —
 // дополнительный LLM/VL-вызов на каждый unknown-док включает владелец.
 describe('deepPass config', () => {
-  it('дефолты: выключен, 8000 символов текста, порог vision 300', () => {
+  it('дефолты: выключен, 8000 символов текста, порог vision 300, imageUncertainConf 0.85', () => {
     const cfg = configMod.loadConfig({ ...BASE_ENV });
     expect(cfg.deepPass.enabled).toBe(false);
     expect(cfg.deepPass.textChars).toBe(8000);
     expect(cfg.deepPass.minTextForTextPath).toBe(300);
+    expect(cfg.deepPass.imageUncertainConf).toBe(0.85);
   });
 
   it('env включает и переопределяет', () => {
@@ -166,10 +167,18 @@ describe('deepPass config', () => {
       DEEP_PASS_ENABLED: 'true',
       DEEP_PASS_TEXT_CHARS: '4000',
       DEEP_PASS_MIN_TEXT: '100',
+      DEEP_PASS_IMAGE_UNCERTAIN_CONF: '0.6',
     });
     expect(cfg.deepPass.enabled).toBe(true);
     expect(cfg.deepPass.textChars).toBe(4000);
     expect(cfg.deepPass.minTextForTextPath).toBe(100);
+    expect(cfg.deepPass.imageUncertainConf).toBe(0.6);
+  });
+
+  it('imageUncertainConf вне 0..1 → падение на boot (это доля, не проценты)', () => {
+    expect(() =>
+      configMod.loadConfig({ ...BASE_ENV, DEEP_PASS_IMAGE_UNCERTAIN_CONF: '85' }),
+    ).toThrow(/between 0 and 1/);
   });
 });
 
