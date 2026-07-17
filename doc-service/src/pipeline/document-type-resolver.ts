@@ -21,6 +21,7 @@ import {
   type DocumentTypeTier,
 } from '../storage/document-types.js';
 import { DOCUMENT_JSON_SCHEMAS, EXTENDED_SCHEMAS, EXPECTED_FIELDS } from '../types/document-json-schemas.js';
+import { canonicalizeSlugForBuiltins } from '../types/slug-normalize.js';
 import type { DocumentTypeSlug } from '../types/documents.js';
 import type { ResolutionConfig } from '../resolution/types.js';
 
@@ -280,12 +281,25 @@ export function resolveConfigFromRow(
   const schemas = DOCUMENT_JSON_SCHEMAS as Record<string, Record<string, unknown> | undefined>;
   const extSchemas = EXTENDED_SCHEMAS as Record<string, Record<string, unknown> | undefined>;
   const fields = EXPECTED_FIELDS as Record<string, string[] | undefined>;
+  // FIX-A (находки SLAI 2026-07-16, docs/BCTT_EXTRACT_FIXES.md). Каталог отдаёт
+  // слаг в ДВУХ написаниях: историческом (`CMR` — keyword-классификатор,
+  // classifier/keywords.ts) и outbound (`cmr` — сегментация композитов,
+  // multidoc/boundaries.ts). Строку в БД `get()` находит в обоих случаях
+  // (expandSlugCandidates регистр-терпим), но DOCUMENT_JSON_SCHEMAS /
+  // EXPECTED_FIELDS проиндексированы ТОЛЬКО историческим именем — лукап по
+  // сырому слагу промахивался: schemas['cmr'] → undefined → fallback `{}` → в
+  // промпт уходило «выводи JSON в формате {}» → модель сочиняла: маршрут
+  // (place_of_loading/place_of_delivery) не извлекался НИ РАЗУ, `number` брал
+  // мусор («CMR», имя перевозчика). Канонизируем перед лукапом; для уже-
+  // исторических слагов операция идемпотентна.
+  const builtinSlug = canonicalizeSlugForBuiltins(slug);
   // Fallback-схема для типа без своей DB-llm_schema: сначала классические
   // DOCUMENT_JSON_SCHEMAS (invoice/TTN/CMR/AKT), затем EXTENDED_SCHEMAS
   // (bill_of_lading/waybill/transport_* и др. — иначе они резолвились в {} и
-  // LLM получал «extract whatever» → пустой extracted).
-  const fallbackSchema = schemas[slug] ?? extSchemas[slug] ?? {};
-  const fallbackFields = fields[slug] ?? [];
+  // LLM получал «extract whatever» → пустой extracted). EXTENDED_SCHEMAS
+  // проиндексированы в outbound-конвенции — там сырой слаг и нужен.
+  const fallbackSchema = schemas[builtinSlug] ?? extSchemas[slug] ?? {};
+  const fallbackFields = fields[builtinSlug] ?? [];
 
   if (!row) {
     return {

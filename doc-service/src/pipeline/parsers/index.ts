@@ -1,5 +1,6 @@
 import type { DocumentTypeSlug, BuiltinDocumentType } from '../../types/documents.js';
 import { isBuiltinDocumentType } from '../../types/documents.js';
+import { canonicalizeSlugForBuiltins } from '../../types/slug-normalize.js';
 import type { LlmClient } from '../llm/types.js';
 import type { DocumentParser } from './types.js';
 import { InvoiceParser } from './invoice.js';
@@ -59,9 +60,19 @@ export class ParsersFactory {
     };
   }
 
+  /**
+   * FIX-A (docs/BCTT_EXTRACT_FIXES.md): канонизируем слаг перед builtin-
+   * проверкой. Сегментация композитов ставит сегменту outbound-слаг (`cmr`,
+   * `upd`), одиночный док приходит с историческим (`CMR`, `UPD`) — без
+   * канонизации первая ветка промахивалась мимо типизированного парсера и
+   * молча уходила в Generic. Одинаковый документ обязан обслуживаться
+   * одинаково независимо от того, пришёл он отдельным файлом или страницей
+   * внутри составного скана.
+   */
   get(slug: DocumentTypeSlug): DocumentParser {
-    if (isBuiltinDocumentType(slug)) {
-      return this.builtins[slug];
+    const canonical = canonicalizeSlugForBuiltins(slug);
+    if (isBuiltinDocumentType(canonical)) {
+      return this.builtins[canonical];
     }
     return this.getGeneric(slug);
   }

@@ -65,6 +65,37 @@ const INN_NEAR_RE = /инн(?:\s*\/?\s*кпп)?[\s:№#\/]*(\d{12}|\d{10})(?!\d)
 // Сколько символов после метки сканировать, если следующей метки нет рядом.
 const WINDOW_CHARS = 400;
 
+/**
+ * FIX-B (находки SLAI 2026-07-16, docs/BCTT_EXTRACT_FIXES.md).
+ *
+ * Маркеры банковского блока. ИНН внутри платёжных реквизитов принадлежит
+ * БАНКУ, а не стороне: «Банк получателя: ПАО СБЕРБАНК · ИНН 7707083893 ·
+ * БИК 044525225 · Сч. № …». Такой ИНН настоящий и проходит checksum, поэтому
+ * прежний «первый ИНН в окне» его молча принимал.
+ *
+ * Реальный кейс (заказ #5 БКТ): `inv_1.jpeg` + `pac_1.jpeg` → seller.inn =
+ * 7707083893 = ИНН ПАО «Сбербанк», при том что продавец — SIA BALTEREX
+ * (Латвия), у которой российского ИНН быть не может в принципе.
+ *
+ * Почему это дороже явного промаха: ОБА документа дают ОДНО И ТО ЖЕ значение,
+ * поэтому кросс-документная сверка на стороне SLAI считает поле «сошедшимся» и
+ * красит зелёным. Контрольная сумма проходит, ЕГРЮЛ проходит — ИНН реальный,
+ * просто ЧУЖОЙ. Систематическая ошибка выглядит как подтверждённая истина.
+ */
+const BANK_MARKER_RE = /банк|бик\b|к\/с|кор(?:р|\.)\s*сч|корсчет|корреспондент|сч\.\s*№|р\/с/i;
+
+/** Страна стороны, при которой российский ИНН невозможен. */
+function partyIsForeign(extracted: Record<string, unknown>, party: string): boolean {
+  const obj = extracted[party];
+  if (!obj || typeof obj !== 'object') return false;
+  const country = (obj as Record<string, unknown>).country;
+  if (typeof country !== 'string' || country.trim().length === 0) return false;
+  const c = country.trim().toUpperCase();
+  // Пусто/RU/РФ/Россия — «наша» сторона, ИНН допустим. Всё остальное —
+  // иностранец: росс. ИНН ему не подставляем (просьба SLAI).
+  return !['RU', 'РФ', 'RUS', 'РОССИЯ', 'RUSSIA'].includes(c);
+}
+
 function partyInnIsValid(extracted: Record<string, unknown>, party: string): boolean {
   const obj = extracted[party];
   if (!obj || typeof obj !== 'object') return false;
@@ -103,6 +134,8 @@ export function recoverPartyInnsFromText(
   for (const lbl of labels) {
     // Уже валидный ИНН (от модели или добитый ранее в этом цикле) не трогаем.
     if (partyInnIsValid(extracted, lbl.party) || recovered[`${lbl.party}.inn`]) continue;
+    // FIX-B: иностранной стороне российский ИНН не подставляем.
+    if (partyIsForeign(extracted, lbl.party)) continue;
 
     const nextStart = sortedStarts.find((s) => s > lbl.index);
     const windowEnd = Math.min(
@@ -110,7 +143,18 @@ export function recoverPartyInnsFromText(
       lbl.end + WINDOW_CHARS,
       rawText.length,
     );
-    const window = rawText.slice(lbl.end, windowEnd);
+    const fullWindow = rawText.slice(lbl.end, windowEnd);
+    // FIX-B: обрезаем окно на первом банковском маркере. Собственный ИНН
+    // стороны стоит рядом с её названием — ДО платёжного блока; всё, что после
+    // «Банк получателя:» / «БИК» / «Сч. №», принадлежит банку. Прежний «первый
+    // ИНН в окне» захватывал ИНН Сбербанка и выдавал его за продавца.
+    //
+    // Осознанный компромисс: если в НАЗВАНИИ стороны есть слово «банк»
+    // («ООО Банк-Сервис»), окно схлопнется и ИНН не добьётся. Это безопасный
+    // недобор — функция и так best-effort fallback на флапы LLM, а промах в
+    // другую сторону (чужой ИНН) даёт ложно-зелёную сверку у потребителя.
+    const bankAt = fullWindow.search(BANK_MARKER_RE);
+    const window = bankAt >= 0 ? fullWindow.slice(0, bankAt) : fullWindow;
     const found = window.match(INN_NEAR_RE);
     if (!found) continue;
     const canonical = normalizeInn(found[1]);

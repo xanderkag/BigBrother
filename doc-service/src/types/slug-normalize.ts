@@ -46,3 +46,42 @@ export function normalizeSlugForApi<T extends string | null | undefined>(slug: T
   if (slug === null || slug === undefined) return slug;
   return (OUTBOUND_SLUG_ALIASES[slug as string] ?? slug) as T;
 }
+
+/**
+ * INBOUND-мап: outbound-форма → историческое имя слага. Строится инверсией
+ * `OUTBOUND_SLUG_ALIASES`, чтобы две таблицы не разъезжались.
+ */
+export const INBOUND_SLUG_ALIASES: Record<string, string> = Object.fromEntries(
+  Object.entries(OUTBOUND_SLUG_ALIASES).map(([historical, outbound]) => [outbound, historical]),
+);
+
+/**
+ * Приводит слаг к **историческому** имени — тому, которым проиндексированы
+ * hardcoded-таблицы в коде (`DOCUMENT_JSON_SCHEMAS`, `EXPECTED_FIELDS`).
+ *
+ * Зачем. Каталог отдаёт слаги в двух написаниях: исторические (`CMR`, `TTN`,
+ * `UPD`, `AKT`, `factInvoice`) и outbound/SLAI-конвенцию (`cmr`, `ttn`, …).
+ * Сегментация композитов ставит сегменту outbound-слаг (`multidoc/boundaries.ts`),
+ * а одиночный док приходит от keyword-классификатора с историческим (`classifier/
+ * keywords.ts`). Обе формы валидны и обе доходят до резолвера.
+ *
+ * Хардкод-таблицы схем при этом проиндексированы ТОЛЬКО историческим именем.
+ * Без канонизации `DOCUMENT_JSON_SCHEMAS['cmr']` → `undefined` → fallback-схема
+ * `{}` → в промпт уходит «выводи JSON в формате {}» → модель сочиняет: маршрут
+ * не извлекается вообще, `number` принимает мусор («CMR», имя перевозчика).
+ * Ровно этот баг нашёл SLAI на корпусе БКТ 2026-07-16 («регистр типа коррелирует
+ * с качеством стопроцентно») — см. `docs/BCTT_EXTRACT_FIXES.md` FIX-A.
+ *
+ * Слаги вне мапы (`waybill`, `commercial_invoice`, …) возвращаются как есть —
+ * их таблицы (`EXTENDED_SCHEMAS`) и так в outbound-конвенции.
+ *
+ * @example
+ *   canonicalizeSlugForBuiltins('cmr')          // → 'CMR'
+ *   canonicalizeSlugForBuiltins('CMR')          // → 'CMR' (идемпотентно)
+ *   canonicalizeSlugForBuiltins('tax_invoice')  // → 'factInvoice'
+ *   canonicalizeSlugForBuiltins('waybill')      // → 'waybill' (без изменений)
+ */
+export function canonicalizeSlugForBuiltins<T extends string | null | undefined>(slug: T): T {
+  if (slug === null || slug === undefined) return slug;
+  return (INBOUND_SLUG_ALIASES[slug as string] ?? slug) as T;
+}
