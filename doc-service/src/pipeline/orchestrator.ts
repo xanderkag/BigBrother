@@ -794,30 +794,36 @@ async function processJobInner(
             { jobId, catalog_slug: dp.catalog_slug, broad_type: dp.broad_type },
             'deep-pass: тип опознан — документ в конвейере',
           );
-        } else if (post.documentType) {
-          // Агрессивный проход: это НЕ рабочий документ (фото/скриншот/мусор), а
-          // текст-классификатор ошибочно присвоил тип. Сбрасываем ложный тип и
-          // «извлечённые» поля — на фото их нет. Фейковый 1-сегментный multidoc
-          // тоже убираем, чтобы бракованный сегмент не уехал в documents[].
-          log.info(
-            {
-              jobId,
-              dropped_type: post.documentType,
-              broad_type: dp.broad_type,
-              verdict: dp.verdict,
-            },
-            'deep-pass: картинка — не рабочий документ, сброс ложного типа и извлечения',
-          );
-          post.documentType = null;
-          post.extracted = {};
-          post.parserConfidence = 0;
-          post.parserMissing = [];
-          if (post.classification) {
-            post.classification.type = null;
-            post.classification.unknown = true;
-            post.classification.method = 'deep_pass';
-            post.classification.confidence = 0;
+        } else {
+          if (post.documentType) {
+            // Агрессивный проход: это НЕ рабочий документ (фото/скриншот/мусор),
+            // а текст-классификатор ошибочно присвоил тип. Сбрасываем ложный тип
+            // и «извлечённые» поля — на фото их нет.
+            log.info(
+              {
+                jobId,
+                dropped_type: post.documentType,
+                broad_type: dp.broad_type,
+                verdict: dp.verdict,
+              },
+              'deep-pass: картинка — не рабочий документ, сброс ложного типа и извлечения',
+            );
+            post.documentType = null;
+            post.extracted = {};
+            post.parserConfidence = 0;
+            post.parserMissing = [];
+            if (post.classification) {
+              post.classification.type = null;
+              post.classification.unknown = true;
+              post.classification.method = 'deep_pass';
+              post.classification.confidence = 0;
+            }
           }
+          // Фейковый 1-сегментный «композит» гасим ВСЕГДА при не-mapped вердикте
+          // (не только при сбросе top-level типа): смоук Repack_photo показал, что
+          // при classifier=null сегмент с ложным cert_of_origin выживал и уезжал в
+          // _multidoc_documents → webhook documents[]. Реальные композиты (≥2
+          // сегментов) сюда не попадают — гейт закрыт условием realComposite.
           multiDocResult = null;
         }
         // След второго яруса — в служебном ключе extracted (паттерн _issues/
