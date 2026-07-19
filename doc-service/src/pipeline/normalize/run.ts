@@ -42,6 +42,7 @@ import { relocateOgrnFromInn } from './ogrn-relocate.js';
 import { applyIdAllowlist } from './id-allowlist.js';
 import { recoverContainersFromText } from './container-recovery.js';
 import { recoverForwardingClientFromText } from './forwarding-client-recovery.js';
+import { sanitizePartyInns } from './sanitize-inns.js';
 import { normalizeExtractedFields } from './extracted-fields.js';
 import { recomputeTotalsFromItems, deriveHeaderTotals } from './totals.js';
 import { applyCategoryHints } from './categories.js';
@@ -89,6 +90,13 @@ export async function runPostExtractNormalization(
   // или совпадение с грузополучателем). Только forwarding_order.
   const clientRecovered = recoverForwardingClientFromText(result, rawText, documentType);
   if (clientRecovered && clientRecovered !== result) result = clientRecovered;
+
+  // F0e (находка SLAI 2026-07-17): канонизировать ИНН сторон прямо в extracted и
+  // ВЫКИНУТЬ битые по длине/контрольной сумме (OCR-дрейф tesseract плодил ~25
+  // фейковых ИНН на одного контрагента → дубли карточек у SLAI). После F0-recovery
+  // (сначала пробуем добить валидный из текста), до F1 (проекция уже чистая).
+  const innsSanitized = sanitizePartyInns(result);
+  if (innsSanitized && innsSanitized !== result) result = innsSanitized;
 
   // F1: ИНН/госномер → канонический вид (validation потом проще)
   const normalized = normalizeExtractedFields(result);
