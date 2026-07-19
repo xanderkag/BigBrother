@@ -38,6 +38,7 @@
  */
 import type { Logger } from 'pino';
 import { recoverPartyInnsFromText } from './inn-recovery.js';
+import { decontaminatePlaceFields } from './place-decontaminate.js';
 import { relocateOgrnFromInn } from './ogrn-relocate.js';
 import { applyIdAllowlist } from './id-allowlist.js';
 import { recoverContainersFromText } from './container-recovery.js';
@@ -106,6 +107,13 @@ export async function runPostExtractNormalization(
   // F1: ИНН/госномер → канонический вид (validation потом проще)
   const normalized = normalizeExtractedFields(result);
   if (normalized && normalized !== result) result = normalized;
+
+  // F0f (FIX-F, SLAI 2026-07-19): вырезать имя грузополучателя/отправителя из
+  // place_of_delivery / place_of_loading (гр.3 CMR содержит имя+адрес стороны,
+  // модель тащит его в поле места). ДО match_signals — маршрут SLAI берёт
+  // финальную точку из place_of_delivery, имя компании ломает приземление.
+  const placeCleaned = decontaminatePlaceFields(result);
+  if (placeCleaned && placeCleaned !== result) result = placeCleaned;
 
   // F7: пересчёт total_with_vat если расходится с items[]
   const recomputed = recomputeTotalsFromItems(result);
