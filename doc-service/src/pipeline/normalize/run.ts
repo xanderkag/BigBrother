@@ -41,6 +41,7 @@ import { recoverPartyInnsFromText } from './inn-recovery.js';
 import { relocateOgrnFromInn } from './ogrn-relocate.js';
 import { applyIdAllowlist } from './id-allowlist.js';
 import { recoverContainersFromText } from './container-recovery.js';
+import { recoverForwardingClientFromText } from './forwarding-client-recovery.js';
 import { normalizeExtractedFields } from './extracted-fields.js';
 import { recomputeTotalsFromItems, deriveHeaderTotals } from './totals.js';
 import { applyCategoryHints } from './categories.js';
@@ -82,6 +83,12 @@ export async function runPostExtractNormalization(
   // строгий формат надёжнее достаётся regex'ом, чем LLM.
   const contRecovered = recoverContainersFromText(result, rawText);
   if (contRecovered && contRecovered !== result) result = contRecovered;
+
+  // F0d: добить заказчика (client) поручения экспедитору из raw_text по метке
+  // «Клиент»/«Заказчик», когда модель его пропустила (проза «(далее — Клиент)»
+  // или совпадение с грузополучателем). Только forwarding_order.
+  const clientRecovered = recoverForwardingClientFromText(result, rawText, documentType);
+  if (clientRecovered && clientRecovered !== result) result = clientRecovered;
 
   // F1: ИНН/госномер → канонический вид (validation потом проще)
   const normalized = normalizeExtractedFields(result);
