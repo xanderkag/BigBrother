@@ -31,6 +31,8 @@ const PARTY_PATHS = [
   'carrier',
   'payer',
   'recipient',
+  'client', // forwarding_order
+  'expeditor', // forwarding_order
 ] as const;
 
 export type EnrichmentBlock = {
@@ -59,28 +61,44 @@ function extractInnDigits(raw: unknown): string | null {
  */
 function collectParties(
   extracted: Record<string, unknown>,
-): Map<string, { name: string | null }> {
-  const out = new Map<string, { name: string | null }>();
+): Map<string, { name: string | null; paths: string[] }> {
+  const out = new Map<string, { name: string | null; paths: string[] }>();
 
-  const add = (innRaw: unknown, name: unknown): void => {
+  const add = (innRaw: unknown, name: unknown, path: string | null): void => {
     const inn = extractInnDigits(innRaw);
     if (!inn) return;
     const nm = typeof name === 'string' && name.length > 0 ? name : null;
     const existing = out.get(inn);
-    if (!existing) out.set(inn, { name: nm });
-    else if (!existing.name && nm) existing.name = nm;
+    if (!existing) out.set(inn, { name: nm, paths: path ? [path] : [] });
+    else {
+      if (!existing.name && nm) existing.name = nm;
+      if (path && !existing.paths.includes(path)) existing.paths.push(path);
+    }
   };
 
   for (const path of PARTY_PATHS) {
     const party = extracted[path];
     if (!isObject(party)) continue;
-    add(party.inn, party.name ?? party.name_full ?? party.title);
+    add(party.inn, party.name ?? party.name_full ?? party.title, path);
   }
 
   // top-level inn (некоторые типы кладут ИНН без вложенного party-объекта).
-  add(extracted.inn, extracted.name ?? null);
+  add(extracted.inn, extracted.name ?? null, null);
 
   return out;
+}
+
+/**
+ * Имя «преимущественно кириллическое» → сравнение с ЕГРЮЛ (кириллица) надёжно,
+ * можно занулять ИНН при расхождении. Латиница/транслит («East-West Logistic»
+ * ↔ «ИСТ-ВЕСТ ЛОДЖИСТИК») наивно не совпадёт — там только флаг, НЕ зануляем
+ * (иначе убьём верный ИНН). ≥60% букв кириллица.
+ */
+function isCyrillicName(s: string): boolean {
+  const cyr = (s.match(/[а-яё]/gi) ?? []).length;
+  const lat = (s.match(/[a-z]/gi) ?? []).length;
+  const total = cyr + lat;
+  return total > 0 && cyr / total >= 0.6;
 }
 
 /** Нормализованное имя для сравнения: lower, без ОПФ-кавычек/пунктуации/пробелов. */
@@ -176,9 +194,11 @@ export async function enrichWithDadata(
     const cache = getCache(cacheTtlMs);
     const enrichedParties: Record<string, DadataParty> = {};
     const mismatches: string[] = [];
+    // Занулить чужой ИНН у стороны: {путь party → сырьё+ЕГРЮЛ-имя}.
+    const dropPaths: Array<{ path: string; inn: string; dadataName: string }> = [];
     let lookups = 0;
 
-    for (const [inn, { name }] of parties) {
+    for (const [inn, { name, paths }] of parties) {
       let party: DadataParty | null;
       const cached = cache.get(inn);
       if (cached.hit) {
@@ -200,9 +220,14 @@ export async function enrichWithDadata(
       if (sNote) mismatches.push(sNote);
 
       if (name && !nameMatches(name, party)) {
-        mismatches.push(
-          `ИНН ${inn}: название "${name}" не совпадает с ЕГРЮЛ "${party.name_short ?? party.name_full ?? ''}"`,
-        );
+        const egrul = party.name_short ?? party.name_full ?? '';
+        mismatches.push(`ИНН ${inn}: название "${name}" не совпадает с ЕГРЮЛ "${egrul}"`);
+        // Чужой ИНН (не та сторона): зануляем ТОЛЬКО при кириллическом имени —
+        // там сравнение с ЕГРЮЛ надёжно. Латиница-транслит остаётся флагом,
+        // чтобы не убить верный ИНН из-за несовпадения письменности.
+        if (isCyrillicName(name)) {
+          for (const p of paths) dropPaths.push({ path: p, inn, dadataName: egrul });
+        }
       }
     }
 
@@ -215,11 +240,19 @@ export async function enrichWithDadata(
       },
     };
 
-    return {
-      extracted: { ...extracted, _enrichment: block },
-      ok: true,
-      lookups,
-    };
+    let out: Record<string, unknown> = { ...extracted, _enrichment: block };
+    if (dropPaths.length > 0) {
+      const dropped: Record<string, string> = { ...((out._inn_dropped as Record<string, string>) ?? {}) };
+      for (const d of dropPaths) {
+        const partyObj = { ...(out[d.path] as Record<string, unknown>) };
+        partyObj.inn = null;
+        out = { ...out, [d.path]: partyObj };
+        dropped[`${d.path}.inn`] = `${d.inn} (имя↔ЕГРЮЛ не сошлось: "${d.dadataName}")`;
+      }
+      out._inn_dropped = dropped;
+    }
+
+    return { extracted: out, ok: true, lookups };
   } catch (err) {
     log.warn({ err: err instanceof Error ? err.message : String(err) }, 'dadata enrichment failed (non-fatal)');
     return { extracted, ok: false, lookups: 0 };

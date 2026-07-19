@@ -197,6 +197,47 @@ describe('enrichWithDadata', () => {
     expect(block.parties['7707083893']).toBeUndefined();
     expect(block._meta.mismatches.some((m) => m.includes('не найден'))).toBe(true);
   });
+
+  // Находка SLAI 2026-07-17 (п.2): чужой ИНН группы компаний. Кириллическое имя
+  // ≠ ЕГРЮЛ → зануляем ИНН (имя цело). Латиница-транслит → только флаг.
+  it('кириллическое имя ≠ ЕГРЮЛ → чужой ИНН зануляется, имя цело + аудит', async () => {
+    const { client } = makeClient(async (inn) => party({ inn, name_short: 'ООО «Рога и Копыта»' }));
+    const res = await enrichWithDadata(
+      { buyer: { inn: '7718965939', name: 'ООО «Ист-Вест Лоджистик»' } },
+      client,
+      TTL,
+      log,
+    );
+    expect((res.extracted.buyer as { inn: unknown }).inn).toBeNull();
+    expect((res.extracted.buyer as { name: string }).name).toBe('ООО «Ист-Вест Лоджистик»');
+    expect((res.extracted._inn_dropped as Record<string, string>)['buyer.inn']).toContain('7718965939');
+  });
+
+  it('ЛАТИНСКОЕ имя ≠ ЕГРЮЛ (транслит) → НЕ зануляем верный ИНН, только флаг', async () => {
+    const { client } = makeClient(async (inn) => party({ inn, name_short: 'ООО «ИСТ-ВЕСТ ЛОДЖИСТИК»' }));
+    const res = await enrichWithDadata(
+      { buyer: { inn: '7811595513', name: 'East-West Logistic' } },
+      client,
+      TTL,
+      log,
+    );
+    expect((res.extracted.buyer as { inn: string }).inn).toBe('7811595513');
+    expect(res.extracted._inn_dropped).toBeUndefined();
+    const block = res.extracted._enrichment as { _meta: { mismatches: string[] } };
+    expect(block._meta.mismatches.some((m) => m.includes('не совпадает'))).toBe(true);
+  });
+
+  it('имя совпадает с ЕГРЮЛ → ИНН цел, сброса нет', async () => {
+    const { client } = makeClient(async (inn) => party({ inn, name_short: 'ООО «Ист-Вест Лоджистик»' }));
+    const res = await enrichWithDadata(
+      { buyer: { inn: '7811595513', name: 'ООО Ист-Вест Лоджистик' } },
+      client,
+      TTL,
+      log,
+    );
+    expect((res.extracted.buyer as { inn: string }).inn).toBe('7811595513');
+    expect(res.extracted._inn_dropped).toBeUndefined();
+  });
 });
 
 describe('DadataClient key resolution (DB default → env fallback)', () => {
