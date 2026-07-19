@@ -41,7 +41,7 @@ import { recoverPartyInnsFromText } from './inn-recovery.js';
 import { relocateOgrnFromInn } from './ogrn-relocate.js';
 import { applyIdAllowlist } from './id-allowlist.js';
 import { recoverContainersFromText } from './container-recovery.js';
-import { recoverForwardingClientFromText } from './forwarding-client-recovery.js';
+import { recoverForwardingClientFromText, sanitizeForwardingLeg } from './forwarding-client-recovery.js';
 import { sanitizePartyInns } from './sanitize-inns.js';
 import { normalizeExtractedFields } from './extracted-fields.js';
 import { recomputeTotalsFromItems, deriveHeaderTotals } from './totals.js';
@@ -90,6 +90,11 @@ export async function runPostExtractNormalization(
   // или совпадение с грузополучателем). Только forwarding_order.
   const clientRecovered = recoverForwardingClientFromText(result, rawText, documentType);
   if (clientRecovered && clientRecovered !== result) result = clientRecovered;
+
+  // F0d2: санитизация плеча forwarding_order (модель иногда кладёт в leg описание
+  // схемы вместо значения) — не из enum → null.
+  const legSanitized = sanitizeForwardingLeg(result, documentType);
+  if (legSanitized && legSanitized !== result) result = legSanitized;
 
   // F0e (находка SLAI 2026-07-17): канонизировать ИНН сторон прямо в extracted и
   // ВЫКИНУТЬ битые по длине/контрольной сумме (OCR-дрейф tesseract плодил ~25

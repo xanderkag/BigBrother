@@ -4,7 +4,10 @@
  * «Клиент:» перед компанией; совпадение роли с грузополучателем.
  */
 import { describe, it, expect } from 'vitest';
-import { recoverForwardingClientFromText } from '../src/pipeline/normalize/forwarding-client-recovery.js';
+import {
+  recoverForwardingClientFromText,
+  sanitizeForwardingLeg,
+} from '../src/pipeline/normalize/forwarding-client-recovery.js';
 
 const FWD = 'forwarding_order';
 
@@ -58,5 +61,31 @@ describe('recoverForwardingClientFromText', () => {
   it('пустой/битый вход → возвращает как есть', () => {
     expect(recoverForwardingClientFromText(null, 'Клиент: ООО X', FWD)).toBeNull();
     expect(recoverForwardingClientFromText({}, '', FWD)).toEqual({});
+  });
+});
+
+describe('sanitizeForwardingLeg', () => {
+  it('валидное плечо → как есть', () => {
+    const ex = { leg: 'air' };
+    expect(sanitizeForwardingLeg(ex, FWD)).toBe(ex);
+  });
+
+  it('валидное с регистром/пробелами → канонизируется', () => {
+    expect(sanitizeForwardingLeg({ leg: ' Road ' }, FWD)).toEqual({ leg: 'road' });
+  });
+
+  it('мусор (затёкшее описание схемы) → null', () => {
+    const out = sanitizeForwardingLeg({ leg: '{"type":"string","description":"Плечо: air|road"}' }, FWD)!;
+    expect(out.leg).toBeNull();
+  });
+
+  it('НЕ forwarding_order → no-op', () => {
+    const ex = { leg: 'мусор' };
+    expect(sanitizeForwardingLeg(ex, 'invoice')).toBe(ex);
+  });
+
+  it('leg отсутствует → no-op', () => {
+    const ex = { number: '1' };
+    expect(sanitizeForwardingLeg(ex, FWD)).toBe(ex);
   });
 });

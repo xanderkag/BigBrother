@@ -81,3 +81,27 @@ export function recoverForwardingClientFromText(
   clientObj.name = name;
   return { ...extracted, client: clientObj, _client_recovered: name };
 }
+
+/** Допустимые значения плеча перевозки (enum схемы forwarding_order). */
+const VALID_LEGS = new Set(['air', 'road', 'rail', 'sea', 'whole_route', 'multimodal']);
+
+/**
+ * Санитизация `leg` у forwarding_order: модель изредка копирует в поле описание
+ * схемы («Плечо: air|road|…») вместо значения. Не из enum → null. Только
+ * forwarding_order; pure/идемпотентна.
+ */
+export function sanitizeForwardingLeg(
+  extracted: Record<string, unknown> | null,
+  documentType?: string | null,
+): Record<string, unknown> | null {
+  if (!extracted || typeof extracted !== 'object') return extracted;
+  if (documentType !== 'forwarding_order') return extracted;
+  const leg = extracted.leg;
+  if (leg === undefined || leg === null) return extracted;
+  const norm = typeof leg === 'string' ? leg.trim().toLowerCase() : '';
+  if (VALID_LEGS.has(norm)) {
+    return norm === leg ? extracted : { ...extracted, leg: norm };
+  }
+  // Мусор (затёкшее описание схемы / произвольная строка) → null.
+  return { ...extracted, leg: null };
+}
