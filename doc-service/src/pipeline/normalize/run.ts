@@ -43,6 +43,7 @@ import { relocateOgrnFromInn } from './ogrn-relocate.js';
 import { applyIdAllowlist } from './id-allowlist.js';
 import { recoverContainersFromText } from './container-recovery.js';
 import { recoverForwardingClientFromText, sanitizeForwardingLeg } from './forwarding-client-recovery.js';
+import { sanitizeHsCodes, recoverHsCodesFromText } from './hs-codes.js';
 import { sanitizePartyInns } from './sanitize-inns.js';
 import { normalizeExtractedFields } from './extracted-fields.js';
 import { recomputeTotalsFromItems, deriveHeaderTotals } from './totals.js';
@@ -85,6 +86,15 @@ export async function runPostExtractNormalization(
   // строгий формат надёжнее достаётся regex'ом, чем LLM.
   const contRecovered = recoverContainersFromText(result, rawText);
   if (contRecovered && contRecovered !== result) result = contRecovered;
+
+  // F0c2 (SLAI §4, 2026-07-19): ТН ВЭД структурным полем. Сначала канонизируем
+  // hs_code и выкидываем мусор-артикулы, затем добиваем код из текста там, где
+  // модель его не вернула (proforma и др.). До F1 — чтобы проекция
+  // _normalized_fields и match_signals увидели чистые/добитые коды.
+  const hsSanitized = sanitizeHsCodes(result);
+  if (hsSanitized && hsSanitized !== result) result = hsSanitized;
+  const hsRecovered = recoverHsCodesFromText(result, rawText, documentType);
+  if (hsRecovered && hsRecovered !== result) result = hsRecovered;
 
   // F0d: добить заказчика (client) поручения экспедитору из raw_text по метке
   // «Клиент»/«Заказчик», когда модель его пропустила (проза «(далее — Клиент)»
