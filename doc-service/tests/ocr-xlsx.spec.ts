@@ -9,7 +9,7 @@ import * as XLSX from 'xlsx';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { XlsxEngine } from '../src/pipeline/ocr/xlsx.js';
+import { XlsxEngine, parseXlsxInWorker } from '../src/pipeline/ocr/xlsx.js';
 
 const engine = new XlsxEngine();
 let tmp: string;
@@ -155,6 +155,23 @@ describe('XlsxEngine', () => {
         mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       });
       expect(res.durationMs).toBeGreaterThanOrEqual(0);
+    });
+  });
+
+  // Инцидент 2026-07-20: битый sync-.xls вешал event loop всего воркера.
+  // Парсинг вынесен в worker_thread с таймаутом+terminate.
+  describe('parse timeout (worker_thread)', () => {
+    it('микро-таймаут → reject(timeout), процесс НЕ виснет', async () => {
+      const file = writeXlsx('to.xlsx', { S: [['a', 'b'], [1, 2]] });
+      // 1мс < времени спавна worker'а + парса → таймаут гарантированно первым.
+      await expect(parseXlsxInWorker(file, 50_000, 1)).rejects.toThrow(/timeout/i);
+    });
+
+    it('нормальный таймаут → парсит через worker', async () => {
+      const file = writeXlsx('okw.xlsx', { S: [['h'], ['v']] });
+      const r = await parseXlsxInWorker(file, 50_000, 30_000);
+      expect(r.text).toContain('=== Sheet: S ===');
+      expect(r.pages.length).toBe(1);
     });
   });
 });
