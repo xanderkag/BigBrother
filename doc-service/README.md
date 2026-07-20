@@ -1,30 +1,42 @@
 # parsedocs — doc-service
 
-Универсальная платформа интеллектуальной обработки документов: **OCR + LLM-extraction + привязка к справочникам**. Работает с 15 типами транспортных, бухгалтерских и таможенных документов; поддерживает многострочные таблицы до 1000 позиций; настраивается через UI без правок кода.
+Платформа интеллектуальной обработки документов: **OCR + LLM-extraction + нормализация + привязка к справочникам**. Понимает **52 типа** транспортных, бухгалтерских, таможенных и ВЭД-документов; тянет многострочные таблицы до 1000 позиций; настраивается через UI без правок кода.
+
+> **Принцип ТАЙПИТ (правило #5):** документы с реальными корпоративными данными обрабатываются **только на локальных моделях** (Ollama / vLLM / llama.cpp через OpenAI-совместимый inference-service на своём GPU). Облачные LLM (Claude, OpenAI, YandexGPT) — резервный режим для синтетики, отладки промптов и dev; на прод-данные не используются. Внешние сервисы (Yandex Vision, DaData) — только за явным PII-гардом.
 
 ```
-Документ (PDF/JPG/PNG/TIFF)
+Документ (PDF / JPG / PNG / TIFF / DOCX / XLSX / XML / ZIP)
    │
    ▼
-[OCR chain] pdf-text → tesseract → vision-LLM → yandex
+[Preprocess]  EXIF-strip · разбор архивов (bomb-guard) · DOCX/XLSX→PDF · dedup по sha256
    │
    ▼
-[Classify] keyword regex или /v1/classify (LLM)
+[OCR chain]   pdf-text · xlsx/docx/xml native → tesseract → vision-LLM (qwen3-vl) → yandex*
    │
    ▼
-[Parse] regex (builtin) или LLM /extract (одно-/двухпроходный)
+[Classify]    keyword-regex или /v1/classify (LLM) · сегментация композитов (multidoc)
    │
    ▼
-[Validate] доменные валидаторы (ИНН, КПП, НДС-разбивка, сверка строк)
+[Parse]       regex (builtin) или LLM /extract (одно- / двухпроходный multipass)
    │
    ▼
-[Resolve] привязка к справочникам организации (cargo_units, nomenclature, …)
+[Normalize]   F0-цепочка: ПДн-allowlist · ИНН recovery/санитайз · контейнеры · totals ·
+              категории · match-signals · DaData-обогащение (имя↔ИНН по ЕГРЮЛ)
    │
    ▼
-Webhook + UI + REST API
+[Validate]    доменные валидаторы (ИНН, КПП, НДС-разбивка, qty×price, ТН ВЭД, сверка строк)
+   │
+   ▼
+[Deep-pass]   для нераспознанного / фото — широкая категория + честное «не документ»
+   │
+   ▼
+[Resolve]     привязка к справочникам организации (cargo_units, nomenclature, …)
+   │
+   ▼
+Webhook (HMAC) + UI + REST API + OpenAI-совместимый LLM-шлюз
 ```
 
-> **Архитектура подробно:** [`ARCHITECTURE.md`](./ARCHITECTURE.md) · **Технический долг:** [`../TECH_DEBT.md`](../TECH_DEBT.md) · **Деплой:** [`../DEPLOY.md`](../DEPLOY.md)
+> **Подробнее:** [`ARCHITECTURE.md`](./ARCHITECTURE.md) · каталог типов [`docs/DOCUMENT_TYPES.md`](./docs/DOCUMENT_TYPES.md) · deep-pass [`docs/DEEP-PASS-SPEC.md`](./docs/DEEP-PASS-SPEC.md)
 
 ---
 
@@ -32,20 +44,26 @@ Webhook + UI + REST API
 
 **Что умеет:**
 
-- 15 типов документов, до 22 полей на строку, до 1000 строк в одном документе
-- Resolution Engine — автопривязка к справочникам организации с поведением `needs_review / warn / ignore`
-- MultiPass extraction для длинных таблиц (>30KB OCR-текста авторежим)
-- Per-line валидаторы: сверка сумм, ставки НДС, единицы, ТН ВЭД, qty×price
-- Multi-tenant (organizations / projects / users / personal access tokens)
-- Operator UI (Vanilla JS + Alpine + Tailwind self-hosted) + Test Lab для админов
-- Webhook с HMAC-подписью, sweeper для авторетраев, idempotency
-- Audit log на админ-изменения, retention-cleanup на файлы и логи
+- **52 типа документов** (6 stable · 30 beta · 16 experimental), до 22 полей на строку, до 1000 строк в документе
+- OCR-каскад с нативным разбором PDF/XLSX/DOCX/XML и vision-fallback на сканы
+- **MultiPass extraction** для длинных таблиц (>30 KB OCR-текста — авторежим)
+- **Normalize-стадия**: детерминированное дочищение после LLM (ИНН по контрольной сумме, восстановление сторон из текста, пересчёт сумм, канонизация полей)
+- **DaData-обогащение**: сверка имя↔ИНН по ЕГРЮЛ, зануление чужого ИНН (только публичные данные юрлиц)
+- **Deep-pass**: нераспознанный остаток → широкая категория; отдельная честная метка «не документ» для скриншотов/мусора; для фото — агрессивная vision-проверка типа перед извлечением
+- **Per-line валидаторы**: сверка сумм, ставки НДС, единицы, ТН ВЭД, qty×price
+- **152-ФЗ / ПДн**: allowlist для удостоверений, EXIF-strip, PII-гард на внешний OCR
+- Resolution Engine — автопривязка к справочникам организации (`needs_review / warn / ignore`)
+- Multi-tenant (organizations / projects / users / personal access tokens, роли)
+- Operator UI (React + Vite + Tailwind) + Test Lab для админов
+- Webhook с HMAC-подписью, sweeper авторетраев, idempotency, auto-dedup
+- Audit log на админ-изменения, retention-cleanup файлов и логов
 
 **Что внутри:**
 
-- `doc-service` (Node 22 + Fastify 5) — основное API, OCR-пайплайн, BullMQ-worker
-- `inference-service` (Python + FastAPI) — LLM-бэкенды (Anthropic / OpenAI-compat / YandexGPT / Ollama / stub)
-- Postgres 16 + Redis + локальное файловое хранилище
+- `doc-service` (Node 22 + Fastify 5) — API, OCR-пайплайн, BullMQ-worker
+- `inference-service` (Python + FastAPI) — LLM-бэкенды (локальные Ollama / vLLM / llama.cpp через OpenAI-compat; cloud — резерв для dev)
+- `ui/` — React 18 + Vite + Tailwind SPA (react-query / zustand / react-router / react-pdf)
+- Postgres 16 + Redis + локальное файловое хранилище (опц. S3/MinIO)
 
 ---
 
@@ -75,22 +93,22 @@ docker network create ai-platform
 docker compose -f docker-compose.doc-platform.yml up -d --build
 ```
 
-В `doc-service/.env` поставить:
+В `doc-service/.env`:
 ```
 LLM_INFERENCE_URL=http://inference:8000
 ```
 
-После этого через UI можно настроить LLM-провайдеров (Providers → Активный) и парсеры начнут реально извлекать поля для всех типов.
+После этого через UI настраиваются LLM-провайдеры (Providers → Активный) и парсеры начинают извлекать поля для всех типов.
 
 ### 3. Локальные модели (Ollama / vLLM / llama.cpp)
 
-Любой OpenAI-совместимый сервер. Через UI в Providers создать `kind=llm`, `base_url=http://host.docker.internal:11434/v1` (или другой), указать `model`. Pipeline начнёт ходить туда.
+Любой OpenAI-совместимый сервер. В UI → Providers создать `kind=llm`, `base_url=http://host.docker.internal:11434/v1` (или адрес vLLM), указать `model`. Для vision-OCR — провайдер с `vision=true` (напр. `qwen3-vl:32b`); он выбирается отдельно от extraction-провайдера (`OCR_VISION_PROVIDER_ID`).
 
 ---
 
 ## Аутентификация
 
-Все ручки `/api/v1/*` за Bearer-токеном.
+Все ручки `/api/v1/*` — за Bearer-токеном. `/health` и `/ready` всегда публичны.
 
 ```bash
 # .env
@@ -101,102 +119,113 @@ API_KEY=$(openssl rand -hex 32)
 Authorization: Bearer <API_KEY>
 ```
 
-**Два режима:**
-
 | Тип | Кто | Что доступно |
 |-----|-----|--------------|
-| **API_KEY** (env) | глобальный root | `super_admin` — всё, везде, без org-фильтра |
+| **API_KEY** (env) | глобальный root | `super_admin` — всё, без org-фильтра |
+| **API_KEYS_JSON** | интеграторы | те же права, но с client-tag в audit-log; ротация без смены root |
 | **Personal Access Token** (UI/CRUD) | конкретный user | роль и organization_id из БД |
 
-**Multi-key:** `API_KEYS_JSON='{"<key>":"<client_name>"}'` — разные ключи разным интеграторам с client-tag в audit-log.
-
-**Dev-mode:** `API_KEY=""` (пустой) → auth выключен, любой запрос идёт как `super_admin`. UI автоматически детектит это и пропускает экран логина.
-
-`/health` и `/ready` всегда публичны (для load balancer / k8s).
+- **Fail-closed:** если и `API_KEY`, и `API_KEYS_JSON` пусты, сервис **не стартует** — кроме явного `ALLOW_NO_AUTH=true` (dev-only: любой запрос идёт как super_admin, UI пропускает логин).
+- **Секреты провайдеров** в БД шифруются envelope-схемой AES-256-GCM (`SECRETS_ENCRYPTION_KEY`, обязателен в prod).
 
 ---
 
 ## Pipeline — фазы обработки документа
 
 ```
+0. Preprocess (до OCR)
+   ├─ EXIF-strip с фото (GPS/автор/серийник камеры — ПДн по 152-ФЗ)
+   ├─ Разбор архивов ZIP/RAR/7Z с bomb-guard (MAX_UNPACKED_BYTES)
+   ├─ DOCX/XLSX → PDF через опциональный unoserver-sidecar
+   └─ Auto-dedup по sha256 содержимого (опц.): повтор → тот же job_id
+
 1. Upload (multipart) → POST /api/v1/jobs
    ├─ Magic-bytes проверка типа файла (защита от .exe в .pdf)
-   ├─ Idempotency-Key из заголовка (по умолчанию SHA-256 содержимого)
+   ├─ Idempotency-Key из заголовка (по умолчанию SHA-256 содержимого), tenant-scoped
    └─ Создание job_id, сохранение в Postgres, постановка в BullMQ
 
 2. Classify (worker)
-   ├─ Если document_hint указан клиентом → пропускаем шаг
-   ├─ Иначе: keyword-классификатор (regex по тексту OCR) или /v1/classify (LLM)
-   └─ Результат: один из 15 DocumentTypeSlug, либо custom-тип из БД
+   ├─ document_hint от клиента → шаг пропускается
+   ├─ Иначе: keyword-классификатор (regex) или /v1/classify (LLM)
+   ├─ Сегментация композитов (multidoc): PDF из нескольких документов → сегменты
+   └─ Результат: один из 52 slug, либо custom-тип из БД
 
-3. OCR chain — пробуем движки от быстрого к медленному
-   ├─ pdf-text       — извлечение текста из текстовых PDF (мгновенно)
-   ├─ tesseract      — локальный OCR (rus+eng по умолчанию)
-   ├─ vision-llm     — Qwen-VL / Claude / GPT-Vision (для сложных макетов)
-   └─ yandex.vision  — резерв (с warning про 152-ФЗ, по умолчанию off)
-   Каждый со своим порогом confidence; первый прошедший — побеждает.
-   Для PDF: pdftoppm рендерит страницы один раз и шарит между движками (no double rasterization).
+3. OCR chain — от быстрого к медленному, первый прошедший порог побеждает
+   ├─ pdf-text / xlsx / docx / xml / html — нативное извлечение (мгновенно)
+   ├─ tesseract      — локальный OCR (rus+eng), с timeout+SIGKILL на патологич. сканах
+   ├─ vision-llm     — qwen3-vl (локально) для сложных макетов и картиночных docx
+   └─ yandex.vision  — резерв, OFF по умолчанию, за PII-гардом (152-ФЗ)
+   Для PDF pdftoppm рендерит страницы один раз и шарит между движками.
 
 4. Parse
-   ├─ parser_kind = builtin:invoice_regex | builtin:upd_regex — regex с LLM-fallback
-   ├─ parser_kind = llm_extract — GenericLlmParser, один запрос к /v1/extract
-   └─ parser_kind = llm_extract_multipass — двухпроходный для длинных таблиц:
+   ├─ builtin:invoice_regex | builtin:upd_regex — regex с LLM-fallback
+   ├─ llm_extract — GenericLlmParser, один /v1/extract
+   └─ llm_extract_multipass — двухпроходный для длинных таблиц:
       Pass 1: header (4KB head + 2KB tail), схема без items[]
       Pass 2: items[] батчами ~12KB, параллелизм 3, до 1000 строк
-   Авторежим: если parser_kind=llm_extract и rawText > MULTIPASS_AUTO_BYTES (default 30KB) → multipass.
+   Авторежим: llm_extract + rawText > MULTIPASS_AUTO_BYTES (30KB) → multipass.
 
-5. Validate
-   ├─ Доменные валидаторы из document_types.validators[]:
+5. Normalize (post-extract, детерминированно, идемпотентно)  ← src/pipeline/normalize/
+   Упорядоченная F0-цепочка дочистки того, что LLM отдал шумно:
+   ├─ id-allowlist   — для удостоверений срезаем extract до {doc_kind,country,present} (ПДн)
+   ├─ ogrn-relocate  — 13/15-значный ОГРН из inn → в ogrn
+   ├─ inn-recovery   — добить ИНН сторон из текста по меткам
+   ├─ sanitize-inns  — канонизировать ИНН, битый по длине/контрольной сумме → null
+   ├─ container-recovery / forwarding-client-recovery / place-decontaminate — доменные фиксы
+   ├─ totals         — пересчёт сумм из items[], вывод канонич. header-полей
+   ├─ categories     — keyword-категоризация строк
+   ├─ enrich (DaData) — карточка ЕГРЮЛ по ИНН; при расхождении имя↔ЕГРЮЛ чужой ИНН зануляется
+   └─ match-signals  — канонический FLAT для внешнего matcher'а
+
+6. Validate
+   ├─ Доменные валидаторы document_types.validators[]:
    │  inn_checksum / kpp_format / vehicle_plate / country_code / date_range /
    │  money_sanity / vat_consistency / parties_differ / weight_nett_le_gross
-   ├─ Per-line валидаторы (Phase D) для items[]:
-   │  items_total_sum — сумма строк сходится с шапкой (±0.02)
-   │  items_vat_rates — vat_rate ∈ {0, 5, 7, 10, 20}
-   │  items_unit_known — единицы из словаря 40 вариантов
-   │  items_line_consistency — qty × price ≈ total_without_vat
-   │  items_hs_code_format — 8 или 10 цифр для ВЭД/таможни
-   └─ Невалидные → validation_issues[]; ниже порога confidence → status=needs_review
+   ├─ Per-line валидаторы для items[]:
+   │  items_total_sum (±0.02) · items_vat_rates ∈ {0,5,7,10,20} · items_unit_known ·
+   │  items_line_consistency (qty×price) · items_hs_code_format (8/10 цифр)
+   └─ Невалидные → validation_issues[]; ниже порога confidence → needs_review
 
-6. Finalize
+7. Deep-pass (для unknown / OCR-refusal / фото)         ← src/pipeline/deep-pass/
+   ├─ Широкая категория + резюме; тип-«рабочий» → возврат в конвейер
+   ├─ Честная метка «не документ» для скриншотов/мусора
+   ├─ Фото: vision-проверка присвоенного типа ВЫПОЛНЯЕТСЯ ВСЕГДА (кроме hint/vlm) —
+   │  уверенное keyword+LLM согласие на надписях с коробки ложно (фото → cert conf=1.0)
+   └─ ПДн-гейт: удостоверение → raw_text блокируется
+
+8. Finalize
    ├─ Запись extracted, confidence, ocr_engine, pipeline_steps в БД
    ├─ Доставка webhook (HMAC-SHA256, retry с backoff)
    └─ Статус: done | needs_review | failed
 
-7. Resolve (fire-and-forget, best-effort)
-   Если у типа задан resolution_config — после finalize запускается
-   привязка к справочникам организации (entity_links + item_matching).
-   See "Resolution Engine" ниже.
+9. Resolve (fire-and-forget, best-effort)
+   Если у типа задан resolution_config — привязка к справочникам организации
+   (entity_links + item_matching). См. «Resolution Engine».
 ```
 
 ---
 
-## 15 типов документов — что извлекаем
+## Каталог типов — 52 типа
 
-| slug | Назначение | Top-level | Леafs | items[] | Полей/строку |
-|------|-----------|-----------|-------|---------|--------------|
-| `invoice` | Счёт на оплату | 16 | 31 | ✓ | **19** |
-| `factInvoice` | Счёт-фактура | 16 | 31 | ✓ | **19** |
-| `UPD` | УПД (универсальный передаточный) | 16 | 31 | ✓ | **19** |
-| `TTN` | ТТН-1.2 (товарно-транспортная) | 11 | 27 | ✓ | **19** |
-| `CMR` | CMR (международная) | 11 | 19 | ✓ | **19** |
-| `AKT` | Акт работ | 16 | 25 | ✓ | **19** |
-| `payment_order` | Платёжное поручение 0401060 | 10 | 22 | — | — |
-| `commercial_invoice` | Коммерческий инвойс (ВЭД) | 15 | 24 | ✓ | **19** |
-| `packing_list` | Упаковочный лист | 9 | 14 | ✓ | **22** ⭐ |
-| `bill_of_lading` | Коносамент (B/L) | 16 | 21 | ✓ | **21** ⭐ |
-| `customs_declaration` | ГТД / Декларация на товары | 14 | 24 | ✓ | **22** ⭐ |
-| `cash_receipt` | Кассовый чек | 13 | 19 | ✓ | **19** |
-| `contract` | Договор | 18 | 42 | — | — |
-| `contract_specification` | Спецификация к договору | 12 | 18 | ✓ | **20** ⭐ |
-| `contract_addendum` | Допсоглашение | 12 | 20 | — | — |
+Реестр в БД (`document_types`), редактируется через UI. **Авторитетный список — `GET /api/v1/document-types`** и [`docs/DOCUMENT_TYPES.md`](./docs/DOCUMENT_TYPES.md). Зрелость размечена полем `tier`: **stable** (6) — выверены на реальном потоке · **beta** (30) — рабочие, добираются на корпусе · **experimental** (16) — заведены, ждут объёма.
 
-⭐ — с domain-специфичными полями поверх 19-полевого канона:
-- `packing_list`: `package_type`, `dimensions`, `volume`
-- `bill_of_lading`: `marks_and_numbers`, `container_number`
-- `customs_declaration`: `invoice_value`, `customs_value`, `statistical_value`
-- `contract_specification`: `delivery_term`
+**Финансовые / бухгалтерские (РФ):** `invoice` (Счёт на оплату) · `factInvoice` (Счёт-фактура) · `UPD` (УПД) · `UKD` (Корректировочный УПД) · `AKT` (Акт услуг/работ) · `payment_order` (Платёжное поручение) · `cash_receipt` (Кассовый чек) · `wire_transfer_application` (Заявление на перевод, ВЭД)
 
-**Канонический shape строки `items[i]` (Phase A v2):**
+**ВЭД / внешнеторговые:** `commercial_invoice` (Инвойс — ВЭД, закупка товара) · `proforma_invoice` (Проформа-инвойс) · `price_list` (Прайс-лист) · `contract_specification` (Спецификация к договору) · `certificate_register` (Реестр сертификатов)
+
+**Договорные:** `contract` (Договор) · `contract_addendum` (Доп. соглашение)
+
+**Транспортные / логистические:** `TTN` (Транспортная накладная, ТН) · `transport_invoice` (Товарно-транспортная, ТТН 1-Т) · `CMR` (Международная накладная) · `bill_of_lading` (Коносамент B/L) · `smgs` (Ж/д СМГС) · `cim` (Ж/д ЦИМ) · `awb` (Авианакладная) · `forwarding_order` (Поручение экспедитору) · `transport_request` (Заявка на перевозку) · `booking_request` (Заявка-бронь) · `manifest` (Грузовой манифест) · `waybill` (Путевой лист) · `empty_container_return` (Возврат порожнего контейнера) · `transport_permit` · `special_permit`
+
+**Таможенные:** `customs_declaration` (ГТД / декларация на товары) · `export_declaration` (Экспортная декларация страны отправления) · `customs_export_ead` (Экспортная декларация ЕС, EAD) · `excise_ead` (Акцизный e-AD)
+
+**Сертификаты / качество / безопасность:** `cert_of_origin` (Сертификат происхождения) · `eac_conformity_certificate` (Соответствия ЕАЭС) · `quality_certificate` (Паспорт качества / CoA) · `safety_data_sheet` (SDS / MSDS) · `insurance_policy` (Страховой полис) · `veterinary_certificate` · `phytosanitary_certificate` · `weighing_act` (Акт взвешивания)
+
+**Складские (ТОРГ / М / МХ):** `transfer_note` (ТОРГ-13) · `material_requisition` (М-11) · `warehouse_receipt` (МХ-1) · `warehouse_return` (МХ-3) · `delivery_note` (Расходная накладная) · `power_of_attorney` (Доверенность М-2/М-2а)
+
+**Прочее / служебное:** `packing_list` (Упаковочный лист) · `document_request` (Запрос документов) · `vehicle_registration` (СТС) · `driver_passport` (Паспорт водителя — ID, обрабатывается по ПДн-allowlist)
+
+**Канонический shape строки `items[i]`:**
 ```
 line_no, code, barcode, name, hs_code, country_of_origin,
 unit, qty, qty_per_package, packages,
@@ -204,158 +233,63 @@ weight_net, weight_gross,
 price, vat_rate, vat_amount, total_without_vat, total_with_vat,
 currency, notes
 ```
+Domain-поля добавляются поверх канона (напр. `packing_list`: package_type/dimensions/volume; `customs_declaration`: invoice_value/customs_value/statistical_value). Builtin-схемы — в `src/types/document-json-schemas.ts`; расширенные типы seed'ятся отдельными миграциями (рецепт добавления типа = 1 seed-миграция).
 
-Builtin-схемы в `src/types/document-json-schemas.ts`, DB-seeded — в миграциях 0005/0006/0015.
+---
+
+## Deep-pass — глубокий разбор остатка
+
+`src/pipeline/deep-pass/` · спека [`docs/DEEP-PASS-SPEC.md`](./docs/DEEP-PASS-SPEC.md). Флаг `DEEP_PASS_ENABLED`.
+
+Когда основной проход не опознал документ (unknown) или OCR отказал (refusal), deep-pass присваивает **широкую категорию** (документ / фото товара / удостоверение / скриншот / …), пишет резюме и — если тип оказался рабочим — возвращает job в конвейер. Отдельно вводится честная метка **«не документ»** вместо ложного натягивания типа на скриншот или фотографию коробки.
+
+**Правило для фото (важное):** когда точно не ясно, что на картинке, сначала **агрессивно прогоняется классификатор по vision**, и только потом извлечение. Для картиночных/сканных входов vision-проверка присвоенного типа выполняется **всегда** (кроме явного hint и уже-vlm-пути): уверенное согласие keyword+LLM на тексте надписей с коробки давало ложный `cert_of_origin` с confidence 1.0. **ПДн-гейт:** если deep-pass распознал удостоверение — `raw_text` жёстко блокируется, персональные поля не доходят до БД/webhook.
+
+---
+
+## 152-ФЗ / персональные данные
+
+- **Удостоверения** (`driver_passport` и любой `doc_kind=id`) — extract срезается до allowlist `{doc_kind, country, present}` первым же шагом normalize; `raw_text` страницы блокируется. ФИО/номер/даты рождения наружу не идут.
+- **EXIF-strip** фото при загрузке (GPS/автор/серийник камеры — ПДн).
+- **Yandex Vision** — внешний OCR, по умолчанию OFF; при включении per-job `metadata._disable_external_ocr=true` и глобальный `YANDEX_DISABLE_FOR_PII` держат документы с ПДн (ТТН/CMR с данными водителя) на локальных движках.
+- **DaData** — наружу уходит **только ИНН юрлица** (публичные данные ЕГРЮЛ, не ПДн); изображения и содержимое документа не передаются.
+- **Cloud LLM** на прод-данные не используются (правило #5) — только локальный inference.
 
 ---
 
 ## API — основные группы
 
 ### Jobs
-
 ```http
 POST   /api/v1/jobs                          загрузить документ
 GET    /api/v1/jobs                          список с фильтрами
 GET    /api/v1/jobs/:id                      статус и результат
 PATCH  /api/v1/jobs/:id/extracted            скорректировать данные
 POST   /api/v1/jobs/:id/approve              needs_review → done
-POST   /api/v1/jobs/:id/reprocess            перепрогон без OCR
-POST   /api/v1/jobs/:id/redeliver-webhook    принудительная доставка
+POST   /api/v1/jobs/:id/reprocess            перепрогон без повторного OCR
+POST   /api/v1/jobs/:id/redeliver-webhook    принудительная доставка (?force=true)
 GET    /api/v1/jobs/:id/file                 скачать оригинал
 GET    /api/v1/jobs/:id/resolution           результаты привязки
 POST   /api/v1/jobs/:id/re-resolve           перезапуск резолюции
 ```
 
-**Поля загрузки** (`multipart/form-data`):
-
-| Поле | Тип | Описание |
-|------|-----|----------|
-| `file` | binary | PDF, JPG, PNG, BMP, TIFF (до 50 MB) |
-| `document_hint` | string | slug типа — пропускает классификатор |
-| `webhook_url` | string | URL для POST результата (HMAC-signed) |
-| `metadata` | string JSON | echo обратно в результат и webhook |
-| `project_id` | uuid | проект для multi-tenant изоляции |
+**Поля загрузки** (`multipart/form-data`): `file` (PDF/JPG/PNG/BMP/TIFF/DOCX/XLSX/XML/ZIP, до 50 MB) · `document_hint` (slug — пропускает классификатор) · `webhook_url` (HMAC-signed POST) · `metadata` (JSON, echo обратно) · `project_id` (multi-tenant изоляция).
 
 **Статусы:** `pending` → `processing` → `done` | `needs_review` | `failed`
 
-### Document Types — реестр и конфигурация
-
+### Document Types, Reference Lists, Resolution, Multi-tenant
 ```http
-GET    /api/v1/document-types                список (builtin + custom)
-POST   /api/v1/document-types                создать пользовательский тип
-PATCH  /api/v1/document-types/:slug          обновить конфигурацию
-DELETE /api/v1/document-types/:slug          удалить (только non-builtin)
-GET    /api/v1/document-types/:slug/history  audit log изменений
-GET    /api/v1/document-types/:slug/stats    статистика обработки за N дней
-GET    /api/v1/document-types/:slug/jobs     последние N jobs этого типа
+GET/POST/PATCH/DELETE  /api/v1/document-types[/:slug]      реестр типов + history/stats/jobs
+GET/POST/PATCH/DELETE  /api/v1/reference-list-types[...]   справочники + /entries + /sync (push от WMS/ERP)
+GET/POST                /api/v1/jobs/:id/resolution         привязка + confirm/reject
+GET/POST/PATCH/DELETE  /api/v1/organizations|projects|users  multi-tenant + /users/:id/tokens (PAT)
 ```
+Конфигурируемые через UI поля типа: `parser_kind`, `llm_prompt`, `llm_schema`, `expected_fields`, `validators`, `confidence_threshold`, `regex_fallback_threshold`, `classification_keywords`, `resolution_config`, `tier`, `prefer_vision`.
 
-Конфигурируемые через UI поля:
-- `parser_kind` — `builtin:invoice_regex` / `builtin:upd_regex` / `llm_extract` / `llm_extract_multipass`
-- `llm_prompt` — кастомная инструкция (overrides builtin)
-- `llm_schema` — JSON Schema для `/v1/extract`
-- `expected_fields`, `validators`, `confidence_threshold`, `regex_fallback_threshold`
-- `classification_keywords` — regex для классификатора без hint
-- `resolution_config` — конфиг привязки к справочникам
+**Роли:** `super_admin` · `org_admin` · `manager` · `viewer`.
 
-### Reference Lists — справочники
-
-```http
-GET    /api/v1/reference-list-types                     список типов
-POST   /api/v1/reference-list-types                     создать тип
-PATCH  /api/v1/reference-list-types/:slug               обновить
-DELETE /api/v1/reference-list-types/:slug               удалить (cascade entries)
-GET    /api/v1/reference-list-types/:slug/entries       поиск/пагинация
-POST   /api/v1/reference-list-types/:slug/entries       добавить запись
-POST   /api/v1/reference-list-types/:slug/entries/bulk  пакетное создание (txn)
-POST   /api/v1/reference-list-types/:slug/sync          push-sync от WMS/ERP (txn)
-PATCH  /api/v1/reference-list-entries/:id               обновить запись
-DELETE /api/v1/reference-list-entries/:id               soft-delete (is_active=false)
-```
-
-**Push-синхронизация** для интеграции с WMS/ERP:
-```http
-POST /api/v1/reference-list-types/cargo_units/sync
-{
-  "entries": [
-    {
-      "external_id": "WMS-001",
-      "display_name": "ГЕ #001 — палет 1200×800",
-      "search_keys": ["WMS-001", "ГЕ-001", "001"],
-      "data": { "weight": 1200, "type": "pallet" }
-    }
-  ]
-}
-```
-Семантика: upsert по `external_id` + soft-delete тех, кого нет в теле. Транзакционно, all-or-nothing.
-
-GIN-индекс на `search_keys[]` обеспечивает O(1) lookup на типичных объёмах.
-
-### Resolution Engine — привязка к справочникам
-
-```http
-GET  /api/v1/jobs/:id/resolution              результаты + summary
-POST /api/v1/jobs/:id/re-resolve              перезапуск (advisory lock)
-
-POST /api/v1/job-entity-links/:id/confirm     подтвердить привязку
-POST /api/v1/job-entity-links/:id/reject      отклонить
-POST /api/v1/job-item-matches/:id/confirm     подтвердить матч строки
-POST /api/v1/job-item-matches/:id/reject      отклонить
-```
-
-#### Конфигурация resolution_config
-
-Хранится в `document_types.resolution_config` (JSONB). Редактируется через UI editor типа документа (Document Types → выбрать → секция «Резолюция»):
-
-```json
-{
-  "entity_links": [
-    {
-      "list_type": "cargo_units",
-      "match_fields": ["cargo_id", "cargo_number"],
-      "on_not_found": "needs_review"
-    },
-    {
-      "list_type": "contractors",
-      "match_fields": ["seller_inn"],
-      "on_not_found": "warn"
-    }
-  ],
-  "item_matching": {
-    "list_type": "nomenclature",
-    "items_field": "items",
-    "code_field": "code",
-    "name_field": "name",
-    "on_not_found": "warn"
-  }
-}
-```
-
-**`on_not_found`:**
-- `"needs_review"` (default для entity_links) — job переходит в `needs_review`, в `extracted._issues[]` пишется причина
-- `"warn"` (default для item_matching) — только лог
-- `"ignore"` — молча пропускается
-
-**Жизненный цикл результата:**
-```
-suggested → confirmed (опционально с другим entry_id)
-         → rejected
-not_found → confirmed (оператор вручную указал)
-         → rejected
-```
-
-### Multi-tenant
-
-```http
-GET/POST/PATCH/DELETE  /api/v1/organizations
-GET/POST/PATCH/DELETE  /api/v1/projects
-GET/POST/PATCH/DELETE  /api/v1/users
-GET                    /api/v1/users/me
-POST/GET/DELETE        /api/v1/users/:id/tokens      Personal Access Tokens
-GET                    /api/v1/users/access          per-project роли
-```
-
-**Роли:** `super_admin` (всё) · `org_admin` (своя org) · `manager` (write на проекты из ACL) · `viewer` (read-only).
+### LLM-шлюз (опциональный)
+При `LLM_GATEWAY_ENABLED=true` doc-service публикует OpenAI-совместимые `/v1/chat/completions` и `/v1/models` для внешних клиентов (аутентифицированный passthrough **прямо на локальный GPU**, с серверной подменой `model` по карте алиасов). Облачные бэкенды не задействованы. Фича-флаг fail-closed.
 
 ---
 
@@ -367,178 +301,105 @@ X-DocService-Signature: sha256=<hex>
 X-DocService-Job-Id:    <uuid>
 X-DocService-Attempt:   <n>
 ```
-
-Ретраи: экспоненциальный backoff до `WEBHOOK_MAX_ATTEMPTS` раз.
-
-**Sweeper** добивает неудачные доставки в фоне (`WEBHOOK_SWEEPER_*` env). Счётчик `webhook_attempts` накапливается, hard-limit 15 = 3 волны × 5 ретраев.
-
-**Принудительный повтор:** `POST /api/v1/jobs/:id/redeliver-webhook?force=true` — нужен `?force=true` если webhook уже был успешно доставлен, иначе 409.
+Ретраи — экспоненциальный backoff до `WEBHOOK_MAX_ATTEMPTS`. **Sweeper** добивает неудачи в фоне; `webhook_attempts` копится до hard-limit 15 (3 волны × 5). Принудительный повтор уже доставленного — `POST /jobs/:id/redeliver-webhook?force=true` (иначе 409).
 
 ---
 
-## UI — два режима
+## Resolution Engine — привязка к справочникам
 
-### `#upload` — для бизнес-пользователя
-- Dropzone + Тип документа (с превью извлекаемых полей)
-- Очередь файлов: статус + краткая сводка (тип, confidence, ocr_engine, замечания)
-- Под `<details>` «Настройки для разработчиков»: webhook, metadata
-- Скрыты: engine chain, model picker
-
-### `#test-lab` — для админа/тестера (gated on role)
-Всё из Upload плюс:
-- Engine chain badges с тултипами (PDF-text → Tesseract → Vision LLM → Yandex)
-- LLM-провайдер picker (per-job override через `metadata._force_provider_id`)
-- Inline result preview на той же странице после загрузки: pipeline timeline + extracted JSON + items table — без перехода в job detail
-
-### Items Table (Phase C)
-В job detail между «Extracted data» и «Этапы обработки»:
-- 8 основных столбцов (#, код, наименование, кол-во, ед, цена, НДС%, сумма)
-- 10+ дополнительных полей раскрываются кликом на строку (barcode, hs_code, страна, веса, currency, notes, …)
-- Полнотекстовый поиск (name + code + barcode), debounce 200ms
-- Сортировка по любому столбцу (кликом)
-- Пагинация client-side, 50 строк на страницу
-- Экспорт в CSV (RFC 4180 + UTF-8 BOM для Excel под Windows)
+Конфиг в `document_types.resolution_config` (JSONB, UI-editor):
+```json
+{
+  "entity_links": [
+    { "list_type": "cargo_units",  "match_fields": ["cargo_id","cargo_number"], "on_not_found": "needs_review" },
+    { "list_type": "contractors",  "match_fields": ["seller_inn"],               "on_not_found": "warn" }
+  ],
+  "item_matching": { "list_type": "nomenclature", "items_field": "items", "code_field": "code", "name_field": "name", "on_not_found": "warn" }
+}
+```
+`on_not_found`: `needs_review` (job → needs_review + причина в `extracted._issues[]`) · `warn` (лог) · `ignore`. Справочники наполняются push-синхронизацией `POST /reference-list-types/:slug/sync` (upsert по `external_id` + soft-delete отсутствующих, транзакционно; GIN-индекс на `search_keys[]`).
 
 ---
 
-## Конфигурация — все env-переменные
+## UI — React SPA
 
-| Группа | Переменная | Default | Описание |
-|--------|-----------|---------|----------|
-| **Базовое** | `PORT` | 3000 | Порт API внутри контейнера |
-| | `HOST_PORT` | =PORT | Порт на хосте для compose |
-| | `HOST` | 0.0.0.0 | Host для bind |
-| | `LOG_LEVEL` | info | pino-уровень |
-| | `MAX_UPLOAD_MB` | 50 | Лимит загрузки |
-| | `MAX_METADATA_BYTES` | 4096 | Лимит JSON metadata |
-| **Соединения** | `DATABASE_URL` | — | Postgres connection string |
-| | `REDIS_URL` | — | Redis URL для BullMQ |
-| | `STORAGE_DIR` | /app/data | Файловое хранилище |
-| **Auth** | `API_KEY` | — | Глобальный root-токен. Пустой = dev-mode |
-| | `API_KEYS_JSON` | — | Multi-key JSON `{key: client_name}` |
-| | `SECRETS_ENCRYPTION_KEY` | — | Master-ключ для шифрования provider keys (hex) |
-| **Worker** | `WORKER_CONCURRENCY` | 4 | Параллельность BullMQ |
-| | `JOB_MAX_AGE_SECONDS` | 600 | Hard deadline на job |
-| **OCR пороги** | `PDF_TEXT_ACCEPT_THRESHOLD` | 0.9 | Confidence чтобы принять pdf-text |
-| | `TESSERACT_ACCEPT_THRESHOLD` | 0.75 | То же для tesseract |
-| | `VISION_LLM_ACCEPT_THRESHOLD` | 0.75 | Для Vision LLM |
-| | `NEEDS_REVIEW_THRESHOLD` | 0.6 | Ниже — статус needs_review |
-| | `LLM_FALLBACK_THRESHOLD` | 0.7 | Regex confidence ниже → LLM-fallback |
-| | `MULTIPASS_AUTO_BYTES` | 30000 | Если OCR-текст больше — авто-multipass |
-| | `TESSERACT_LANGS` | rus+eng | Языки tesseract |
-| **LLM** | `LLM_INFERENCE_URL` | — | URL inference-service |
-| | `LLM_API_KEY` | — | Ключ к inference (если нужен) |
-| | `LLM_TIMEOUT_MS` | 60000 | Таймаут /extract |
-| **Yandex** | `YANDEX_VISION_API_KEY` | — | Ключ Yandex Cloud Vision |
-| | `YANDEX_FOLDER_ID` | — | Folder ID |
-| | `YANDEX_TIMEOUT_MS` | 30000 | |
-| **Webhook** | `WEBHOOK_HMAC_SECRET` | — | Секрет HMAC-подписи |
-| | `WEBHOOK_MAX_ATTEMPTS` | 5 | Ретраев на одну доставку |
-| | `WEBHOOK_SWEEPER_INTERVAL_MS` | 900000 | Период sweeper (15 мин) |
-| | `WEBHOOK_SWEEPER_GRACE_MINUTES` | 60 | Grace до перезапуска |
-| | `WEBHOOK_SWEEPER_HARD_LIMIT` | 15 | Hard-limit попыток |
-| **Sweepers** | `PENDING_SWEEPER_INTERVAL_MS` | 60000 | Перезапуск зависших job |
-| | `PENDING_SWEEPER_GRACE_SECONDS` | 30 | |
-| | `FILE_CLEANUP_INTERVAL_MS` | 3600000 | Чистка старых файлов |
-| | `FILE_RETENTION_DAYS` | 30 | |
-| | `AUDIT_LOG_SWEEP_INTERVAL_MS` | 86400000 | Архивация audit log |
-| | `AUDIT_LOG_RETENTION_DAYS` | 90 | |
-| **Прочее** | `RATE_LIMIT_PER_MINUTE` | 60 | 0 = выключить |
-| | `SLOW_JOB_THRESHOLD_MS` | 30000 | Лог-флаг slow job |
+`ui/` — React 18 + Vite + Tailwind (react-query / zustand / react-router / react-pdf). Сборка `npm --prefix ui run build` → статика раздаётся Fastify по `/ui/`.
 
-См. `.env.example` для актуального шаблона.
+- **Upload** (бизнес-пользователь): dropzone + выбор типа с превью полей; очередь файлов со статусом и сводкой (тип, confidence, ocr_engine, замечания); настройки разработчика (webhook/metadata) под `<details>`.
+- **Test Lab** (админ, gated): engine-chain badges, LLM-провайдер picker (per-job override), inline preview (pipeline timeline + extracted JSON + items table) без перехода в job detail.
+- **Job detail**: PDF-превью (react-pdf), items-таблица с поиском/сортировкой/пагинацией/CSV-экспортом (UTF-8 BOM для Excel), карточка deep-pass, этапы обработки.
+
+---
+
+## Конфигурация
+
+Полный, подробно закомментированный шаблон — **`.env.example`** (авторитетный источник). Ключевые группы:
+
+| Группа | Важные переменные (default) |
+|--------|------------------------------|
+| **Базовое** | `PORT`(3000) · `MAX_UPLOAD_MB`(50) · `MAX_METADATA_BYTES`(65536) · `LOG_LEVEL`(info) |
+| **Соединения** | `DATABASE_URL` · `REDIS_URL` · `STORAGE_DIR`(/app/data) |
+| **Storage** | `STORAGE_BACKEND`(local\|s3) · `S3_BUCKET`/`S3_ENDPOINT`/… (для MinIO/AWS) |
+| **Auth** | `API_KEY` · `API_KEYS_JSON` · `ALLOW_NO_AUTH`(fail-closed) · `SECRETS_ENCRYPTION_KEY` |
+| **Worker** | `WORKER_CONCURRENCY`(1) · `JOB_MAX_AGE_SECONDS`(14400) · `RATE_LIMIT_PER_MINUTE`(200) |
+| **OCR пороги** | `PDF_TEXT_ACCEPT_THRESHOLD`(0.9) · `TESSERACT_ACCEPT_THRESHOLD`(0.75) · `VISION_LLM_ACCEPT_THRESHOLD`(0.75) · `NEEDS_REVIEW_THRESHOLD`(0.6) · `LLM_FALLBACK_THRESHOLD`(0.7) |
+| **Tesseract** | `TESSERACT_LANGS`(rus+eng) · `TESSERACT_TIMEOUT_MS`(90000) · `TESSERACT_MAX_PAGES`(0) |
+| **MultiPass** | `MULTIPASS_AUTO_BYTES`(30000) · `MULTIPASS_*_BYTES` · `MULTIPASS_ITEMS_PARALLELISM`(3) |
+| **LLM** | `LLM_INFERENCE_URL` · `LLM_TIMEOUT_MS`(60000) · `OCR_VISION_PROVIDER_ID` · `VISION_PAGE_PARALLELISM`(1) |
+| **LLM-шлюз** | `LLM_GATEWAY_ENABLED`(false) · `LLM_GATEWAY_BASE_URL` · `LLM_GATEWAY_MODELS_JSON` |
+| **Deep-pass** | `DEEP_PASS_ENABLED`(false) · `DEEP_PASS_TEXT_CHARS`(8000) · `DEEP_PASS_MIN_TEXT`(300) |
+| **Office fallback** | `OFFICE_IMAGE_FALLBACK_ENABLED`(true) · `ENABLE_DOCX_SIDECAR`(false) · `UNOSERVER_URL` |
+| **DaData** | `DADATA_API_KEY` · `DADATA_TIMEOUT_MS`(10000) · `DADATA_CACHE_TTL_MS`(24h) |
+| **Yandex OCR** | `YANDEX_VISION_API_KEY` · `YANDEX_FOLDER_ID` · `YANDEX_DISABLE_FOR_PII`(false) · `YANDEX_PREFER_FOR_SCANS`(false) |
+| **Webhook** | `WEBHOOK_HMAC_SECRET` · `WEBHOOK_MAX_ATTEMPTS`(5) · `WEBHOOK_SWEEPER_*` |
+| **152-ФЗ / preprocess** | `STRIP_EXIF_ON_UPLOAD`(true) · `MAX_UNPACKED_BYTES`(500MB) · `AUTO_DEDUP_BY_HASH`(false) |
+| **Sweepers / retention** | `PENDING_SWEEPER_*` · `FILE_RETENTION_DAYS`(30) · `AUDIT_LOG_RETENTION_DAYS`(365) |
 
 ---
 
 ## Структура проекта
 
 ```
-parsedocs/
-├── README.md                  ← вы здесь
-├── ARCHITECTURE.md            ← детальная архитектура
-├── TECH_DEBT.md               ← технический долг
-├── DEPLOY.md                  ← регламент развёртывания
-├── DEPLOY-REQUEST.md          ← заявка DevOps
-├── docker-compose.doc-platform.yml   ← master compose
-├── docker-compose.local-models.yml   ← Ollama/локальные модели
-├── docker-compose.monitoring.yml     ← Prometheus + Grafana
-├── shared/
-│   └── classifier-rules.json  ← единый источник правил классификатора
-├── monitoring/                ← Prometheus + Grafana dashboards
-├── scripts/
-│   └── network-test/          ← smoke/load/soak/stress оснастка
-├── docs/
-│   ├── TESTING_REGULATION.md  ← регламент сетевых прогонов
-│   └── test-runs/             ← отчёты прогонов
-├── inference-service/         ← Python FastAPI, LLM-бэкенды
-└── doc-service/
-    ├── README.md (этот)
-    ├── docker-compose.yml     ← api + worker + postgres + redis
-    ├── Dockerfile             ← node:22-slim + tesseract + poppler
-    ├── package.json
-    ├── migrations/            ← 15 миграций (0001-0015)
-    ├── tests/                 ← 25 vitest spec файлов
-    ├── web/                   ← Operator UI (без build-step для JS)
-    │   ├── index.html
-    │   ├── app.js             ← ~5000 строк, hash-routing, fetch
-    │   ├── input.css          ← Tailwind input
-    │   ├── tailwind.config.cjs
-    │   └── vendor/            ← precompiled tailwind.css + alpine.min.js
-    └── src/
-        ├── server.ts          ← Fastify entry + плагины
-        ├── worker.ts          ← BullMQ worker + sweeper-процессы
-        ├── config.ts          ← все env через Zod
-        ├── auth.ts            ← Bearer + req.user типизация
-        ├── authz.ts           ← guards (requireProjectWrite…) + helpers
-        ├── db.ts              ← Postgres pool + withTransaction()
-        ├── queue.ts           ← BullMQ setup
-        ├── metrics.ts         ← Prometheus registry
-        ├── routes/
-        │   ├── jobs.ts        ← CRUD jobs + approve/reprocess/redeliver
-        │   ├── document-types.ts  ← реестр типов
-        │   ├── reference-lists.ts ← справочники + sync
-        │   ├── resolution.ts  ← привязка + confirm/reject
-        │   ├── tenants.ts     ← multi-tenant CRUD
-        │   ├── provider-settings.ts ← ключи LLM/OCR провайдеров
-        │   ├── audit-log.ts
-        │   ├── settings.ts    ← снимок конфига
-        │   ├── operational-metrics.ts ← дашборд-метрики
-        │   ├── metrics.ts     ← /metrics для Prometheus
-        │   └── health.ts
-        ├── pipeline/
-        │   ├── orchestrator.ts ← OCR chain → parse → validate → resolve
-        │   ├── router.ts      ← выбор цепочки OCR
-        │   ├── quality.ts     ← combineConfidence эвристики
-        │   ├── document-type-resolver.ts ← TTL-кэш над document_types
-        │   ├── classifier/    ← keywords + LLM
-        │   ├── ocr/           ← pdf-text, tesseract, vision-llm, yandex
-        │   ├── parsers/       ← invoice/upd/ttn/cmr/akt regex + generic-llm + multipass-llm
-        │   ├── validation/    ← валидаторы (16 builtin'ов)
-        │   └── llm/           ← клиент к inference-service
-        ├── resolution/
-        │   ├── types.ts       ← ResolutionConfig + JSDoc
-        │   ├── list-repo.ts   ← репозитории справочников
-        │   └── pipeline.ts    ← runResolutionPipeline с advisory lock
-        ├── storage/
-        │   ├── jobs.ts        ← JobsRepo
-        │   ├── document-types.ts
-        │   ├── files.ts       ← локальное ФС + retention
-        │   ├── projects.ts / users.ts / organizations.ts / tokens.ts
-        │   ├── normalize-extracted.ts ← legacy positions/services → items
-        │   ├── secrets.ts     ← AES-256-GCM шифрование provider keys
-        │   ├── metadata-sanitizer.ts
-        │   └── audit-log.ts
-        ├── webhooks/
-        │   └── deliver.ts     ← HMAC-signed POST с retry
-        ├── workers/
-        │   ├── webhook-sweeper.ts
-        │   ├── pending-job-sweeper.ts
-        │   ├── file-cleanup.ts
-        │   └── audit-log-sweeper.ts
-        └── scripts/
-            ├── migrate.ts
-            ├── smoke.ts       ← локальный прогон без БД/Redis
-            └── eval/          ← golden-set + accuracy
+doc-service/
+├── README.md · ARCHITECTURE.md
+├── docker-compose.yml        ← api + worker + migrate + postgres + redis
+├── Dockerfile                ← node:22-slim + tesseract + poppler
+├── package.json · tsconfig.json · vitest.config.ts
+├── .env.example              ← авторитетный шаблон конфигурации
+├── migrations/               ← 93 миграции (timestamp-имена, см. ниже)
+├── tests/                    ← 122 vitest spec-файла
+├── docs/                     ← спеки (DEEP-PASS, DOCUMENT_TYPES, PARSING_SPEC, …) + archive/
+├── ui/                       ← React 18 + Vite + Tailwind SPA
+│   └── src/                  ← компоненты, роуты, api-клиент, store (zustand)
+└── src/
+    ├── server.ts             ← Fastify entry + плагины
+    ├── worker.ts             ← BullMQ worker + sweeper-процессы
+    ├── config.ts             ← все env через Zod
+    ├── db.ts · queue.ts · metrics.ts
+    ├── routes/               ← jobs · document-types · reference-lists · resolution ·
+    │                            tenants · provider-settings · audit-log · settings ·
+    │                            llm-gateway · gateway-admin · integrations/slai-sync · health
+    ├── security/             ← auth (Bearer + req.user) · authz-guards · tenant-scope
+    ├── pipeline/
+    │   ├── orchestrator.ts   ← OCR chain → classify → parse → normalize → validate → deep-pass → resolve
+    │   ├── preprocess/       ← EXIF-strip · разбор архивов · docx/xlsx-sidecar · dedup
+    │   ├── ingest/           ← приём файла, magic-bytes, роутинг форматов
+    │   ├── classifier/       ← keyword + LLM + VLM-classify + spec-invoice-correction
+    │   ├── multidoc/         ← сегментация композитов (boundaries + splitter)
+    │   ├── ocr/              ← pdf-text · tesseract · vision-llm · yandex · xlsx/docx/xml/html · refusal
+    │   ├── parsers/          ← invoice/upd/ttn/cmr/akt regex + generic-llm + multipass-llm
+    │   ├── normalize/        ← F0-цепочка (id-allowlist, inn-recovery/sanitize, totals, …)
+    │   ├── enrich/           ← DaData (имя↔ИНН по ЕГРЮЛ)
+    │   ├── validation/       ← доменные + per-line валидаторы
+    │   ├── deep-pass/        ← широкая категория + «не документ» + vision-verify
+    │   ├── llm/              ← клиент к inference-service
+    │   ├── asr/ · preview/   ← распознавание речи (вход) · превью xlsx и т.п.
+    │   └── quality*.ts · document-type-resolver.ts (TTL-кэш)
+    ├── resolution/           ← ResolutionConfig + репозитории справочников + pipeline (advisory lock)
+    ├── storage/              ← jobs · document-types · files (retention) · tenants · secrets (AES-GCM) · audit-log
+    ├── webhooks/             ← HMAC-signed доставка с retry
+    ├── workers/              ← webhook-sweeper · pending-job-sweeper · file-cleanup · audit-log-sweeper
+    └── scripts/              ← migrate · smoke (без БД/Redis) · eval (golden-set + accuracy)
 ```
 
 ---
@@ -546,36 +407,23 @@ parsedocs/
 ## Локальный smoke (без Docker)
 
 Прогон одного файла через полный пайплайн без БД и очереди:
-
 ```bash
 npm install
 npm run smoke -- ./path/to/document.pdf
 npm run smoke -- ./scan.jpg --hint TTN
 ```
-
-Использует `.env`, поэтому подхватит настроенные LLM/Yandex. Результат — JSON в stdout с разбивкой по шагам (OCR-движок, классификатор, parser, validators, extracted).
-
-Требования: tesseract + pdftoppm в PATH.
+Использует `.env` (подхватит LLM/Yandex). Результат — JSON в stdout с разбивкой по шагам. Требования: tesseract + pdftoppm в PATH.
 
 ---
 
-## Тестирование (network-test)
-
-Систематические прогоны на удалённом сервере:
+## Тесты и eval
 
 ```bash
-cd scripts/network-test
-cp .env.example .env           # настроить URL, token, corpus path
-# Положить корпус документов в corpus/
-
-./run-smoke.sh                 # ~5 минут, проверка работоспособности
-./run-load.sh                  # нагрузочный: N документов параллельно
-./run-soak.sh                  # длительный: N часов с лимитом RPS
-./run-stress.sh                # стрессовый: до отказа
-./report.sh                    # сводный отчёт по последнему прогону
+npm test              # vitest run — 122 spec-файла
+npm run test:watch
+npm run eval          # прогон корпуса → accuracy
+npm run eval:golden   # golden-set сверка
 ```
-
-Регламент в `docs/TESTING_REGULATION.md`, отчёты в `docs/test-runs/`.
 
 ---
 
@@ -586,36 +434,18 @@ npm run migrate           # применить все pending
 npm run migrate:down      # откатить последнюю
 npm run migrate:create add_column_x
 ```
+В Docker применяются автоматически one-shot `migrate`-сервисом перед стартом `api`/`worker`.
 
-В Docker миграции применяются автоматически one-shot `migrate` сервисом перед стартом `api` и `worker`.
-
-**15 миграций (`migrations/`)**:
-```
-0001_init                              — базовая схема jobs
-0002_idempotency_key                   — Idempotency-Key column
-0003_document_types                    — Document Type Registry
-0004_provider_settings_audit           — provider_settings + audit_log
-0005_extended_document_types           — +6 типов (commercial_invoice, customs_declaration, …)
-0006_contracts_and_addendums           — +3 типа (contract, specification, addendum)
-0007_jobs_last_llm_call                — last_llm_call для observability
-0008_multi_tenant                      — organizations/projects/users/access
-0009_personal_tokens_unique            — UNIQUE на token hash
-0010_personal_access_tokens            — PAT + scopes
-0011_reference_lists                   — Reference Lists + GIN-индекс
-0012_document_types_resolution_config  — JSONB колонка resolution_config
-0013_jobs_pipeline_steps               — observability per-job timeline
-0014_parser_kind_multipass             — расширение CHECK constraint
-0015_canonical_items_schema            — items[] 19+ полей для 6 DB-seeded типов
-```
+**93 миграции**, имена — по timestamp'у (`YYYYMMDDHHmmssN_<name>.sql`), от `20260506000001_init` до `20260717000003_display_name_cleanup`. Каждый расширенный тип и правка каталога — отдельная seed-миграция (напр. `..._forwarding_order_type`, `..._display_name_cleanup`), что даёт полную историю изменений реестра типов в git.
 
 ---
 
 ## Документация API
 
 - **Swagger UI:** `https://parsedocs.taipit.ru/docs`
-- **OpenAPI 3.1 spec:** `https://parsedocs.taipit.ru/docs/json` — для автогенерации клиентов (`openapi-typescript-codegen`, `oapi-codegen`, `openapi-python-client` etc.)
+- **OpenAPI 3.1:** `https://parsedocs.taipit.ru/docs/json` — для автогенерации клиентов.
 
-Auth-токен вводится через **Authorize** в правом верхнем углу Swagger UI — после этого все запросы из UI идут с `Authorization: Bearer ...`.
+Токен вводится через **Authorize** в Swagger UI.
 
 ---
 
@@ -623,17 +453,16 @@ Auth-токен вводится через **Authorize** в правом вер
 
 | Аспект | Статус |
 |--------|--------|
-| **Production deploy** | ✓ `https://parsedocs.taipit.ru` (10.10.13.10:8085) |
-| **Auth** | Временно off для тестов на локальных моделях |
-| **LLM backend** | Конфигурируется через UI Providers |
-| **15 типов документов** | ✓ все с актуальными схемами |
+| **Production** | ✓ `https://parsedocs.taipit.ru` (10.10.13.10:8085) |
+| **Каталог типов** | ✓ 52 (6 stable · 30 beta · 16 experimental) |
+| **LLM backend** | ✓ локальный inference (qwen3-vl vision + text) через UI Providers |
+| **Normalize + DaData enrichment** | ✓ в проде (ИНН-санитайз + сверка имя↔ЕГРЮЛ) |
+| **Deep-pass** | ✓ широкая категория + «не документ» + vision-verify фото |
+| **152-ФЗ / ПДн** | ✓ allowlist удостоверений · EXIF-strip · PII-гард внешнего OCR |
 | **Resolution Engine** | ✓ UI editor + API + advisory lock |
-| **Multi-tenant** | ✓ organizations/projects/users/PAT |
-| **Operator UI** | ✓ self-hosted Tailwind (CDN-free) |
-| **Test Lab** | ✓ admin-only с inline preview |
-| **Network-test toolkit** | ✓ smoke/load/soak/stress |
-| **Тесты на Resolution Engine** | ✗ пока 0 (общее покрытие 25 spec) |
-| **Реальный прогон документов** | ⏳ ждёт корпуса PDF |
-| **inference-service shared/ mount** | ⏳ pre-prod gap |
+| **Multi-tenant** | ✓ organizations/projects/users/PAT, роли |
+| **Operator UI** | ✓ React + Vite SPA |
+| **Тесты** | ✓ 122 spec-файла |
+| **LLM-шлюз** | ⏳ за фича-флагом, локальный passthrough |
 
-Следующие шаги — см. `TECH_DEBT.md` и `docs/TESTING_REGULATION.md`.
+Технический долг и ближайшие шаги — в `docs/` и `ARCHITECTURE.md`.
