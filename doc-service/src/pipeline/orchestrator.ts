@@ -1358,7 +1358,16 @@ export async function runOcrChain(
             log,
           );
         }
-        const accepted = r.confidence >= engine.acceptanceThreshold;
+        // Худой tesseract-текст с фото/PNG (аудит 2026-07-21): confidence
+        // проходит порог, но в ~500 символах обрывков извлекать нечего, а
+        // vision-llm при раннем акцепте даже не пробуется. Не акцептуем —
+        // пусть vision попробует; best-by-confidence остаётся страховкой.
+        const thinImageText =
+          engine.name === 'tesseract' &&
+          input.mimeType.startsWith('image/') &&
+          r.text.length < config.tesseractImageMinTextAccept &&
+          chain.some((e, k) => k > i && e.name === 'vision-llm');
+        const accepted = r.confidence >= engine.acceptanceThreshold && !thinImageText;
         log.info(
           {
             engine: engine.name,
@@ -1367,6 +1376,7 @@ export async function runOcrChain(
             text_length_chars: r.text.length,
             text_lines: r.text ? r.text.split('\n').length : 0,
             accepted,
+            ...(thinImageText ? { thin_image_text: true } : {}),
             skipped: false,
           },
           'ocr engine result',

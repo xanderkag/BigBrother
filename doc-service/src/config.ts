@@ -298,6 +298,13 @@ const ConfigSchema = z.object({
   tesseractTimeoutMs: numberFromEnv(90_000), // per-page timeout, по срабатыванию — SIGKILL
   tesseractMaxPages: numberFromEnv(0), // потолок страниц на документ (0 = без лимита)
   tesseractOmpThreads: numberFromEnv(2), // OMP_THREAD_LIMIT — не переподписывать CPU под concurrency
+  // Аудит пустых доков 2026-07-21: на фото/PNG tesseract «проходит» свой
+  // порог уверенности, отдавая ~400-600 символов обрывков (СМР-фото, CLP-
+  // формы) — vision даже не пробуется, извлекать нечего. Если картиночный
+  // tesseract-текст короче порога и дальше в цепочке есть vision-llm — не
+  // даём tesseract ранний акцепт (best-by-confidence остаётся страховкой,
+  // если vision упадёт). Только image/*; PDF не трогаем.
+  tesseractImageMinTextAccept: numberFromEnv(800),
 
   // Vision-OCR: сколько страниц скана распознавать ПАРАЛЛЕЛЬНО (vision-llm.ts).
   // Раньше страницы шли строго по одной (for...await) — многостраничный скан
@@ -780,6 +787,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     tesseractTimeoutMs: env.TESSERACT_TIMEOUT_MS,
     tesseractMaxPages: env.TESSERACT_MAX_PAGES,
     tesseractOmpThreads: env.TESSERACT_OMP_THREADS,
+    tesseractImageMinTextAccept: env.TESSERACT_IMAGE_MIN_TEXT_ACCEPT,
     visionPageParallelism: env.VISION_PAGE_PARALLELISM,
     cost: {
       ocrPageRub: env.COST_OCR_PAGE_RUB,
