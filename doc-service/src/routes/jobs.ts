@@ -1047,7 +1047,7 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
         return { error: 'file missing on disk' };
       }
       try {
-        const sheets = readSheetsForPreview(materialized.absolutePath);
+        const sheets = await readSheetsForPreview(materialized.absolutePath);
         return { file_name: job.file_name, sheets };
       } catch (err) {
         req.log.warn({ jobId: job.id, err }, 'failed to parse spreadsheet for preview');

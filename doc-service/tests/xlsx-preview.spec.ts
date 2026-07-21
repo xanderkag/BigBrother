@@ -35,7 +35,7 @@ afterAll(() => {
 });
 
 describe('readSheetsForPreview', () => {
-  it('одиночный лист: грид строк, размеры, без обрезки', () => {
+  it('одиночный лист: грид строк, размеры, без обрезки', async () => {
     const p = writeWb({
       Invoice: [
         ['№', 'Товар', 'Кол-во', 'Цена'],
@@ -43,7 +43,7 @@ describe('readSheetsForPreview', () => {
         [2, 'Стол', 5, 12000],
       ],
     });
-    const [s] = readSheetsForPreview(p);
+    const [s] = await readSheetsForPreview(p);
     expect(s!.name).toBe('Invoice');
     expect(s!.rows.length).toBe(3);
     expect(s!.rows[0]).toEqual(['№', 'Товар', 'Кол-во', 'Цена']);
@@ -53,32 +53,38 @@ describe('readSheetsForPreview', () => {
     expect(s!.truncated).toBe(false);
   });
 
-  it('несколько листов → несколько превью в порядке', () => {
+  it('несколько листов → несколько превью в порядке', async () => {
     const p = writeWb({ CI: [['a']], PL: [['b']], Extra: [['c']] });
-    const out = readSheetsForPreview(p);
+    const out = await readSheetsForPreview(p);
     expect(out.map((s) => s.name)).toEqual(['CI', 'PL', 'Extra']);
   });
 
-  it('пустой лист → rows=[]', () => {
+  it('пустой лист → rows=[]', async () => {
     const p = writeWb({ Empty: [] });
-    const [s] = readSheetsForPreview(p);
+    const [s] = await readSheetsForPreview(p);
     expect(s!.rows).toEqual([]);
     expect(s!.totalRows).toBe(0);
   });
 
-  it('лист длиннее лимита → truncated=true, rows обрезаны до лимита', () => {
+  it('лист длиннее лимита → truncated=true, rows обрезаны до лимита', async () => {
     const many = Array.from({ length: PREVIEW_MAX_ROWS + 50 }, (_, i) => [i, `row${i}`]);
     const p = writeWb({ Big: many });
-    const [s] = readSheetsForPreview(p);
+    const [s] = await readSheetsForPreview(p);
     expect(s!.truncated).toBe(true);
     expect(s!.rows.length).toBe(PREVIEW_MAX_ROWS);
     expect(s!.totalRows).toBe(PREVIEW_MAX_ROWS + 50);
   });
 
-  it('пустые ячейки → пустые строки в гриде (defval)', () => {
+  it('пустые ячейки → пустые строки в гриде (defval)', async () => {
     const p = writeWb({ Gaps: [['a', '', 'c']] });
-    const [s] = readSheetsForPreview(p);
+    const [s] = await readSheetsForPreview(p);
     expect(s!.rows[0]).toEqual(['a', '', 'c']);
+  });
+
+  // Инцидент 2026-07-20: битый .xls вешал бы API-поток на sync-readFile.
+  it('микро-таймаут → reject(timeout), API не виснет', async () => {
+    const p = writeWb({ S: [['a', 'b'], [1, 2]] });
+    await expect(readSheetsForPreview(p, 1)).rejects.toThrow(/timeout/i);
   });
 });
 
