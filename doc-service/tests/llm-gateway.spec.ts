@@ -31,9 +31,9 @@ const { cfg } = vi.hoisted(() => ({
       baseUrl: 'http://gpu:11434/v1' as string | undefined,
       defaultAlias: 'parsdocs-chat',
       models: {
-        'parsdocs-chat': 'mistral-small3.1',
-        'parsdocs-vision': 'qwen2.5vl:72b',
-      } as Record<string, string>,
+        'parsdocs-chat': { model: 'mistral-small3.1' },
+        'parsdocs-vision': { model: 'qwen2.5vl:72b' },
+      } as Record<string, { model: string; upstream?: string }>,
       timeoutMs: 120000,
       // EXT-LLM-GATEWAY-EMBEDDINGS/DADATA: оба фича-флага выключены —
       // роут регистрируется, но /v1/embeddings и /v1/dadata fail-closed.
@@ -89,8 +89,8 @@ beforeEach(async () => {
   cfg.llmGateway.baseUrl = 'http://gpu:11434/v1';
   cfg.llm.url = undefined;
   cfg.llmGateway.models = {
-    'parsdocs-chat': 'mistral-small3.1',
-    'parsdocs-vision': 'qwen2.5vl:72b',
+    'parsdocs-chat': { model: 'mistral-small3.1' },
+    'parsdocs-vision': { model: 'qwen2.5vl:72b' },
   };
   cfg.llmGateway.defaultAlias = 'parsdocs-chat';
   ({ llmGatewayRoutes } = await import('../src/routes/llm-gateway.js'));
@@ -176,6 +176,38 @@ describe('POST /v1/chat/completions — резолв модели', () => {
     expect(r.statusCode).toBe(200);
     expect(lastUpstreamBody().model).toBe('qwen2.5vl:72b');
     expect(r.json().model).toBe('parsdocs-vision');
+  });
+
+  it('per-alias upstream: алиас со своим upstream уходит в ДРУГОЙ адрес + tools passthrough', async () => {
+    // Ассистент SLAI: parsdocs-assistant → vLLM 8100 (tool-calling), а
+    // остальные алиасы остаются на дефолтном Ollama 11434.
+    cfg.llmGateway.models = {
+      ...cfg.llmGateway.models,
+      'parsdocs-assistant': { model: 'qwen36-vllm', upstream: 'http://vllm:8100/v1' },
+    };
+    requestMock.mockResolvedValueOnce(upstream(200, completion('qwen36-vllm')));
+    const app = await makeApp();
+    const r = await app.inject({
+      method: 'POST',
+      url: '/v1/chat/completions',
+      headers: AUTH,
+      payload: {
+        model: 'parsdocs-assistant',
+        messages: [{ role: 'user', content: 'сводка по заказу 378' }],
+        tools: [{ type: 'function', function: { name: 'get_order_summary', parameters: {} } }],
+        tool_choice: 'auto',
+      },
+    });
+    expect(r.statusCode).toBe(200);
+    // ушло в per-alias upstream (vLLM), НЕ в дефолтный Ollama
+    const [url] = requestMock.mock.calls[0] as [string];
+    expect(url).toBe('http://vllm:8100/v1/chat/completions');
+    expect(lastUpstreamBody().model).toBe('qwen36-vllm');
+    // tools/tool_choice проброшены насквозь (passthrough — критично для function-calling)
+    expect(lastUpstreamBody().tools).toBeDefined();
+    expect(lastUpstreamBody().tool_choice).toBe('auto');
+    // ответ эхает опубликованный алиас
+    expect(r.json().model).toBe('parsdocs-assistant');
   });
 
   it('неизвестный алиас → fallback на дефолт', async () => {

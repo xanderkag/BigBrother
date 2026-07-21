@@ -28,7 +28,10 @@ const { cfg } = vi.hoisted(() => ({
       apiKey: undefined as string | undefined,
       baseUrl: undefined as string | undefined,
       defaultAlias: 'parsdocs-chat',
-      models: { 'parsdocs-chat': 'claude-3-5-sonnet-20241022' } as Record<string, string>,
+      models: { 'parsdocs-chat': { model: 'claude-3-5-sonnet-20241022' } } as Record<
+        string,
+        { model: string; upstream?: string }
+      >,
       timeoutMs: 120000,
       embeddings: {
         enabled: false,
@@ -85,7 +88,7 @@ beforeEach(async () => {
   cfg.llmGateway.apiKey = 'sk-ant-env';
   cfg.llmGateway.baseUrl = undefined;
   cfg.llmGateway.defaultAlias = 'parsdocs-chat';
-  cfg.llmGateway.models = { 'parsdocs-chat': 'claude-3-5-sonnet-20241022' };
+  cfg.llmGateway.models = { 'parsdocs-chat': { model: 'claude-3-5-sonnet-20241022' } };
   providerMock.findById.mockReset();
   providerMock.findDefault.mockReset();
   ({ llmGatewayRoutes } = await import('../src/routes/llm-gateway.js'));

@@ -599,16 +599,38 @@ const ConfigSchema = z.object({
      */
     apiKey: z.string().optional(),
     defaultAlias: z.string().default('parsdocs-chat'),
+    /**
+     * Карта alias→backend. Значение — либо строка (backend-tag на дефолтном
+     * upstream `baseUrl`), либо объект `{model, upstream}` (у алиаса свой
+     * upstream — per-alias upstream: напр. `parsdocs-assistant` в vLLM
+     * 8100/tool-calling, а остальные алиасы в Ollama 11434). Строку нормализуем
+     * в `{model}`. Обратно совместимо с прежним `Record<string,string>`.
+     */
     models: z
       .preprocess((v) => {
         if (!v || v === '') return {};
         try {
           const parsed = JSON.parse(v as string);
-          return parsed && typeof parsed === 'object' ? parsed : {};
+          if (!parsed || typeof parsed !== 'object') return {};
+          const out: Record<string, { model: string; upstream?: string }> = {};
+          for (const [alias, val] of Object.entries(parsed as Record<string, unknown>)) {
+            if (typeof val === 'string') {
+              out[alias] = { model: val };
+            } else if (val && typeof val === 'object') {
+              const o = val as Record<string, unknown>;
+              if (typeof o.model === 'string') {
+                out[alias] = {
+                  model: o.model,
+                  ...(typeof o.upstream === 'string' && o.upstream ? { upstream: o.upstream } : {}),
+                };
+              }
+            }
+          }
+          return out;
         } catch {
           return {};
         }
-      }, z.record(z.string()))
+      }, z.record(z.object({ model: z.string(), upstream: z.string().optional() })))
       .default({}),
     timeoutMs: numberFromEnv(120_000),
     /**

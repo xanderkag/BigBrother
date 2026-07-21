@@ -25,7 +25,10 @@ const { cfg } = vi.hoisted(() => ({
       apiKey: undefined as string | undefined,
       baseUrl: 'http://gpu:11434/v1' as string | undefined,
       defaultAlias: 'parsdocs-chat',
-      models: { 'parsdocs-chat': 'mistral-small3.1' } as Record<string, string>,
+      models: { 'parsdocs-chat': { model: 'mistral-small3.1' } } as Record<
+        string,
+        { model: string; upstream?: string }
+      >,
       timeoutMs: 120000,
       embeddings: {
         enabled: false,

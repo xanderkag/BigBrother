@@ -154,13 +154,29 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
    * есть в опубликованной карте; пусто/неизвестно → дефолтный алиас. Сырые
    * ollama-теги клиент задать НЕ может (выбор моделей — серверный).
    */
-  function resolveModel(requested?: string): { alias: string; model: string } | null {
+  function resolveModel(
+    requested?: string,
+  ): { alias: string; model: string; upstream?: string } | null {
     if (requested && Object.prototype.hasOwnProperty.call(models, requested)) {
-      return { alias: requested, model: models[requested]! };
+      const m = models[requested]!;
+      return { alias: requested, model: m.model, upstream: m.upstream };
     }
     const fallback = models[defaultAlias];
-    if (fallback) return { alias: defaultAlias, model: fallback };
+    if (fallback) return { alias: defaultAlias, model: fallback.model, upstream: fallback.upstream };
     return null; // карта пуста / дефолт не настроен — misconfig
+  }
+
+  // Per-alias upstream: алиас может нести свой upstream (напр. ассистент → vLLM
+  // 8100, остальные → дефолтный Ollama). Клиенты кэшируем по URL. Только
+  // openai_compat passthrough без ключа — доп-upstream'ы это сырые vLLM/Ollama.
+  const perUpstreamClients = new Map<string, GatewayChatClient>();
+  function clientForUpstream(upstream: string): GatewayChatClient {
+    let c = perUpstreamClients.get(upstream);
+    if (!c) {
+      c = new GatewayChatClient({ baseUrl: upstream, timeoutMs: config.llmGateway.timeoutMs });
+      perUpstreamClients.set(upstream, c);
+    }
+    return c;
   }
 
   // EXT-LLM-GATEWAY-EMBEDDINGS: отдельный клиент под /v1/embeddings.
@@ -368,7 +384,23 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
       },
     },
     async (req, reply) => {
-      const client = await getClient();
+      const body = req.body;
+      const resolved = resolveModel(body.model);
+      if (!resolved) {
+        return reply
+          .code(500)
+          .send(
+            openAiError(
+              'No model alias is configured on the gateway (LLM_GATEWAY_MODELS_JSON).',
+              'server_error',
+              'no_model_configured',
+            ),
+          );
+      }
+
+      // per-alias upstream → выделенный passthrough-клиент; иначе дефолтный
+      // getClient() (учитывает backend=anthropic|openai_compat + ключи).
+      const client = resolved.upstream ? clientForUpstream(resolved.upstream) : await getClient();
       if (!client) {
         // Сообщение зависит от backend: для anthropic не хватает ключа, для
         // openai_compat — upstream baseUrl. Раньше текст всегда ссылался на
@@ -384,20 +416,6 @@ export async function llmGatewayRoutes(app: FastifyInstance): Promise<void> {
               `LLM gateway backend is not configured. ${hint}`,
               'server_error',
               'gateway_unconfigured',
-            ),
-          );
-      }
-
-      const body = req.body;
-      const resolved = resolveModel(body.model);
-      if (!resolved) {
-        return reply
-          .code(500)
-          .send(
-            openAiError(
-              'No model alias is configured on the gateway (LLM_GATEWAY_MODELS_JSON).',
-              'server_error',
-              'no_model_configured',
             ),
           );
       }
