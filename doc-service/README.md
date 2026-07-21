@@ -36,7 +36,7 @@
 Webhook (HMAC) + UI + REST API + OpenAI-совместимый LLM-шлюз
 ```
 
-> **Подробнее:** [`ARCHITECTURE.md`](./ARCHITECTURE.md) · каталог типов [`docs/DOCUMENT_TYPES.md`](./docs/DOCUMENT_TYPES.md) · deep-pass [`docs/DEEP-PASS-SPEC.md`](./docs/DEEP-PASS-SPEC.md)
+> **Подробнее:** [`ARCHITECTURE.md`](./ARCHITECTURE.md) · **где что реально крутится (+ловушки)** [`docs/RUNTIME_TOPOLOGY.md`](./docs/RUNTIME_TOPOLOGY.md) · эксплуатация/очередь/инциденты [`docs/OPERATIONS_RUNBOOK.md`](./docs/OPERATIONS_RUNBOOK.md) · каталог типов [`docs/DOCUMENT_TYPES.md`](./docs/DOCUMENT_TYPES.md) · deep-pass [`docs/DEEP-PASS-SPEC.md`](./docs/DEEP-PASS-SPEC.md)
 
 ---
 
