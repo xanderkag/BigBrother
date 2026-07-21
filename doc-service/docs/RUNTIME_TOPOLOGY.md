@@ -136,5 +136,5 @@ UPDATE jobs SET status='processing', started_at = COALESCE(started_at, now()) WH
 
 - `src/pipeline/llm/http-client.ts` (`withModel` инжектит model/backend/base_url/api_key), `provider-resolver.ts` (resolve/vision-pin/readBackendOverride).
 - `src/routes/llm-gateway.ts` (per-alias upstream), `src/config.ts` (models `{model,upstream?}`, `ocrVisionProviderId`).
-- `inference-service/src/inference_service/{deps.py, backends/openai_compatible.py:483, routes/*.py, schemas.py}`.
+- `inference-service/src/inference_service/{deps.py, backends/openai_compatible.py:483, routes/*.py, schemas.py}` — **`inference-service/` — сосед `doc-service/` в монорепо `Big Brother/`, не подпапка** (путь от корня монорепо, из doc-service — `../inference-service/…`).
 - `src/storage/jobs.ts:450` (корень ловушки латентности), `src/queue.ts`, `src/worker.ts`, `src/workers/pending-job-sweeper.ts`.
