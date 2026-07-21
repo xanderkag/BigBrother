@@ -20,7 +20,12 @@ import {
   type DocumentTypeRow,
   type DocumentTypeTier,
 } from '../storage/document-types.js';
-import { DOCUMENT_JSON_SCHEMAS, EXTENDED_SCHEMAS, EXPECTED_FIELDS } from '../types/document-json-schemas.js';
+import {
+  DOCUMENT_JSON_SCHEMAS,
+  EXTENDED_SCHEMAS,
+  EXPECTED_FIELDS,
+  EXTENDED_EXPECTED_FIELDS,
+} from '../types/document-json-schemas.js';
 import { canonicalizeSlugForBuiltins } from '../types/slug-normalize.js';
 import type { DocumentTypeSlug } from '../types/documents.js';
 import type { ResolutionConfig } from '../resolution/types.js';
@@ -299,7 +304,13 @@ export function resolveConfigFromRow(
   // LLM получал «extract whatever» → пустой extracted). EXTENDED_SCHEMAS
   // проиндексированы в outbound-конвенции — там сырой слаг и нужен.
   const fallbackSchema = schemas[builtinSlug] ?? extSchemas[slug] ?? {};
-  const fallbackFields = fields[builtinSlug] ?? [];
+  // EXTENDED_EXPECTED_FIELDS (bill_of_lading/waybill/transport_*) до
+  // 2026-07-21 был мёртвой константой — резолвер смотрел только builtin-мапу,
+  // из-за чего missing[] у extended-типов всегда был пуст (контроль полноты
+  // и stats-coverage не работали). Индексация — сырым слагом, как у
+  // EXTENDED_SCHEMAS (outbound-конвенция).
+  const extFields = EXTENDED_EXPECTED_FIELDS as Record<string, string[] | undefined>;
+  const fallbackFields = fields[builtinSlug] ?? extFields[slug] ?? [];
 
   if (!row) {
     return {

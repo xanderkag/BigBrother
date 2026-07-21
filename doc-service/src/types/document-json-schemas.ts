@@ -1288,6 +1288,18 @@ export const EXPECTED_FIELDS: Record<DocumentType, string[]> = {
  * для acceptance criteria SLAI ТЗ — `params.missing[]` в pipeline result.
  */
 export const EXTENDED_EXPECTED_FIELDS: Record<string, string[]> = {
+  // Ядро коносамента: по прод-статистике 2026-07-21 эти поля заполняются
+  // ~100% (335/335) — missing[] останется пустым на здоровых доках, но
+  // контроль полноты и stats-coverage оживают (раньше BL не мониторился).
+  bill_of_lading: [
+    'number',
+    'date',
+    'shipper',
+    'consignee',
+    'port_of_loading',
+    'port_of_discharge',
+    'containers',
+  ],
   waybill: ['number', 'date', 'organization', 'vehicle', 'driver', 'route', 'odometer_start'],
   // F17: ТН формы 2013 — обязательные поля для acceptance
   transport_invoice: [
