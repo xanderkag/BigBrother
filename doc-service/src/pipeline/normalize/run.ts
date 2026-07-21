@@ -45,6 +45,7 @@ import { recoverContainersFromText } from './container-recovery.js';
 import { recoverForwardingClientFromText, sanitizeForwardingLeg } from './forwarding-client-recovery.js';
 import { sanitizeHsCodes, recoverHsCodesFromText } from './hs-codes.js';
 import { sanitizePartyInns } from './sanitize-inns.js';
+import { guardInvoiceLetter } from './invoice-letter-guard.js';
 import { normalizeExtractedFields } from './extracted-fields.js';
 import { recomputeTotalsFromItems, deriveHeaderTotals } from './totals.js';
 import { applyCategoryHints } from './categories.js';
@@ -113,6 +114,16 @@ export async function runPostExtractNormalization(
   // (сначала пробуем добить валидный из текста), до F1 (проекция уже чистая).
   const innsSanitized = sanitizePartyInns(result);
   if (innsSanitized && innsSanitized !== result) result = innsSanitized;
+
+  // F0g (аудит пустых доков 2026-07-21): guard «письмо в invoice» — у счёта
+  // без позиций и без итога зануляем выдуманную валюту + флаг _suspect_letter.
+  // ДО F1/F7 — чтобы проекции не разносили сочинённую валюту дальше.
+  if (result) {
+    const letterGuard = guardInvoiceLetter(documentType, result);
+    if (letterGuard.changed && log) {
+      log.info({ document_type: documentType }, `normalize F0g: ${letterGuard.reason}`);
+    }
+  }
 
   // F1: ИНН/госномер → канонический вид (validation потом проще)
   const normalized = normalizeExtractedFields(result);
