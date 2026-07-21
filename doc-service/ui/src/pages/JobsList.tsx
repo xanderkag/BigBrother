@@ -25,6 +25,7 @@ import {
   shortIdSplit,
 } from '@/lib/format';
 import { isSynthetic, matchesOrigin, type DocOrigin } from '@/lib/synthetic';
+import { normalizeSlugForApi } from '@/lib/slug-aliases';
 import { typeGroupOf, TYPE_GROUPS, type TypeGroup } from '@/lib/type-groups';
 import type { JobNavState } from '@/lib/job-nav';
 import type { DocumentTypeEntry, DocumentTypeTier } from '@/queries/documentTypes';
@@ -110,16 +111,25 @@ export default function JobsListPage() {
 
   const { data, isLoading, error, refetch, isFetching } = useJobsList(filters);
   const { data: docTypes } = useDocumentTypes();
+  // Каталог отдаёт исторические слаги ('CMR'), а job.document_type из API
+  // всегда в outbound-форме ('cmr') — ключуем обеими, иначе бейдж/имя
+  // не находятся ни для одного алиасного builtin-типа.
   const tierBySlug = useMemo(() => {
     const m = new Map<string, DocumentTypeTier>();
     for (const t of docTypes?.items ?? []) {
-      if (t.tier) m.set(t.slug, t.tier);
+      if (t.tier) {
+        m.set(t.slug, t.tier);
+        m.set(normalizeSlugForApi(t.slug), t.tier);
+      }
     }
     return m;
   }, [docTypes]);
   const nameBySlug = useMemo(() => {
     const m = new Map<string, string>();
-    for (const t of docTypes?.items ?? []) m.set(t.slug, t.display_name || t.slug);
+    for (const t of docTypes?.items ?? []) {
+      m.set(t.slug, t.display_name || t.slug);
+      m.set(normalizeSlugForApi(t.slug), t.display_name || t.slug);
+    }
     return m;
   }, [docTypes]);
 

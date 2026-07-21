@@ -627,9 +627,17 @@ export async function documentTypesRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const days = req.query.days;
+      // Покрытие считаем по ЭФФЕКТИВНОМУ списку полей (резолвер с
+      // код-fallback'ом), а не по сырой колонке: у TTN/CMR (миграция
+      // 20260604000001) колонка пуста, но runtime проверяет missing[] по
+      // EXPECTED_FIELDS из кода — ручка мониторинга обязана мерить то же.
+      const resolvedForStats = resolveConfigFromRow(
+        req.params.slug as DocumentTypeSlug,
+        type,
+      );
       const [stats, coverage] = await Promise.all([
         jobsRepo.getTypeStats(req.params.slug, days),
-        jobsRepo.getFieldCoverage(req.params.slug, type.expected_fields, days),
+        jobsRepo.getFieldCoverage(req.params.slug, resolvedForStats.expectedFields, days),
       ]);
 
       return {

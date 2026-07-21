@@ -49,7 +49,7 @@ import {
   buildWebhookPayload,
 } from '../webhooks/deliver.js';
 import { organizationSettingsRepo } from '../storage/organization-settings.js';
-import { normalizeSlugForApi } from '../types/slug-normalize.js';
+import { normalizeSlugForApi, expandSlugForms } from '../types/slug-normalize.js';
 import {
   getEffectiveScope,
   hasProjectAccess,
@@ -1507,6 +1507,23 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
       // нельзя «попросить чужой проект» в обход authz.
       const scope = await getEffectiveScope(req);
       const filters = { ...req.query };
+      // В jobs.document_type живут ОБЕ формы слага (см. expandSlugForms) —
+      // расширяем фильтры, иначе точный SQL-матч молча теряет hint-документы
+      // и в списке, и в count → таб-счётчиках.
+      if (filters.document_types && filters.document_types.length > 0) {
+        filters.document_types = [
+          ...new Set(filters.document_types.flatMap(expandSlugForms)),
+        ] as typeof filters.document_types;
+      }
+      if (filters.document_type) {
+        filters.document_types = [
+          ...new Set([
+            ...(filters.document_types ?? []),
+            ...expandSlugForms(filters.document_type),
+          ]),
+        ] as typeof filters.document_types;
+        delete filters.document_type;
+      }
       if (scope.kind === 'org') {
         filters.organization_id = filters.organization_id ?? scope.orgId;
         // Защита от попытки спросить другую организацию.

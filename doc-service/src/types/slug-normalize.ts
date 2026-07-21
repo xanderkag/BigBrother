@@ -85,3 +85,20 @@ export function canonicalizeSlugForBuiltins<T extends string | null | undefined>
   if (slug === null || slug === undefined) return slug;
   return (INBOUND_SLUG_ALIASES[slug as string] ?? slug) as T;
 }
+
+/**
+ * Обе формы слага (историческая + outbound) для SQL-фильтров по
+ * `jobs.document_type` — в колонке живут ОБЕ: keyword-классификатор пишет
+ * исторические (`CMR`), document_hint от клиента сохраняется дословно в
+ * outbound (`cmr`). Точный матч по одной форме молча теряет вторую половину
+ * документов (и в списке, и в count → таб-счётчиках UI).
+ *
+ * @example
+ *   expandSlugForms('CMR')          // → ['CMR', 'cmr']
+ *   expandSlugForms('cmr')          // → ['cmr', 'CMR']
+ *   expandSlugForms('factInvoice')  // → ['factInvoice', 'tax_invoice']
+ *   expandSlugForms('invoice')      // → ['invoice'] (не алиасный)
+ */
+export function expandSlugForms(slug: string): string[] {
+  return [...new Set([slug, normalizeSlugForApi(slug), canonicalizeSlugForBuiltins(slug)])];
+}

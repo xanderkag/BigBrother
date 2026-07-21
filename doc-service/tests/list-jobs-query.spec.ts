@@ -4,6 +4,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { ListJobsQuery } from '../src/types/api-schemas.js';
+import { expandSlugForms } from '../src/types/slug-normalize.js';
 
 describe('ListJobsQuery.document_types', () => {
   it('парсит comma-separated в массив слагов', () => {
@@ -25,6 +26,24 @@ describe('ListJobsQuery.document_types', () => {
     const q = ListJobsQuery.parse({ document_type: 'invoice' });
     expect(q.document_types).toBeUndefined();
     expect(q.document_type).toBe('invoice');
+  });
+});
+
+describe('expandSlugForms — фильтр по типу ловит обе формы слага', () => {
+  // В jobs.document_type живут ОБЕ формы: keyword-классификатор пишет
+  // исторические ('CMR'), document_hint сохраняется в outbound ('cmr').
+  it('алиасные builtin расширяются в пару (обе стороны)', () => {
+    expect(expandSlugForms('CMR')).toEqual(['CMR', 'cmr']);
+    expect(expandSlugForms('cmr')).toEqual(['cmr', 'CMR']);
+    expect(expandSlugForms('factInvoice')).toEqual(['factInvoice', 'tax_invoice']);
+    expect(expandSlugForms('tax_invoice')).toEqual(['tax_invoice', 'factInvoice']);
+    expect(expandSlugForms('UPD')).toEqual(['UPD', 'upd']);
+  });
+
+  it('не-алиасные слаги остаются одиночными', () => {
+    expect(expandSlugForms('invoice')).toEqual(['invoice']);
+    expect(expandSlugForms('bill_of_lading')).toEqual(['bill_of_lading']);
+    expect(expandSlugForms('commercial_invoice')).toEqual(['commercial_invoice']);
   });
 });
 

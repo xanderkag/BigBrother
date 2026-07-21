@@ -197,7 +197,12 @@ export default function DocumentTypesPage() {
                     </span>
                   </td>
                   <td className="hidden px-4 py-2 text-slate-600 xl:table-cell dark:text-slate-400 dark:text-slate-500">
-                    <span className="text-xs">{(t.classification_keywords ?? []).length}</span>
+                    <span
+                      className="text-xs"
+                      title="0 ключевых слов ≠ вне классификации: LLM-классификатор работает по описаниям типов"
+                    >
+                      {(t.classification_keywords ?? []).length || 'LLM-каталог'}
+                    </span>
                   </td>
                   <td className="px-4 py-2">
                     {t.is_active ? (
@@ -305,7 +310,11 @@ export default function DocumentTypesPage() {
                 <div className="flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] text-slate-500 dark:text-slate-400">
                   <span>{t.parser_kind ?? 'parser —'}</span>
                   <span>{t.extracted_fields_count ?? (t.expected_fields ?? []).length} полей</span>
-                  <span>{(t.classification_keywords ?? []).length} ключ.слов</span>
+                  <span>
+                    {(t.classification_keywords ?? []).length
+                      ? `${(t.classification_keywords ?? []).length} ключ.слов`
+                      : 'LLM-каталог'}
+                  </span>
                 </div>
               </li>
             ))}
@@ -701,8 +710,14 @@ function DocumentTypeEditor({
                 label="Ключевые слова для классификации"
                 value={draft.classification_keywords ?? []}
                 onChange={(v) => setField('classification_keywords', v)}
-                hint="Если в OCR-тексте найдено любое — документ классифицируется этим типом"
+                hint="Взвешенный сигнал-prior для LLM-классификатора (не «нашли слово → тип»). Веса позиционные и правятся миграцией — удаление/перестановка строк молча сдвинет соответствие слово↔вес"
               />
+              {(draft.classification_keywords ?? []).length === 0 && (
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  Пусто ≠ «тип вне классификации»: LLM-классификатор строит
+                  каталог из описаний всех активных типов и без ключевых слов.
+                </p>
+              )}
             </div>
 
             <div className="sm:col-span-2">
@@ -712,6 +727,13 @@ function DocumentTypeEditor({
                 onChange={(v) => setField('expected_fields', v)}
                 hint="Какие поля парсер должен извлечь. Влияет на missing/coverage метрики"
               />
+              {(draft.expected_fields ?? []).length === 0 && (
+                <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                  Пусто — для builtin-типов (счёт, УПД, ТТН, CMR…) действует
+                  встроенный список из кода: missing/coverage считаются по
+                  нему, а не «не считаются». Введённое здесь его перекроет.
+                </p>
+              )}
             </div>
 
             <div className="sm:col-span-2">
@@ -742,6 +764,13 @@ function DocumentTypeEditor({
                 onChange={(v) => setField('llm_schema', v)}
                 hint="Передаётся в /extract как response_schema"
               />
+              {draft.llm_schema == null && (initial.extracted_fields_count ?? 0) > 0 && (
+                <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                  Пусто ≠ «схемы нет»: сейчас действует встроенная код-схема
+                  ({initial.extracted_fields_count} полей — см. «Что
+                  извлекаем»). Непустое значение здесь её перекроет.
+                </p>
+              )}
             </div>
 
             <div className="sm:col-span-2">
@@ -749,7 +778,7 @@ function DocumentTypeEditor({
                 label="Metadata"
                 value={draft.metadata}
                 onChange={(v) => setField('metadata', v)}
-                hint="Произвольный admin-config, не влияет на pipeline напрямую"
+                hint="Влияет на pipeline: preferred_provider_id — принудительный LLM-провайдер extract'а этого типа (adaptive routing). Остальные ключи — произвольный admin-config"
               />
             </div>
 
