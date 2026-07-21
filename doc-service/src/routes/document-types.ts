@@ -90,6 +90,9 @@ const DocumentType = z.object({
   confidence_threshold: z.number().nullable(),
   regex_fallback_threshold: z.number().nullable(),
   classification_keywords: z.array(z.string()),
+  // Позиционные веса (параллельно keywords); read-only для клиента — при
+  // PATCH keywords сервер пересобирает их сам по identity слова.
+  classification_keyword_weights: z.array(z.number()).nullable(),
   metadata: z.record(z.unknown()).nullable(),
   resolution_config: ResolutionConfigSchema.nullable(),
   // CP7: владелец типа. null = глобальный/builtin/shared. uuid = tenant-owned.
@@ -397,7 +400,27 @@ export async function documentTypesRoutes(app: FastifyInstance): Promise<void> {
       // CP7: tenant-owned тип может править super_admin или org_admin его орг.
       // Глобальный/builtin тип — super_admin only (как раньше).
       if (!canMutate(req, reply, before.organization_id)) return reply;
-      const updated = await documentTypesRepo.patch(req.params.slug, req.body);
+      // Веса keywords позиционные (weights[i] ↔ keywords[i]) и курируются
+      // миграциями. Клиент их не шлёт; при изменении списка слов пересобираем
+      // по identity слова: знакомое слово сохраняет свой вес, новое = 1.0.
+      // Без этого удаление/перестановка строки в UI молча сдвигала вес на
+      // соседнее слово (испорченный prior добивал до прод-классификации).
+      const patchInput: Parameters<typeof documentTypesRepo.patch>[1] = { ...req.body };
+      if (
+        req.body.classification_keywords !== undefined &&
+        (before.classification_keyword_weights?.length ?? 0) > 0
+      ) {
+        const weightByWord = new Map(
+          before.classification_keywords.map((w, idx) => [
+            w,
+            Number(before.classification_keyword_weights![idx] ?? 1),
+          ]),
+        );
+        patchInput.classification_keyword_weights = (req.body.classification_keywords ?? []).map(
+          (w) => weightByWord.get(w) ?? 1.0,
+        );
+      }
+      const updated = await documentTypesRepo.patch(req.params.slug, patchInput);
       if (!updated) {
         // race: row vanished between findBySlug and patch
         reply.code(404);

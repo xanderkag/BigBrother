@@ -718,6 +718,19 @@ function DocumentTypeEditor({
                   каталог из описаний всех активных типов и без ключевых слов.
                 </p>
               )}
+              {(initial.classification_keyword_weights?.length ?? 0) > 0 && (
+                <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  <span className="font-medium">Текущие веса (read-only): </span>
+                  {(initial.classification_keywords ?? []).map((w, idx) => (
+                    <span key={w} className="mr-2 font-mono">
+                      {w}={initial.classification_keyword_weights?.[idx] ?? 1}
+                    </span>
+                  ))}
+                  <span className="block">
+                    При сохранении вес сохраняется за словом; новые слова получают 1.0.
+                  </span>
+                </div>
+              )}
             </div>
 
             <div className="sm:col-span-2">

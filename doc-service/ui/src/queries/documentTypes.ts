@@ -34,6 +34,8 @@ export interface DocumentTypeEntry {
   expected_fields?: string[];
   /** Листовые поля эффективной схемы (БД ?? код-fallback) — для колонки «Поля». */
   extracted_fields_count?: number;
+  /** Позиционные веса keywords (read-only; пересобираются сервером при PATCH). */
+  classification_keyword_weights?: number[] | null;
   validators?: string[];
   confidence_threshold?: number | null;
   regex_fallback_threshold?: number | null;

@@ -107,6 +107,13 @@ export type DocumentTypeCreateInput = {
   confidence_threshold?: number | null;
   regex_fallback_threshold?: number | null;
   classification_keywords?: string[];
+  /**
+   * Позиционные веса keywords (параллельный массив). Клиентский PATCH их НЕ
+   * принимает (нет в zod PatchBody) — их пересобирает route-слой по identity
+   * слова при изменении keywords, иначе правка списка молча сдвигала
+   * соответствие слово↔вес (аудит 2026-07-21).
+   */
+  classification_keyword_weights?: number[] | null;
   metadata?: Record<string, unknown> | null;
   /** Конфиг резолюционного пайплайна (entity_links + item_matching). */
   resolution_config?: Record<string, unknown> | null;
@@ -273,6 +280,8 @@ class DocumentTypesRepo {
       push('regex_fallback_threshold', patch.regex_fallback_threshold);
     if (patch.classification_keywords !== undefined)
       push('classification_keywords', patch.classification_keywords);
+    if (patch.classification_keyword_weights !== undefined)
+      push('classification_keyword_weights', patch.classification_keyword_weights);
     if (patch.metadata !== undefined) push('metadata', patch.metadata);
     if (patch.resolution_config !== undefined) push('resolution_config', patch.resolution_config);
     if (patch.prefer_vision !== undefined) push('prefer_vision', patch.prefer_vision);
@@ -322,6 +331,9 @@ class DocumentTypesRepo {
       regex_fallback_threshold:
         row.regex_fallback_threshold === null ? null : Number(row.regex_fallback_threshold),
       classification_keywords: row.classification_keywords,
+      // Веса видимы (read-only в UI) — оператор должен видеть соответствие
+      // слово↔вес, а не править список вслепую.
+      classification_keyword_weights: row.classification_keyword_weights?.map(Number) ?? null,
       metadata: row.metadata,
       resolution_config: row.resolution_config,
       organization_id: row.organization_id,

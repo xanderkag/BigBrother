@@ -102,6 +102,7 @@ function apiRow(over: Record<string, unknown> = {}) {
     confidence_threshold: null,
     regex_fallback_threshold: null,
     classification_keywords: [],
+    classification_keyword_weights: null,
     metadata: null,
     resolution_config: null,
     organization_id: null,
@@ -170,6 +171,50 @@ describe('GET /api/v1/document-types — scope', () => {
     const r = await app.inject({ method: 'GET', url: '/api/v1/document-types' });
     expect(r.statusCode).toBe(200);
     expect(repo.listForOrg).toHaveBeenCalledWith(ORG_A);
+  });
+});
+
+describe('PATCH classification_keywords — пересборка позиционных весов', () => {
+  it('знакомое слово сохраняет вес, новое = 1.0, порядок следует новому списку', async () => {
+    currentUser = superAdmin;
+    repo.findBySlug.mockResolvedValue(
+      apiRow({
+        slug: 'custom_test',
+        classification_keywords: ['первое', 'второе', 'generic'],
+        classification_keyword_weights: ['5.0', '3.0', '0.8'],
+      }),
+    );
+    repo.patch.mockImplementation(async (_slug: string, p: Record<string, unknown>) =>
+      apiRow({
+        slug: 'custom_test',
+        classification_keywords: p.classification_keywords,
+        classification_keyword_weights: p.classification_keyword_weights,
+      }),
+    );
+    const r = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/document-types/custom_test',
+      payload: { classification_keywords: ['generic', 'первое', 'новое'] },
+    });
+    expect(r.statusCode).toBe(200);
+    const patchArg = repo.patch.mock.calls[0]![1] as Record<string, unknown>;
+    expect(patchArg.classification_keyword_weights).toEqual([0.8, 5, 1.0]);
+  });
+
+  it('у типа без весов пересборка не навязывается', async () => {
+    currentUser = superAdmin;
+    repo.findBySlug.mockResolvedValue(
+      apiRow({ slug: 'custom_test', classification_keywords: ['a'], classification_keyword_weights: null }),
+    );
+    repo.patch.mockResolvedValue(apiRow({ slug: 'custom_test' }));
+    const r = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/document-types/custom_test',
+      payload: { classification_keywords: ['a', 'b'] },
+    });
+    expect(r.statusCode).toBe(200);
+    const patchArg = repo.patch.mock.calls[0]![1] as Record<string, unknown>;
+    expect(patchArg.classification_keyword_weights).toBeUndefined();
   });
 });
 
