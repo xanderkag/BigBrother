@@ -192,7 +192,9 @@ export default function DocumentTypesPage() {
                     <TierBadge tier={t.tier} />
                   </td>
                   <td className="hidden px-4 py-2 text-slate-600 xl:table-cell dark:text-slate-400 dark:text-slate-500">
-                    <span className="text-xs">{(t.expected_fields ?? []).length}</span>
+                    <span className="text-xs">
+                      {t.extracted_fields_count ?? (t.expected_fields ?? []).length}
+                    </span>
                   </td>
                   <td className="hidden px-4 py-2 text-slate-600 xl:table-cell dark:text-slate-400 dark:text-slate-500">
                     <span className="text-xs">{(t.classification_keywords ?? []).length}</span>
@@ -302,7 +304,7 @@ export default function DocumentTypesPage() {
                 </div>
                 <div className="flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] text-slate-500 dark:text-slate-400">
                   <span>{t.parser_kind ?? 'parser —'}</span>
-                  <span>{(t.expected_fields ?? []).length} полей</span>
+                  <span>{t.extracted_fields_count ?? (t.expected_fields ?? []).length} полей</span>
                   <span>{(t.classification_keywords ?? []).length} ключ.слов</span>
                 </div>
               </li>

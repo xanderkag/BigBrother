@@ -4,8 +4,9 @@ import { z } from 'zod';
 import { documentTypesRepo } from '../storage/document-types.js';
 import { auditLogRepo } from '../storage/audit-log.js';
 import { jobsRepo } from '../storage/jobs.js';
-import { documentTypeResolver } from '../pipeline/document-type-resolver.js';
+import { documentTypeResolver, resolveConfigFromRow } from '../pipeline/document-type-resolver.js';
 import type { DocumentTypeSlug } from '../types/documents.js';
+import { countSchemaLeafFields } from '../types/schema-field-count.js';
 import { ErrorResponse, Job } from '../types/api-schemas.js';
 import { bearerAuthHook } from '../auth.js';
 import { requireSuperAdmin, requireOrgAdmin, getEffectiveScope } from '../authz.js';
@@ -95,6 +96,10 @@ const DocumentType = z.object({
   organization_id: z.string().uuid().nullable(),
   // Hybrid-routing (SLAI #3): per-type принудительный vision-путь.
   prefer_vision: z.boolean(),
+  // Число листовых полей ЭФФЕКТИВНОЙ схемы (БД llm_schema ?? код-fallback
+  // резолвера). Именно его показывает колонка «Поля» в UI — сырой
+  // expected_fields у типов со схемой-в-коде (BL/CMR/TTN) пуст и врал «0».
+  extracted_fields_count: z.number(),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -102,6 +107,20 @@ const DocumentType = z.object({
 const ListResponse = z.object({
   items: z.array(DocumentType),
 });
+
+/**
+ * toApi + счётчик полей по ЭФФЕКТИВНОЙ схеме. resolveConfigFromRow — чистая
+ * функция (без запросов в БД), поэтому обогащение списка из 52 типов ничего
+ * не стоит. Считать по сырому row.llm_schema нельзя: у BL/CMR/TTN он NULL,
+ * боевая схема приходит из код-fallback'а (EXTENDED_SCHEMAS / builtin).
+ */
+function toApiWithFieldsCount(row: Parameters<typeof documentTypesRepo.toApi>[0]) {
+  const resolved = resolveConfigFromRow(row.slug as DocumentTypeSlug, row);
+  return {
+    ...documentTypesRepo.toApi(row),
+    extracted_fields_count: countSchemaLeafFields(resolved.llmSchema),
+  };
+}
 
 /**
  * F2 (§8.2): эффективная схема полей типа для schema-driven редактора.
@@ -218,7 +237,7 @@ export async function documentTypesRoutes(app: FastifyInstance): Promise<void> {
           ? await documentTypesRepo.listForOrg(orgId)
           : await documentTypesRepo.listActiveForOrg(null);
       }
-      return { items: rows.map((r) => documentTypesRepo.toApi(r)) };
+      return { items: rows.map((r) => toApiWithFieldsCount(r)) };
     },
   );
 
@@ -243,7 +262,7 @@ export async function documentTypesRoutes(app: FastifyInstance): Promise<void> {
         reply.code(404);
         return { error: 'document type not found' };
       }
-      return documentTypesRepo.toApi(row);
+      return toApiWithFieldsCount(row);
     },
   );
 
@@ -341,7 +360,9 @@ export async function documentTypesRoutes(app: FastifyInstance): Promise<void> {
       });
       documentTypeResolver.invalidate(row.slug);
       reply.code(201);
-      return after;
+      // Ответ несёт счётчик полей (схема DocumentType); в audit_log — сырой
+      // снимок строки без вычисляемых полей.
+      return toApiWithFieldsCount(row);
     },
   );
 
@@ -393,7 +414,7 @@ export async function documentTypesRoutes(app: FastifyInstance): Promise<void> {
         after: afterApi,
       });
       documentTypeResolver.invalidate(updated.slug);
-      return afterApi;
+      return toApiWithFieldsCount(updated);
     },
   );
 

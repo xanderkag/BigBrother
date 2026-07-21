@@ -32,6 +32,8 @@ export interface DocumentTypeEntry {
   llm_prompt?: string | null;
   llm_schema?: Record<string, unknown> | null;
   expected_fields?: string[];
+  /** Листовые поля эффективной схемы (БД ?? код-fallback) — для колонки «Поля». */
+  extracted_fields_count?: number;
   validators?: string[];
   confidence_threshold?: number | null;
   regex_fallback_threshold?: number | null;

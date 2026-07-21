@@ -47,9 +47,18 @@ vi.mock('../src/storage/audit-log.js', () => ({
 vi.mock('../src/storage/jobs.js', () => ({
   jobsRepo: { listByDocumentType: vi.fn(), getTypeStats: vi.fn(), getFieldCoverage: vi.fn(), toApi: (r: unknown) => r },
 }));
-vi.mock('../src/pipeline/document-type-resolver.js', () => ({
-  documentTypeResolver: { invalidate: vi.fn() },
-}));
+// Роут импортирует ЧИСТУЮ resolveConfigFromRow (счётчик «Поля» по эффективной
+// схеме) — оставляем её настоящей через importActual, мокаем только stateful
+// documentTypeResolver (invalidate). Так тесты гоняют реальный код-fallback
+// (EXTENDED_SCHEMAS для bill_of_lading и т.п.).
+vi.mock('../src/pipeline/document-type-resolver.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../src/pipeline/document-type-resolver.js')>();
+  return {
+    ...actual,
+    documentTypeResolver: { invalidate: vi.fn() },
+  };
+});
 vi.mock('../src/storage/users.js', () => ({
   usersRepo: { getAccessibleProjectIds: vi.fn().mockResolvedValue(new Set<string>()) },
 }));
@@ -161,6 +170,64 @@ describe('GET /api/v1/document-types — scope', () => {
     const r = await app.inject({ method: 'GET', url: '/api/v1/document-types' });
     expect(r.statusCode).toBe(200);
     expect(repo.listForOrg).toHaveBeenCalledWith(ORG_A);
+  });
+});
+
+describe('extracted_fields_count — счётчик «Поля» по эффективной схеме', () => {
+  it('bill_of_lading с llm_schema=NULL → счётчик из код-схемы (>20), а не 0', async () => {
+    // Регресс-кейс бага витрины: expected_fields=[] и llm_schema=NULL в БД,
+    // но боевая схема (EXTENDED_SCHEMAS.bill_of_lading = BL_SCHEMA) богатая —
+    // раньше UI показывал 0.
+    currentUser = superAdmin;
+    repo.list.mockResolvedValue([
+      apiRow({ slug: 'bill_of_lading', llm_schema: null, expected_fields: [] }),
+    ]);
+    const r = await app.inject({ method: 'GET', url: '/api/v1/document-types' });
+    expect(r.statusCode).toBe(200);
+    const item = r.json().items[0];
+    expect(item.extracted_fields_count).toBeGreaterThan(20);
+  });
+
+  it('явная llm_schema из БД приоритетнее fallback — считаем её листья', async () => {
+    currentUser = superAdmin;
+    repo.list.mockResolvedValue([
+      apiRow({
+        slug: 'custom_test',
+        llm_schema: {
+          type: 'object',
+          properties: {
+            number: { type: 'string' },
+            seller: { type: 'object', properties: { name: { type: 'string' }, inn: { type: 'string' } } },
+            items: {
+              type: 'array',
+              items: { type: 'object', properties: { name: { type: 'string' }, qty: { type: 'number' }, price: { type: 'number' } } },
+            },
+          },
+        },
+      }),
+    ]);
+    const r = await app.inject({ method: 'GET', url: '/api/v1/document-types' });
+    // number(1) + seller{name,inn}(2) + items[]{name,qty,price}(3) = 6 листьев
+    expect(r.json().items[0].extracted_fields_count).toBe(6);
+  });
+
+  it('custom-тип без схемы вообще → честный 0', async () => {
+    currentUser = superAdmin;
+    repo.list.mockResolvedValue([
+      apiRow({ slug: 'totally_unknown_custom', llm_schema: null, expected_fields: [] }),
+    ]);
+    const r = await app.inject({ method: 'GET', url: '/api/v1/document-types' });
+    expect(r.json().items[0].extracted_fields_count).toBe(0);
+  });
+
+  it('GET /:slug (деталь) тоже несёт счётчик', async () => {
+    currentUser = superAdmin;
+    repo.findBySlug.mockResolvedValue(
+      apiRow({ slug: 'bill_of_lading', llm_schema: null, expected_fields: [] }),
+    );
+    const r = await app.inject({ method: 'GET', url: '/api/v1/document-types/bill_of_lading' });
+    expect(r.statusCode).toBe(200);
+    expect(r.json().extracted_fields_count).toBeGreaterThan(20);
   });
 });
 
