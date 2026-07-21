@@ -125,6 +125,7 @@ pdf-text · tesseract · vision-llm · yandex · xlsx · docx · doc · xml · t
 | F0a | `relocateOgrnFromInn` | 13/15 цифр в `inn` → перенос в `ogrn` |
 | F0 | `recoverPartyInnsFromText` | добить ИНН стороны из OCR-текста по метке |
 | F0c | `recoverContainersFromText` | добить номер контейнера (ISO 6346) |
+| F0c2 | `sanitizeHsCodes`, `recoverHsCodesFromText` | ТН ВЭД: канонизировать код, выкинуть мусор-артикулы, добить из текста |
 | F0d | `recoverForwardingClientFromText` | добить заказчика поручения экспедитору |
 | F0d2 | `sanitizeForwardingLeg` | `leg` не из enum → `null` |
 | F0e | `sanitizePartyInns` | выкинуть ИНН, битые по длине / контрольной сумме |
