@@ -32,21 +32,28 @@ function stubQuery<T extends Record<string, unknown>>(returnRows: T[]): {
 }
 
 describe('jobsRepo.listByDocumentType', () => {
-  it('делает SELECT с WHERE document_type=$1 LIMIT $2 (DESC по created_at)', async () => {
+  it('делает SELECT с WHERE document_type=ANY($1) LIMIT $2 (обе формы слага)', async () => {
     const { spy, capturedArgs } = stubQuery([]);
     await jobsRepo.listByDocumentType('commercial_invoice', 25);
     expect(capturedArgs).toHaveLength(1);
-    expect(capturedArgs[0]!.sql).toMatch(/document_type\s*=\s*\$1/);
+    expect(capturedArgs[0]!.sql).toMatch(/document_type\s*=\s*ANY\(\$1\)/);
     expect(capturedArgs[0]!.sql).toMatch(/ORDER BY created_at DESC/);
     expect(capturedArgs[0]!.sql).toMatch(/LIMIT \$2/);
-    expect(capturedArgs[0]!.params).toEqual(['commercial_invoice', 25]);
+    expect(capturedArgs[0]!.params).toEqual([['commercial_invoice'], 25]);
+    spy.mockRestore();
+  });
+
+  it('алиасный слаг расширяется в обе формы (CMR → CMR+cmr)', async () => {
+    const { spy, capturedArgs } = stubQuery([]);
+    await jobsRepo.listByDocumentType('CMR', 25);
+    expect(capturedArgs[0]!.params).toEqual([['CMR', 'cmr'], 25]);
     spy.mockRestore();
   });
 
   it('limit по умолчанию = 50', async () => {
     const { spy, capturedArgs } = stubQuery([]);
     await jobsRepo.listByDocumentType('invoice');
-    expect(capturedArgs[0]!.params).toEqual(['invoice', 50]);
+    expect(capturedArgs[0]!.params).toEqual([['invoice'], 50]);
     spy.mockRestore();
   });
 });
@@ -79,7 +86,8 @@ describe('jobsRepo.getTypeStats', () => {
       { total_jobs: '0', done: '0', needs_review: '0', failed: '0', avg_confidence: null },
     ]);
     await jobsRepo.getTypeStats("'; DROP TABLE jobs; --", 30);
-    expect(capturedArgs[0]!.params).toEqual(["'; DROP TABLE jobs; --", '30']);
+    // Слаг уходит массивом кандидатов в ANY($1) — по-прежнему параметром.
+    expect(capturedArgs[0]!.params).toEqual([["'; DROP TABLE jobs; --"], '30']);
     spy.mockRestore();
   });
 });
@@ -98,9 +106,9 @@ describe('jobsRepo.getFieldCoverage', () => {
       { total: '100', f0: '95', f1: '70' },
     ]);
     const r = await jobsRepo.getFieldCoverage('invoice', ['number', 'seller.inn'], 30);
-    // params: [slug, days, path0, path1, ...]
+    // params: [slug-кандидаты (обе формы), days, path0, path1, ...]
     expect(capturedArgs[0]!.params).toEqual([
-      'invoice',
+      ['invoice'],
       '30',
       ['number'],
       ['seller', 'inn'],

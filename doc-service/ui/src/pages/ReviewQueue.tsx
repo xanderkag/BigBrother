@@ -23,6 +23,7 @@ import {
 import { isSynthetic, matchesOrigin, type DocOrigin } from '@/lib/synthetic';
 import type { DocumentTypeTier } from '@/queries/documentTypes';
 import type { Job } from '@/lib/types';
+import { normalizeSlugForApi } from '@/lib/slug-aliases';
 
 /**
  * Review queue v2 (2026-05-19 refactor):
@@ -76,10 +77,14 @@ export default function ReviewQueuePage() {
     limit: PAGE_SIZE,
   });
   const { data: docTypes } = useDocumentTypes();
+  // Обе формы слага: каталог — исторические ('CMR'), джобы — outbound ('cmr').
   const tierBySlug = useMemo(() => {
     const m = new Map<string, DocumentTypeTier>();
     for (const t of docTypes?.items ?? []) {
-      if (t.tier) m.set(t.slug, t.tier);
+      if (t.tier) {
+        m.set(t.slug, t.tier);
+        m.set(normalizeSlugForApi(t.slug), t.tier);
+      }
     }
     return m;
   }, [docTypes]);

@@ -1,6 +1,10 @@
 import { db } from '../db.js';
 import { normalizeExtracted } from './normalize-extracted.js';
-import { normalizeSlugForApi } from '../types/slug-normalize.js';
+import {
+  normalizeSlugForApi,
+  expandSlugForms,
+  INBOUND_SLUG_ALIASES,
+} from '../types/slug-normalize.js';
 import { stripInlineCredentials } from '../pipeline/llm/inline-credentials.js';
 import { countBusinessFields } from '../pipeline/quality-assessment.js';
 import { computeJobCost } from '../pipeline/cost.js';
@@ -698,12 +702,14 @@ class JobsRepo {
    * этого типа (по created_at DESC).
    */
   async listByDocumentType(slug: string, limit = 50): Promise<JobRow[]> {
+    // Обе формы слага (CMR/cmr): в колонке живут и исторические (keyword-
+    // классификатор), и outbound (document_hint) — см. expandSlugForms.
     const { rows } = await db.query<JobRow>(
       `SELECT * FROM jobs
-       WHERE document_type = $1
+       WHERE document_type = ANY($1)
        ORDER BY created_at DESC
        LIMIT $2`,
-      [slug, limit],
+      [expandSlugForms(slug), limit],
     );
     return rows;
   }
@@ -745,9 +751,9 @@ class JobsRepo {
          COUNT(*) FILTER (WHERE status = 'failed')::text                                  AS failed,
          AVG(confidence) FILTER (WHERE status IN ('done', 'needs_review'))::text          AS avg_confidence
        FROM jobs
-       WHERE document_type = $1
+       WHERE document_type = ANY($1)
          AND created_at >= now() - ($2 || ' days')::interval`,
-      [slug, String(sinceDays)],
+      [expandSlugForms(slug), String(sinceDays)],
     );
     const r = rows[0]!;
     return {
@@ -791,7 +797,7 @@ class JobsRepo {
           AND extracted #> $${i + 3} <> '""'::jsonb
       )::text AS f${i}`;
     });
-    const params: unknown[] = [slug, String(sinceDays)];
+    const params: unknown[] = [expandSlugForms(slug), String(sinceDays)];
     for (const field of expectedFields) params.push(field.split('.'));
 
     const { rows } = await db.query<Record<string, string>>(
@@ -799,7 +805,7 @@ class JobsRepo {
          COUNT(*) FILTER (WHERE status IN ('done', 'needs_review'))::text AS total,
          ${expressions.join(',\n         ')}
        FROM jobs
-       WHERE document_type = $1
+       WHERE document_type = ANY($1)
          AND created_at >= now() - ($2 || ' days')::interval`,
       params,
     );
@@ -931,9 +937,16 @@ class JobsRepo {
     // при LEFT JOIN'е с document_types (обе таблицы имеют created_at,
     // organization_id, updated_at). Без квалификации Postgres валился с
     // "column reference "created_at" is ambiguous" на by_tier.
+    // В jobs.document_type живут обе формы слага ('CMR' и 'cmr') — без
+    // канонизации by_type раздваивает строки типа, а by_tier теряет tier у
+    // outbound-форм (JOIN по слагу мимо строки каталога 'CMR'). CASE-выражение
+    // генерируется из INBOUND_SLUG_ALIASES — второго рукописного списка нет.
+    const canonType = `CASE j.document_type ${Object.entries(INBOUND_SLUG_ALIASES)
+      .map(([outbound, historical]) => `WHEN '${outbound}' THEN '${historical}'`)
+      .join(' ')} ELSE j.document_type END`;
     const byType = await this.groupBreakdown<'slug'>(
       'slug',
-      `COALESCE(j.document_type, '_unknown')`,
+      `COALESCE(${canonType}, '_unknown')`,
       'jobs j',
       whereExtra,
       params,
@@ -948,7 +961,7 @@ class JobsRepo {
     const byTier = await this.groupBreakdown<'tier'>(
       'tier',
       `COALESCE(dt.tier, '_untyped')`,
-      'jobs j LEFT JOIN document_types dt ON j.document_type = dt.slug',
+      `jobs j LEFT JOIN document_types dt ON ${canonType} = dt.slug`,
       whereExtra,
       params,
     );

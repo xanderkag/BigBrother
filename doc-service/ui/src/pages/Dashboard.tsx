@@ -265,14 +265,18 @@ export default function DashboardPage() {
               keyHeader="Тип"
               rows={data.by_type}
               rowKey={(t) => t.slug}
-              renderKey={(t) => (
-                <Link
-                  to={`/jobs?document_type=${t.slug}`}
-                  className="font-medium text-slate-900 dark:text-slate-100 hover:underline"
-                >
-                  {t.slug}
-                </Link>
-              )}
+              renderKey={(t) =>
+                t.slug === '_unknown' ? (
+                  <span className="font-medium text-slate-500 dark:text-slate-400">без типа</span>
+                ) : (
+                  <Link
+                    to={`/jobs?document_types=${encodeURIComponent(t.slug)}`}
+                    className="font-medium text-slate-900 dark:text-slate-100 hover:underline"
+                  >
+                    {t.slug}
+                  </Link>
+                )
+              }
             />
           )}
 

@@ -45,6 +45,7 @@ import {
   formatDuration,
 } from '@/lib/format';
 import type { Job, Classification } from '@/lib/types';
+import { normalizeSlugForApi } from '@/lib/slug-aliases';
 
 /**
  * F5 multi-doc сегмент — один документ внутри multi-doc PDF/xlsx.
@@ -139,10 +140,15 @@ export default function JobDetailPage() {
   const [helpOpen, setHelpOpen] = useState(false);
   const pdfRef = useRef<PdfViewerHandle>(null);
 
+  // Ключуем обеими формами слага: каталог отдаёт исторические ('CMR'),
+  // job.document_type из API — outbound ('cmr').
   const tierBySlug = useMemo(() => {
     const m = new Map<string, DocumentTypeTier>();
     for (const t of docTypes?.items ?? []) {
-      if (t.tier) m.set(t.slug, t.tier);
+      if (t.tier) {
+        m.set(t.slug, t.tier);
+        m.set(normalizeSlugForApi(t.slug), t.tier);
+      }
     }
     return m;
   }, [docTypes]);
@@ -153,6 +159,10 @@ export default function JobDetailPage() {
     const m = new Map<string, { display_name: string; description?: string | null }>();
     for (const t of docTypes?.items ?? []) {
       m.set(t.slug, { display_name: t.display_name, description: t.description });
+      m.set(normalizeSlugForApi(t.slug), {
+        display_name: t.display_name,
+        description: t.description,
+      });
     }
     return m;
   }, [docTypes]);

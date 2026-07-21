@@ -103,6 +103,13 @@ const DocumentType = z.object({
   // резолвера). Именно его показывает колонка «Поля» в UI — сырой
   // expected_fields у типов со схемой-в-коде (BL/CMR/TTN) пуст и врал «0».
   extracted_fields_count: z.number(),
+  // Эффективные значения (резолвер + config-дефолты) — чтобы UI не показывал
+  // NULL как «не задано/нет», когда runtime реально работает с дефолтом.
+  effective_confidence_threshold: z.number(),
+  effective_regex_fallback_threshold: z.number(),
+  effective_expected_fields: z.array(z.string()),
+  // 'db' = схема из строки БД, 'code' = код-fallback, 'none' = схемы нет.
+  effective_schema_source: z.enum(['db', 'code', 'none']),
   created_at: z.string(),
   updated_at: z.string(),
 });
@@ -119,9 +126,20 @@ const ListResponse = z.object({
  */
 function toApiWithFieldsCount(row: Parameters<typeof documentTypesRepo.toApi>[0]) {
   const resolved = resolveConfigFromRow(row.slug as DocumentTypeSlug, row);
+  const fieldsCount = countSchemaLeafFields(resolved.llmSchema);
   return {
     ...documentTypesRepo.toApi(row),
-    extracted_fields_count: countSchemaLeafFields(resolved.llmSchema),
+    extracted_fields_count: fieldsCount,
+    effective_confidence_threshold: resolved.confidenceThreshold,
+    effective_regex_fallback_threshold: resolved.regexFallbackThreshold,
+    effective_expected_fields: resolved.expectedFields,
+    // НЕ resolved.source: он означает «строка найдена в БД», а не «схема из
+    // БД» — для TTN/CMR/BL source='db' при фактически код-fallback-схеме.
+    effective_schema_source: (row.llm_schema != null
+      ? 'db'
+      : fieldsCount > 0
+        ? 'code'
+        : 'none') as 'db' | 'code' | 'none',
   };
 }
 

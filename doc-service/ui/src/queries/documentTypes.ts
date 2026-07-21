@@ -36,6 +36,11 @@ export interface DocumentTypeEntry {
   extracted_fields_count?: number;
   /** Позиционные веса keywords (read-only; пересобираются сервером при PATCH). */
   classification_keyword_weights?: number[] | null;
+  /** Эффективные значения (резолвер + config-дефолты) — NULL в БД ≠ «нет». */
+  effective_confidence_threshold?: number;
+  effective_regex_fallback_threshold?: number;
+  effective_expected_fields?: string[];
+  effective_schema_source?: 'db' | 'code' | 'none';
   validators?: string[];
   confidence_threshold?: number | null;
   regex_fallback_threshold?: number | null;

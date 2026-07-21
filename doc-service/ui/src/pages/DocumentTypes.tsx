@@ -308,7 +308,7 @@ export default function DocumentTypesPage() {
                   )}
                 </div>
                 <div className="flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] text-slate-500 dark:text-slate-400">
-                  <span>{t.parser_kind ?? 'parser —'}</span>
+                  <span>{t.parser_kind ?? (t.is_builtin ? 'parser: авто (regex)' : 'parser: авто (LLM)')}</span>
                   <span>{t.extracted_fields_count ?? (t.expected_fields ?? []).length} полей</span>
                   <span>
                     {(t.classification_keywords ?? []).length
@@ -631,7 +631,7 @@ function DocumentTypeEditor({
                   setField('parser_kind', (e.target.value || null) as ParserKind | null)
                 }
               >
-                <option value="">— не задан —</option>
+                <option value="">авто — по умолчанию (regex для builtin, LLM для остальных)</option>
                 {PARSER_KINDS.map((p) => (
                   <option key={p} value={p}>
                     {p}
@@ -683,7 +683,11 @@ function DocumentTypeEditor({
                     e.target.value === '' ? null : Number(e.target.value),
                   )
                 }
-                placeholder="env default"
+                placeholder={
+                  initial.effective_confidence_threshold != null
+                    ? `пусто = ${initial.effective_confidence_threshold} (default)`
+                    : 'env default'
+                }
               />
             </div>
             <div>
@@ -701,7 +705,11 @@ function DocumentTypeEditor({
                     e.target.value === '' ? null : Number(e.target.value),
                   )
                 }
-                placeholder="env default"
+                placeholder={
+                  initial.effective_regex_fallback_threshold != null
+                    ? `пусто = ${initial.effective_regex_fallback_threshold} (default)`
+                    : 'env default'
+                }
               />
             </div>
 
