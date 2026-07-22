@@ -1,6 +1,6 @@
 import type { Logger } from 'pino';
 import { config } from '../config.js';
-import { docQueue } from '../queue.js';
+import { enqueueDocJob } from '../queue.js';
 import { jobsRepo as defaultJobsRepo, type JobRow } from '../storage/jobs.js';
 
 /**
@@ -18,8 +18,12 @@ import { jobsRepo as defaultJobsRepo, type JobRow } from '../storage/jobs.js';
  * (повторное finalize OK), так что re-enqueue безопасен.
  *
  * The sweep is cheap: один SELECT для pending + один для processing,
- * каждый с `graceSeconds` window. BullMQ deduplicates by `jobId`, так что
- * если worker реально работает — no-op.
+ * каждый с `graceSeconds` window.
+ *
+ * ВАЖНО (2026-07-22): re-enqueue идёт через `enqueueDocJob`, который снимает
+ * terminal-дубликат (completed/failed) перед add. Наивный `queue.add` тут
+ * молча дедупился бы об старую completed/failed-запись → строка навечно
+ * `pending`, а sweeper вхолостую логировал бы «re-enqueued» каждые 60с.
  */
 export type PendingJobSweeperDeps = {
   log: Logger;
@@ -44,7 +48,7 @@ const defaultEnqueue = async (
   payload: { jobId: string; requestId?: string },
   bullId: string,
 ): Promise<void> => {
-  await docQueue.add('process', payload, { jobId: bullId });
+  await enqueueDocJob(payload, bullId);
 };
 
 export function startPendingJobSweeper(

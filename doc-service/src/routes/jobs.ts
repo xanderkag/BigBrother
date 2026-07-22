@@ -13,7 +13,7 @@ import {
   fileStorage,
 } from '../storage/files.js';
 import { jobsRepo, type JobRow } from '../storage/jobs.js';
-import { docQueue } from '../queue.js';
+import { enqueueDocJob } from '../queue.js';
 import {
   CreateFeedbackBody,
   CreateJobResponse,
@@ -720,13 +720,10 @@ export async function jobsRoutes(app: FastifyInstance): Promise<void> {
 
       // Propagate the HTTP request id into the BullMQ payload so the worker
       // can bind it to its child logger. The BullMQ jobId is the same as our
-      // domain jobId — gives us idempotent enqueue (a retry of POST with the
-      // same row inserted wouldn't create a duplicate Bull job).
-      await docQueue.add(
-        'process',
-        { jobId: job.id, requestId: req.id },
-        { jobId: job.id },
-      );
+      // domain jobId. enqueueDocJob снимает terminal-дубликат перед add —
+      // важно для повторной загрузки того же файла (SHA-dedup вернул старый
+      // job.id, чья BullMQ-запись уже completed): наивный add молча no-op'ил.
+      await enqueueDocJob({ jobId: job.id, requestId: req.id }, job.id);
 
       reply.code(202);
       return { job_id: job.id, status: job.status };
