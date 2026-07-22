@@ -4,6 +4,7 @@ import { config, assertRuntimeConfig } from './config.js';
 import { QUEUE_NAME, redisConnection, type DocJobPayload, closeQueue } from './queue.js';
 import { closeDb } from './db.js';
 import { processJob, isDeterministicJobError } from './pipeline/orchestrator.js';
+import { jobsRepo } from './storage/jobs.js';
 import { startPendingJobSweeper } from './workers/pending-job-sweeper.js';
 import { startFileCleanupSweeper } from './workers/file-cleanup.js';
 import { startAuditLogSweeper } from './workers/audit-log-sweeper.js';
@@ -41,9 +42,19 @@ const worker = new Worker<DocJobPayload>(
         { job_age_min: Math.round(jobAgeMs / 60_000), max_age_min: config.jobMaxAgeSeconds / 60 },
         'job exceeded max age — dropping without retry',
       );
-      throw new UnrecoverableError(
-        `job exceeded max age (${Math.round(jobAgeMs / 60_000)} min > ${config.jobMaxAgeSeconds / 60} min)`,
-      );
+      const ageError = `job exceeded max age (${Math.round(jobAgeMs / 60_000)} min > ${config.jobMaxAgeSeconds / 60} min)`;
+      // ОБЯЗАТЕЛЬНО финализировать строку в Postgres ДО throw: иначе она
+      // остаётся в 'processing' навечно — BullMQ-джоба уходит в failed-set,
+      // re-enqueue sweeper'а с тем же id молча дедупится об неё, и sweeper
+      // спамит «re-enqueued stuck processing job» каждые 60с бесконечно
+      // (зомби ТН_FESU5433115, 2026-07-21). best-effort: упавший UPDATE не
+      // должен спрятать UnrecoverableError.
+      await jobsRepo
+        .finalize(job.data.jobId, { status: 'failed', error: ageError })
+        .catch((err) =>
+          jobLog.error({ err }, 'failed to finalize over-age job row — row may stay processing'),
+        );
+      throw new UnrecoverableError(ageError);
     }
 
     // Retry-событие — отдельным сообщением, чтобы log-агрегатор
