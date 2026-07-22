@@ -1,6 +1,6 @@
 {
   "name": "doc-service",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Universal document processing service: OCR + structured extraction for transport and accounting documents",
   "private": true,
   "type": "module",
