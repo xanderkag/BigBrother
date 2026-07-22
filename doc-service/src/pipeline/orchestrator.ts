@@ -43,6 +43,8 @@ import { correctSpecVsInvoice, correctWeightPageToPacking } from './classifier/s
 import { combineConfidence } from './quality.js';
 import { assessQuality, countBusinessFields, type QualityFactor } from './quality-assessment.js';
 import { ParsersFactory } from './parsers/index.js';
+import type { DocumentParser } from './parsers/types.js';
+import { countTableRows } from './parsers/multipass-llm.js';
 import { dynamicLlm } from './llm/provider-resolver.js';
 import type { LlmClient, LlmExtractDebug } from './llm/types.js';
 import type { DocumentTypeSlug } from '../types/documents.js';
@@ -1716,10 +1718,25 @@ export async function runDocumentPipeline(
     //
     // Для всех остальных значений (null / builtin:*) — стандартный диспатч
     // фабрики: builtin slug → типизированный regex-парсер, custom → Generic.
+    // SPEED-5 (2026-07-22): триггер multipass ещё и по ЧИСЛУ табличных строк
+    // (прокси объёма вывода), не только по входным байтам. Мульти-док сегмент
+    // (инвойс с сотней позиций) может быть мал по байтам, но его single-shot
+    // вывод упирается в 8192 токена → truncated → пусто → дорогой ретрай.
+    const tableRows =
+      typeConfig?.parserKind === 'llm_extract' && config.thresholds.multipassAutoRows > 0
+        ? countTableRows(rawText)
+        : 0;
+    const rowHeavy = tableRows > config.thresholds.multipassAutoRows;
     const useMultipass =
       typeConfig?.parserKind === 'llm_extract_multipass' ||
       (typeConfig?.parserKind === 'llm_extract' &&
-        rawText.length > config.thresholds.multipassAutoBytes);
+        (rawText.length > config.thresholds.multipassAutoBytes || rowHeavy));
+    if (rowHeavy && rawText.length <= config.thresholds.multipassAutoBytes) {
+      log.info(
+        { ...context, table_rows: tableRows, threshold: config.thresholds.multipassAutoRows },
+        'multipass triggered by row density (SPEED-5): вход мал по байтам, но много табличных строк',
+      );
+    }
     const parser =
       useMultipass
         ? parsersFactory.getMultipass(documentType)
@@ -1794,8 +1811,11 @@ export async function runDocumentPipeline(
     }
     extractMode = imagePathForExtract ? 'image' : 'text';
 
-    const runParse = () =>
-      parser.parse(rawText, {
+    // SPEED-5: parser параметризован — retry может подменить single-shot на
+    // multipass при обрыве вывода (чанки решают 8192-truncation, чего смена
+    // провайдера не даёт).
+    const runParse = (useParser: DocumentParser = parser) =>
+      useParser.parse(rawText, {
         expectedFields: typeConfig!.expectedFields,
         regexFallbackThreshold: typeConfig!.regexFallbackThreshold,
         llmSchema: typeConfig!.llmSchema,
@@ -1840,7 +1860,29 @@ export async function runDocumentPipeline(
         ocrText: rawText,
       });
       const fallbackId = config.requality.fallbackProviderId;
-      const canRetry = assessment.shouldRequality && !!fallbackId && fallbackId !== extractProviderId;
+      // SPEED-5: обрыв вывода / пустой extract на row-heavy типе, который шёл
+      // single-shot — ретраить тем же single-shot бессмысленно (снова обрыв).
+      // Эскалируем в multipass (чанки), приоритетнее провайдер-фолбэка.
+      const hasTruncatedJson = assessment.factors.some((f) => f.code === 'truncated_json');
+      const hasEmptyExtract = assessment.factors.some((f) => f.code === 'empty_extract');
+      const schemaHasItems = !!(
+        (typeConfig!.llmSchema as { properties?: Record<string, unknown> } | undefined)?.properties
+          ?.items
+      );
+      // Эскалируем: (а) обрыв JSON — явный признак упора в потолок вывода,
+      // всегда; (б) пустой extract — только если в тексте ЕСТЬ табличные
+      // строки (single-shot захлебнулся объёмом), иначе это просто пустой
+      // документ и multipass не поможет.
+      const canEscalateMultipass =
+        !useMultipass &&
+        typeConfig?.parserKind === 'llm_extract' &&
+        schemaHasItems &&
+        (hasTruncatedJson || (hasEmptyExtract && tableRows > 0));
+      const canRetry =
+        !canEscalateMultipass &&
+        assessment.shouldRequality &&
+        !!fallbackId &&
+        fallbackId !== extractProviderId;
       if (assessment.shouldRequality) {
         log.warn(
           {
@@ -1848,13 +1890,56 @@ export async function runDocumentPipeline(
             type: documentType,
             requality_score: assessment.score,
             requality_factors: assessment.factors.map((f) => f.code),
-            will_retry: canRetry,
+            will_retry: canRetry || canEscalateMultipass,
+            escalate_multipass: canEscalateMultipass,
             fallback_provider: canRetry ? fallbackId : null,
           },
           'quality assessment flagged strange extract',
         );
       }
-      if (canRetry) {
+      if (canEscalateMultipass) {
+        // Тот же (default/preferred) провайдер, но multipass-парсер: чанки не
+        // упираются в потолок вывода. Fail-soft: хуже — оставляем оригинал.
+        try {
+          const mpParser = parsersFactory.getMultipass(documentType);
+          const retry = extractProviderId
+            ? await dynamicLlm.withForceProvider(extractProviderId, () => runParse(mpParser))
+            : await runParse(mpParser);
+          const retryAssess = assessQuality({
+            extracted: retry.extracted,
+            expectedFields: typeConfig!.expectedFields,
+            missing: retry.missing,
+            confidence: retry.confidence,
+            rawResponse: retry.llmCall?.raw_response ?? null,
+            ocrText: rawText,
+          });
+          const retryBetter =
+            retryAssess.score < assessment.score ||
+            (retryAssess.score === assessment.score &&
+              retry.missing.length < result.missing.length);
+          log.info(
+            {
+              ...context,
+              orig_score: assessment.score,
+              retry_score: retryAssess.score,
+              chosen: retryBetter ? 'multipass-escalation' : 'original',
+            },
+            'requality multipass escalation completed',
+          );
+          if (retryBetter) {
+            result = retry;
+            requalityFactors.push(...retryAssess.factors);
+          } else {
+            requalityFactors.push(...assessment.factors);
+          }
+        } catch (err) {
+          log.warn(
+            { ...context, err: err instanceof Error ? err.message : String(err) },
+            'requality multipass escalation failed — keeping original extract',
+          );
+          requalityFactors.push(...assessment.factors);
+        }
+      } else if (canRetry) {
         // Вторая попытка через fallback-провайдер. Fail-soft: если она упала
         // или дала ХУЖЕ (меньше полей) — оставляем оригинальный результат.
         // `assessment` уже посчитан для original выше — переиспользуем его как

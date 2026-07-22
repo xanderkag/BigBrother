@@ -328,16 +328,29 @@ function itemDedupKey(item: unknown): string | null {
  *
  * Порядок текста сохранён, куски не перекрываются.
  */
+/** Табличная строка-кандидат: непустая и ≥2 разделителей колонок. */
+export function isTableRow(line: string): boolean {
+  if (!line.trim()) return false;
+  let seps = 0;
+  for (const ch of line) if (ch === ',' || ch === '\t' || ch === ';' || ch === '|') seps++;
+  return seps >= 2;
+}
+
+/**
+ * Оценка числа табличных строк в тексте — прокси ожидаемого объёма ВЫХОДА
+ * (SPEED-5): row-heavy сегмент даёт много items[] и упирается в потолок
+ * вывода при single-shot. Используется для триггера multipass.
+ */
+export function countTableRows(text: string): number {
+  let n = 0;
+  for (const line of text.split('\n')) if (isTableRow(line)) n++;
+  return n;
+}
+
 export function splitForItems(text: string, chunkBytes: number, targetRows = 0): string[] {
   if (text.length <= chunkBytes && targetRows <= 0) return [text];
 
-  // Табличная строка-кандидат: непустая и ≥2 разделителей колонок.
-  const isRowLike = (line: string): boolean => {
-    if (!line.trim()) return false;
-    let seps = 0;
-    for (const ch of line) if (ch === ',' || ch === '\t' || ch === ';' || ch === '|') seps++;
-    return seps >= 2;
-  };
+  const isRowLike = isTableRow;
 
   const lines = text.split('\n');
   const chunks: string[] = [];

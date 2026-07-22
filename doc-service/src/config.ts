@@ -186,6 +186,14 @@ const ConfigSchema = z.object({
     // 26.7k chars от tesseract → single-shot OOM. На 15k threshold —
     // contract/cert/long-CI идут через multipass, что устраняет OOM.
     multipassAutoBytes: numberFromEnv(15_000),
+    // SPEED-5 (2026-07-22): входить в multipass ТАКЖЕ при большом числе
+    // табличных строк, даже если вход мал по байтам. Корень бенча: мульти-
+    // док сегменты (инвойс с сотней позиций) < порога байт → single-shot →
+    // вывод упирается в 8192 токена → truncated_json → пустой → ретрай тем
+    // же single-shot → снова обрыв (531с/сегмент, 0 результат). Оценка: при
+    // ~20 полях/строку single-shot безопасен до ~40 строк (~4-6К вых.токенов
+    // по ExtractBench); выше — чанкуем. 0 = выключить строковый триггер.
+    multipassAutoRows: numberFromEnv(40),
   }),
 
   /**
@@ -755,6 +763,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       needsReview: env.NEEDS_REVIEW_THRESHOLD,
       regexFallback: env.LLM_FALLBACK_THRESHOLD,
       multipassAutoBytes: env.MULTIPASS_AUTO_BYTES,
+      multipassAutoRows: env.MULTIPASS_AUTO_ROWS,
     },
     multipass: {
       headerHeadBytes: env.MULTIPASS_HEADER_HEAD_BYTES,
