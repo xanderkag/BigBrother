@@ -103,6 +103,14 @@ export const forcedProviderFallthroughTotal = new Counter({
   registers: [registry],
 });
 
+// COMPLEX-DEFER (2026-07-22): сложные доки, у которых extract отложен, чтобы
+// не занимать слот воркера надолго и не тормозить очередь.
+export const complexDocsDeferred = new Counter({
+  name: 'docservice_complex_docs_deferred_total',
+  help: 'Documents whose expensive extract was deferred (too many table rows) — classified + needs_review, collected for batch handling.',
+  registers: [registry],
+});
+
 // --- Webhook delivery ---
 
 export const webhookAttemptsTotal = new Counter({

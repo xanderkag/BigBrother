@@ -194,6 +194,14 @@ const ConfigSchema = z.object({
     // ~20 полях/строку single-shot безопасен до ~40 строк (~4-6К вых.токенов
     // по ExtractBench); выше — чанкуем. 0 = выключить строковый триггер.
     multipassAutoRows: numberFromEnv(40),
+    // COMPLEX-DEFER (2026-07-22, решение владельца): док с числом табличных
+    // строк выше порога — «сложный»: полный extract занял бы слот воркера
+    // надолго (мульти-док мега-книга = 15+ мин) и тормозил бы очередь.
+    // Такой док детектим дёшево (countTableRows после OCR), extract
+    // ОТКЛАДЫВАЕМ (классифицируем, помечаем needs_review + _complex_deferred),
+    // копим для батч-разбора позже. 0 = выключить (обрабатывать всё как есть).
+    // Порог высокий — только настоящие выбросы (норм. инвойс <50 строк).
+    complexDocRowThreshold: numberFromEnv(400),
   }),
 
   /**
@@ -764,6 +772,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       regexFallback: env.LLM_FALLBACK_THRESHOLD,
       multipassAutoBytes: env.MULTIPASS_AUTO_BYTES,
       multipassAutoRows: env.MULTIPASS_AUTO_ROWS,
+      complexDocRowThreshold: env.COMPLEX_DOC_ROW_THRESHOLD,
     },
     multipass: {
       headerHeadBytes: env.MULTIPASS_HEADER_HEAD_BYTES,

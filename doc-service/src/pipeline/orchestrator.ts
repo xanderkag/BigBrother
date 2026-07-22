@@ -59,6 +59,7 @@ import {
   llmCredentialsSuppliedTotal,
   llmProviderErrorsTotal,
   forcedProviderFallthroughTotal,
+  complexDocsDeferred,
 } from '../metrics.js';
 import {
   decryptInlineCredentials,
@@ -523,6 +524,28 @@ async function processJobInner(
       }
     }
 
+    // ── COMPLEX-DEFER (2026-07-22) ──────────────────────────────────────────
+    // Сложный док (много табличных строк) полным extract'ом занял бы слот
+    // воркера на 10-15+ мин (мульти-док мега-книга: N сегментов × multipass)
+    // и тормозил бы очередь для нормальных доков. Решение владельца: детектим
+    // дёшево (countTableRows), extract ОТКЛАДЫВАЕМ — классифицируем и
+    // финализируем needs_review с пометкой _complex_deferred, копим для
+    // батч-разбора. Переиспользуем classify_only-путь (он уже «классифицируй,
+    // пропусти extract, финализируй + webhook»): skipExtract = classifyOnly ||
+    // deferComplex. deferComplex гейтим на !classifyOnly, чтобы у classify_only-
+    // потребителя поведение не менялось.
+    const complexRowThreshold = config.thresholds.complexDocRowThreshold;
+    const docTableRows = complexRowThreshold > 0 ? countTableRows(ocr.text) : 0;
+    const deferComplex = !classifyOnly && complexRowThreshold > 0 && docTableRows > complexRowThreshold;
+    const skipExtract = classifyOnly || deferComplex;
+    if (deferComplex) {
+      log.warn(
+        { jobId, table_rows: docTableRows, threshold: complexRowThreshold },
+        'COMPLEX-DEFER: сложный документ — extract отложен, помечаем needs_review для батч-разбора',
+      );
+      complexDocsDeferred.inc();
+    }
+
     // ── F5 Multi-doc detection (xlsx multi-sheet, MVP) ──────────────────
     // Если OCR engine выдал множество страниц (xlsx с несколькими sheets'ами),
     // классифицируем каждую отдельно. Если sheets имеют разные types →
@@ -546,7 +569,7 @@ async function processJobInner(
     }
 
     let multiDocResult: Awaited<ReturnType<typeof tryMultiDoc>> = null;
-    if (!classifyOnly && mdOcr.pages && mdOcr.pages.length > 1) {
+    if (!skipExtract && mdOcr.pages && mdOcr.pages.length > 1) {
       // §P0-1/§FIX-2: keyword — основной per-page классификатор (границы уже
       // типизируют boundary-страницы). За флагом MULTIDOC_LLM_CLASSIFY — LLM
       // как keyword-prior-GATED хук: runner зовёт его ТОЛЬКО для слабых страниц
@@ -658,7 +681,8 @@ async function processJobInner(
         promptOverride,
         organizationId: job.organization_id,
         fileName: job.file_name,
-        classifyOnly,
+        // COMPLEX-DEFER: сложный док классифицируем, но extract пропускаем.
+        classifyOnly: skipExtract,
         imagePath: firstPageImage.imagePath,
         forceExtractFromImage,
         // Hybrid-routing (SLAI #3). Гейтится HYBRID_ROUTING_ENABLED — при
@@ -688,7 +712,7 @@ async function processJobInner(
     // равно не дадут извлечь ПДн; vision локальный, не облако.
     if (
       config.classifier.vlmClassify &&
-      !classifyOnly &&
+      !skipExtract &&
       !post.documentType &&
       firstPageImage.imagePath &&
       ocr.text.trim().length < 200
@@ -752,7 +776,7 @@ async function processJobInner(
       !isIdDocument(post.documentType, post.extracted);
     if (
       config.deepPass.enabled &&
-      !classifyOnly &&
+      !skipExtract &&
       (!post.documentType || imageUncertain) &&
       !realComposite
     ) {
@@ -887,10 +911,10 @@ async function processJobInner(
         unknown: post.classification?.unknown ?? false,
       },
     });
-    if (classifyOnly) {
-      // Phase 3 (CP7): extract-стадия пропущена по профилю потребителя.
+    if (skipExtract) {
+      // Extract-стадия пропущена: либо профиль classify_only, либо COMPLEX-DEFER.
       await stepEvent('parse', 'skipped', {
-        details: { reason: 'profile.mode=classify_only' },
+        details: { reason: deferComplex ? 'complex_document_deferred' : 'profile.mode=classify_only' },
       });
     } else {
       await stepEvent('parse', 'done', {
@@ -919,7 +943,7 @@ async function processJobInner(
     // DaData (DADATA_API_KEY). Fail-soft: НИКОГДА не роняет job. Кладёт
     // результат в extracted._enrichment, который relay'ится через webhook.
     // Не запускаем в classify_only (extracted пустой — нечего обогащать).
-    if (!classifyOnly && profile.enrich_enabled && (await dadataClient.isAvailable())) {
+    if (!skipExtract && profile.enrich_enabled && (await dadataClient.isAvailable())) {
       const enrichStart = Date.now();
       try {
         const result = await enrichWithDadata(
@@ -941,7 +965,7 @@ async function processJobInner(
           details: { error: String((err as Error)?.message ?? err) },
         });
       }
-    } else if (!classifyOnly) {
+    } else if (!skipExtract) {
       await stepEvent('enrich', 'skipped', {
         details: {
           reason: !profile.enrich_enabled ? 'profile.enrich_enabled=false' : 'dadata_unavailable',
@@ -985,7 +1009,7 @@ async function processJobInner(
     // Когда requality ВКЛЮЧЁН, фактор `empty_extract` уже добавлен через
     // requalityFactors (см. runDocumentPipeline перед return) — не дублируем.
     const emptyExtraction =
-      countBusinessFields(extractedClean) === 0 && !classifyOnly && !config.requality.enabled;
+      countBusinessFields(extractedClean) === 0 && !skipExtract && !config.requality.enabled;
     if (emptyExtraction) {
       log.warn(
         { jobId, overall_confidence: overall, document_type: post.documentType },
@@ -1020,8 +1044,17 @@ async function processJobInner(
       post.validationIssues.push(`classify_uncertain: ${why} — проверьте тип документа`);
     }
 
+    // COMPLEX-DEFER: отложенный сложный док — всегда needs_review с явной
+    // причиной; сам маркер (для батч-выборки «покажем глобально позже»)
+    // добавляем в extractedToStore ниже.
+    if (deferComplex) {
+      post.validationIssues.push(
+        `complex_document_deferred: ${docTableRows} табличных строк > порога ${complexRowThreshold} — детальный разбор отложен для батч-обработки`,
+      );
+    }
+
     const status: 'done' | 'needs_review' =
-      lowConfidence || post.validationIssues.length > 0 || emptyExtraction
+      deferComplex || lowConfidence || post.validationIssues.length > 0 || emptyExtraction
         ? 'needs_review'
         : 'done';
 
@@ -1029,6 +1062,15 @@ async function processJobInner(
       log.info({ jobId, issues: post.validationIssues }, 'validation issues detected');
     }
     const extractedToStore: Record<string, unknown> = { ...extractedClean };
+    if (deferComplex) {
+      // Служебный маркер — по нему выбираем отложенные доки для глобального
+      // разбора («выявили — пропускаем пока, посмотрим пачкой потом»).
+      extractedToStore._complex_deferred = {
+        table_rows: docTableRows,
+        threshold: complexRowThreshold,
+        reason: 'extract_deferred_queue_protection',
+      };
+    }
     if (post.validationIssues.length > 0) {
       extractedToStore._issues = post.validationIssues;
     }
