@@ -140,6 +140,10 @@ const ConfigSchema = z.object({
     // A pending row younger than this is left alone — gives the normal
     // enqueue path time to land before the sweeper second-guesses it.
     pendingGraceSeconds: numberFromEnv(60),
+    // Stall-guard (2026-07-22): после скольких безуспешных reclaim'ов зависшая
+    // в processing джоба помечается failed + `_stall_deferred` (батч-
+    // перепроверка) вместо вечного ретрая. 0 = выкл (всегда re-enqueue).
+    stallMaxReclaims: numberFromEnv(2),
     // How often we sweep finished jobs to delete their on-disk file.
     fileCleanupIntervalMs: numberFromEnv(60 * 60 * 1000), // hourly
     // Retain uploaded files for N days after the job reaches a terminal
@@ -759,6 +763,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     sweepers: {
       pendingIntervalMs: env.PENDING_SWEEPER_INTERVAL_MS,
       pendingGraceSeconds: env.PENDING_SWEEPER_GRACE_SECONDS,
+      stallMaxReclaims: env.STALL_MAX_RECLAIMS,
       fileCleanupIntervalMs: env.FILE_CLEANUP_INTERVAL_MS,
       fileRetentionDays: env.FILE_RETENTION_DAYS,
       auditLogIntervalMs: env.AUDIT_LOG_SWEEP_INTERVAL_MS,

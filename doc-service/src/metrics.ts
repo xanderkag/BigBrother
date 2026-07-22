@@ -111,6 +111,14 @@ export const complexDocsDeferred = new Counter({
   registers: [registry],
 });
 
+// Stall-guard (2026-07-22): зависшие в processing доки, помеченные failed +
+// `_stall_deferred` после безуспешных reclaim'ов — для батч-перепроверки.
+export const stallDeferredTotal = new Counter({
+  name: 'docservice_stall_deferred_total',
+  help: 'Jobs stuck in processing that were marked failed after failed reclaims (deferred for batch recheck).',
+  registers: [registry],
+});
+
 // --- Webhook delivery ---
 
 export const webhookAttemptsTotal = new Counter({

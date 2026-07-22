@@ -31,9 +31,13 @@ export type PendingJobSweeperDeps = {
   jobsRepo?: {
     findStalePending: (graceSeconds: number, limit?: number) => Promise<JobRow[]>;
     findStuckProcessing: (graceSeconds: number, limit?: number) => Promise<JobRow[]>;
+    bumpReclaimCount: (id: string) => Promise<number>;
+    markStalledDeferred: (id: string, error: string) => Promise<boolean>;
   };
   /** Override the BullMQ enqueue function (e.g., in tests). */
   enqueue?: (payload: { jobId: string; requestId?: string }, bullId: string) => Promise<void>;
+  /** Called when a stuck job is given up on (stall-guard). Override in tests. */
+  onStallDeferred?: () => void;
   intervalMs?: number;
   graceSeconds?: number;
   /**
@@ -42,6 +46,14 @@ export type PendingJobSweeperDeps = {
    * Меньше — false-positive'ы (подберём реально работающий job).
    */
   processGraceSeconds?: number;
+  /**
+   * Stall-guard (2026-07-22): после скольких безуспешных reclaim'ов «точный
+   * подвисон» помечается failed (+ маркер `_stall_deferred` для батч-
+   * перепроверки) вместо бесконечного ретрая. 0 = выкл (старое поведение —
+   * всегда re-enqueue). Консервативно 2: легит-медленный multipass успевает
+   * финализироваться между reclaim'ами, настоящий hang — нет.
+   */
+  stallMaxReclaims?: number;
 };
 
 const defaultEnqueue = async (
@@ -61,6 +73,8 @@ export function startPendingJobSweeper(
   const graceSeconds = deps.graceSeconds ?? config.sweepers.pendingGraceSeconds;
   // 15 minutes default — typical multipass LLM extract + buffer.
   const processGraceSeconds = deps.processGraceSeconds ?? 900;
+  const stallMaxReclaims = deps.stallMaxReclaims ?? config.sweepers.stallMaxReclaims;
+  const onStallDeferred = deps.onStallDeferred;
 
   let running = false;
 
@@ -86,19 +100,46 @@ export function startPendingJobSweeper(
         }
       }
 
-      // 2. Stuck processing — worker died/restarted, job orphaned in active queue
+      // 2. Stuck processing — worker died/restarted ИЛИ «точный подвисон»
+      // (updated_at заморожен processGraceSeconds = нет прогресса). Stall-guard:
+      // даём stallMaxReclaims восстановительных re-enqueue, потом помечаем
+      // failed + `_stall_deferred` (батч-перепроверка), а не ретраим вечно.
       const stuckProcessing = await repo.findStuckProcessing(processGraceSeconds);
       if (stuckProcessing.length > 0) {
         log.warn(
           { count: stuckProcessing.length, age_seconds_min: processGraceSeconds },
-          'found stuck processing jobs (worker died?), re-enqueueing',
+          'found stuck processing jobs (worker died / stall?)',
         );
         for (const row of stuckProcessing) {
+          const reclaims = Number(
+            (row.metadata as Record<string, unknown> | null)?.['_reclaim_count'] ?? 0,
+          );
           try {
-            await enqueue({ jobId: row.id, requestId: undefined }, row.id);
-            log.info({ job_id: row.id, age_seconds: processGraceSeconds }, 're-enqueued stuck processing job');
+            if (stallMaxReclaims > 0 && reclaims >= stallMaxReclaims) {
+              // Восстановление не помогло — «точный подвисон», метим и откладываем.
+              const marked = await repo.markStalledDeferred(
+                row.id,
+                `processing_stall_deferred: подвис на обработке (reclaims=${reclaims}) — помечен ошибкой, перепроверить пачкой позже`,
+              );
+              if (marked) {
+                onStallDeferred?.();
+                log.warn(
+                  { job_id: row.id, reclaims },
+                  'stuck job marked stalled/failed — deferred for batch recheck (stall-guard)',
+                );
+              }
+              // marked=false → джоба финализировалась сама между детектом и
+              // UPDATE (гонка) — ничего не делаем.
+            } else {
+              await repo.bumpReclaimCount(row.id);
+              await enqueue({ jobId: row.id, requestId: undefined }, row.id);
+              log.info(
+                { job_id: row.id, reclaims: reclaims + 1 },
+                're-enqueued stuck processing job (recovery attempt)',
+              );
+            }
           } catch (err) {
-            log.error({ job_id: row.id, err }, 'failed to re-enqueue stuck processing job');
+            log.error({ job_id: row.id, err }, 'failed to handle stuck processing job');
           }
         }
       }

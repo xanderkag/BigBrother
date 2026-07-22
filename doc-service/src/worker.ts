@@ -9,6 +9,7 @@ import { startPendingJobSweeper } from './workers/pending-job-sweeper.js';
 import { startFileCleanupSweeper } from './workers/file-cleanup.js';
 import { startAuditLogSweeper } from './workers/audit-log-sweeper.js';
 import { startWebhookSweeper } from './workers/webhook-sweeper.js';
+import { stallDeferredTotal } from './metrics.js';
 
 // pino directly: matches the Fastify-bound logger format on the API side so
 // log aggregation tools see a single shape. The base bindings (name=worker)
@@ -114,7 +115,10 @@ worker.on('failed', (job, err) =>
 // a single worker process per deployment they need no distributed locking; if
 // we ever go horizontal, swap setInterval for BullMQ repeatable jobs so only
 // one instance executes each sweep.
-const pendingSweeper = startPendingJobSweeper({ log });
+const pendingSweeper = startPendingJobSweeper({
+  log,
+  onStallDeferred: () => stallDeferredTotal.inc(),
+});
 const fileSweeper = startFileCleanupSweeper({ log });
 const auditLogSweeper = startAuditLogSweeper({ log });
 const webhookSweeper = startWebhookSweeper({ log });

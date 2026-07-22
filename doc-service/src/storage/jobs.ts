@@ -626,6 +626,50 @@ class JobsRepo {
   }
 
   /**
+   * Инкремент счётчика reclaim'ов зависшей джобы (metadata._reclaim_count).
+   * Возвращает новое значение — sweeper решает: ещё восстанавливать или уже
+   * пометить как «подвис» (stall-guard, 2026-07-22).
+   */
+  async bumpReclaimCount(id: string): Promise<number> {
+    const { rows } = await db.query<{ n: number }>(
+      `UPDATE jobs
+         SET metadata = coalesce(metadata, '{}'::jsonb)
+               || jsonb_build_object('_reclaim_count',
+                    coalesce((metadata->>'_reclaim_count')::int, 0) + 1),
+             updated_at = now()
+       WHERE id = $1
+       RETURNING (metadata->>'_reclaim_count')::int AS n`,
+      [id],
+    );
+    return rows[0]?.n ?? 0;
+  }
+
+  /**
+   * «Точный подвисон»: джоба повисла в processing и восстановление не помогло.
+   * Метим failed с явной причиной + маркер `_stall_deferred` (для батч-
+   * перепроверки — «выявили, отложили, посмотрим пачкой»). НЕ ретраим.
+   * Guard `status='processing'` — не переехать поверх джобы, которая как раз
+   * финализировалась между sweep-детектом и этим UPDATE.
+   */
+  async markStalledDeferred(id: string, error: string): Promise<boolean> {
+    const { rowCount } = await db.query(
+      `UPDATE jobs
+         SET status = 'failed',
+             error = $2,
+             finished_at = now(),
+             updated_at = now(),
+             metadata = coalesce(metadata, '{}'::jsonb)
+               || jsonb_build_object('_stall_deferred',
+                    jsonb_build_object(
+                      'reclaims', coalesce((metadata->>'_reclaim_count')::int, 0),
+                      'reason', 'processing_stall'))
+       WHERE id = $1 AND status = 'processing'`,
+      [id, error],
+    );
+    return (rowCount ?? 0) > 0;
+  }
+
+  /**
    * Terminal-state jobs (done / failed / needs_review) older than retention
    * whose source file is still on disk. `file_path IS NOT NULL` is the
    * "already cleaned up" gate — we NULL it inside `markFileDeleted` so
