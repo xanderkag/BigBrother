@@ -62,6 +62,7 @@ describe('MultiPassLlmParser dedups repeated items on merge', () => {
       maxPasses: 10,
       maxItemsTotal: 1000,
       itemsParallelism: 1,
+      targetRowsPerChunk: 0, // этот тест — про байтовую нарезку
     });
     // ~120 символов / 20 = ~6 кусков, каждый вернёт одни и те же 3 позиции.
     const longText = ('строка таблицы товаров; '.repeat(5)).slice(0, 120);
@@ -108,6 +109,7 @@ describe('MultiPassLlmParser dedups repeated items on merge', () => {
       maxPasses: 10,
       maxItemsTotal: 1000,
       itemsParallelism: 1,
+      targetRowsPerChunk: 0, // байтовая нарезка
     });
     const longText = 'a'.repeat(100);
     const result = await parser.parse(longText, {

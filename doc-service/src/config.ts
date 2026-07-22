@@ -203,9 +203,15 @@ const ConfigSchema = z.object({
     headerHeadBytes: numberFromEnv(4_000),
     headerTailBytes: numberFromEnv(2_000),
     chunkSizeBytes: numberFromEnv(12_000),
-    maxPasses: numberFromEnv(10),
+    // 24 (было 10): куски мельче (см. targetRowsPerChunk) — прежний потолок
+    // МОЛЧА обрезал товарный хвост больших .xls (>120КБ терялись строки).
+    maxPasses: numberFromEnv(24),
     maxItemsTotal: numberFromEnv(1_000),
     itemsParallelism: numberFromEnv(3),
+    // SPEED-1: закрывать кусок по N табличным строкам (≈ N позиций × 20
+    // полей ≈ 2-4К ВЫХОДНЫХ токенов — предиктор провала по ExtractBench),
+    // а не только по входным байтам. 0 = выключить (резать как раньше).
+    targetRowsPerChunk: numberFromEnv(30),
   }),
 
   /**
@@ -757,6 +763,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       maxPasses: env.MULTIPASS_MAX_PASSES,
       maxItemsTotal: env.MULTIPASS_MAX_ITEMS_TOTAL,
       itemsParallelism: env.MULTIPASS_ITEMS_PARALLELISM,
+      targetRowsPerChunk: env.MULTIPASS_TARGET_ROWS,
     },
     requality: {
       enabled: env.REQUALITY_ENABLED,

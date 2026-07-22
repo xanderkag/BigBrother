@@ -46,6 +46,7 @@ import { recoverForwardingClientFromText, sanitizeForwardingLeg } from './forwar
 import { sanitizeHsCodes, recoverHsCodesFromText } from './hs-codes.js';
 import { sanitizePartyInns } from './sanitize-inns.js';
 import { guardInvoiceLetter } from './invoice-letter-guard.js';
+import { expandXlsxRefs } from './xlsx-ref-expand.js';
 import { normalizeExtractedFields } from './extracted-fields.js';
 import { recomputeTotalsFromItems, deriveHeaderTotals } from './totals.js';
 import { applyCategoryHints } from './categories.js';
@@ -69,6 +70,16 @@ export async function runPostExtractNormalization(
   // поля не попали ни в один последующий шаг, ни в match_signals, ни в БД.
   const idFiltered = applyIdAllowlist(result, documentType);
   if (idFiltered && idFiltered !== result) result = idFiltered;
+
+  // F0-xlsx-refs (SPEED-2): развернуть словарные @N из xlsx-сериализации,
+  // если модель протащила реф вместо полного значения. РАНЬШЕ всех
+  // recovery-шагов — они должны видеть настоящие значения, не @3.
+  if (result) {
+    const expanded = expandXlsxRefs(result, rawText);
+    if (expanded > 0 && log) {
+      log.info({ expanded_refs: expanded }, 'normalize F0-xlsx-refs: развёрнуты словарные @N');
+    }
+  }
 
   // F0a: перенести 13/15-значный ОГРН из inn в ogrn. До F0-inn-recovery,
   // чтобы recovery добивал inn в уже освобождённое поле, а не спотыкался о

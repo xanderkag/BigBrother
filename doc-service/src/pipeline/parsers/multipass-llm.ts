@@ -46,6 +46,14 @@ export type MultipassConfig = {
   maxPasses: number;
   maxItemsTotal: number;
   itemsParallelism: number;
+  /**
+   * SPEED-1 (2026-07-21, по ExtractBench): предиктор провала извлечения —
+   * объём ВЫХОДА, не входа (883 вых. токена → 56% успеха, 25К → 21%).
+   * Поэтому кусок закрывается при N строках-кандидатах (≈ N позиций × 20
+   * полей ≈ 2-4К выходных токенов), а chunkSizeBytes остаётся верхним
+   * пределом для прозы (длинные .doc без табличных строк).
+   */
+  targetRowsPerChunk: number;
 };
 
 /** Дефолты на случай прямого инстанцирования (тесты) без явного config'а. */
@@ -53,9 +61,13 @@ const DEFAULT_MULTIPASS_CONFIG: MultipassConfig = {
   headerHeadBytes: 4_000,
   headerTailBytes: 2_000,
   chunkSizeBytes: 12_000,
-  maxPasses: 10,
+  // 24 (было 10): куски стали мельче (по строкам), а параллелизм вырос —
+  // 24 куска при parallelism 6 = 4 волны. Молчаливый обрез хвоста на
+  // больших доках (>10 кусков) терял товарные строки без следа.
+  maxPasses: 24,
   maxItemsTotal: 1_000,
   itemsParallelism: 3,
+  targetRowsPerChunk: 30,
 };
 
 export class MultiPassLlmParser implements DocumentParser {
@@ -132,7 +144,16 @@ export class MultiPassLlmParser implements DocumentParser {
     const issues: string[] = [];
 
     if (itemsSchema) {
-      const chunks = splitForItems(rawText, this.cfg.chunkSizeBytes).slice(0, this.cfg.maxPasses);
+      const allChunks = splitForItems(rawText, this.cfg.chunkSizeBytes, this.cfg.targetRowsPerChunk);
+      const chunks = allChunks.slice(0, this.cfg.maxPasses);
+      // Раньше хвост за maxPasses выбрасывался МОЛЧА — на 128КБ .xls терялись
+      // товарные строки без единого следа в issues. Теперь обрез честный.
+      if (allChunks.length > chunks.length) {
+        issues.push(
+          `multipass_chunks_truncated: документ дал ${allChunks.length} кусков, обработано ${chunks.length} (MULTIPASS_MAX_PASSES)`,
+        );
+        (header as Record<string, unknown>)._truncated = true;
+      }
 
       // Параллельный пул с ограничением — больше 3 одновременных запросов к
       // inference-service увеличивает риск получить 429/timeout от модели.
@@ -295,32 +316,57 @@ function itemDedupKey(item: unknown): string | null {
 }
 
 /**
- * Разбить текст на куски не более `chunkBytes` байт, предпочитая границы
- * по двойному переводу строк (между табличными блоками или страницами).
- * Если такого разделителя нет — режем по одинарному \n, в крайнем случае
- * по char-boundary.
+ * Разбить текст на куски для Pass 2 (items).
  *
- * Гарантия: ни один кусок > chunkBytes (с допуском 10% на «не порвать слово»),
- * и порядок текста сохранён.
+ * SPEED-1 (2026-07-21): кусок закрывается по ПЕРВОМУ из двух пределов —
+ *   1. `targetRows` строк-кандидатов (непустая строка с ≥2 разделителями
+ *      колонок — табличная строка CSV/TSV-сериализации). Держит ВЫХОД
+ *      вызова в безопасном коридоре ~2-4К токенов (ExtractBench: провал
+ *      растёт с объёмом вывода, не входа): 30 строк × 20+ полей.
+ *   2. `chunkBytes` байт — верхний предел для прозы (длинные .doc без
+ *      табличных строк ведут себя как раньше: ~12КБ по границам \n\n/\n).
+ *
+ * Порядок текста сохранён, куски не перекрываются.
  */
-export function splitForItems(text: string, chunkBytes: number): string[] {
-  if (text.length <= chunkBytes) return [text];
+export function splitForItems(text: string, chunkBytes: number, targetRows = 0): string[] {
+  if (text.length <= chunkBytes && targetRows <= 0) return [text];
 
+  // Табличная строка-кандидат: непустая и ≥2 разделителей колонок.
+  const isRowLike = (line: string): boolean => {
+    if (!line.trim()) return false;
+    let seps = 0;
+    for (const ch of line) if (ch === ',' || ch === '\t' || ch === ';' || ch === '|') seps++;
+    return seps >= 2;
+  };
+
+  const lines = text.split('\n');
   const chunks: string[] = [];
-  let cursor = 0;
-  while (cursor < text.length) {
-    if (text.length - cursor <= chunkBytes) {
-      chunks.push(text.slice(cursor));
-      break;
+  let cur: string[] = [];
+  let curBytes = 0;
+  let curRows = 0;
+  const flush = () => {
+    if (cur.length > 0) {
+      chunks.push(cur.join('\n'));
+      cur = [];
+      curBytes = 0;
+      curRows = 0;
     }
-    // Ищем «красивую» границу около chunkBytes — приоритет двойному \n,
-    // потом одинарному, потом char-boundary.
-    const tail = text.slice(cursor, cursor + chunkBytes + chunkBytes * 0.1);
-    let breakAt = tail.lastIndexOf('\n\n');
-    if (breakAt < chunkBytes / 2) breakAt = tail.lastIndexOf('\n');
-    if (breakAt < chunkBytes / 2) breakAt = chunkBytes; // fallback hard cut
-    chunks.push(text.slice(cursor, cursor + breakAt));
-    cursor += breakAt;
+  };
+  for (const line of lines) {
+    // Одиночная строка длиннее лимита (OCR-блоб без переводов строк) —
+    // режем её жёстко по chunkBytes, иначе кусок выйдет неограниченным.
+    if (line.length + 1 > chunkBytes) {
+      flush();
+      for (let i = 0; i < line.length; i += chunkBytes) {
+        chunks.push(line.slice(i, i + chunkBytes));
+      }
+      continue;
+    }
+    cur.push(line);
+    curBytes += line.length + 1;
+    if (targetRows > 0 && isRowLike(line)) curRows++;
+    if ((targetRows > 0 && curRows >= targetRows) || curBytes >= chunkBytes) flush();
   }
-  return chunks;
+  flush();
+  return chunks.length > 0 ? chunks : [text];
 }
