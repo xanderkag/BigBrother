@@ -45,6 +45,7 @@ import { assessQuality, countBusinessFields, type QualityFactor } from './qualit
 import { ParsersFactory } from './parsers/index.js';
 import type { DocumentParser } from './parsers/types.js';
 import { countTableRows } from './parsers/multipass-llm.js';
+import { buildJobCostSnapshot } from './cost-snapshot.js';
 import { dynamicLlm } from './llm/provider-resolver.js';
 import type { LlmClient, LlmExtractDebug } from './llm/types.js';
 import type { DocumentTypeSlug } from '../types/documents.js';
@@ -1083,9 +1084,29 @@ async function processJobInner(
       extractedToStore._multidoc_documents = multiDocResult;
     }
 
+    // BILL-1: считаем снимок себестоимости ДО finalize — со ставками
+    // провайдеров, которые реально отработали эту задачу. Снимок ложится в
+    // задачу целиком (ставка + курс внутри): смена тарифа завтра не изменит
+    // уже посчитанное. Fail-soft — расчёт стоимости не должен ронять джобу.
+    const jobUsage = currentJobLlmUsage();
+    let costSnapshot: Awaited<ReturnType<typeof buildJobCostSnapshot>> | null = null;
+    try {
+      costSnapshot = await buildJobCostSnapshot({
+        llmUsage: jobUsage,
+        extractProviderId: post.extractProviderId ?? null,
+        ocrEngine: ocr.engine,
+        ocrPages: ocr.pages?.length ?? 1,
+        documentType,
+      });
+    } catch (err) {
+      log.warn({ jobId, err }, 'cost snapshot failed — стоимость не сохранена (не блокирует job)');
+    }
+
     const updated = await jobsRepo.finalize(jobId, {
       status,
-      llmUsage: currentJobLlmUsage(),
+      costRub: costSnapshot?.total ?? null,
+      costBreakdown: costSnapshot as Record<string, unknown> | null,
+      llmUsage: jobUsage,
       // Число OCR-страниц для оценки ₽/док (Yandex Vision — ₽/страница).
       // ocr.pages есть у multi-page; одиночный док = 1 страница.
       ocrPages: ocr.pages?.length ?? 1,
@@ -1652,6 +1673,11 @@ export async function runDocumentPipeline(
    * extract не запускался. Пишется в pipeline step для debug.
    */
   routeReason?: RouteReason;
+  /**
+   * BILL-1: провайдер, которому приписывается LLM-расход задачи (forced/
+   * preferred). null → дефолтный, резолвится при сборке снимка стоимости.
+   */
+  extractProviderId?: string | null;
 }> {
   let documentType: DocumentTypeSlug | null = options.hint ?? null;
   let classificationSource: 'hint' | 'keyword' = documentType ? 'hint' : 'keyword';
@@ -1732,6 +1758,8 @@ export async function runDocumentPipeline(
   const requalityFactors: QualityFactor[] = [];
   let extractMode: 'image' | 'text' | undefined;
   let routeReason: RouteReason | undefined;
+  // BILL-1: поднято на уровень функции — нужно в возврате для снимка стоимости.
+  let extractProviderId: string | null = null;
 
   if (documentType && options.classifyOnly) {
     // Phase 3 (CP7): classify_only — потребителю нужен только тип документа.
@@ -1881,7 +1909,7 @@ export async function runDocumentPipeline(
     //      с 32k context для длинных items[]; лёгкие типы → vLLM 8k быстрый)
     //   3. Default provider
     // withForceProvider fail-soft'нет на default если id не резолвится.
-    const extractProviderId = forceVisionProviderId ?? typeConfig!.preferredProviderId;
+    extractProviderId = forceVisionProviderId ?? typeConfig!.preferredProviderId;
     let result = extractProviderId
       ? await dynamicLlm.withForceProvider(extractProviderId, runParse)
       : await runParse();
@@ -2116,5 +2144,8 @@ export async function runDocumentPipeline(
     llmCall,
     extractMode,
     routeReason,
+    // BILL-1: кому приписать LLM-расход задачи. null → дефолтный провайдер
+    // (резолвится в buildJobCostSnapshot).
+    extractProviderId,
   };
 }

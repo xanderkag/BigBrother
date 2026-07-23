@@ -350,6 +350,14 @@ const ConfigSchema = z.object({
     ocrTableRub: numberFromEnv(1.22), // Vision таблицы ₽/стр (счёт/УПД)
     llmInputPer1kRub: numberFromEnv(0.2), // AI Studio Qwen3.6-35B вход ₽/1k
     llmOutputPer1kRub: numberFromEnv(0.3), // AI Studio Qwen3.6-35B выход ₽/1k
+    /**
+     * BILL-1: курс USD→RUB для сведения расхода валютных провайдеров
+     * (Anthropic/OpenAI) в единый ₽-итог — решение владельца 2026-07-23.
+     * Курс ФИКСИРУЕТСЯ в снимке задачи: смена значения не меняет уже
+     * посчитанные задачи. 0 = курс не задан → валютный расход помечается
+     * estimate (НЕ считается нулём). Автоподтяжка курса ЦБ — отдельная задача.
+     */
+    fxUsdRub: numberFromEnv(0),
   }),
 
   /**
@@ -824,6 +832,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       ocrTableRub: env.COST_OCR_TABLE_RUB,
       llmInputPer1kRub: env.COST_LLM_INPUT_PER1K_RUB,
       llmOutputPer1kRub: env.COST_LLM_OUTPUT_PER1K_RUB,
+      fxUsdRub: env.COST_FX_USD_RUB,
     },
     officeImageFallback: {
       enabled: env.OFFICE_IMAGE_FALLBACK_ENABLED,

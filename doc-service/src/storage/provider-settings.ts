@@ -58,6 +58,13 @@ export type ProviderSettingRow = {
    */
   vision: boolean;
   extra: Record<string, unknown> | null;
+  /**
+   * BILL-1: прайс-лист провайдера — {currency, cost_basis, llm_input_per_1k,
+   * llm_output_per_1k, ocr_page, ocr_page_table}. NULL → ставка неизвестна,
+   * расход помечается estimate (молча считать нулём запрещено).
+   * Своё железо идёт с cost_basis='amortized' (коммерческий эквивалент).
+   */
+  rates: Record<string, unknown> | null;
   created_at: Date;
   updated_at: Date;
 };

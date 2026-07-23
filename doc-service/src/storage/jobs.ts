@@ -212,6 +212,10 @@ export type JobRow = {
    * Заполняется на finalize из ocr.pages.length. NULL для legacy / до миграции.
    */
   ocr_pages: number | null;
+  /** BILL-1: сохранённый итог себестоимости (₽). NULL у задач до BILL-1. */
+  cost_rub: string | number | null;
+  /** BILL-1: снимок расчёта со ставкой и курсом на момент разбора. */
+  cost_breakdown: Record<string, unknown> | null;
   /** Tenant scope — заполняется при create, обязательное поле в БД. */
   organization_id: string;
   project_id: string;
@@ -303,6 +307,13 @@ export type ProcessingUpdate = {
   llmUsage?: JobLlmUsage | null;
   /** Число OCR-страниц (для оценки ₽/док). `undefined` = не трогать колонку. */
   ocrPages?: number | null;
+  /**
+   * BILL-1: итог себестоимости (₽) и построчный СНИМОК расчёта. Снимок
+   * самодостаточен (ставка + курс внутри) — смена тарифа завтра не меняет
+   * уже посчитанные задачи. `undefined` = не трогать колонки.
+   */
+  costRub?: number | null;
+  costBreakdown?: Record<string, unknown> | null;
   documentType?: DocumentTypeSlug | null;
   ocrEngine?: OcrEngineName | null;
   rawText?: string | null;
@@ -477,6 +488,8 @@ class JobsRepo {
          last_llm_call = CASE WHEN $10::boolean THEN $9::jsonb ELSE last_llm_call END,
          llm_usage     = CASE WHEN $12::boolean THEN $11::jsonb ELSE llm_usage END,
          ocr_pages     = COALESCE($13, ocr_pages),
+         cost_rub      = COALESCE($14, cost_rub),
+         cost_breakdown = COALESCE($15::jsonb, cost_breakdown),
          finished_at   = now()
        WHERE id = $1
        RETURNING *`,
@@ -494,6 +507,8 @@ class JobsRepo {
         llmUsageJson,
         llmUsageProvided,
         update.ocrPages ?? null,
+        update.costRub ?? null,
+        update.costBreakdown == null ? null : JSON.stringify(update.costBreakdown),
       ],
     );
     return rows[0] ?? null;
@@ -1355,16 +1370,26 @@ class JobsRepo {
     // Старые job'ы написанные до миграции получают унифицированную форму
     // без перезаписи в БД.
     const normalized = normalizeExtracted(extracted);
-    const cost = computeJobCost(
-      {
-        llmUsage: row.llm_usage,
-        ocrEngine: row.ocr_engine,
-        ocrPages: row.ocr_pages,
-        documentType: row.document_type,
-      },
-      config.cost,
-      COST_TABLE_TYPES,
-    );
+    // BILL-1: у новых задач стоимость — СОХРАНЁННЫЙ снимок (ставка и курс
+    // зафиксированы на момент разбора). Пересчитывать на чтение нельзя:
+    // смена тарифа переписала бы историю. Задачи, разобранные до BILL-1,
+    // снимка не имеют — для них остаётся прежний расчёт на лету.
+    const snap = row.cost_breakdown as
+      | { total?: unknown; estimate?: unknown }
+      | null;
+    const cost =
+      snap && typeof snap.total === 'number'
+        ? { rub: snap.total, estimate: snap.estimate === true }
+        : computeJobCost(
+            {
+              llmUsage: row.llm_usage,
+              ocrEngine: row.ocr_engine,
+              ocrPages: row.ocr_pages,
+              documentType: row.document_type,
+            },
+            config.cost,
+            COST_TABLE_TYPES,
+          );
     return {
       job_id: row.id,
       status: row.status,
