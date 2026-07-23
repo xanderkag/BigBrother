@@ -355,9 +355,21 @@ const ConfigSchema = z.object({
      * (Anthropic/OpenAI) в единый ₽-итог — решение владельца 2026-07-23.
      * Курс ФИКСИРУЕТСЯ в снимке задачи: смена значения не меняет уже
      * посчитанные задачи. 0 = курс не задан → валютный расход помечается
-     * estimate (НЕ считается нулём). Автоподтяжка курса ЦБ — отдельная задача.
+     * estimate (НЕ считается нулём).
+     *
+     * FX-1: теперь это АВАРИЙНЫЙ дефолт. Основной курс тянется из ЦБ РФ
+     * (таблица fx_rates) обновлятором; резолвер откатывается на этот статик,
+     * только если кэш пуст (первый запуск / ЦБ недоступен).
      */
     fxUsdRub: numberFromEnv(0),
+    /**
+     * FX-1: включить фоновую подтяжку курса ЦБ (cbr.ru). true → обновлятор в
+     * воркере тянет курс раз в fxRefreshHours. false → работаем только на
+     * статическом fxUsdRub (напр. если корп-сеть закроет egress на cbr.ru).
+     */
+    fxCbrEnabled: booleanFromEnv(true),
+    /** FX-1: период подтяжки курса ЦБ, часы (ЦБ обновляет курс раз в сутки). */
+    fxRefreshHours: numberFromEnv(6),
   }),
 
   /**
@@ -842,6 +854,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       llmInputPer1kRub: env.COST_LLM_INPUT_PER1K_RUB,
       llmOutputPer1kRub: env.COST_LLM_OUTPUT_PER1K_RUB,
       fxUsdRub: env.COST_FX_USD_RUB,
+      fxCbrEnabled: env.COST_FX_CBR_ENABLED,
+      fxRefreshHours: env.COST_FX_REFRESH_HOURS,
     },
     officeImageFallback: {
       enabled: env.OFFICE_IMAGE_FALLBACK_ENABLED,

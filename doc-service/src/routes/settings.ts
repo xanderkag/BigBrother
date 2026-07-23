@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { config } from '../config.js';
 import { bearerAuthHook } from '../auth.js';
 import { resolveYandexVisionCredentials } from '../pipeline/ocr/yandex-gate.js';
+import { fxRatesRepo } from '../storage/fx-rates.js';
 import { ErrorResponse } from '../types/api-schemas.js';
 
 /**
@@ -77,6 +78,13 @@ const SettingsResponse = z.object({
     max_upload_mb: z.number(),
     max_metadata_bytes: z.number(),
   }),
+  // FX-1: курс USD→RUB для сведения валютных LLM-затрат в ₽.
+  fx: z.object({
+    usd_rub: z.number().nullable(), // null → курса нет (стоимость estimate)
+    source: z.string(), // 'cbr:YYYY-MM-DD' | 'config:COST_FX_USD_RUB' | 'none'
+    cbr_enabled: z.boolean(), // включена ли авто-подтяжка ЦБ
+    refresh_hours: z.number(),
+  }),
 });
 
 const ProviderStatusResponse = z.object({
@@ -115,6 +123,8 @@ export async function settingsRoutes(app: FastifyInstance): Promise<void> {
       // иначе панель покажет «выключено», пока UI-ключ уже гонит изображения в
       // облако — враньё в egress-чувствительную сторону.
       const yandexCreds = await resolveYandexVisionCredentials(req.log);
+      // FX-1: текущий курс USD→RUB (кэш ЦБ → конфиг-fallback), fail-soft.
+      const fx = await fxRatesRepo.resolveUsdRub();
       return {
       service: {
         name: 'doc-service' as const,
@@ -166,6 +176,12 @@ export async function settingsRoutes(app: FastifyInstance): Promise<void> {
       limits: {
         max_upload_mb: config.maxUploadMb,
         max_metadata_bytes: config.maxMetadataBytes,
+      },
+      fx: {
+        usd_rub: fx.rate,
+        source: fx.source,
+        cbr_enabled: config.cost.fxCbrEnabled,
+        refresh_hours: config.cost.fxRefreshHours,
       },
       };
     },

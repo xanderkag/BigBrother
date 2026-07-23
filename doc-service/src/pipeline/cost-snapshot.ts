@@ -10,6 +10,7 @@
  */
 import { config } from '../config.js';
 import { providerSettingsRepo } from '../storage/provider-settings.js';
+import { fxRatesRepo } from '../storage/fx-rates.js';
 import {
   computeCostBreakdown,
   type CostBreakdown,
@@ -83,6 +84,11 @@ export async function buildJobCostSnapshot(
   const ocrProviderId = input.ocrEngine === 'yandex' ? 'yandex-vision' : null;
   if (ocrProviderId) await load(ocrProviderId);
 
+  // FX-1: курс USD→RUB из кэша ЦБ (fx_rates) с fail-soft на статический
+  // COST_FX_USD_RUB. Курс + источник фиксируются в снимке (BILL-1) — смена
+  // курса завтра не переписывает эту задачу.
+  const fx = await fxRatesRepo.resolveUsdRub();
+
   return computeCostBreakdown(
     {
       llmUsage: input.llmUsage,
@@ -96,8 +102,8 @@ export async function buildJobCostSnapshot(
       getRates: (id) => cache.get(id) ?? null,
       fallback: config.cost,
       tableTypes: COST_TABLE_TYPES,
-      fxUsdRub: config.cost.fxUsdRub || null,
-      fxSource: 'config:COST_FX_USD_RUB',
+      fxUsdRub: fx.rate,
+      fxSource: fx.source,
     },
   );
 }

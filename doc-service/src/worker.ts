@@ -6,6 +6,7 @@ import { closeDb } from './db.js';
 import { processJob, isDeterministicJobError } from './pipeline/orchestrator.js';
 import { jobsRepo } from './storage/jobs.js';
 import { startPendingJobSweeper } from './workers/pending-job-sweeper.js';
+import { startFxRateRefresher } from './workers/fx-rate-refresher.js';
 import { startFileCleanupSweeper } from './workers/file-cleanup.js';
 import { startAuditLogSweeper } from './workers/audit-log-sweeper.js';
 import { startWebhookSweeper } from './workers/webhook-sweeper.js';
@@ -122,6 +123,11 @@ const pendingSweeper = startPendingJobSweeper({
 const fileSweeper = startFileCleanupSweeper({ log });
 const auditLogSweeper = startAuditLogSweeper({ log });
 const webhookSweeper = startWebhookSweeper({ log });
+// FX-1: подтяжка курса ЦБ (cbr.ru) для конвертации валютных LLM-затрат в ₽.
+// Гейт config.cost.fxCbrEnabled — можно выключить, если корп-сеть закроет egress.
+const fxRefresher = config.cost.fxCbrEnabled
+  ? startFxRateRefresher({ log, intervalMs: config.cost.fxRefreshHours * 60 * 60 * 1000 })
+  : null;
 
 const shutdown = async (signal: string) => {
   log.info({ signal }, 'shutting down worker');
@@ -129,6 +135,7 @@ const shutdown = async (signal: string) => {
   fileSweeper.stop();
   auditLogSweeper.stop();
   webhookSweeper.stop();
+  fxRefresher?.stop();
   await worker.close();
   await closeQueue();
   await closeDb();

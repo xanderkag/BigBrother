@@ -61,6 +61,13 @@ export interface SettingsSnapshot {
     max_upload_mb: number;
     max_metadata_bytes: number;
   };
+  // FX-1: курс USD→RUB для сведения валютных LLM-затрат в ₽.
+  fx: {
+    usd_rub: number | null; // null → курса нет (стоимость estimate)
+    source: string; // 'cbr:YYYY-MM-DD' | 'config:COST_FX_USD_RUB' | 'none'
+    cbr_enabled: boolean;
+    refresh_hours: number;
+  };
 }
 
 export interface ProviderInfo {

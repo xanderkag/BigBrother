@@ -274,6 +274,29 @@ function LimitsCard({ data }: { data: SettingsSnapshot }) {
             }
           />
           <Kv k="webhook attempts" v={data.webhook.max_attempts} />
+          {/* FX-1: курс USD→RUB для стоимости валютных LLM-вызовов */}
+          <KvNode
+            k="курс USD→RUB"
+            v={
+              data.fx.usd_rub != null ? (
+                <span>
+                  <span className="font-mono">{data.fx.usd_rub.toFixed(2)} ₽</span>{' '}
+                  <span className="text-xs text-slate-400 dark:text-slate-500">
+                    {data.fx.source.startsWith('cbr:')
+                      ? `ЦБ · ${data.fx.source.slice(4)}`
+                      : data.fx.source.startsWith('config')
+                        ? 'из конфига'
+                        : ''}
+                    {!data.fx.cbr_enabled ? ' · авто-ЦБ выкл' : ''}
+                  </span>
+                </span>
+              ) : (
+                <span className="badge-amber" title="курс не задан — валютный расход помечается estimate">
+                  не задан
+                </span>
+              )
+            }
+          />
         </dl>
       </div>
     </div>
