@@ -26,8 +26,18 @@ def _cached_backend(kind: str, base_url: str, api_key: str) -> ModelBackend:
     if kind == "claude":
         from .backends.claude import ClaudeBackend
 
+        # MTI-3: LLM-ключ приходит в body.api_key (из UI Providers doc-service),
+        # env ANTHROPIC_API_KEY — dev-fallback. Если нет НИ там, НИ там — раньше
+        # в SDK уходил пустой ключ и падало криптично уже на вызове. Теперь —
+        # внятная ошибка сразу (приёмка MTI-3 §Acceptance).
+        key = api_key or settings.anthropic_api_key
+        if not key:
+            raise ValueError(
+                "no_key_configured: нет ключа Anthropic — ни в запросе (body.api_key "
+                "из UI Providers), ни в ANTHROPIC_API_KEY (dev-fallback)"
+            )
         return ClaudeBackend(
-            api_key=api_key or settings.anthropic_api_key,
+            api_key=key,
             model_id=settings.anthropic_model_id,
             max_tokens=settings.anthropic_max_tokens,
             timeout_seconds=settings.anthropic_timeout_seconds,
@@ -38,10 +48,16 @@ def _cached_backend(kind: str, base_url: str, api_key: str) -> ModelBackend:
         # OpenAICompatibleBackend — без base_url он ходит на api.openai.com.
         from .backends.openai_compatible import OpenAICompatibleBackend
 
+        key = api_key or settings.openai_api_key
+        if not key:
+            raise ValueError(
+                "no_key_configured: нет ключа OpenAI — ни в запросе (body.api_key), "
+                "ни в OPENAI_API_KEY (dev-fallback)"
+            )
         return OpenAICompatibleBackend(
             base_url=base_url,  # обычно "" → api.openai.com
             model_id=settings.openai_model,
-            api_key=api_key or settings.openai_api_key,
+            api_key=key,
             max_tokens=settings.openai_max_tokens,
             timeout_seconds=settings.openai_timeout_seconds,
         )

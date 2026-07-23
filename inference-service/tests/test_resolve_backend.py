@@ -16,6 +16,8 @@ import os
 os.environ.setdefault("BACKEND", "stub")
 os.environ.setdefault("API_KEY", "")
 
+import pytest
+
 from inference_service.backends.openai_compatible import OpenAICompatibleBackend
 from inference_service.backends.stub import StubBackend
 from inference_service.config import settings
@@ -64,6 +66,36 @@ def test_override_wins_over_default() -> None:
         backend="openai_compat", base_url="http://ollama:11434/v1", default=sentinel
     )
     assert b is not sentinel
+
+
+# ── MTI-3: no_key_configured для облачных бэкендов без ключа ──────────────────
+
+
+def test_claude_without_key_raises_no_key_configured(monkeypatch) -> None:
+    # LLM-ключ приходит в body.api_key (из UI Providers). Если его нет НИ в
+    # запросе, НИ в env ANTHROPIC_API_KEY — внятная ошибка, а не пустой SDK.
+    monkeypatch.setattr(settings, "anthropic_api_key", "", raising=False)
+    with pytest.raises(ValueError, match="no_key_configured"):
+        resolve_backend(backend="claude")
+
+
+def test_claude_uses_request_key_over_env(monkeypatch) -> None:
+    # Ключ из body приоритетнее env-fallback (MTI-3 §Acceptance).
+    monkeypatch.setattr(settings, "anthropic_api_key", "env-key", raising=False)
+    b = resolve_backend(backend="claude", api_key="body-key-from-ui")
+    assert b.api_key == "body-key-from-ui"
+
+
+def test_openai_cloud_without_key_raises(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "openai_api_key", "", raising=False)
+    with pytest.raises(ValueError, match="no_key_configured"):
+        resolve_backend(backend="openai")
+
+
+def test_openai_compat_local_needs_no_key() -> None:
+    # Локальный OpenAI-совместимый (Ollama/vLLM) работает без ключа — ошибки нет.
+    b = resolve_backend(backend="openai_compat", base_url="http://ollama:11434/v1")
+    assert isinstance(b, OpenAICompatibleBackend)
     assert isinstance(b, OpenAICompatibleBackend)
 
 

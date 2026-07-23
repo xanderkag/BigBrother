@@ -15,7 +15,18 @@ import { addLlmUsage, type LlmCallUsage } from './usage-context.js';
 
 export type HttpLlmClientOptions = {
   baseUrl: string;
+  /**
+   * LLM-ключ провайдера (`provider_settings.api_key` / env-fallback). MTI-3:
+   * уходит ТОЛЬКО в `body.api_key` — реальный вызов Anthropic/OpenAI на
+   * стороне inference. Больше НЕ дублируется в `Authorization` (та был
+   * inter-service auth, а не LLM-ключ — путаница из ТЗ §3).
+   */
   apiKey?: string;
+  /**
+   * MTI-3 «PR 2»: отдельный inter-service секрет для `Authorization: Bearer`
+   * (doc-service → inference `require_api_key`). Пусто → заголовок не шлём.
+   */
+  interServiceKey?: string;
   timeoutMs: number;
   /**
    * Per-request model override. Если задан — клиент кладёт его в body
@@ -81,11 +92,11 @@ export class HttpLlmClient implements LlmClient {
    *     во ВСЕ вызовы, чтобы provider был быстрым на любом hop'е.
    *   - `backend` + `base_url` — VANGA-LLM-2, cloud/local/gpu switch без
    *     рестарта inference. Оба опц; без них inference берёт свой env-дефолт.
-   *   - `api_key` — MTI-3 (2026-07-08): унифицированная передача LLM-ключа.
-   *     inference через `resolve_backend()` поднимает ephemeral SDK-клиент.
-   *     Пока dual-write с `Authorization: Bearer` заголовком (back-compat),
-   *     PR 2 разделит: Bearer → inter-service auth (INFERENCE_API_KEY),
-   *     body.api_key → LLM-ключ. См. `MTI_TZ_2026-05-31.md` §3.1.
+   *   - `api_key` — MTI-3: LLM-ключ в body, inference через `resolve_backend()`
+   *     поднимает ephemeral SDK-клиент с ним (env-fallback если пусто). «PR 2»
+   *     (2026-07-23) развёл каналы: `Authorization: Bearer` теперь несёт ТОЛЬКО
+   *     inter-service секрет (`interServiceKey`), LLM-ключ живёт только здесь.
+   *     См. `MTI_TZ_2026-05-31.md` §3.
    *
    *   Все 5 полей — одной аллокацией через conditional-spread; None не
    *   попадает в JSON (undefined-поля пропускаются JSON.stringify).
@@ -191,7 +202,11 @@ export class HttpLlmClient implements LlmClient {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          ...(this.opts.apiKey ? { authorization: `Bearer ${this.opts.apiKey}` } : {}),
+          // MTI-3 «PR 2»: Authorization несёт inter-service секрет, НЕ LLM-ключ.
+          // LLM-ключ (opts.apiKey) уходит только в body.api_key (см. withModel).
+          ...(this.opts.interServiceKey
+            ? { authorization: `Bearer ${this.opts.interServiceKey}` }
+            : {}),
         },
         body: JSON.stringify(body),
         headersTimeout: this.opts.timeoutMs,

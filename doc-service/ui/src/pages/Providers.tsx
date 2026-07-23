@@ -561,6 +561,16 @@ export function ProviderEditor({
                 Очистить ключ (явно установить null)
               </label>
             )}
+            <p className="mt-1.5 text-xs text-slate-500 dark:text-slate-400">
+              Этот ключ используется для реальных вызовов провайдера (Anthropic /
+              OpenAI). Он приоритетнее статичного ключа в{' '}
+              <code className="rounded bg-slate-100 px-1 dark:bg-slate-800">
+                inference-service/.env
+              </code>{' '}
+              (тот оставлен как fallback для dev). Шифруется AES-256-GCM перед
+              записью в БД, расшифровывается только в момент вызова. Локальным
+              провайдерам (Ollama / vLLM) ключ не нужен — оставьте пусто.
+            </p>
           </div>
 
           {draft.kind === 'dadata' && (

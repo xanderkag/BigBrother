@@ -392,6 +392,15 @@ const ConfigSchema = z.object({
     url: z.string().optional(),
     apiKey: z.string().optional(),
     timeoutMs: numberFromEnv(60000),
+    /**
+     * MTI-3 «PR 2» (2026-07-23): ОТДЕЛЬНЫЙ inter-service секрет для авторизации
+     * doc-service → inference-service (`Authorization: Bearer`). Раньше туда
+     * ошибочно шёл LLM-ключ провайдера — путаница из ТЗ (§3). Теперь LLM-ключ
+     * живёт только в `body.api_key`, а этот ключ — чистая межсервисная auth
+     * (сверяется с inference `API_KEY`). Пусто = заголовок не шлём (inference
+     * `require_api_key` тоже no-op при пустом ключе — dev-режим).
+     */
+    interServiceKey: z.string().optional(),
   }),
 
   /**
@@ -846,6 +855,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       url: env.LLM_INFERENCE_URL || undefined,
       apiKey: env.LLM_API_KEY || undefined,
       timeoutMs: env.LLM_TIMEOUT_MS,
+      interServiceKey: env.INFERENCE_API_KEY || undefined,
     },
     asr: {
       enabled: env.ASR_ENABLED,

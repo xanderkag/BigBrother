@@ -244,6 +244,7 @@ class DynamicLlmClient implements LlmClient {
     return new HttpLlmClient({
       baseUrl,
       apiKey: ctx.apiKey,
+      interServiceKey: config.llm.interServiceKey,
       timeoutMs: config.llm.timeoutMs,
       model: ctx.model || undefined,
     });
@@ -309,6 +310,7 @@ class DynamicLlmClient implements LlmClient {
     return new HttpLlmClient({
       baseUrl,
       apiKey,
+      interServiceKey: config.llm.interServiceKey,
       timeoutMs: config.llm.timeoutMs,
       model: row.model || undefined,
       vision: row.vision === true,
@@ -343,6 +345,7 @@ class DynamicLlmClient implements LlmClient {
     return new HttpLlmClient({
       baseUrl,
       apiKey,
+      interServiceKey: config.llm.interServiceKey,
       timeoutMs: config.llm.timeoutMs,
       // Если is_default-провайдер задал model — пробрасываем его в inference,
       // иначе inference использует свой OPENAI_MODEL из env.

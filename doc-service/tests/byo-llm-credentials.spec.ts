@@ -189,19 +189,17 @@ describe('(a) inline provider is used (not default) under withInlineCredentials'
     expect(url).not.toContain('default-inference');
 
     const headers = opts.headers as Record<string, string>;
-    // MTI-3: Authorization Bearer сохранён для backward-compat с inference,
-    // проверяющим Bearer против своего API_KEY env. Убирается отдельным PR
-    // после того как body.llm_api_key потребляется приёмной стороной.
-    expect(headers.authorization).toBe(`Bearer ${SECRET_KEY}`);
+    // MTI-3 «PR 2» (2026-07-23): Authorization больше НЕ несёт LLM-ключ.
+    // interServiceKey не задан в тесте → заголовка Authorization нет вовсе.
+    // LLM-ключ уходит только в body.api_key (проверка ниже).
+    expect(headers.authorization).toBeUndefined();
 
     const body = JSON.parse(opts.body as string) as Record<string, unknown>;
     // Header-supplied model wins.
     expect(body.model).toBe('byo-model-xl');
     expect(body.text).toBe('some document text');
-    // MTI-3: apiKey теперь дублируется в body как `api_key` — inference
-    // читает это поле в BackendOverrideMixin (VANGA-LLM-2), передаёт в
-    // resolve_backend() → строит ephemeral SDK-клиент под этот ключ.
-    // Bearer заголовок сохранён параллельно для back-compat.
+    // LLM-ключ в body.api_key — inference читает его в BackendOverrideMixin
+    // (VANGA-LLM-2) → resolve_backend() → ephemeral SDK-клиент под этот ключ.
     expect(body.api_key).toBe(SECRET_KEY);
   });
 
