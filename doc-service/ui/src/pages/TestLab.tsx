@@ -31,6 +31,10 @@ export default function TestLabPage() {
   const [dragOver, setDragOver] = useState(false);
   const [documentHint, setDocumentHint] = useState('');
   const [providerId, setProviderId] = useState('');
+  // MTI-2 (§2.3): выбор модели из pack'а провайдера. '' = default провайдера,
+  // '__custom__' = ручной ввод (customModel), иначе alias/name из pack.
+  const [model, setModel] = useState('');
+  const [customModel, setCustomModel] = useState('');
   const [jobId, setJobId] = useState<string | null>(null);
 
   const { isWriter } = usePermissions();
@@ -39,6 +43,11 @@ export default function TestLabPage() {
   const { data: providersStatus } = useProvidersStatus();
   const { data: allProviders } = useProviders();
   const llmProviders = (allProviders?.items ?? []).filter((p) => p.kind === 'llm');
+  // MTI-2: активный провайдер (явно выбранный или default) и его pack моделей.
+  const selectedProvider = providerId
+    ? llmProviders.find((p) => p.id === providerId)
+    : llmProviders.find((p) => p.is_default);
+  const providerModels = selectedProvider?.models ?? [];
 
   const onDrop = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -50,11 +59,16 @@ export default function TestLabPage() {
   const run = async () => {
     if (!file) return;
     setJobId(null);
+    // MTI-2: эффективная модель — ручной ввод при '__custom__', иначе выбор из pack.
+    const effectiveModel = (model === '__custom__' ? customModel : model).trim();
+    const metadata: Record<string, unknown> = {};
+    if (providerId) metadata._force_provider_id = providerId;
+    if (effectiveModel) metadata._llm_model = effectiveModel;
     try {
       const res = await upload.mutateAsync({
         file,
         documentHint: documentHint || undefined,
-        metadata: providerId ? { _force_provider_id: providerId } : undefined,
+        metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
       });
       setJobId(res.job_id);
     } catch (err) {
@@ -174,14 +188,19 @@ export default function TestLabPage() {
               <select
                 className="form-select"
                 value={providerId}
-                onChange={(e) => setProviderId(e.target.value)}
+                onChange={(e) => {
+                  setProviderId(e.target.value);
+                  // Сбрасываем выбор модели — pack у другого провайдера иной.
+                  setModel('');
+                  setCustomModel('');
+                }}
               >
                 <option value="">По умолчанию (как настроено)</option>
                 {llmProviders
                   .filter((p) => p.is_active)
                   .map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.display_name} {p.model ? `· ${p.model}` : ''}
+                      {p.display_name} {p.default_model || p.model ? `· ${p.default_model ?? p.model}` : ''}
                       {p.is_default ? ' (default)' : ''}
                     </option>
                   ))}
@@ -191,6 +210,43 @@ export default function TestLabPage() {
                 <code className="font-mono">metadata._force_provider_id</code>.
               </p>
             </div>
+
+            {/* MTI-2 (§2.3): выбор модели из pack'а провайдера + своя модель */}
+            {(providerModels.length > 0 || model === '__custom__') && (
+              <div>
+                <label className="form-label">Модель</label>
+                <select
+                  className="form-select"
+                  value={model}
+                  onChange={(e) => setModel(e.target.value)}
+                >
+                  <option value="">
+                    По умолчанию
+                    {selectedProvider?.default_model ? ` · ${selectedProvider.default_model}` : ''}
+                  </option>
+                  {providerModels.map((m) => (
+                    <option key={m.name} value={m.alias || m.name}>
+                      {m.alias ? `${m.alias} (${m.name})` : m.name}
+                      {m.name === selectedProvider?.default_model ? ' — default' : ''}
+                    </option>
+                  ))}
+                  <option value="__custom__">Своя модель…</option>
+                </select>
+                {model === '__custom__' && (
+                  <input
+                    type="text"
+                    className="form-input mt-2 font-mono text-sm"
+                    placeholder="напр. claude-opus-4-7"
+                    value={customModel}
+                    onChange={(e) => setCustomModel(e.target.value)}
+                  />
+                )}
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  Перекрывает модель через{' '}
+                  <code className="font-mono">metadata._llm_model</code> (можно alias).
+                </p>
+              </div>
+            )}
           </div>
 
           <div className="flex flex-wrap items-center gap-3">

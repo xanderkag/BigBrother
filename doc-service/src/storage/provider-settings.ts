@@ -34,6 +34,46 @@ import { encryptSecret, decryptSecret } from './secrets.js';
 export type ProviderKind = 'llm' | 'ocr' | 'dadata' | 'yandex_maps';
 
 /**
+ * MTI-2 (§2.1): одна модель внутри pack'а провайдера.
+ *   - `name`  — то, что реально уходит в inference `body.model` (ollama-tag,
+ *               anthropic model-id). Обязателен.
+ *   - `alias` — короткое имя для per-job выбора (`metadata._llm_model: "opus"`);
+ *               резолвер найдёт по нему `name`. Опционален.
+ *   - `vision`/`cost_tier` — метаданные для UI/роутинга (не влияют на вызов).
+ */
+export type ProviderModel = {
+  name: string;
+  alias?: string | null;
+  vision?: boolean;
+  cost_tier?: 'low' | 'mid' | 'high' | null;
+};
+
+/**
+ * Нормализует сырой JSONB `models` из БД в массив валидных ProviderModel.
+ * Терпим к мусору (не-массив, элементы без name) — отбрасываем такие,
+ * чтобы кривая строка в БД не роняла hot-path резолва.
+ */
+export function parseProviderModels(raw: unknown): ProviderModel[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ProviderModel[] = [];
+  for (const el of raw) {
+    if (!el || typeof el !== 'object') continue;
+    const e = el as Record<string, unknown>;
+    if (typeof e.name !== 'string' || e.name.length === 0) continue;
+    out.push({
+      name: e.name,
+      alias: typeof e.alias === 'string' && e.alias.length > 0 ? e.alias : null,
+      vision: e.vision === true,
+      cost_tier:
+        e.cost_tier === 'low' || e.cost_tier === 'mid' || e.cost_tier === 'high'
+          ? e.cost_tier
+          : null,
+    });
+  }
+  return out;
+}
+
+/**
  * Дополнительный секрет в `extra`. Для kind='dadata' это `secret_key`
  * (DaData cleaning API). Маскируется/опускается в `toApi()` — никогда не
  * уходит клиенту в plaintext.
@@ -57,6 +97,18 @@ export type ProviderSettingRow = {
    * миграцию 20260528000001.
    */
   vision: boolean;
+  /**
+   * MTI-2 (§2.1): pack моделей провайдера. Один провайдер (один ключ, один
+   * endpoint) несёт несколько моделей — резолвер выбирает нужную per-job без
+   * дублирования строк. Пусто → берём legacy-колонку `model`.
+   */
+  models: ProviderModel[];
+  /**
+   * MTI-2 (§2.1): модель по умолчанию. Приоритет: job `_llm_model` →
+   * type `preferred_model` → `default_model` → legacy `model`. NULL → откат
+   * на `model` (backward-compat, миграция 20260723000002 бэкфиллит из model).
+   */
+  default_model: string | null;
   extra: Record<string, unknown> | null;
   /**
    * BILL-1: прайс-лист провайдера — {currency, cost_basis, llm_input_per_1k,
@@ -77,6 +129,10 @@ export type ProviderSettingInput = {
   base_url?: string | null;
   api_key?: string | null;
   model?: string | null;
+  /** MTI-2: pack моделей провайдера. Undefined → не трогаем (upsert ставит []). */
+  models?: ProviderModel[] | null;
+  /** MTI-2: модель по умолчанию. */
+  default_model?: string | null;
   is_active?: boolean;
   vision?: boolean;
   extra?: Record<string, unknown> | null;
@@ -129,6 +185,9 @@ class ProviderSettingsRepo {
       ...row,
       api_key: row.api_key === null ? null : decryptSecret(row.api_key),
       extra: decryptExtraSecrets(row.extra),
+      // MTI-2: нормализуем pack (JSONB → чистый ProviderModel[]), терпимо к
+      // мусору/легаси — кривая строка в БД не должна ронять резолв.
+      models: parseProviderModels(row.models),
     };
   }
 
@@ -178,18 +237,20 @@ class ProviderSettingsRepo {
   async upsert(input: ProviderSettingInput): Promise<ProviderSettingRow> {
     const { rows } = await db.query<ProviderSettingRow>(
       `INSERT INTO provider_settings
-         (id, kind, display_name, description, base_url, api_key, model, is_active, vision, extra)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, true), COALESCE($9, false), $10)
+         (id, kind, display_name, description, base_url, api_key, model, is_active, vision, extra, models, default_model)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, true), COALESCE($9, false), $10, COALESCE($11::jsonb, '[]'::jsonb), $12)
        ON CONFLICT (id) DO UPDATE SET
-         kind         = EXCLUDED.kind,
-         display_name = EXCLUDED.display_name,
-         description  = EXCLUDED.description,
-         base_url     = EXCLUDED.base_url,
-         api_key      = EXCLUDED.api_key,
-         model        = EXCLUDED.model,
-         is_active    = EXCLUDED.is_active,
-         vision       = EXCLUDED.vision,
-         extra        = EXCLUDED.extra
+         kind          = EXCLUDED.kind,
+         display_name  = EXCLUDED.display_name,
+         description   = EXCLUDED.description,
+         base_url      = EXCLUDED.base_url,
+         api_key       = EXCLUDED.api_key,
+         model         = EXCLUDED.model,
+         is_active     = EXCLUDED.is_active,
+         vision        = EXCLUDED.vision,
+         extra         = EXCLUDED.extra,
+         models        = EXCLUDED.models,
+         default_model = EXCLUDED.default_model
        RETURNING *`,
       [
         input.id,
@@ -204,6 +265,12 @@ class ProviderSettingsRepo {
         input.vision ?? false,
         // extra.secret_key шифруется ДО записи, как и api_key.
         encryptExtraSecrets(input.extra),
+        // MTI-2: pack — JS-массив стрингуем явно (node-pg иначе сделает
+        // postgres array-литерал, а не jsonb). undefined → NULL → COALESCE '[]'.
+        input.models === undefined || input.models === null
+          ? null
+          : JSON.stringify(input.models),
+        input.default_model ?? null,
       ],
     );
     // Возвращаем уже расшифрованную row, чтобы вызывающий код не натолкнулся
@@ -234,6 +301,13 @@ class ProviderSettingsRepo {
     if (patch.is_active !== undefined) push('is_active', patch.is_active);
     if (patch.vision !== undefined) push('vision', patch.vision);
     if (patch.extra !== undefined) push('extra', encryptExtraSecrets(patch.extra));
+    // MTI-2: pack — явный ::jsonb cast + stringify (см. upsert). null → '[]'
+    // (колонка NOT NULL DEFAULT '[]', очистка pack'а = пустой массив).
+    if (patch.models !== undefined) {
+      sets.push(`models = $${i++}::jsonb`);
+      values.push(patch.models === null ? '[]' : JSON.stringify(patch.models));
+    }
+    if (patch.default_model !== undefined) push('default_model', patch.default_model);
     if (sets.length === 0) return this.findById(id);
 
     values.push(id);
@@ -318,6 +392,9 @@ class ProviderSettingsRepo {
       has_api_key: !!row.api_key,
       has_secret_key: hasSecretKey,
       model: row.model,
+      // MTI-2: pack моделей + дефолт — не секрет, отдаём как есть для UI-редактора.
+      models: row.models,
+      default_model: row.default_model,
       is_active: row.is_active,
       is_default: row.is_default,
       vision: row.vision,

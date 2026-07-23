@@ -276,11 +276,30 @@ async function processJobBody(
     );
   }
 
+  // MTI-2 (§2.2): per-job override МОДЕЛИ. Пользователь мог выбрать конкретную
+  // модель провайдера через UI Upload / Test Lab (передаётся как
+  // `metadata._llm_model`, допускается alias — "opus"). Если задан — оборачиваем
+  // весь job в withModelOverride: все LLM-вызовы (classify/extract/verify) пойдут
+  // через эту модель, не меняя провайдера/ключа. Приоритетнее type-level
+  // preferred_model (тот применяется только если job-level НЕ активен — см.
+  // runDocumentPipeline). Композируется с force_provider ниже.
+  const llmModelRaw = meta?.['_llm_model'];
+  const llmModel =
+    typeof llmModelRaw === 'string' && llmModelRaw.length > 0 ? llmModelRaw : null;
+  if (llmModel) {
+    log.info({ jobId, llm_model: llmModel }, 'using per-job LLM model override for this job');
+  }
+  const runInner = (): Promise<void> => processJobInner(job, jobId, log, opts);
+  const runWithModel = llmModel
+    ? (): Promise<void> => dynamicLlm.withModelOverride(llmModel, runInner)
+    : runInner;
+
   // Per-job force_provider override: пользователь мог при загрузке выбрать
   // конкретного LLM-провайдера через UI Upload (передаётся как
   // `metadata._force_provider_id`). Если задан — оборачиваем всю обработку
   // в withForceProvider, который через AsyncLocalStorage заставит все вызовы
-  // dynamicLlm внутри pipeline резолвиться к этому провайдеру.
+  // dynamicLlm внутри pipeline резолвиться к этому провайдеру. Модель-override
+  // (runWithModel) вложен внутрь — резолвер читает оба ALS независимо.
   const forceProviderId = meta?.['_force_provider_id'];
   if (typeof forceProviderId === 'string' && forceProviderId.length > 0) {
     log.info({ jobId, force_provider: forceProviderId }, 'using forced LLM provider for this job');
@@ -296,9 +315,9 @@ async function processJobBody(
       );
       forcedProviderFallthroughTotal.inc({ reason: fallthrough });
     }
-    return dynamicLlm.withForceProvider(forceProviderId, () => processJobInner(job, jobId, log, opts));
+    return dynamicLlm.withForceProvider(forceProviderId, runWithModel);
   }
-  return processJobInner(job, jobId, log, opts);
+  return runWithModel();
 }
 
 /**
@@ -1884,22 +1903,34 @@ export async function runDocumentPipeline(
     // SPEED-5: parser параметризован — retry может подменить single-shot на
     // multipass при обрыве вывода (чанки решают 8192-truncation, чего смена
     // провайдера не даёт).
-    const runParse = (useParser: DocumentParser = parser) =>
-      useParser.parse(rawText, {
-        expectedFields: typeConfig!.expectedFields,
-        regexFallbackThreshold: typeConfig!.regexFallbackThreshold,
-        llmSchema: typeConfig!.llmSchema,
-        imagePath: imagePathForExtract,
-        // Кастомная инструкция админа (если задана) → пробрасывается
-        // парсером в LLM-клиент → попадает как `prompt_override` в
-        // inference-service → заменяет builtin prompt для этого типа.
-        //
-        // F20 (SLAI ТЗ): per-job override через options.promptOverride
-        // приоритетнее чем per-type llmPrompt. Use case: оператор хочет
-        // переспросить документ с другим промптом для одного конкретного
-        // job (через `POST /jobs/:id/reprocess` с metadata.prompt_override).
-        llmPrompt: options.promptOverride ?? typeConfig!.llmPrompt ?? undefined,
-      });
+    // MTI-2 (§2.4): type-level preferred_model. Применяем ТОЛЬКО если job-level
+    // `_llm_model` НЕ активен (job приоритетнее — проверяем ALS через
+    // hasModelOverride). Оборачиваем сам parse, чтобы КАЖДЫЙ вызов runParse
+    // (первичный + requality-ретраи ниже) шёл с этой моделью; withForceProvider
+    // (провайдер) композируется снаружи. Alias→name резолвится в
+    // resolveEffectiveModel. Вычисляем applyTypeModel один раз — job-level scope
+    // стабилен на весь pipeline.
+    const typePreferredModel = typeConfig!.preferredModel;
+    const applyTypeModel = !!typePreferredModel && !dynamicLlm.hasModelOverride();
+    const runParse = (useParser: DocumentParser = parser) => {
+      const exec = () =>
+        useParser.parse(rawText, {
+          expectedFields: typeConfig!.expectedFields,
+          regexFallbackThreshold: typeConfig!.regexFallbackThreshold,
+          llmSchema: typeConfig!.llmSchema,
+          imagePath: imagePathForExtract,
+          // Кастомная инструкция админа (если задана) → пробрасывается
+          // парсером в LLM-клиент → попадает как `prompt_override` в
+          // inference-service → заменяет builtin prompt для этого типа.
+          //
+          // F20 (SLAI ТЗ): per-job override через options.promptOverride
+          // приоритетнее чем per-type llmPrompt. Use case: оператор хочет
+          // переспросить документ с другим промптом для одного конкретного
+          // job (через `POST /jobs/:id/reprocess` с metadata.prompt_override).
+          llmPrompt: options.promptOverride ?? typeConfig!.llmPrompt ?? undefined,
+        });
+      return applyTypeModel ? dynamicLlm.withModelOverride(typePreferredModel!, exec) : exec();
+    };
 
     const tParser = Date.now();
     // Adaptive-model routing (2026-07-09): per-type preferred_provider_id из

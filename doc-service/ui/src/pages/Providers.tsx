@@ -8,6 +8,7 @@ import {
   useTestProvider,
   type ProviderEntry,
   type ProviderKind,
+  type ProviderModel,
   type TestResult,
 } from '@/queries/providers';
 import JsonField from '@/components/JsonField';
@@ -181,7 +182,19 @@ function ProviderRow({
         {provider.base_url ?? <span className="text-slate-400 dark:text-slate-500">—</span>}
       </td>
       <td className="px-4 py-2 text-slate-600 dark:text-slate-400 dark:text-slate-500">
-        {provider.model ?? <span className="text-slate-400 dark:text-slate-500">—</span>}
+        {/* MTI-2: pack → показываем default + счётчик; иначе legacy model */}
+        {provider.models && provider.models.length > 0 ? (
+          <span className="font-mono text-xs">
+            {provider.default_model ?? provider.models[0]?.name}
+            {provider.models.length > 1 && (
+              <span className="ml-1 rounded bg-slate-100 px-1 text-[10px] text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                +{provider.models.length - 1}
+              </span>
+            )}
+          </span>
+        ) : (
+          (provider.model ?? <span className="text-slate-400 dark:text-slate-500">—</span>)
+        )}
       </td>
       <td className="px-4 py-2 font-mono text-xs text-slate-600 dark:text-slate-400 dark:text-slate-500">
         {provider.has_api_key ? (
@@ -269,7 +282,9 @@ interface DraftForm {
   base_url: string;
   api_key: string;
   secret_key: string; // только для kind='dadata' → extra.secret_key (write-only)
-  model: string;
+  model: string; // LEGACY (до MTI-2) — одиночная модель, fallback когда pack пуст
+  models: ProviderModel[]; // MTI-2 pack
+  default_model: string; // MTI-2 — модель по умолчанию (имя из pack)
   is_active: boolean;
   extra: Record<string, unknown> | null;
 }
@@ -296,6 +311,8 @@ export function ProviderEditor({
     api_key: '', // никогда не pre-fill'им
     secret_key: '', // никогда не pre-fill'им (backend не отдаёт plaintext)
     model: initial?.model ?? '',
+    models: initial?.models ? initial.models.map((m) => ({ ...m })) : [],
+    default_model: initial?.default_model ?? '',
     is_active: initial?.is_active ?? true,
     // extra без secret_key: маскированное значение из toApi() в JSON-редакторе
     // показывать/гонять обратно нельзя. secret_key редактируется отдельным полем.
@@ -337,6 +354,30 @@ export function ProviderEditor({
       return { ...d, extra: Object.keys(next).length > 0 ? next : null };
     });
 
+  // ── MTI-2: редактор pack'а моделей ──────────────────────────────────────
+  const addModel = () =>
+    setDraft((d) => ({
+      ...d,
+      models: [...d.models, { name: '', alias: '', vision: false, cost_tier: null }],
+    }));
+  const removeModel = (idx: number) =>
+    setDraft((d) => ({ ...d, models: d.models.filter((_, i) => i !== idx) }));
+  const patchModel = (idx: number, p: Partial<ProviderModel>) =>
+    setDraft((d) => ({
+      ...d,
+      models: d.models.map((m, i) => (i === idx ? { ...m, ...p } : m)),
+    }));
+  // Санитизация перед отправкой: строки без name выкидываем, значения тримим.
+  const cleanModels = (): ProviderModel[] =>
+    draft.models
+      .filter((m) => m.name.trim().length > 0)
+      .map((m) => ({
+        name: m.name.trim(),
+        alias: m.alias && m.alias.trim().length > 0 ? m.alias.trim() : null,
+        vision: !!m.vision,
+        cost_tier: m.cost_tier ?? null,
+      }));
+
   // «Ты же знаешь адреса» — пресет Yandex AI Studio: заполняет всё, что
   // одинаково для всех (бэкенд + upstream), модель — шаблон (folder/model свои).
   // Base URL не трогаем: это адрес inference, берётся из env.
@@ -364,6 +405,9 @@ export function ProviderEditor({
           setError('display_name обязательно');
           return;
         }
+        // MTI-2: pack + дефолт. Если дефолт не выбран, но pack непустой —
+        // берём первую модель, чтобы провайдер всегда имел определённый выбор.
+        const cm = cleanModels();
         await create.mutateAsync({
           id: draft.id,
           kind: draft.kind,
@@ -372,6 +416,8 @@ export function ProviderEditor({
           base_url: draft.base_url || null,
           api_key: draft.api_key || null,
           model: draft.model || null,
+          models: cm.length ? cm : null,
+          default_model: draft.default_model || cm[0]?.name || null,
           is_active: draft.is_active,
           extra: buildExtra(),
         });
@@ -384,11 +430,15 @@ export function ProviderEditor({
         // Тип патча — Partial<CreateProviderInput> чтобы null'ы для
         // description/base_url/model работали (DraftForm хранит их как
         // string для удобства binding'а в input'ах).
+        // MTI-2: pack + дефолт — full-replace (как model). Пустой pack = очистка.
+        const cm = cleanModels();
         const patch: Partial<import('@/queries/providers').CreateProviderInput> = {
           display_name: draft.display_name,
           description: draft.description || null,
           base_url: draft.base_url || null,
           model: draft.model || null,
+          models: cm,
+          default_model: draft.default_model || cm[0]?.name || null,
           is_active: draft.is_active,
         };
         if (clearApiKey) {
@@ -618,7 +668,7 @@ export function ProviderEditor({
 
           {draft.kind !== 'ocr' && (
             <div>
-              <label className="form-label">Модель (для LLM)</label>
+              <label className="form-label">Модель — одиночная (legacy)</label>
               <input
                 type="text"
                 className="form-input font-mono text-sm"
@@ -630,6 +680,114 @@ export function ProviderEditor({
                     : 'claude-sonnet-4-6'
                 }
               />
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                Используется как fallback, если pack моделей ниже пуст. Для нескольких
+                моделей на одном ключе заполните «Модели (pack)».
+              </p>
+            </div>
+          )}
+
+          {/* MTI-2 (§2.1): pack моделей — один провайдер = несколько моделей */}
+          {draft.kind === 'llm' && (
+            <div className="rounded-lg border border-slate-200 p-3 dark:border-slate-800 sm:col-span-2">
+              <div className="mb-2 flex items-center justify-between">
+                <label className="form-label mb-0">Модели (pack)</label>
+                <button type="button" className="btn-ghost text-xs" onClick={addModel}>
+                  + Добавить модель
+                </button>
+              </div>
+              <p className="mb-2 text-xs text-slate-500 dark:text-slate-400">
+                Один провайдер = несколько моделей на одном ключе.{' '}
+                <code className="font-mono">alias</code> — короткое имя для выбора per-job
+                (напр. «opus» → <code className="font-mono">metadata._llm_model</code>).
+              </p>
+              {draft.models.length === 0 ? (
+                <p className="text-xs text-slate-400 dark:text-slate-500">
+                  Пусто — добавьте модели, чтобы выбирать их per-job без дублирования провайдера.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  <div className="grid grid-cols-12 gap-2 text-[10px] uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                    <span className="col-span-5">model name</span>
+                    <span className="col-span-3">alias</span>
+                    <span className="col-span-2">tier</span>
+                    <span className="col-span-1 text-center" title="vision">👁</span>
+                    <span className="col-span-1" />
+                  </div>
+                  {draft.models.map((m, idx) => (
+                    <div key={idx} className="grid grid-cols-12 items-center gap-2">
+                      <input
+                        className="form-input col-span-5 font-mono text-xs"
+                        placeholder="claude-opus-4-7"
+                        value={m.name}
+                        onChange={(e) => patchModel(idx, { name: e.target.value })}
+                      />
+                      <input
+                        className="form-input col-span-3 font-mono text-xs"
+                        placeholder="opus"
+                        value={m.alias ?? ''}
+                        onChange={(e) => patchModel(idx, { alias: e.target.value })}
+                      />
+                      <select
+                        className="form-select col-span-2 text-xs"
+                        value={m.cost_tier ?? ''}
+                        onChange={(e) =>
+                          patchModel(idx, {
+                            cost_tier: (e.target.value || null) as ProviderModel['cost_tier'],
+                          })
+                        }
+                      >
+                        <option value="">—</option>
+                        <option value="low">low</option>
+                        <option value="mid">mid</option>
+                        <option value="high">high</option>
+                      </select>
+                      <label
+                        className="col-span-1 flex items-center justify-center"
+                        title="vision-модель"
+                      >
+                        <input
+                          type="checkbox"
+                          className="h-4 w-4 rounded border-slate-300"
+                          checked={!!m.vision}
+                          onChange={(e) => patchModel(idx, { vision: e.target.checked })}
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        className="btn-ghost col-span-1 text-xs text-rose-600 dark:text-rose-400"
+                        onClick={() => removeModel(idx)}
+                        title="удалить модель"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {draft.models.some((m) => m.name.trim()) && (
+                <div className="mt-3">
+                  <label className="form-label">Модель по умолчанию</label>
+                  <select
+                    className="form-select text-sm"
+                    value={draft.default_model}
+                    onChange={(e) => setDraft((d) => ({ ...d, default_model: e.target.value }))}
+                  >
+                    <option value="">(первая из pack)</option>
+                    {draft.models
+                      .filter((m) => m.name.trim())
+                      .map((m) => (
+                        <option key={m.name} value={m.name}>
+                          {m.name}
+                          {m.alias ? ` · ${m.alias}` : ''}
+                        </option>
+                      ))}
+                  </select>
+                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                    Берётся, если job/тип не указали иную модель.
+                  </p>
+                </div>
+              )}
             </div>
           )}
           <div className="flex items-end">

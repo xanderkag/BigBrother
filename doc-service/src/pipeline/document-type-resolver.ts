@@ -90,6 +90,15 @@ export type ResolvedTypeConfig = {
    * `null` = используем дефолтного провайдера (без override).
    */
   preferredProviderId: string | null;
+  /**
+   * MTI-2 (§2.4): предпочтительная МОДЕЛЬ для extract'а этого типа. Читается из
+   * `metadata.preferred_model` (JSONB, зеркально preferred_provider_id). Может
+   * быть alias'ом ("opus") — резолвится в models[] провайдера. Применяется
+   * автоматически ПОСЛЕ классификации, если job не задал свой `_llm_model`
+   * (тот приоритетнее). `null` = без override (default_model провайдера).
+   * Use-case: customs_declaration → точная дорогая модель, cash_receipt → дешёвая.
+   */
+  preferredModel: string | null;
   /** Whether this config was DB-sourced or fully built from fallbacks. */
   source: 'db' | 'fallback';
 };
@@ -326,6 +335,7 @@ export function resolveConfigFromRow(
       tier: 'experimental',
       preferVision: false,
       preferredProviderId: null,
+      preferredModel: null,
       source: 'fallback',
     };
   }
@@ -354,6 +364,7 @@ export function resolveConfigFromRow(
     tier: (row.tier ?? 'experimental') as DocumentTypeTier,
     preferVision: row.prefer_vision === true,
     preferredProviderId: readPreferredProviderId(row.metadata),
+    preferredModel: readPreferredModel(row.metadata),
     source: 'db',
   };
 }
@@ -367,5 +378,20 @@ export function resolveConfigFromRow(
 function readPreferredProviderId(metadata: Record<string, unknown> | null | undefined): string | null {
   if (!metadata) return null;
   const v = metadata.preferred_provider_id;
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
+/**
+ * MTI-2 (§2.4): читает `preferred_model` из document_types.metadata (JSONB).
+ * Возвращает имя/alias модели, если задан непустой строкой, иначе null.
+ * Валидность (есть ли такая модель в pack'е провайдера) разрешается на
+ * runtime в resolveEffectiveModel — тут просто извлекаем строку. Хранится в
+ * metadata, а не отдельной колонкой (в отличие от буквы ТЗ §2.4
+ * `ADD COLUMN preferred_model`) — единообразно с preferred_provider_id, без
+ * миграции горячей таблицы document_types.
+ */
+function readPreferredModel(metadata: Record<string, unknown> | null | undefined): string | null {
+  if (!metadata) return null;
+  const v = metadata.preferred_model;
   return typeof v === 'string' && v.length > 0 ? v : null;
 }

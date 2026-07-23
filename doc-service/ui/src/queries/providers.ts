@@ -21,6 +21,17 @@ import { api } from '@/lib/api';
 
 export type ProviderKind = 'llm' | 'ocr' | 'dadata' | 'yandex_maps';
 
+/**
+ * MTI-2: одна модель внутри pack'а провайдера. `name` уходит в inference
+ * `body.model`; `alias` — короткое имя для per-job выбора (`_llm_model: "opus"`).
+ */
+export interface ProviderModel {
+  name: string;
+  alias?: string | null;
+  vision?: boolean;
+  cost_tier?: 'low' | 'mid' | 'high' | null;
+}
+
 export interface ProviderEntry {
   id: string;
   kind: ProviderKind;
@@ -30,7 +41,9 @@ export interface ProviderEntry {
   api_key_masked?: string | null; // ••••1234, никогда не plaintext
   has_api_key?: boolean;
   has_secret_key?: boolean; // extra.secret_key установлен (plaintext не отдаём)
-  model?: string | null;
+  model?: string | null; // LEGACY (до MTI-2) — одиночная модель
+  models?: ProviderModel[]; // MTI-2 pack
+  default_model?: string | null; // MTI-2 — какая модель по умолчанию
   is_active: boolean;
   is_default?: boolean;
   extra?: Record<string, unknown> | null;
@@ -71,6 +84,8 @@ export interface CreateProviderInput {
   base_url?: string | null;
   api_key?: string | null;
   model?: string | null;
+  models?: ProviderModel[] | null; // MTI-2 pack
+  default_model?: string | null; // MTI-2
   is_active?: boolean;
   extra?: Record<string, unknown> | null;
 }

@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { providerSettingsRepo } from '../../storage/provider-settings.js';
+import { providerSettingsRepo, type ProviderSettingRow } from '../../storage/provider-settings.js';
 import { config } from '../../config.js';
 import { HttpLlmClient } from './http-client.js';
 import { NullLlmClient } from './null-client.js';
@@ -37,6 +37,49 @@ const inlineCredentialsContext = new AsyncLocalStorage<{
   model?: string;
   baseUrl?: string;
 }>();
+
+/**
+ * MTI-2 (§2.2): per-request override МОДЕЛИ (не провайдера). Заполняется:
+ *   · job-level — processJob оборачивает весь job, если задан `metadata._llm_model`;
+ *   · type-level — runDocumentPipeline оборачивает extract, если у типа задан
+ *     `metadata.preferred_model` И job-level НЕ активен (job приоритетнее).
+ * Несёт «запрошенную» модель (name ИЛИ alias) — резолвится в `models[]` строки
+ * провайдера на resolve-время (см. resolveEffectiveModel). В отличие от
+ * forceProviderContext, НЕ меняет провайдера/ключ/endpoint — только `body.model`.
+ */
+const modelOverrideContext = new AsyncLocalStorage<{ model: string }>();
+
+/**
+ * MTI-2 (§2.1): вычисляет эффективную модель для строки провайдера с учётом
+ * per-request override (job `_llm_model` / type `preferred_model`).
+ *
+ * Приоритет:
+ *   1. `requested` (override), если задан:
+ *        · совпал с `alias` в models[] → возвращаем его `name`;
+ *        · совпал с `name` в models[] → возвращаем как есть;
+ *        · не найден в pack → возвращаем `requested` как есть (custom-модель;
+ *          ТЗ §2.3 допускает ввод не-в-pack модели — вдруг вышла новая).
+ *   2. `default_model` провайдера (MTI-2).
+ *   3. legacy `model` (backward-compat: старые строки/снимки до MTI-2, миграция
+ *      20260723000002 бэкфиллит default_model из model — тут просто страховка).
+ *   4. undefined → inference берёт свой env OPENAI_MODEL (как было).
+ */
+export function resolveEffectiveModel(
+  row: ProviderSettingRow,
+  requested: string | undefined,
+): string | undefined {
+  if (requested && requested.length > 0) {
+    const models = row.models ?? [];
+    const lc = requested.toLowerCase();
+    const byAlias = models.find((m) => m.alias && m.alias.toLowerCase() === lc);
+    if (byAlias) return byAlias.name;
+    const byName = models.find((m) => m.name === requested);
+    if (byName) return byName.name;
+    return requested; // custom (не в pack) — пробрасываем как есть
+  }
+  if (row.default_model && row.default_model.length > 0) return row.default_model;
+  return row.model || undefined;
+}
 
 /**
  * DynamicLlmClient — wraps a real LlmClient, but reads its endpoint+key from
@@ -142,6 +185,28 @@ class DynamicLlmClient implements LlmClient {
    */
   withForceProvider<T>(providerId: string, fn: () => Promise<T>): Promise<T> {
     return forceProviderContext.run({ providerId }, fn);
+  }
+
+  /**
+   * MTI-2 (§2.2): запустить `fn` с per-job/per-type override МОДЕЛИ. Все вызовы
+   * dynamicLlm внутри callback'а (classify/extract/verify) пойдут через ту же
+   * строку провайдера, но с этой моделью в `body.model`. Провайдер/ключ/endpoint
+   * НЕ меняются (в отличие от withForceProvider). Композируется с
+   * withForceProvider: forced-provider снаружи, модель внутри — резолвер читает
+   * оба ALS независимо. Модель может быть alias ("opus") — резолвится в models[].
+   */
+  withModelOverride<T>(model: string, fn: () => Promise<T>): Promise<T> {
+    return modelOverrideContext.run({ model }, fn);
+  }
+
+  /**
+   * MTI-2: активен ли уже override модели (обычно job-level `_llm_model`).
+   * runDocumentPipeline читает это, чтобы НЕ накладывать type-level
+   * `preferred_model` поверх более приоритетного job-level override.
+   */
+  hasModelOverride(): boolean {
+    const s = modelOverrideContext.getStore();
+    return !!s && typeof s.model === 'string' && s.model.length > 0;
   }
 
   /**
@@ -268,6 +333,14 @@ class DynamicLlmClient implements LlmClient {
       if (forced) return forced;
       // fallthrough на default если provider не найден
     }
+    // MTI-2: override модели на DEFAULT-провайдере (job `_llm_model` / type
+    // `preferred_model` без forced-provider). TTL-кэш модель-агностичен (его
+    // ключ — только default-провайдер), поэтому переиспользовать его НЕЛЬЗЯ —
+    // резолвим свежим клиентом с нужной моделью (resolve() читает ALS). Кэш
+    // при этом НЕ трогаем, чтобы он остался «чистой» default-моделью.
+    if (this.hasModelOverride()) {
+      return this.resolve();
+    }
     const now = Date.now();
     if (this.cached && now - this.cached.resolvedAt < TTL_MS) {
       return this.cached.client;
@@ -301,18 +374,18 @@ class DynamicLlmClient implements LlmClient {
     const baseUrl = row.base_url || config.llm.url || null;
     if (!baseUrl) return null;
     const apiKey = row.api_key || config.llm.apiKey;
-    // row.model — конкретный ollama-tag (например "phi4", "gemma3:27b",
-    // "mistral-small3.1"). Если задан — клиент пошлёт его в body запроса,
-    // и inference-service.openai_compatible подменит свой default из env.
-    // Это позволяет иметь несколько provider_settings rows с одним base_url
-    // но разными model — каждая строка = «прогон через эту модель».
+    // MTI-2: эффективная модель = per-request override (job `_llm_model` / type
+    // `preferred_model`) → default_model → legacy model. requested может быть
+    // alias'ом ("opus") — резолвится в row.models[]. До MTI-2 тут было просто
+    // row.model; теперь одна строка провайдера несёт pack, а модель выбирается.
+    const requestedModel = modelOverrideContext.getStore()?.model;
     const override = readBackendOverride(row.extra);
     return new HttpLlmClient({
       baseUrl,
       apiKey,
       interServiceKey: config.llm.interServiceKey,
       timeoutMs: config.llm.timeoutMs,
-      model: row.model || undefined,
+      model: resolveEffectiveModel(row, requestedModel),
       vision: row.vision === true,
       reasoningEffort: readReasoningEffort(row.extra),
       backend: override.backend,
@@ -342,14 +415,20 @@ class DynamicLlmClient implements LlmClient {
 
     const apiKey = dbRow?.api_key || config.llm.apiKey;
     const override = readBackendOverride(dbRow?.extra);
+    // MTI-2: эффективная модель default-провайдера. При наличии dbRow —
+    // override→default_model→legacy model (resolveEffectiveModel). Без dbRow
+    // (чистый env-fallback) — только явный override, иначе undefined (inference
+    // берёт свой env OPENAI_MODEL, поведение как раньше).
+    const requestedModel = modelOverrideContext.getStore()?.model;
+    const effectiveModel = dbRow
+      ? resolveEffectiveModel(dbRow, requestedModel)
+      : requestedModel || undefined;
     return new HttpLlmClient({
       baseUrl,
       apiKey,
       interServiceKey: config.llm.interServiceKey,
       timeoutMs: config.llm.timeoutMs,
-      // Если is_default-провайдер задал model — пробрасываем его в inference,
-      // иначе inference использует свой OPENAI_MODEL из env.
-      model: dbRow?.model || undefined,
+      model: effectiveModel,
       vision: dbRow?.vision === true,
       reasoningEffort: readReasoningEffort(dbRow?.extra),
       // VANGA-LLM-2: per-instance cloud/local/gpu из extra.backend (+upstream).
