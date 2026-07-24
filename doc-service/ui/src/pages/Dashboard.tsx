@@ -11,6 +11,7 @@ import { formatPercent, formatDateTime, formatNumber } from '@/lib/format';
 import ConfidenceBar from '@/components/ConfidenceBar';
 import TierBadge from '@/components/TierBadge';
 import TimeseriesChart from '@/components/TimeseriesChart';
+import SystemHealthStrip from '@/components/SystemHealthStrip';
 import type { DocumentTypeTier } from '@/queries/documentTypes';
 import type { Job } from '@/lib/types';
 
@@ -100,6 +101,9 @@ export default function DashboardPage() {
           ))}
         </div>
       </div>
+
+      {/* UX-3: одна строка «всё ли работает» + куда идти чинить */}
+      <SystemHealthStrip />
 
       {error && (
         <div className="error-banner">

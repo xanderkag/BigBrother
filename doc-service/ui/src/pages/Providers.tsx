@@ -274,6 +274,9 @@ function stripSecretKey(
   return Object.keys(rest).length > 0 ? rest : null;
 }
 
+/** UX-1: запомненный выбор «простой / расширенный» в редакторе провайдера. */
+const PROVIDER_ADVANCED_KEY = 'parsdocs.v2.providerAdvanced';
+
 interface DraftForm {
   id: string;
   kind: ProviderKind;
@@ -321,6 +324,18 @@ export function ProviderEditor({
   const [error, setError] = useState<string | null>(null);
   const [clearApiKey, setClearApiKey] = useState(false);
   const [clearSecretKey, setClearSecretKey] = useState(false);
+  // UX-1 (docs/UX_ANALYSIS_2026-05-31.md §UX-1): простой режим по умолчанию.
+  // В форме остаётся только то, что нужно для «подключить модель» — название,
+  // ключ, модели. Технические поля (адреса, бэкенд, extra, legacy-модель)
+  // прячутся под переключателем. Выбор запоминаем: инженеру не кликать каждый
+  // раз, а обычному пользователю не спотыкаться о внутренности.
+  const [advanced, setAdvanced] = useState<boolean>(
+    () => localStorage.getItem(PROVIDER_ADVANCED_KEY) === '1',
+  );
+  const toggleAdvanced = (v: boolean): void => {
+    setAdvanced(v);
+    localStorage.setItem(PROVIDER_ADVANCED_KEY, v ? '1' : '0');
+  };
 
   // Собрать extra для отправки: базовый extra (без secret_key) +
   // secret_key только если введён новый или явно очищается.
@@ -497,6 +512,39 @@ export function ProviderEditor({
         </div>
 
         <div className="card-body grid flex-1 grid-cols-1 gap-4 overflow-auto sm:grid-cols-2">
+          {/* UX-1: переключатель простой / расширенный */}
+          <div className="sm:col-span-2 flex items-center justify-between rounded-lg bg-slate-50 px-3 py-1.5 dark:bg-slate-900/40">
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              {advanced
+                ? 'Показаны все настройки, включая технические'
+                : 'Показано только необходимое для подключения'}
+            </span>
+            <div className="flex rounded-md bg-slate-200/70 p-0.5 text-xs dark:bg-slate-800">
+              <button
+                type="button"
+                className={`rounded px-2.5 py-1 ${
+                  !advanced
+                    ? 'bg-white font-medium text-slate-900 shadow-sm dark:bg-slate-900 dark:text-slate-100'
+                    : 'text-slate-600 dark:text-slate-400'
+                }`}
+                onClick={() => toggleAdvanced(false)}
+              >
+                Простой
+              </button>
+              <button
+                type="button"
+                className={`rounded px-2.5 py-1 ${
+                  advanced
+                    ? 'bg-white font-medium text-slate-900 shadow-sm dark:bg-slate-900 dark:text-slate-100'
+                    : 'text-slate-600 dark:text-slate-400'
+                }`}
+                onClick={() => toggleAdvanced(true)}
+              >
+                Расширенный
+              </button>
+            </div>
+          </div>
+
           {draft.kind === 'ocr' && (
             <div className="sm:col-span-2 rounded-md bg-sky-50 px-3 py-2 text-xs text-sky-800 dark:bg-sky-950/40 dark:text-sky-200">
               <b>Yandex Vision OCR.</b> Адрес (<code>ocr.api.cloud.yandex.net</code>) и
@@ -505,33 +553,39 @@ export function ProviderEditor({
               <b>Активен</b>. Base URL и Модель для OCR не используются.
             </div>
           )}
-          <div>
-            <label className="form-label">ID</label>
-            <input
-              type="text"
-              className="form-input font-mono text-sm"
-              value={draft.id}
-              onChange={(e) => setDraft((d) => ({ ...d, id: e.target.value }))}
-              disabled={!isNew}
-              placeholder="например: claude-prod"
-            />
-          </div>
-          <div>
-            <label className="form-label">Тип</label>
-            <select
-              className="form-select"
-              value={draft.kind}
-              onChange={(e) =>
-                setDraft((d) => ({ ...d, kind: e.target.value as ProviderKind }))
-              }
-              disabled={!isNew}
-            >
-              <option value="llm">LLM</option>
-              <option value="ocr">OCR</option>
-              <option value="dadata">DaData (ЕГРЮЛ-обогащение)</option>
-              <option value="yandex_maps">Яндекс.Карты (геокодер)</option>
-            </select>
-          </div>
+          {/* ID и Тип обязательны при создании; у существующего они заблокированы
+              и в простом режиме только зашумляют форму. */}
+          {(isNew || advanced) && (
+            <>
+              <div>
+                <label className="form-label">ID</label>
+                <input
+                  type="text"
+                  className="form-input font-mono text-sm"
+                  value={draft.id}
+                  onChange={(e) => setDraft((d) => ({ ...d, id: e.target.value }))}
+                  disabled={!isNew}
+                  placeholder="например: claude-prod"
+                />
+              </div>
+              <div>
+                <label className="form-label">Тип</label>
+                <select
+                  className="form-select"
+                  value={draft.kind}
+                  onChange={(e) =>
+                    setDraft((d) => ({ ...d, kind: e.target.value as ProviderKind }))
+                  }
+                  disabled={!isNew}
+                >
+                  <option value="llm">LLM</option>
+                  <option value="ocr">OCR</option>
+                  <option value="dadata">DaData (ЕГРЮЛ-обогащение)</option>
+                  <option value="yandex_maps">Яндекс.Карты (геокодер)</option>
+                </select>
+              </div>
+            </>
+          )}
 
           <div className="sm:col-span-2">
             <label className="form-label">Название</label>
@@ -546,19 +600,21 @@ export function ProviderEditor({
             />
           </div>
 
-          <div className="sm:col-span-2">
-            <label className="form-label">Описание</label>
-            <textarea
-              className="form-textarea text-sm"
-              rows={2}
-              value={draft.description}
-              onChange={(e) =>
-                setDraft((d) => ({ ...d, description: e.target.value }))
-              }
-            />
-          </div>
+          {advanced && (
+            <div className="sm:col-span-2">
+              <label className="form-label">Описание</label>
+              <textarea
+                className="form-textarea text-sm"
+                rows={2}
+                value={draft.description}
+                onChange={(e) =>
+                  setDraft((d) => ({ ...d, description: e.target.value }))
+                }
+              />
+            </div>
+          )}
 
-          {draft.kind !== 'ocr' && (
+          {advanced && draft.kind !== 'ocr' && (
             <div className="sm:col-span-2">
               <label className="form-label">
                 Base URL{' '}
@@ -666,7 +722,7 @@ export function ProviderEditor({
             </div>
           )}
 
-          {draft.kind !== 'ocr' && (
+          {advanced && draft.kind !== 'ocr' && (
             <div>
               <label className="form-label">Модель — одиночная (legacy)</label>
               <input
@@ -804,7 +860,7 @@ export function ProviderEditor({
             </label>
           </div>
 
-          {draft.kind === 'llm' && (
+          {advanced && draft.kind === 'llm' && (
             <>
               <div className="sm:col-span-2 flex flex-wrap items-center gap-2">
                 <button
@@ -852,14 +908,16 @@ export function ProviderEditor({
             </>
           )}
 
-          <div className="sm:col-span-2">
-            <JsonField
-              label="Extra (сырой JSON — продвинутое)"
-              value={draft.extra}
-              onChange={(v) => setDraft((d) => ({ ...d, extra: v }))}
-              hint="Произвольный provider-specific config. backend/upstream_base_url удобнее задать полями выше — они пишут сюда же."
-            />
-          </div>
+          {advanced && (
+            <div className="sm:col-span-2">
+              <JsonField
+                label="Extra (сырой JSON — продвинутое)"
+                value={draft.extra}
+                onChange={(v) => setDraft((d) => ({ ...d, extra: v }))}
+                hint="Произвольный provider-specific config. backend/upstream_base_url удобнее задать полями выше — они пишут сюда же."
+              />
+            </div>
+          )}
 
           {error && <div className="error-banner sm:col-span-2">{error}</div>}
         </div>
