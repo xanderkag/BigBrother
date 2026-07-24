@@ -115,11 +115,22 @@ export class MultiPassLlmParser implements DocumentParser {
     itemsSchema: { properties?: Record<string, unknown> },
     issues: string[],
   ): Promise<unknown[] | null> {
+    // Ранние выходы ТОЖЕ оставляют след: без этого путь «молчит», и по проду
+    // невозможно понять, он не сработал или не пробовался вовсе (наступили
+    // на это при первом замере — трасса была пустой).
     const cand = pickItemTable(override.tables);
-    if (!cand) return null;
+    if (!cand) {
+      const sheets = override.tables?.length ?? 0;
+      const rows = (override.tables ?? []).reduce((n, t) => n + (t.rows?.length ?? 0), 0);
+      issues.push(`xlsx_fast_no_table:sheets=${sheets},rows=${rows}`);
+      return null;
+    }
 
     const fields = itemFieldNames(itemsSchema.properties?.items);
-    if (fields.length === 0) return null;
+    if (fields.length === 0) {
+      issues.push('xlsx_fast_no_item_fields');
+      return null;
+    }
 
     const mapping = await mapColumnsWithLlm(this.llm, cand, fields, this.type);
     if (!mapping) {
@@ -214,8 +225,15 @@ export class MultiPassLlmParser implements DocumentParser {
     // Если удалось — вместо 20+ вызовов на перепечатку строк уходит один
     // короткий вызов на разметку колонок. Не удалось — молча идём по-старому.
     let fastItems: unknown[] | null = null;
-    if (itemsSchema && this.cfg.xlsxFastPath && override?.tables?.length) {
-      fastItems = await this.tryTableFastPath(override, itemsSchema, issues);
+    if (itemsSchema && this.cfg.xlsxFastPath) {
+      if (override?.tables?.length) {
+        fastItems = await this.tryTableFastPath(override, itemsSchema, issues);
+      } else {
+        // Флаг включён, но структуры нет — значит документ не из Excel либо
+        // структура не доехала. Без этого следа причина неотличима от «путь
+        // попробовал и отказался».
+        issues.push('xlsx_fast_no_tables_provided');
+      }
     }
 
     if (fastItems) {
