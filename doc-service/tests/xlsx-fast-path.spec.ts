@@ -241,7 +241,7 @@ describe('сторожа полноты: «быстро» не должно по
     .concat(Array.from({ length: 156 }, (_, i) => `Товар ${i},1,100`))
     .join('\n');
 
-  it('модель выбрала маленькую служебную таблицу → отказ по охвату документа', async () => {
+  it('модель пропустила область КРУПНЕЕ выбранной → отказ, идём медленным путём', async () => {
     const calls: Call[] = [];
     // Область 0 — самая большая (ТОВАРЫ, 150 строк), область 1 — служебная.
     // Модель «ошибается» и берёт служебную.
@@ -262,10 +262,51 @@ describe('сторожа полноты: «быстро» не должно по
 
     const res = await parser.parse(TRAP_TEXT, { llmSchema: SCHEMA, tables: TRAP_TABLES });
 
-    // Сторож обязан поймать недобор и отправить документ по медленному пути.
+    // Сторож обязан поймать промах выбора и отправить документ по медленному пути.
     const issues = (res.extracted._issues ?? []) as string[];
-    expect(issues.some((i) => i.startsWith('xlsx_fast_incomplete_doc'))).toBe(true);
+    expect(issues.some((i) => i.startsWith('xlsx_fast_skipped_bigger'))).toBe(true);
     expect(calls.filter((c) => c.kind === 'chunk').length).toBeGreaterThan(0);
+  });
+
+  /**
+   * Обратная сторона того же правила. Книга, где рядом с таблицей товаров лежит
+   * справочник наименований — на боевом прайсе это был лист на 112 строк без
+   * цен и количеств. Пропустить область МЕНЬШЕ выбранной — законно, отказывать
+   * тут нельзя: прежний порог «извлеки четверть строк документа» именно на
+   * таком файле забраковал бы правильный ответ.
+   */
+  it('пропущена область МЕНЬШЕ выбранной (справочник) → путь срабатывает', async () => {
+    const calls: Call[] = [];
+    const parser = new MultiPassLlmParser(
+      makeLlm({
+        mapping: {
+          regions: [
+            {
+              region: 0,
+              header_row: 0,
+              mapping: [
+                { field: 'name', column: 0 },
+                { field: 'quantity', column: 1 },
+                { field: 'price', column: 2 },
+              ],
+            },
+          ],
+        },
+        calls,
+      }),
+      'invoice',
+      CFG,
+    );
+
+    // Область 0 — ТОВАРЫ (150 строк), область 1 — служебная (6). Берём товары.
+    const res = await parser.parse(TRAP_TEXT, { llmSchema: SCHEMA, tables: TRAP_TABLES });
+
+    expect(calls.filter((c) => c.kind === 'chunk')).toHaveLength(0);
+    const issues = (res.extracted._issues ?? []) as string[];
+    const used = issues.find((i) => i.startsWith('xlsx_fast_used:'));
+    expect(used).toBeDefined();
+    // Пропущенное видно в маркере — молчаливых решений быть не должно.
+    expect(used).toContain('skipped_max=Служебный:6');
   });
 
   it('модель выбрала правильную большую таблицу → путь срабатывает', async () => {

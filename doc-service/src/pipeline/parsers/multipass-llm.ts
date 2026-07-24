@@ -96,9 +96,15 @@ const DEFAULT_MULTIPASS_CONFIG: MultipassConfig = {
  * разметку боевого прайса.
  */
 /**
- * Пороги сторожей полноты. Внутри области ждём почти все строки; по документу
- * порог низкий — там законно несколько таблиц, ловим только грубый промах
- * (10 позиций там, где строк ~200).
+ * Пороги сторожей полноты.
+ *
+ * `REGION_COVERAGE_MIN` — сколько строк выбранной области обязано доехать до
+ * результата (почти все; запас на дубли и хвостовые «Итого»).
+ *
+ * `DOC_COVERAGE_MIN` — доля табличных строк ТЕКСТА документа, ниже которой в
+ * маркер пишется расхождение. Это уже НЕ порог отказа: в книге лежат не только
+ * позиции (справочники, упаковочные листы, переводы), и сравнение со всеми
+ * строками текста браковало правильный ответ.
  */
 const REGION_COVERAGE_MIN = 0.9;
 const DOC_COVERAGE_MIN = 0.25;
@@ -214,7 +220,7 @@ export class MultiPassLlmParser implements DocumentParser {
 
     // ── Сторожа полноты ────────────────────────────────────────────────────
     // Без них «быстро» побеждало «правильно»: на боевом прайсе путь взял не ту
-    // таблицу, извлёк 28 позиций вместо 176 — и это выглядело ускорением.
+    // таблицу и извлёк горстку позиций — по времени это выглядело ускорением.
     // Полнота важнее скорости: не сошлось — идём медленным путём.
 
     // 1. Внутри выбранных областей не потеряли строки (дубли учтены — потому
@@ -224,19 +230,50 @@ export class MultiPassLlmParser implements DocumentParser {
       return null;
     }
 
-    // 2. НЕЗАВИСИМАЯ мерка. Считаем табличные строки в тексте документа — тем
-    // же счётчиком, по которому включается нарезка. Важно, что он НЕ завязан на
-    // анализатор: прошлый сторож сравнивал результат с числом, которое дал тот
-    // же анализатор, и потому пропустил потерю 84% (анализатор дробил таблицу и
-    // сам занижал ожидание). Порог низкий: в книге законно несколько таблиц.
-    const docRows = countTableRows(rawText);
-    if (docRows > 0 && items.length < docRows * DOC_COVERAGE_MIN) {
-      issues.push(`xlsx_fast_incomplete_doc:${items.length}/${docRows}`);
+    // 2. Проверка САМОГО ВЫБОРА, без семантики: модель не вправе пропустить
+    // область КРУПНЕЕ любой из взятых. Именно этим кончился первый боевой
+    // промах — взяли служебную табличку, а таблицу товаров вчетверо больше
+    // проигнорировали. Пропустить область поменьше — законно (упаковочный
+    // лист, итоги, перевод того же перечня), пропустить самую большую — нет.
+    const chosen = new Set(choices.map((c) => c.region.index));
+    let biggestSkipped: { index: number; sheet: string; rows: number } | null = null;
+    for (const r of report.regions) {
+      if (chosen.has(r.index)) continue;
+      if (!biggestSkipped || r.dataRowCount > biggestSkipped.rows) {
+        biggestSkipped = { index: r.index, sheet: r.sheet, rows: r.dataRowCount };
+      }
+    }
+    const maxChosen = choices.reduce((n, c) => Math.max(n, c.region.dataRowCount), 0);
+    if (biggestSkipped && biggestSkipped.rows > maxChosen) {
+      issues.push(
+        `xlsx_fast_skipped_bigger:${biggestSkipped.index}:${biggestSkipped.sheet}:` +
+          `${biggestSkipped.rows}>${maxChosen}`,
+      );
       return null;
     }
 
+    // 3. Сверка с текстом документа — ТОЛЬКО пометка, не отказ.
+    //
+    // Раньше здесь стоял жёсткий порог «извлеки хотя бы четверть табличных
+    // строк текста», и он был неверен по существу: в книге лежат не только
+    // позиции. На боевом прайсе (2026-07-24) отдельный лист оказался
+    // справочником наименований на 112 строк — без цен и количеств. Прежний
+    // (медленный) путь превращал их в «позиции»: из 176 строк 95 были без цены
+    // и количества, 15 вообще без наименования. Порог, настроенный на такой
+    // «эталон», браковал бы правильный ответ. Поэтому расхождение теперь
+    // ВИДНО в маркере, но решения не принимает.
+    const docRows = countTableRows(rawText);
+    const docNote =
+      docRows > 0 && items.length < docRows * DOC_COVERAGE_MIN
+        ? `,doc_rows=${items.length}/${docRows}`
+        : '';
+    const skippedNote = biggestSkipped
+      ? `,skipped_max=${biggestSkipped.sheet}:${biggestSkipped.rows}`
+      : '';
+
     issues.push(
-      `xlsx_fast_used:rows=${items.length},cols=${mapped.length},regions=${usedRegions.join('+')}`,
+      `xlsx_fast_used:rows=${items.length},cols=${mapped.length},` +
+        `regions=${usedRegions.join('+')}${skippedNote}${docNote}`,
     );
     return items;
   }
