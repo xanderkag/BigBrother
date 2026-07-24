@@ -113,9 +113,29 @@ const NUMERIC_TOKENS = new Set([
   'qty', 'quantity', 'count', 'price', 'amount', 'sum', 'total', 'cost',
   'rate', 'weight', 'netweight', 'grossweight', 'volume', 'pcs', 'value',
 ]);
-const NAME_TOKENS = new Set([
-  'name', 'description', 'title', 'article', 'sku', 'model', 'goods', 'product',
-]);
+/**
+ * Поля-наименования В ПОРЯДКЕ ПРИОРИТЕТА. Обязательным для проверки берём
+ * первое найденное ПО ЭТОМУ СПИСКУ, а не первое попавшееся «name-подобное».
+ *
+ * Откуда правило (боевой замер 2026-07-24). В списке были ещё `article`, `sku`,
+ * `model` — идентификаторы, а не наименования. Проверка брала первое совпадение
+ * в порядке, в котором поля вернула модель, и на боевых прайсах требовала
+ * заполненный **артикул**: `xlsx_fast_rejected:required_sparse:sku:0.60`.
+ * Артикул есть не у каждого товара — 60% это норма, а не промах разметки.
+ * Быстрый путь из-за этого не сработал НИ РАЗУ, оба замера показали прежний
+ * путь. Идентификатор обязательным полем быть не может: нет наименования в
+ * разметке — не требуем ничего, полноту стерегут другие проверки.
+ */
+const PRIMARY_NAME_TOKENS = ['name', 'description', 'title', 'goods', 'product'];
+
+/** Поле-наименование для проверки обязательности (по приоритету, не по порядку модели). */
+export function pickNameField(fields: string[]): string | undefined {
+  for (const token of PRIMARY_NAME_TOKENS) {
+    const hit = fields.find((f) => fieldTokens(f).includes(token));
+    if (hit) return hit;
+  }
+  return undefined;
+}
 
 /** Разбивает имя поля на токены: snake_case, camelCase, дефисы, цифры. */
 export function fieldTokens(field: string): string[] {
@@ -208,7 +228,7 @@ export class MultiPassLlmParser implements DocumentParser {
     // первое поле-наименование. Сравниваем ТОКЕНЫ, а не подстроки: подстрочная
     // версия ловила «count» внутри «country» и браковала верную разметку.
     const numericFields = mapped.filter((f) => hasToken(f, NUMERIC_TOKENS));
-    const nameLike = mapped.find((f) => hasToken(f, NAME_TOKENS));
+    const nameLike = pickNameField(mapped);
     const validation = validateMappedItems(items, {
       requiredFields: nameLike ? [nameLike] : [],
       numericFields,
