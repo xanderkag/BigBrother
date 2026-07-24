@@ -126,3 +126,45 @@ describe('renderReportForPrompt — компактно и по делу', () => 
     expect(text.split('\n').length).toBeLessThan(40);
   });
 });
+
+/**
+ * Регрессия боевого прайса 2026-07-24. К таблице товаров сверху примыкает
+ * преамбула документа («Contract: …», «Terms of delivery: FOB, Shanghai») —
+ * по две заполненные ячейки, разрыва между ней и таблицей нет. Блок склеивался
+ * целиком, и в отчёт для модели как шапка и примеры уходила ПРЕАМБУЛА:
+ * товаров в описании области видно не было, и модель выбирала другой лист
+ * (8 строк вместо 23).
+ */
+describe('преамбула документа не выдаётся за таблицу', () => {
+  const withPreamble = () => [
+    {
+      sheet: 'PRICE LIST',
+      rows: [
+        ['Contract:', 'EWL-ZBF/250423 dd 25.04.2023', '', '', '', ''],
+        ['Terms of delivery:', 'FOB, Shanghai', '', '', '', ''],
+        ['Validity:', 'unless other is agreed by the Parties', '', '', '', ''],
+        ['Article', 'Description', 'HS code', 'Unit', 'Price', 'MOQ'],
+        ...Array.from({ length: 12 }, (_, i) => [
+          `RSB${300 + i}`, `castors for chair ${i}`, '8302200009', 'set', String(i + 1), '100',
+        ]),
+      ],
+    },
+  ];
+
+  it('шапкой берётся строка заголовков таблицы, а не «Contract:»', () => {
+    const [region] = analyzeWorkbook(withPreamble()).regions;
+    expect(region!.header[0]).toBe('Article');
+    expect(region!.header[1]).toBe('Description');
+  });
+
+  it('в примерах для модели — товары, а не условия поставки', () => {
+    const text = renderReportForPrompt(analyzeWorkbook(withPreamble()));
+    expect(text).toContain('castors for chair');
+    expect(text).not.toContain('FOB, Shanghai');
+  });
+
+  it('строки преамбулы не считаются позициями', () => {
+    const [region] = analyzeWorkbook(withPreamble()).regions;
+    expect(region!.dataRowCount).toBe(12);
+  });
+});

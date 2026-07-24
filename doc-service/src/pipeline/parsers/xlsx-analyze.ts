@@ -63,6 +63,13 @@ const DEFAULTS = {
   maxRegions: 12,
 };
 
+/**
+ * Какую долю от максимальной ширины блока должна иметь строка, чтобы считаться
+ * телом таблицы. Ниже — это преамбула («Условия поставки: FOB»), выше — данные.
+ * Доля, а не «±1 колонка»: в живых таблицах часть ячеек законно пуста.
+ */
+const BODY_WIDTH_RATIO = 0.5;
+
 function filled(row: string[] | undefined): number {
   if (!row) return 0;
   let n = 0;
@@ -98,37 +105,70 @@ function findRegionsInSheet(
   let runWidth = 0;
 
   const closeRun = (endExclusive: number): void => {
-    if (runStart < 0) return;
-    const len = endExclusive - runStart;
-    if (runWidth >= opts.minWidth) {
-      // Шапкой считаем строку НАД блоком только если она сопоставимой ширины.
-      // Иначе это заголовок документа («ООО Поставщик») — узкий, и принимать
-      // его за шапку нельзя: данные съедут на строку.
-      const above = runStart - 1;
-      const aboveFilled = above >= 0 ? filled(rows[above]) : 0;
-      const headerAbove = above >= 0 && aboveFilled >= Math.max(opts.minWidth, runWidth - 1);
-      const headerRowIndex = headerAbove ? above : runStart;
-      const dataStartIndex = headerAbove ? runStart : runStart + 1;
-      const dataRowCount = runStart + len - dataStartIndex;
-      if (dataRowCount >= opts.minDataRows) {
-        const samples: string[][] = [];
-        for (let i = dataStartIndex; i < rows.length && samples.length < opts.sampleRows; i++) {
-          const r = rows[i];
-          if (r && filled(r) > 0) samples.push(r);
-        }
-        out.push({
-          sheet,
-          headerRowIndex,
-          dataStartIndex,
-          dataRowCount,
-          width: runWidth,
-          header: rows[headerRowIndex] ?? [],
-          samples,
-        });
-      }
-    }
+    const from = runStart;
+    const width = runWidth;
     runStart = -1;
     runWidth = 0;
+    if (from < 0 || width < opts.minWidth) return;
+
+    // Тело таблицы ВНУТРИ блока: самая длинная непрерывная полоса строк,
+    // сопоставимых по ширине с максимумом блока.
+    //
+    // Зачем (боевой прайс 2026-07-24). Разрыв содержимого — надёжная граница
+    // блока, но недостаточная: сверху к таблице примыкает преамбула документа
+    // («Contract: EWL-ZBF/250423», «Terms of delivery: FOB, Shanghai») — по две
+    // заполненные ячейки в строке, разрыва между ней и таблицей нет. Блок
+    // склеивался целиком, и в отчёт для модели как шапка и примеры уходила
+    // ПРЕАМБУЛА. Товаров в описании области видно не было, и модель разумно
+    // выбирала другой лист, где примеры выглядели товарами (8 строк вместо 23).
+    //
+    // Порог по ДОЛЕ от максимума, а не «±1 колонка»: жёсткое равенство ширины
+    // дробило живые таблицы на огрызки (часть ячеек законно пуста).
+    const bodyThreshold = Math.max(2, Math.ceil(width * BODY_WIDTH_RATIO));
+    let bodyStart = -1;
+    let bodyLen = 0;
+    let curStart = -1;
+    let curLen = 0;
+    for (let i = from; i < endExclusive; i++) {
+      if (filled(rows[i]) >= bodyThreshold) {
+        if (curStart < 0) curStart = i;
+        curLen++;
+        if (curLen > bodyLen) {
+          bodyLen = curLen;
+          bodyStart = curStart;
+        }
+      } else {
+        curStart = -1;
+        curLen = 0;
+      }
+    }
+    if (bodyStart < 0) return;
+    const bodyEnd = bodyStart + bodyLen;
+
+    // Шапкой считаем строку НАД телом только если она сопоставимой ширины.
+    // Иначе это преамбула или заголовок документа — принимать его за шапку
+    // нельзя: данные съедут на строку. Тогда шапка — первая строка тела.
+    const above = bodyStart - 1;
+    const headerAbove = above >= from && filled(rows[above]) >= bodyThreshold;
+    const headerRowIndex = headerAbove ? above : bodyStart;
+    const dataStartIndex = headerAbove ? bodyStart : bodyStart + 1;
+    const dataRowCount = bodyEnd - dataStartIndex;
+    if (dataRowCount < opts.minDataRows) return;
+
+    const samples: string[][] = [];
+    for (let i = dataStartIndex; i < bodyEnd && samples.length < opts.sampleRows; i++) {
+      const r = rows[i];
+      if (r && filled(r) > 0) samples.push(r);
+    }
+    out.push({
+      sheet,
+      headerRowIndex,
+      dataStartIndex,
+      dataRowCount,
+      width,
+      header: rows[headerRowIndex] ?? [],
+      samples,
+    });
   };
 
   for (let i = 0; i < rows.length; i++) {
