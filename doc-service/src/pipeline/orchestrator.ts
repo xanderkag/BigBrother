@@ -1020,9 +1020,35 @@ async function processJobInner(
     // key inside extracted; `toApi` lifts it back into a top-level field.
     // Strip any pre-existing `_issues` (e.g., if an LLM accidentally emitted
     // one in /extract output) — domain validation here is authoritative.
-    const { _issues: _ignore, ...extractedClean } = post.extracted as {
+    const { _issues: parserIssues, ...extractedClean } = post.extracted as {
       _issues?: unknown;
     } & Record<string, unknown>;
+
+    // ...НО операционные пометки парсера терять нельзя. Раньше здесь молча
+    // пропадали `multipass_chunks_truncated` (у большого дока часть строк НЕ
+    // обработана — и ни следа в задаче) и `multipass_chunk_failed:N`.
+    //
+    // Делим их по последствиям, потому что ниже (строка ~1092) статус
+    // перечитывает validationIssues: попади туда информационная пометка — и
+    // нормальный документ уехал бы на ревью.
+    //   · ПОТЕРЯ ДАННЫХ (обрез кусков, упавший кусок) → в validationIssues:
+    //     часть строк отсутствует, человек обязан посмотреть;
+    //   · информационные (xlsx_fast_*, какой путь сработал) → только в лог,
+    //     на статус не влияют.
+    if (Array.isArray(parserIssues)) {
+      const notes = parserIssues.filter((i): i is string => typeof i === 'string');
+      const dataLoss = notes.filter((i) =>
+        /^multipass_(chunks_truncated|chunk_failed)/.test(i),
+      );
+      const informational = notes.filter((i) => /^xlsx_fast/.test(i));
+      for (const i of dataLoss) post.validationIssues.push(i);
+      if (informational.length > 0 || dataLoss.length > 0) {
+        log.info(
+          { jobId, parser_notes: [...dataLoss, ...informational] },
+          'parser operational notes',
+        );
+      }
+    }
 
     // Empty-extract safety-net: когда auto-requality ВЫКЛЮЧЕН
     // (config.requality.enabled=false), assessQuality в runDocumentPipeline не
