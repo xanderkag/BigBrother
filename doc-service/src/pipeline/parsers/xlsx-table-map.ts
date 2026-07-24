@@ -1,6 +1,7 @@
 import type { OcrTable } from '../ocr/types.js';
 import type { LlmClient } from '../llm/types.js';
 import type { DocumentTypeSlug } from '../../types/documents.js';
+import { renderReportForPrompt, type TableRegion, type WorkbookReport } from './xlsx-analyze.js';
 
 /**
  * XLSX-FAST (замер 2026-07-24): у Excel таблица уже структурирована, но мы
@@ -270,6 +271,7 @@ export function validateMappedItems(
   return { ok: true, items: items.length };
 }
 
+
 /** Имена полей позиции из схемы типа — то, что ищем в колонках. */
 export function itemFieldNames(itemsSchema: unknown): string[] {
   const s = itemsSchema as { items?: { properties?: Record<string, unknown> } } | undefined;
@@ -278,45 +280,65 @@ export function itemFieldNames(itemsSchema: unknown): string[] {
   return Object.keys(props);
 }
 
+/** Собирает кандидата (со строками листа) из области, найденной анализатором. */
+export function regionToCandidate(
+  tables: OcrTable[] | undefined,
+  region: TableRegion,
+): TableCandidate | null {
+  const sheet = (tables ?? []).find((t) => t.sheet === region.sheet);
+  if (!sheet || !Array.isArray(sheet.rows)) return null;
+  return {
+    sheet: region.sheet,
+    rows: sheet.rows,
+    headerRowIndex: region.headerRowIndex,
+    dataStartIndex: region.dataStartIndex,
+    dataRowCount: region.dataRowCount,
+    width: region.width,
+  };
+}
+
+/** Выбор области + разметка колонок, полученные от модели. */
+export type RegionChoice = {
+  region: TableRegion;
+  mapping: ColumnMapping;
+};
+
 /**
- * Просит модель разметить колонки — ОДИН короткий вызов вместо перепечатки
- * всей таблицы. Ключевая экономия XLSX-FAST.
+ * ОДИН вызов модели на весь файл: она видит перечень областей (шапки всех
+ * листов + образцы строк + сколько где строк) и отвечает, какая из них —
+ * таблица позиций, и какая колонка что означает.
  *
- * Почему это дёшево и точно: тип документа уже определён классификатором, а с
- * ним известна схема — значит спрашиваем не «разбери таблицу», а прицельно
- * «какая колонка это `quantity`, какая `price`». На входе — только шапка и
- * 3 строки-образца, на выходе — десяток чисел. Промпт и ответ крошечные,
- * поэтому вызов идёт за секунды независимо от того, 50 в таблице строк или 800.
+ * Почему выбор отдан модели. Прежняя эвристика брала «самую длинную таблицу»
+ * и на боевом прайсе из шести листов выбрала служебный лист: вместо 176
+ * позиций извлеклось 10. Размер — плохой признак; понять, что «Артикул |
+ * Наименование | Цена» это товары, а «код | значение | примечание» нет,
+ * умеет модель. Код при этом по-прежнему считает строки и раскладывает их.
  *
- * Возвращает null при любой неуверенности (модель упала, ответ пустой,
- * колонки вне диапазона) — caller откатывается на обычную нарезку.
+ * Возвращает null при любой неуверенности → caller откатывается на нарезку.
  */
-export async function mapColumnsWithLlm(
+export async function chooseRegionAndMapColumns(
   llm: LlmClient,
-  cand: TableCandidate,
+  report: WorkbookReport,
   fields: string[],
   hint?: DocumentTypeSlug,
-): Promise<ColumnMapping | null> {
-  if (fields.length === 0) return null;
-  const preview = headerPreview(cand, 3);
-  if (preview.length === 0) return null;
+): Promise<RegionChoice | null> {
+  if (report.regions.length === 0 || fields.length === 0) return null;
 
-  // Колонки нумеруем явно — модели проще ссылаться на индекс, чем на позицию.
-  const width = Math.max(...preview.map((r) => r.length));
-  const colLine = Array.from({ length: width }, (_, i) => `[${i}]`).join(' | ');
-  const rowsText = preview.map((r) => r.map((c) => c ?? '').join(' | ')).join('\n');
-  const text = `Колонки: ${colLine}\n\nСтрока заголовков (индекс ${cand.headerRowIndex}) и примеры строк:\n${rowsText}`;
-
+  const text = renderReportForPrompt(report);
   const prompt =
-    'Это таблица позиций из Excel. Определи, какая КОЛОНКА содержит какое поле. ' +
-    `Доступные поля: ${fields.join(', ')}. ` +
-    'Верни header_row (индекс строки заголовков) и mapping — массив пар {field, column}, ' +
-    'где column — номер колонки в квадратных скобках. ' +
-    'Включай ТОЛЬКО поля, которые реально есть в таблице. Если поля нет — не выдумывай его.';
+    'Это структура книги Excel: перечислены табличные области с шапками и примерами строк. ' +
+    'Определи, какая область — ТАБЛИЦА ПОЗИЦИЙ (товары/услуги документа), а какие служебные ' +
+    '(упаковочные листы, справочники, итоги, переводы). ' +
+    `Затем размести поля по колонкам этой области. Доступные поля: ${fields.join(', ')}. ` +
+    'Верни region (номер области), header_row (индекс строки заголовков) и mapping — ' +
+    'массив пар {field, column}, где column — номер колонки в квадратных скобках. ' +
+    'Включай ТОЛЬКО поля, которые реально есть в таблице; не выдумывай отсутствующие. ' +
+    'Ориентируйся на СМЫСЛ заголовков, а не на размер области.';
 
   const schema = {
     type: 'object',
     properties: {
+      region: { type: 'number' },
       header_row: { type: 'number' },
       mapping: {
         type: 'array',
@@ -333,31 +355,34 @@ export async function mapColumnsWithLlm(
     const res = await llm.extract({ text, schema, hint, promptOverride: prompt });
     raw = (res.extracted ?? {}) as Record<string, unknown>;
   } catch {
-    return null; // модель недоступна/упала — молча откатываемся
+    return null;
   }
+
+  const idx = typeof raw.region === 'number' ? raw.region : Number.parseInt(String(raw.region), 10);
+  const region = report.regions.find((r) => r.index === idx) ?? null;
+  if (!region) return null;
 
   const pairs = raw.mapping;
   if (!Array.isArray(pairs) || pairs.length === 0) return null;
 
   const allowed = new Set(fields);
+  const width = Math.max(region.width, region.header.length);
   const columns: Record<string, number> = {};
   for (const p of pairs) {
     if (!p || typeof p !== 'object') continue;
     const field = (p as { field?: unknown }).field;
     const column = (p as { column?: unknown }).column;
     if (typeof field !== 'string' || !allowed.has(field)) continue;
-    const idx = typeof column === 'number' ? column : Number.parseInt(String(column), 10);
-    // Колонка вне таблицы — признак, что модель промахнулась; такое поле не берём.
-    if (!Number.isInteger(idx) || idx < 0 || idx >= width) continue;
-    columns[field] = idx;
+    const c = typeof column === 'number' ? column : Number.parseInt(String(column), 10);
+    // Колонка вне таблицы — промах модели; такое поле не берём.
+    if (!Number.isInteger(c) || c < 0 || c >= width) continue;
+    columns[field] = c;
   }
   if (Object.keys(columns).length === 0) return null;
 
   const hr = raw.header_row;
   const headerRow =
-    typeof hr === 'number' && Number.isInteger(hr) && hr >= 0 && hr < cand.rows.length
-      ? hr
-      : cand.headerRowIndex;
+    typeof hr === 'number' && Number.isInteger(hr) && hr >= 0 ? hr : region.headerRowIndex;
 
-  return { headerRow, columns };
+  return { region, mapping: { headerRow, columns } };
 }

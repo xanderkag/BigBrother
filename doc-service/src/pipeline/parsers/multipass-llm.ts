@@ -38,12 +38,13 @@ import type { DocumentTypeSlug } from '../../types/documents.js';
 import type { LlmClient, LlmExtractDebug } from '../llm/types.js';
 import type { DocumentParser, ParseResult, ParserOverride } from './types.js';
 import {
-  pickItemTable,
   itemFieldNames,
-  mapColumnsWithLlm,
+  chooseRegionAndMapColumns,
+  regionToCandidate,
   applyColumnMapping,
   validateMappedItems,
 } from './xlsx-table-map.js';
+import { analyzeWorkbook } from './xlsx-analyze.js';
 
 /** Пороги multipass — приходят из config.multipass (env), см. config.ts. */
 export type MultipassConfig = {
@@ -94,6 +95,14 @@ const DEFAULT_MULTIPASS_CONFIG: MultipassConfig = {
  * подстрочная версия ловила «count» внутри «country» и браковала верную
  * разметку боевого прайса.
  */
+/**
+ * Пороги сторожей полноты. Внутри области ждём почти все строки; по документу
+ * порог низкий — там законно несколько таблиц, ловим только грубый промах
+ * (10 позиций там, где строк ~200).
+ */
+const REGION_COVERAGE_MIN = 0.9;
+const DOC_COVERAGE_MIN = 0.25;
+
 const NUMERIC_TOKENS = new Set([
   'qty', 'quantity', 'count', 'price', 'amount', 'sum', 'total', 'cost',
   'rate', 'weight', 'netweight', 'grossweight', 'volume', 'pcs', 'value',
@@ -130,26 +139,21 @@ export class MultiPassLlmParser implements DocumentParser {
 
   /**
    * XLSX-FAST: разложить позиции по структуре таблицы Excel вместо перепечатки
-   * её моделью. Один короткий вызов (разметка колонок) + раскладка кодом.
+   * её моделью. Анализатор перечисляет области, модель ОДНИМ вызовом выбирает
+   * нужную и размечает колонки, код раскладывает все строки.
    *
-   * Возвращает null при ЛЮБОЙ неуверенности — не нашли таблицу, модель не
-   * разметила, проверка не прошла. Тогда caller идёт прежней нарезкой, то есть
-   * худший исход быстрого пути равен сегодняшнему поведению. Причина отказа
-   * пишется в issues — чтобы по проду было видно, где путь не сработал.
+   * Возвращает null при любой неуверенности → caller идёт прежней нарезкой,
+   * то есть худший исход равен сегодняшнему поведению. Каждый выход именован:
+   * по проду видно, где именно путь не сработал.
    */
   private async tryTableFastPath(
     override: ParserOverride,
     itemsSchema: { properties?: Record<string, unknown> },
     issues: string[],
   ): Promise<unknown[] | null> {
-    // Ранние выходы ТОЖЕ оставляют след: без этого путь «молчит», и по проду
-    // невозможно понять, он не сработал или не пробовался вовсе (наступили
-    // на это при первом замере — трасса была пустой).
-    const cand = pickItemTable(override.tables);
-    if (!cand) {
-      const sheets = override.tables?.length ?? 0;
-      const rows = (override.tables ?? []).reduce((n, t) => n + (t.rows?.length ?? 0), 0);
-      issues.push(`xlsx_fast_no_table:sheets=${sheets},rows=${rows}`);
+    const report = analyzeWorkbook(override.tables);
+    if (report.regions.length === 0) {
+      issues.push(`xlsx_fast_no_table:sheets=${override.tables?.length ?? 0}`);
       return null;
     }
 
@@ -159,23 +163,22 @@ export class MultiPassLlmParser implements DocumentParser {
       return null;
     }
 
-    const mapping = await mapColumnsWithLlm(this.llm, cand, fields, this.type);
-    if (!mapping) {
+    const choice = await chooseRegionAndMapColumns(this.llm, report, fields, this.type);
+    if (!choice) {
       issues.push('xlsx_fast_mapping_failed');
       return null;
     }
+    const cand = regionToCandidate(override.tables, choice.region);
+    if (!cand) {
+      issues.push('xlsx_fast_region_lost');
+      return null;
+    }
 
-    const items = applyColumnMapping(cand, mapping);
-    const mapped = Object.keys(mapping.columns);
+    const items = applyColumnMapping(cand, choice.mapping);
+    const mapped = Object.keys(choice.mapping.columns);
     // Числовыми считаем поля с «денежно-количественными» именами, обязательным —
-    // первое поле-наименование. Так проверка ловит съехавшие колонки, но не
-    // придирается к таблицам, где части полей просто нет.
-    //
-    // ВАЖНО по подстрокам: сравниваем ТОКЕНЫ, а не вхождения. Первая версия
-    // искала подстроку и на боевом прайсе отбраковала ВЕРНУЮ разметку —
-    // `country_of_origin` попал в «числовые», потому что в «country» сидит
-    // «count», а названия стран числами не являются (лог:
-    // xlsx_fast_rejected:not_numeric:country_of_origin:0.00).
+    // первое поле-наименование. Сравниваем ТОКЕНЫ, а не подстроки: подстрочная
+    // версия ловила «count» внутри «country» и браковала верную разметку.
     const numericFields = mapped.filter((f) => hasToken(f, NUMERIC_TOKENS));
     const nameLike = mapped.find((f) => hasToken(f, NAME_TOKENS));
     const validation = validateMappedItems(items, {
@@ -187,8 +190,32 @@ export class MultiPassLlmParser implements DocumentParser {
       return null;
     }
 
-    // Маркер для замера «было/стало»: видно, что документ прошёл быстрым путём.
-    issues.push(`xlsx_fast_used:rows=${validation.items},cols=${mapped.length}`);
+    // ── Сторожа полноты ────────────────────────────────────────────────────
+    // Без них «быстро» побеждало «правильно»: на боевом прайсе путь взял не ту
+    // таблицу, извлёк 10 позиций вместо 176 — и это выглядело ускорением втрое.
+    // Полнота важнее скорости: не сошлось — идём медленным путём.
+
+    // 1. Внутри выбранной области не потеряли строки.
+    const expected = choice.region.dataRowCount;
+    if (expected > 0 && items.length < expected * REGION_COVERAGE_MIN) {
+      issues.push(`xlsx_fast_incomplete_region:${items.length}/${expected}`);
+      return null;
+    }
+
+    // 2. Не взяли ли маленькую служебную табличку вместо таблицы товаров.
+    // Сравниваем с тем, сколько строк АНАЛИЗАТОР нашёл во всей книге — это
+    // надёжнее текстовых эвристик: он считал по самой структуре файла.
+    // Порог низкий: в книге законно несколько таблиц (позиции + упаковка +
+    // итоги), поэтому ловим только грубый промах, а не любое расхождение.
+    const fileRows = report.totalDataRows;
+    if (fileRows > 0 && items.length < fileRows * DOC_COVERAGE_MIN) {
+      issues.push(`xlsx_fast_incomplete_doc:${items.length}/${fileRows}`);
+      return null;
+    }
+
+    issues.push(
+      `xlsx_fast_used:rows=${items.length},cols=${mapped.length},region=${choice.region.index},sheet=${choice.region.sheet}`,
+    );
     return items;
   }
 
