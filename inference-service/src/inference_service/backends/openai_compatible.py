@@ -462,6 +462,53 @@ class OpenAICompatibleBackend(ModelBackend):
         text, _ = await self._complete_with_usage(messages, json_mode, model_override=model_override)
         return text
 
+    async def _retry_within_context(
+        self, kwargs: dict[str, Any], first_err: Exception
+    ) -> Any:
+        """Итеративно ужимает `max_tokens`, пока запрос не влезет в окно модели.
+
+        ВАЖНО про арифметику. Апстрим сообщает промпт как «at least N», и это
+        НЕ реальный размер, а нижняя граница, выведенная из самого нарушения:
+        N == окно + 1 - max_tokens. Боевой лог:
+
+            вывод 8192 → «промпт не менее 8193»  (итого 16385)
+            вывод 8127 → «промпт не менее 8258»  (итого снова 16385)
+
+        Поэтому «уменьшить ровно на нехватку» не сходится никогда — граница
+        сдвигается следом за бюджетом. Ужимаем ВДВОЕ (и не больше, чем даёт
+        текущая граница), тогда сходимся за 1-2 шага: 8192 → 4096 обычно уже
+        влезает. Ниже _MIN_OUTPUT_TOKENS не опускаемся — там JSON-ответ всё
+        равно не поместится, честно падаем с внятным логом.
+        """
+        err = first_err
+        for _ in range(_CONTEXT_RETRIES):
+            parsed = _parse_context_overflow(err)
+            if parsed is None:
+                raise err
+            ctx_limit, prompt_bound = parsed
+            current = int(kwargs.get("max_tokens") or 0)
+            fitted = ctx_limit - prompt_bound - _CONTEXT_SAFETY_MARGIN
+            new_max = min(fitted, current // 2) if current else fitted
+            if new_max < _MIN_OUTPUT_TOKENS:
+                log.error(
+                    "context overflow: prompt >=%s vs window %s — output budget "
+                    "would be %s (<%s), giving up",
+                    prompt_bound, ctx_limit, new_max, _MIN_OUTPUT_TOKENS,
+                )
+                raise err
+            log.warning(
+                "context overflow: prompt >=%s, window %s; max_tokens %s -> %s",
+                prompt_bound, ctx_limit, current, new_max,
+            )
+            kwargs["max_tokens"] = new_max
+            try:
+                return await self._client.chat.completions.create(**kwargs)
+            except Exception as e2:  # noqa: BLE001
+                if _parse_context_overflow(e2) is None:
+                    raise  # другая ошибка — не наш случай
+                err = e2
+        raise err
+
     async def _complete_with_usage(
         self,
         messages: list[dict[str, Any]],
@@ -518,29 +565,10 @@ class OpenAICompatibleBackend(ModelBackend):
                 log.info("backend rejected reasoning_effort, retrying without")
                 kwargs.pop("extra_body", None)
                 response = await self._client.chat.completions.create(**kwargs)
-            elif (overflow := _parse_context_overflow(e)) is not None:
+            elif _parse_context_overflow(e) is not None:
                 # Промпт + фиксированный max_tokens не влезли в окно модели.
-                # Ужимаем бюджет ВЫВОДА под остаток окна и повторяем один раз.
-                # Раньше это была смерть задачи: апстрим 400 → наш 500 → 3
-                # бесполезных ретрая воркера с тем же исходом.
-                ctx_limit, prompt_tokens = overflow
-                fitted = ctx_limit - prompt_tokens - _CONTEXT_SAFETY_MARGIN
-                if fitted < _MIN_OUTPUT_TOKENS:
-                    # Один только промпт съел окно — ретраить нечем. Падаем, но
-                    # с внятной причиной в логе (раньше был голый 500).
-                    log.error(
-                        "context overflow: prompt %s tokens vs window %s — "
-                        "output budget would be %s (<%s), giving up",
-                        prompt_tokens, ctx_limit, fitted, _MIN_OUTPUT_TOKENS,
-                    )
-                    raise
-                log.warning(
-                    "context overflow: prompt %s + max_tokens %s > window %s; "
-                    "retrying with max_tokens=%s",
-                    prompt_tokens, kwargs.get("max_tokens"), ctx_limit, fitted,
-                )
-                kwargs["max_tokens"] = fitted
-                response = await self._client.chat.completions.create(**kwargs)
+                # Ужимаем бюджет ВЫВОДА и повторяем (см. _retry_within_context).
+                response = await self._retry_within_context(kwargs, e)
             else:
                 raise
 
@@ -568,6 +596,10 @@ _CONTEXT_SAFETY_MARGIN = 64
 # Ниже этого вывод бессмысленен (JSON-ответ не поместится) — честно падаем,
 # вместо того чтобы вернуть заведомо обрезанный мусор.
 _MIN_OUTPUT_TOKENS = 256
+# Сколько раз ужимаем бюджет вдвое. 8192 → 4096 → 2048 → 1024 → 512: этого
+# с запасом хватает для окна 16384, а больше и не нужно — ниже минимума всё
+# равно останавливаемся.
+_CONTEXT_RETRIES = 4
 
 
 def _parse_context_overflow(err: Exception) -> tuple[int, int] | None:
