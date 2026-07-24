@@ -64,11 +64,11 @@ const DEFAULTS = {
 };
 
 /**
- * Какую долю от максимальной ширины блока должна иметь строка, чтобы считаться
- * телом таблицы. Ниже — это преамбула («Условия поставки: FOB»), выше — данные.
- * Доля, а не «±1 колонка»: в живых таблицах часть ячеек законно пуста.
+ * Сколько строк-разделителей допускается между шапкой и телом таблицы.
+ * Нужно, когда шапка отделена от данных пустой строкой или строкой-заголовком
+ * («ГРУЗ»): тогда шапка остаётся в предыдущем блоке, и её надо подобрать.
  */
-const BODY_WIDTH_RATIO = 0.5;
+const MAX_SEPARATOR_ROWS = 2;
 
 function filled(row: string[] | undefined): number {
   if (!row) return 0;
@@ -111,52 +111,49 @@ function findRegionsInSheet(
     runWidth = 0;
     if (from < 0 || width < opts.minWidth) return;
 
-    // Тело таблицы ВНУТРИ блока: самая длинная непрерывная полоса строк,
-    // сопоставимых по ширине с максимумом блока.
+    // Границу «преамбула / данные» задаёт СТРОКА ЗАГОЛОВКОВ — самая широкая
+    // строка блока. Всё, что выше неё, к таблице не относится.
     //
-    // Зачем (боевой прайс 2026-07-24). Разрыв содержимого — надёжная граница
-    // блока, но недостаточная: сверху к таблице примыкает преамбула документа
-    // («Contract: EWL-ZBF/250423», «Terms of delivery: FOB, Shanghai») — по две
-    // заполненные ячейки в строке, разрыва между ней и таблицей нет. Блок
-    // склеивался целиком, и в отчёт для модели как шапка и примеры уходила
-    // ПРЕАМБУЛА. Товаров в описании области видно не было, и модель разумно
-    // выбирала другой лист, где примеры выглядели товарами (8 строк вместо 23).
+    // Почему не по ширине строк (боевой прайс 2026-07-24). Сверху к таблице
+    // примыкает преамбула документа («Contract: EWL-ZBF/250423»,
+    // «Terms of delivery: FOB, Shanghai») — по две заполненные ячейки, разрыва
+    // между ней и таблицей нет. Напрашивалось «считать телом только достаточно
+    // широкие строки», но данные это опровергли: в том же прайсе узкие строки
+    // по две ячейки — это КОМПЛЕКТУЮЩИЕ набора («CX0898H/white ┃ plastic
+    // armrest»), цена стоит только у головной строки. Структурно они
+    // неотличимы от преамбулы, и порог по ширине резал таблицу с 18 строк до 8.
     //
-    // Порог по ДОЛЕ от максимума, а не «±1 колонка»: жёсткое равенство ширины
-    // дробило живые таблицы на огрызки (часть ячеек законно пуста).
-    const bodyThreshold = Math.max(2, Math.ceil(width * BODY_WIDTH_RATIO));
-    let bodyStart = -1;
-    let bodyLen = 0;
-    let curStart = -1;
-    let curLen = 0;
+    // Строка заголовков различает их надёжно: она шире всех (заполнены все
+    // колонки), и она ровно там, где начинается таблица.
+    let headerIdx = from;
+    let headerWidth = 0;
     for (let i = from; i < endExclusive; i++) {
-      if (filled(rows[i]) >= bodyThreshold) {
-        if (curStart < 0) curStart = i;
-        curLen++;
-        if (curLen > bodyLen) {
-          bodyLen = curLen;
-          bodyStart = curStart;
-        }
-      } else {
-        curStart = -1;
-        curLen = 0;
+      const w = filled(rows[i]);
+      if (w > headerWidth) {
+        headerWidth = w;
+        headerIdx = i;
       }
     }
-    if (bodyStart < 0) return;
-    const bodyEnd = bodyStart + bodyLen;
 
-    // Шапкой считаем строку НАД телом только если она сопоставимой ширины.
-    // Иначе это преамбула или заголовок документа — принимать его за шапку
-    // нельзя: данные съедут на строку. Тогда шапка — первая строка тела.
-    const above = bodyStart - 1;
-    const headerAbove = above >= from && filled(rows[above]) >= bodyThreshold;
-    const headerRowIndex = headerAbove ? above : bodyStart;
-    const dataStartIndex = headerAbove ? bodyStart : bodyStart + 1;
-    const dataRowCount = bodyEnd - dataStartIndex;
+    // Шапка могла остаться в ПРЕДЫДУЩЕМ блоке — если между ней и данными есть
+    // строка-разделитель. Тогда весь текущий блок это данные, а шапку берём
+    // сверху (боевой инвойс: шапка на строке 9, разделитель на 10, товары с 11).
+    let k = from - 1;
+    let skipped = 0;
+    while (k >= 0 && filled(rows[k]) <= 1 && skipped < MAX_SEPARATOR_ROWS) {
+      k--;
+      skipped++;
+    }
+    const aboveWidth = k >= 0 ? filled(rows[k]) : 0;
+    const useAbove = k >= 0 && aboveWidth > headerWidth;
+
+    const headerRowIndex = useAbove ? k : headerIdx;
+    const dataStartIndex = useAbove ? from : headerIdx + 1;
+    const dataRowCount = endExclusive - dataStartIndex;
     if (dataRowCount < opts.minDataRows) return;
 
     const samples: string[][] = [];
-    for (let i = dataStartIndex; i < bodyEnd && samples.length < opts.sampleRows; i++) {
+    for (let i = dataStartIndex; i < endExclusive && samples.length < opts.sampleRows; i++) {
       const r = rows[i];
       if (r && filled(r) > 0) samples.push(r);
     }
@@ -165,7 +162,7 @@ function findRegionsInSheet(
       headerRowIndex,
       dataStartIndex,
       dataRowCount,
-      width,
+      width: Math.max(width, headerWidth),
       header: rows[headerRowIndex] ?? [],
       samples,
     });
