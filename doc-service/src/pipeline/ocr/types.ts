@@ -36,11 +36,30 @@ export type OcrInput = {
   documentType?: string;
 };
 
+/**
+ * XLSX-FAST: исходная матрица листа (строки × колонки) ДО расплющивания в текст.
+ *
+ * Зачем: у Excel структура таблицы уже есть — мы её читаем, схлопываем в CSV-текст
+ * и потом платим модели 20+ вызовов, чтобы она эту же структуру восстановила
+ * (замер 2026-07-24: у проформ/прайсов ~21 вызов, 2-7 минут на документ, при этом
+ * само чтение файла — 0.2с). Донеся матрицу до парсера, можно разметить колонки
+ * ОДНИМ вызовом и разложить все строки кодом.
+ *
+ * Заполняет только xlsx-движок; остальные оставляют undefined.
+ */
+export type OcrTable = {
+  sheet: string;
+  /** Строки листа; ячейки уже приведены к строкам и обрезаны по краям. */
+  rows: string[][];
+};
+
 export type OcrResult = {
   engine: OcrEngineName;
   text: string;
   confidence: number; // 0..1
   pages?: Array<{ text: string; confidence: number }>;
+  /** XLSX-FAST: структура таблиц (только xlsx). См. OcrTable. */
+  tables?: OcrTable[];
   durationMs: number;
 };
 

@@ -32,7 +32,7 @@
  * и edge cases.
  */
 import { Worker } from 'node:worker_threads';
-import type { OcrEngine, OcrInput, OcrResult } from './types.js';
+import type { OcrEngine, OcrInput, OcrResult, OcrTable } from './types.js';
 
 const XLS_MIMES = new Set([
   'application/vnd.ms-excel',
@@ -70,10 +70,20 @@ const XLSX_DEDUP_MAX_ENTRIES = process.env.XLSX_DEDUP_MAX_ENTRIES === '0'
   ? 0
   : Number(process.env.XLSX_DEDUP_MAX_ENTRIES) || 60;
 
+/**
+ * XLSX-FAST: сколько ячеек максимум отдаём наружу структурой (суммарно по книге).
+ * Матрица нужна, чтобы разложить позиции кодом вместо 20+ вызовов модели, но
+ * тащить через postMessage каталог на миллион ячеек незачем — выше лимита
+ * структуру просто не отдаём и работает прежний текстовый путь.
+ */
+const MAX_TABLE_CELLS_TOTAL = Number(process.env.XLSX_MAX_TABLE_CELLS) || 200_000;
+
 /** Результат парсинга из worker'а. */
 interface ParseOut {
   text: string;
   pages: Array<{ text: string; confidence: number }>;
+  /** XLSX-FAST: матрицы листов (могут отсутствовать — см. MAX_TABLE_CELLS_TOTAL). */
+  tables?: OcrTable[];
 }
 
 // Тело worker'а (CommonJS, eval:true). Переводы строк передаём через workerData
@@ -83,7 +93,7 @@ const WORKER_SRC = `
 const { parentPort, workerData } = require('worker_threads');
 const XLSX = require('xlsx');
 try {
-  const { filePath, maxCells, NL, dedupMinCount, dedupMinLen, dedupMaxEntries } = workerData;
+  const { filePath, maxCells, maxTableCells, NL, dedupMinCount, dedupMinLen, dedupMaxEntries } = workerData;
   const CR = String.fromCharCode(13);
   const QUOTE = String.fromCharCode(34);
   const wb = XLSX.readFile(filePath, { cellDates: true, cellFormula: false, cellNF: false, cellHTML: false });
@@ -152,7 +162,30 @@ try {
     sections.push(section);
     pages.push({ text: section, confidence: 1.0 });
   }
-  parentPort.postMessage({ ok: true, text: sections.join(NL + NL), pages });
+  // XLSX-FAST: отдаём наружу и саму матрицу (строки × колонки) — по ней парсер
+// разложит позиции кодом вместо 20+ вызовов модели. Значения БЕЗ @N-сокращений
+// (dict применяется только к тексту выше), поэтому раскладка идёт по исходным.
+// Выше лимита ячеек структуру не отдаём — работает прежний текстовый путь.
+var tables = [];
+var tableCells = 0;
+for (var ti = 0; ti < sheets.length; ti++) {
+  var sh = sheets[ti];
+  if (sh.skipped || !sh.matrix) continue;
+  var rowsOut = [];
+  for (var ri = 0; ri < sh.matrix.length; ri++) {
+    var srcRow = sh.matrix[ri];
+    var cellsOut = [];
+    for (var ci = 0; ci < srcRow.length; ci++) {
+      cellsOut.push(String(srcRow[ci] == null ? '' : srcRow[ci]).trim());
+    }
+    tableCells += cellsOut.length;
+    if (tableCells > maxTableCells) { rowsOut = null; break; }
+    rowsOut.push(cellsOut);
+  }
+  if (rowsOut === null) { tables = null; break; }
+  if (rowsOut.length > 0) tables.push({ sheet: sh.name, rows: rowsOut });
+}
+parentPort.postMessage({ ok: true, text: sections.join(NL + NL), pages, tables: tables || undefined });
 } catch (e) {
   parentPort.postMessage({ ok: false, error: (e && e.message) ? e.message : String(e) });
 }
@@ -173,6 +206,7 @@ export function parseXlsxInWorker(
       workerData: {
         filePath,
         maxCells,
+        maxTableCells: MAX_TABLE_CELLS_TOTAL,
         NL: '\n',
         dedupMinCount: XLSX_DEDUP_MIN_COUNT,
         dedupMinLen: XLSX_DEDUP_MIN_LEN,
@@ -192,12 +226,22 @@ export function parseXlsxInWorker(
         reject(new Error(`xlsx parse timeout after ${timeoutMs}ms (битый/зависший .xls): ${filePath}`)),
       );
     }, timeoutMs);
-    worker.once('message', (msg: { ok: boolean; text?: string; pages?: ParseOut['pages']; error?: string }) => {
-      finish(() => {
-        if (msg.ok) resolve({ text: msg.text ?? '', pages: msg.pages ?? [] });
-        else reject(new Error(`xlsx parse failed: ${msg.error ?? 'unknown'}`));
-      });
-    });
+    worker.once(
+      'message',
+      (msg: {
+        ok: boolean;
+        text?: string;
+        pages?: ParseOut['pages'];
+        tables?: OcrTable[];
+        error?: string;
+      }) => {
+        finish(() => {
+          if (msg.ok) {
+            resolve({ text: msg.text ?? '', pages: msg.pages ?? [], tables: msg.tables });
+          } else reject(new Error(`xlsx parse failed: ${msg.error ?? 'unknown'}`));
+        });
+      },
+    );
     worker.once('error', (err) => finish(() => reject(err)));
     worker.once('exit', (code) => {
       if (settled) return;
@@ -231,7 +275,7 @@ export class XlsxEngine implements OcrEngine {
   async run(input: OcrInput): Promise<OcrResult> {
     const t0 = Date.now();
     // Парсинг в worker_thread с таймаутом: битый sync-.xls не вешает воркер.
-    const { text, pages } = await parseXlsxInWorker(
+    const { text, pages, tables } = await parseXlsxInWorker(
       input.filePath,
       MAX_CELLS_PER_SHEET,
       XLSX_PARSE_TIMEOUT_MS,
@@ -243,6 +287,8 @@ export class XlsxEngine implements OcrEngine {
       confidence: text.length > 0 ? 1.0 : 0.0,
       // F5: per-sheet pages для multi-doc detection в orchestrator.
       pages,
+      // XLSX-FAST: структура таблиц для быстрой раскладки позиций (см. OcrTable).
+      tables,
       durationMs: Date.now() - t0,
     };
   }
