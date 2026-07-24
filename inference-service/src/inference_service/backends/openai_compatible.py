@@ -518,6 +518,29 @@ class OpenAICompatibleBackend(ModelBackend):
                 log.info("backend rejected reasoning_effort, retrying without")
                 kwargs.pop("extra_body", None)
                 response = await self._client.chat.completions.create(**kwargs)
+            elif (overflow := _parse_context_overflow(e)) is not None:
+                # Промпт + фиксированный max_tokens не влезли в окно модели.
+                # Ужимаем бюджет ВЫВОДА под остаток окна и повторяем один раз.
+                # Раньше это была смерть задачи: апстрим 400 → наш 500 → 3
+                # бесполезных ретрая воркера с тем же исходом.
+                ctx_limit, prompt_tokens = overflow
+                fitted = ctx_limit - prompt_tokens - _CONTEXT_SAFETY_MARGIN
+                if fitted < _MIN_OUTPUT_TOKENS:
+                    # Один только промпт съел окно — ретраить нечем. Падаем, но
+                    # с внятной причиной в логе (раньше был голый 500).
+                    log.error(
+                        "context overflow: prompt %s tokens vs window %s — "
+                        "output budget would be %s (<%s), giving up",
+                        prompt_tokens, ctx_limit, fitted, _MIN_OUTPUT_TOKENS,
+                    )
+                    raise
+                log.warning(
+                    "context overflow: prompt %s + max_tokens %s > window %s; "
+                    "retrying with max_tokens=%s",
+                    prompt_tokens, kwargs.get("max_tokens"), ctx_limit, fitted,
+                )
+                kwargs["max_tokens"] = fitted
+                response = await self._client.chat.completions.create(**kwargs)
             else:
                 raise
 
@@ -537,6 +560,46 @@ class OpenAICompatibleBackend(ModelBackend):
                 if completion_t is not None:
                     usage["completion_tokens"] = int(completion_t)
         return content, usage
+
+
+# Запас токенов при пересчёте бюджета вывода: провайдеры считают промпт
+# «не меньше чем» (at least N), плюс шаблон чата добавляет служебные токены.
+_CONTEXT_SAFETY_MARGIN = 64
+# Ниже этого вывод бессмысленен (JSON-ответ не поместится) — честно падаем,
+# вместо того чтобы вернуть заведомо обрезанный мусор.
+_MIN_OUTPUT_TOKENS = 256
+
+
+def _parse_context_overflow(err: Exception) -> tuple[int, int] | None:
+    """Разбирает 400 «превышено контекстное окно» → (лимит_окна, токенов_промпта).
+
+    Симптом (боевой, vision-модель qwen3-vl на :8101, окно 16384):
+        This model's maximum context length is 16384 tokens. However, you
+        requested 8192 output tokens and your prompt contains at least 8193
+        input tokens, for a total of at least 16385 tokens.
+
+    Причина: `max_tokens` фиксирован (OPENAI_MAX_TOKENS=8192), а промпт скана
+    вырастает с размером страницы. Как только промпт перевалил за
+    (окно - max_tokens), апстрим отвечает 400 → inference отдавал 500 →
+    задача падала насовсем (3 ретрая впустую, все с тем же исходом).
+
+    Возвращает None, если это не про контекст (тогда обработка не меняется).
+    Поддержаны обе формулировки: vLLM/Ollama («prompt contains at least N
+    input tokens») и классическая OpenAI («your messages resulted in N tokens»).
+    """
+    msg = str(err)
+    if "context length" not in msg and "context_length" not in msg:
+        return None
+    m_ctx = re.search(r"maximum context length is (\d+)", msg)
+    if not m_ctx:
+        return None
+    m_prompt = re.search(
+        r"prompt contains at least (\d+)|your messages resulted in (\d+)", msg
+    )
+    if not m_prompt:
+        return None
+    prompt_tokens = int(m_prompt.group(1) or m_prompt.group(2))
+    return int(m_ctx.group(1)), prompt_tokens
 
 
 def _looks_like_json_mode_not_supported(err: Exception) -> bool:
