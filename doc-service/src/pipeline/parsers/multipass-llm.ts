@@ -109,6 +109,13 @@ const DEFAULT_MULTIPASS_CONFIG: MultipassConfig = {
 const REGION_COVERAGE_MIN = 0.9;
 const DOC_COVERAGE_MIN = 0.25;
 
+/**
+ * Какую долю колонок таблицы обязана задействовать разметка. Ниже — позиции
+ * выходят пустыми: в боевом манифесте модель разметила 2 колонки из 10, строк
+ * стало больше прежнего, а полей в каждой втрое меньше.
+ */
+const MAPPED_COLUMNS_MIN_RATIO = 0.5;
+
 const NUMERIC_TOKENS = new Set([
   'qty', 'quantity', 'count', 'price', 'amount', 'sum', 'total', 'cost',
   'rate', 'weight', 'netweight', 'grossweight', 'volume', 'pcs', 'value',
@@ -312,6 +319,28 @@ export class MultiPassLlmParser implements DocumentParser {
       if (chosen.has(r.index)) continue;
       if (chosenWidths.get(r.sheet)?.has(r.width)) {
         issues.push(`xlsx_fast_split_table:${r.sheet}:${r.dataRowCount}x${r.width}`);
+        return null;
+      }
+    }
+
+    // 2в. Разметка должна покрывать таблицу, а не уголок её.
+    //
+    // Откуда правило (набор из 15 боевых документов, 2026-07-24). В манифесте
+    // авиаотправок таблица на 10 колонок, а модель разметила ДВЕ. Строк вышло
+    // даже больше прежнего (120 против 99), но каждая почти пустая: прежний
+    // путь заполнял 5.5 поля на позицию. «Больше строк, беднее строки» —
+    // это не улучшение, и по числу позиций оно выглядело выигрышем.
+    //
+    // Мерка структурная: сколько колонок таблицы задействовано. Если меньше
+    // половины — либо схема типа к этой таблице не подходит, либо разметка
+    // неудачна; в обоих случаях прежний путь соберёт больше.
+    for (const c of choices) {
+      const cols = Object.keys(c.mapping.columns).length;
+      const need = Math.max(2, Math.floor(c.region.width * MAPPED_COLUMNS_MIN_RATIO));
+      if (cols < need) {
+        issues.push(
+          `xlsx_fast_thin_mapping:${c.region.sheet}:${cols}/${c.region.width}`,
+        );
         return null;
       }
     }
