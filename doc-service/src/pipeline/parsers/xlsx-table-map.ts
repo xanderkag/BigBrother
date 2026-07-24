@@ -43,6 +43,12 @@ export type TableCandidate = {
   dataRowCount: number;
   /** Рабочая ширина таблицы (модальное число заполненных колонок). */
   width: number;
+  /**
+   * Граница области (не включая). Обязательна при множественном выборе: без
+   * неё раскладка читала бы до конца листа и захватывала соседние таблицы —
+   * позиции задвоились бы.
+   */
+  dataEndIndex?: number;
 };
 
 export type PickOptions = {
@@ -191,8 +197,12 @@ export function applyColumnMapping(
       ? mapping.headerRow + 1
       : cand.dataStartIndex;
 
+  // Не выходим за границу области (см. dataEndIndex): при нескольких выбранных
+  // областях чтение «до конца листа» захватило бы соседние таблицы.
+  const end = Math.min(cand.rows.length, cand.dataEndIndex ?? cand.rows.length);
+
   const out: Record<string, string>[] = [];
-  for (let i = start; i < cand.rows.length; i++) {
+  for (let i = start; i < end; i++) {
     const row = cand.rows[i];
     if (!row || filledCount(row) === 0) continue;
     const item: Record<string, string> = {};
@@ -294,6 +304,7 @@ export function regionToCandidate(
     dataStartIndex: region.dataStartIndex,
     dataRowCount: region.dataRowCount,
     width: region.width,
+    dataEndIndex: region.dataStartIndex + region.dataRowCount,
   };
 }
 
@@ -316,35 +327,47 @@ export type RegionChoice = {
  *
  * Возвращает null при любой неуверенности → caller откатывается на нарезку.
  */
-export async function chooseRegionAndMapColumns(
+export async function chooseRegionsAndMapColumns(
   llm: LlmClient,
   report: WorkbookReport,
   fields: string[],
   hint?: DocumentTypeSlug,
-): Promise<RegionChoice | null> {
+): Promise<RegionChoice[] | null> {
   if (report.regions.length === 0 || fields.length === 0) return null;
 
   const text = renderReportForPrompt(report);
   const prompt =
     'Это структура книги Excel: перечислены табличные области с шапками и примерами строк. ' +
-    'Определи, какая область — ТАБЛИЦА ПОЗИЦИЙ (товары/услуги документа), а какие служебные ' +
-    '(упаковочные листы, справочники, итоги, переводы). ' +
-    `Затем размести поля по колонкам этой области. Доступные поля: ${fields.join(', ')}. ` +
-    'Верни region (номер области), header_row (индекс строки заголовков) и mapping — ' +
-    'массив пар {field, column}, где column — номер колонки в квадратных скобках. ' +
-    'Включай ТОЛЬКО поля, которые реально есть в таблице; не выдумывай отсутствующие. ' +
+    'Найди ВСЕ области, которые содержат ПОЗИЦИИ документа (товары/услуги), и размести поля ' +
+    'по колонкам каждой из них. Служебные области (упаковочные листы, справочники, итоги) не бери. ' +
+    'ВАЖНО: если несколько областей содержат ОДИН И ТОТ ЖЕ перечень товаров (например перевод на ' +
+    'другой язык или дубль того же списка) — верни только ОСНОВНУЮ, иначе позиции задвоятся. ' +
+    'Если же позиции документа разбиты по нескольким областям (продолжение списка) — верни все. ' +
+    `Доступные поля: ${fields.join(', ')}. ` +
+    'Верни regions — массив объектов {region, header_row, mapping}, где region — номер области, ' +
+    'header_row — индекс строки заголовков, mapping — массив пар {field, column} ' +
+    '(column — номер колонки в квадратных скобках). ' +
+    'Включай ТОЛЬКО поля, которые реально есть; не выдумывай отсутствующие. ' +
     'Ориентируйся на СМЫСЛ заголовков, а не на размер области.';
 
   const schema = {
     type: 'object',
     properties: {
-      region: { type: 'number' },
-      header_row: { type: 'number' },
-      mapping: {
+      regions: {
         type: 'array',
         items: {
           type: 'object',
-          properties: { field: { type: 'string' }, column: { type: 'number' } },
+          properties: {
+            region: { type: 'number' },
+            header_row: { type: 'number' },
+            mapping: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: { field: { type: 'string' }, column: { type: 'number' } },
+              },
+            },
+          },
         },
       },
     },
@@ -358,31 +381,45 @@ export async function chooseRegionAndMapColumns(
     return null;
   }
 
-  const idx = typeof raw.region === 'number' ? raw.region : Number.parseInt(String(raw.region), 10);
-  const region = report.regions.find((r) => r.index === idx) ?? null;
-  if (!region) return null;
-
-  const pairs = raw.mapping;
-  if (!Array.isArray(pairs) || pairs.length === 0) return null;
+  const list = raw.regions;
+  if (!Array.isArray(list) || list.length === 0) return null;
 
   const allowed = new Set(fields);
-  const width = Math.max(region.width, region.header.length);
-  const columns: Record<string, number> = {};
-  for (const p of pairs) {
-    if (!p || typeof p !== 'object') continue;
-    const field = (p as { field?: unknown }).field;
-    const column = (p as { column?: unknown }).column;
-    if (typeof field !== 'string' || !allowed.has(field)) continue;
-    const c = typeof column === 'number' ? column : Number.parseInt(String(column), 10);
-    // Колонка вне таблицы — промах модели; такое поле не берём.
-    if (!Number.isInteger(c) || c < 0 || c >= width) continue;
-    columns[field] = c;
+  const out: RegionChoice[] = [];
+  const seenRegions = new Set<number>();
+
+  for (const entry of list) {
+    if (!entry || typeof entry !== 'object') continue;
+    const e = entry as Record<string, unknown>;
+    const idx = typeof e.region === 'number' ? e.region : Number.parseInt(String(e.region), 10);
+    const region = report.regions.find((r) => r.index === idx);
+    // Одну и ту же область дважды не берём — иначе позиции задвоятся.
+    if (!region || seenRegions.has(idx)) continue;
+
+    const pairs = e.mapping;
+    if (!Array.isArray(pairs) || pairs.length === 0) continue;
+
+    const width = Math.max(region.width, region.header.length);
+    const columns: Record<string, number> = {};
+    for (const p of pairs) {
+      if (!p || typeof p !== 'object') continue;
+      const field = (p as { field?: unknown }).field;
+      const column = (p as { column?: unknown }).column;
+      if (typeof field !== 'string' || !allowed.has(field)) continue;
+      const c = typeof column === 'number' ? column : Number.parseInt(String(column), 10);
+      // Колонка вне таблицы — промах модели; такое поле не берём.
+      if (!Number.isInteger(c) || c < 0 || c >= width) continue;
+      columns[field] = c;
+    }
+    if (Object.keys(columns).length === 0) continue;
+
+    const hr = e.header_row;
+    const headerRow =
+      typeof hr === 'number' && Number.isInteger(hr) && hr >= 0 ? hr : region.headerRowIndex;
+
+    seenRegions.add(idx);
+    out.push({ region, mapping: { headerRow, columns } });
   }
-  if (Object.keys(columns).length === 0) return null;
 
-  const hr = raw.header_row;
-  const headerRow =
-    typeof hr === 'number' && Number.isInteger(hr) && hr >= 0 ? hr : region.headerRowIndex;
-
-  return { region, mapping: { headerRow, columns } };
+  return out.length > 0 ? out : null;
 }

@@ -63,7 +63,7 @@ const TABLES: OcrTable[] = [
 
 /** Текст, который БЫ нарезался на куски, если бы быстрый путь не сработал. */
 const RAW_TEXT = ['Инвойс № 42', 'Наименование,Кол-во,Цена']
-  .concat(Array.from({ length: 200 }, (_, i) => `Товар ${i},1,100`))
+  .concat(TABLES[0]!.rows.slice(2).map((r) => r.join(',')))
   .join('\n');
 
 type Call = { kind: 'header' | 'mapping' | 'chunk' };
@@ -78,7 +78,7 @@ function makeLlm(opts: { mapping?: unknown; calls: Call[] }): LlmClient {
     verify: async () => ({ ok: true, issues: [] }),
     extract: async ({ schema }: { schema: Record<string, unknown> }) => {
       const props = (schema.properties ?? {}) as Record<string, unknown>;
-      if ('mapping' in props) {
+      if ('regions' in props) {
         opts.calls.push({ kind: 'mapping' });
         return { extracted: (opts.mapping ?? {}) as Record<string, unknown>, confidence: 0.9 };
       }
@@ -93,12 +93,16 @@ function makeLlm(opts: { mapping?: unknown; calls: Call[] }): LlmClient {
 }
 
 const GOOD_MAPPING = {
-  region: 0,
-  header_row: 1,
-  mapping: [
-    { field: 'name', column: 0 },
-    { field: 'quantity', column: 1 },
-    { field: 'price', column: 2 },
+  regions: [
+    {
+      region: 0,
+      header_row: 1,
+      mapping: [
+        { field: 'name', column: 0 },
+        { field: 'quantity', column: 1 },
+        { field: 'price', column: 2 },
+      ],
+    },
   ],
 };
 
@@ -138,11 +142,15 @@ describe('XLSX-FAST врезка в multipass', () => {
   it('колонки съехали (в «цене» текст) → проверка отбраковывает, откат на нарезку', async () => {
     const calls: Call[] = [];
     const badMapping = {
-      region: 0,
-      header_row: 1,
-      mapping: [
-        { field: 'name', column: 1 },
-        { field: 'price', column: 0 }, // в цену поедет наименование
+      regions: [
+        {
+          region: 0,
+          header_row: 1,
+          mapping: [
+            { field: 'name', column: 1 },
+            { field: 'price', column: 0 }, // в цену поедет наименование
+          ],
+        },
       ],
     };
     const parser = new MultiPassLlmParser(makeLlm({ mapping: badMapping, calls }), 'invoice', CFG);
@@ -238,12 +246,16 @@ describe('сторожа полноты: «быстро» не должно по
     // Область 0 — самая большая (ТОВАРЫ, 150 строк), область 1 — служебная.
     // Модель «ошибается» и берёт служебную.
     const wrongChoice = {
-      region: 1,
-      header_row: 0,
-      mapping: [
-        { field: 'name', column: 0 },
-        { field: 'quantity', column: 1 },
-        { field: 'price', column: 2 },
+      regions: [
+        {
+          region: 1,
+          header_row: 0,
+          mapping: [
+            { field: 'name', column: 0 },
+            { field: 'quantity', column: 1 },
+            { field: 'price', column: 2 },
+          ],
+        },
       ],
     };
     const parser = new MultiPassLlmParser(makeLlm({ mapping: wrongChoice, calls }), 'invoice', CFG);
@@ -259,12 +271,16 @@ describe('сторожа полноты: «быстро» не должно по
   it('модель выбрала правильную большую таблицу → путь срабатывает', async () => {
     const calls: Call[] = [];
     const rightChoice = {
-      region: 0,
-      header_row: 0,
-      mapping: [
-        { field: 'name', column: 0 },
-        { field: 'quantity', column: 1 },
-        { field: 'price', column: 2 },
+      regions: [
+        {
+          region: 0,
+          header_row: 0,
+          mapping: [
+            { field: 'name', column: 0 },
+            { field: 'quantity', column: 1 },
+            { field: 'price', column: 2 },
+          ],
+        },
       ],
     };
     const parser = new MultiPassLlmParser(makeLlm({ mapping: rightChoice, calls }), 'invoice', CFG);

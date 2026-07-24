@@ -71,10 +71,20 @@ function filled(row: string[] | undefined): number {
 }
 
 /**
- * Находит на листе ВСЕ блоки подряд идущих строк близкой ширины. В отличие от
- * прежней версии («один самый длинный блок») возвращает каждый блок: на листе
- * бывает несколько таблиц (позиции + итоги + реквизиты), и выбирать между ними
- * должна модель, а не код.
+ * Находит на листе ВСЕ табличные блоки.
+ *
+ * ВАЖНО про «рваные» строки. Первая версия рвала блок при любом изменении
+ * ширины больше чем на ±1 — и на боевой книге раздробила таблицу из 29 строк
+ * на огрызки по 8 и 6 (в живых таблицах часть ячеек пуста: нет артикула, нет
+ * страны, объединённые ячейки). Последствия были хуже, чем «нашли не всё»:
+ * сторож полноты сравнивал извлечённое с этим же заниженным счётом и считал
+ * потерю 84% полным охватом.
+ *
+ * Теперь блок рвётся ТОЛЬКО на разрыве содержимого — пустой строке или строке
+ * с одной заполненной ячейкой (подзаголовок/разделитель). Ширина блока — МАКСИМУМ
+ * по его строкам, а не «мода». Соседние таблицы без пустой строки между ними
+ * могут слипнуться — это допустимо: какие строки брать, решает разметка колонок,
+ * а лишние отсеются (строка без единого размеченного значения пропускается).
  */
 function findRegionsInSheet(
   sheet: string,
@@ -90,32 +100,32 @@ function findRegionsInSheet(
   const closeRun = (endExclusive: number): void => {
     if (runStart < 0) return;
     const len = endExclusive - runStart;
-    // Шапкой считаем строку НАД блоком только если она сопоставимой ширины.
-    // Иначе это заголовок документа («ООО Поставщик», «Прайс-лист от …») —
-    // он узкий, и принимать его за шапку нельзя: данные съедут на строку, а
-    // настоящие названия колонок уедут в первую позицию (поймано тестом).
-    const above = runStart - 1;
-    const aboveFilled = above >= 0 ? filled(rows[above]) : 0;
-    const looksLikeHeaderAbove =
-      above >= 0 && aboveFilled >= Math.max(opts.minWidth, runWidth - 1);
-    const headerRowIndex = looksLikeHeaderAbove ? above : runStart;
-    const dataStartIndex = looksLikeHeaderAbove ? runStart : runStart + 1;
-    const dataRowCount = runStart + len - dataStartIndex;
-    if (dataRowCount >= opts.minDataRows) {
-      const samples: string[][] = [];
-      for (let i = dataStartIndex; i < rows.length && samples.length < opts.sampleRows; i++) {
-        const r = rows[i];
-        if (r && filled(r) > 0) samples.push(r);
+    if (runWidth >= opts.minWidth) {
+      // Шапкой считаем строку НАД блоком только если она сопоставимой ширины.
+      // Иначе это заголовок документа («ООО Поставщик») — узкий, и принимать
+      // его за шапку нельзя: данные съедут на строку.
+      const above = runStart - 1;
+      const aboveFilled = above >= 0 ? filled(rows[above]) : 0;
+      const headerAbove = above >= 0 && aboveFilled >= Math.max(opts.minWidth, runWidth - 1);
+      const headerRowIndex = headerAbove ? above : runStart;
+      const dataStartIndex = headerAbove ? runStart : runStart + 1;
+      const dataRowCount = runStart + len - dataStartIndex;
+      if (dataRowCount >= opts.minDataRows) {
+        const samples: string[][] = [];
+        for (let i = dataStartIndex; i < rows.length && samples.length < opts.sampleRows; i++) {
+          const r = rows[i];
+          if (r && filled(r) > 0) samples.push(r);
+        }
+        out.push({
+          sheet,
+          headerRowIndex,
+          dataStartIndex,
+          dataRowCount,
+          width: runWidth,
+          header: rows[headerRowIndex] ?? [],
+          samples,
+        });
       }
-      out.push({
-        sheet,
-        headerRowIndex,
-        dataStartIndex,
-        dataRowCount,
-        width: runWidth,
-        header: rows[headerRowIndex] ?? [],
-        samples,
-      });
     }
     runStart = -1;
     runWidth = 0;
@@ -123,23 +133,13 @@ function findRegionsInSheet(
 
   for (let i = 0; i < rows.length; i++) {
     const w = filled(rows[i]);
-    if (w < opts.minWidth) {
+    // Разрыв содержимого: пусто или одна ячейка (разделитель/подзаголовок).
+    if (w <= 1) {
       closeRun(i);
       continue;
     }
-    if (runStart < 0) {
-      runStart = i;
-      runWidth = w;
-      continue;
-    }
-    // ±1 — хвостовые «Итого» и строки с пропущенной ячейкой блок не рвут.
-    if (Math.abs(w - runWidth) <= 1) {
-      runWidth = Math.max(runWidth, w);
-    } else {
-      closeRun(i);
-      runStart = i;
-      runWidth = w;
-    }
+    if (runStart < 0) runStart = i;
+    runWidth = Math.max(runWidth, w);
   }
   closeRun(rows.length);
   return out;

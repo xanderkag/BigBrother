@@ -39,7 +39,7 @@ import type { LlmClient, LlmExtractDebug } from '../llm/types.js';
 import type { DocumentParser, ParseResult, ParserOverride } from './types.js';
 import {
   itemFieldNames,
-  chooseRegionAndMapColumns,
+  chooseRegionsAndMapColumns,
   regionToCandidate,
   applyColumnMapping,
   validateMappedItems,
@@ -149,6 +149,7 @@ export class MultiPassLlmParser implements DocumentParser {
   private async tryTableFastPath(
     override: ParserOverride,
     itemsSchema: { properties?: Record<string, unknown> },
+    rawText: string,
     issues: string[],
   ): Promise<unknown[] | null> {
     const report = analyzeWorkbook(override.tables);
@@ -163,19 +164,40 @@ export class MultiPassLlmParser implements DocumentParser {
       return null;
     }
 
-    const choice = await chooseRegionAndMapColumns(this.llm, report, fields, this.type);
-    if (!choice) {
+    const choices = await chooseRegionsAndMapColumns(this.llm, report, fields, this.type);
+    if (!choices || choices.length === 0) {
       issues.push('xlsx_fast_mapping_failed');
       return null;
     }
-    const cand = regionToCandidate(override.tables, choice.region);
-    if (!cand) {
+
+    // Позиции документа нередко разбиты по нескольким листам (продолжение
+    // списка), поэтому собираем из всех выбранных областей. Дубли снимаем тем
+    // же ключом, что и склейка кусков: модель могла указать и перевод того же
+    // перечня, несмотря на инструкцию.
+    const items: Record<string, string>[] = [];
+    const seen = new Set<string>();
+    let expectedRows = 0;
+    const usedRegions: string[] = [];
+    for (const choice of choices) {
+      const cand = regionToCandidate(override.tables, choice.region);
+      if (!cand) continue;
+      expectedRows += choice.region.dataRowCount;
+      usedRegions.push(`${choice.region.index}:${choice.region.sheet}`);
+      for (const it of applyColumnMapping(cand, choice.mapping)) {
+        const key = itemDedupKey(it);
+        if (key !== null) {
+          if (seen.has(key)) continue;
+          seen.add(key);
+        }
+        items.push(it);
+      }
+    }
+    if (items.length === 0) {
       issues.push('xlsx_fast_region_lost');
       return null;
     }
 
-    const items = applyColumnMapping(cand, choice.mapping);
-    const mapped = Object.keys(choice.mapping.columns);
+    const mapped = Array.from(new Set(choices.flatMap((c) => Object.keys(c.mapping.columns))));
     // Числовыми считаем поля с «денежно-количественными» именами, обязательным —
     // первое поле-наименование. Сравниваем ТОКЕНЫ, а не подстроки: подстрочная
     // версия ловила «count» внутри «country» и браковала верную разметку.
@@ -192,29 +214,29 @@ export class MultiPassLlmParser implements DocumentParser {
 
     // ── Сторожа полноты ────────────────────────────────────────────────────
     // Без них «быстро» побеждало «правильно»: на боевом прайсе путь взял не ту
-    // таблицу, извлёк 10 позиций вместо 176 — и это выглядело ускорением втрое.
+    // таблицу, извлёк 28 позиций вместо 176 — и это выглядело ускорением.
     // Полнота важнее скорости: не сошлось — идём медленным путём.
 
-    // 1. Внутри выбранной области не потеряли строки.
-    const expected = choice.region.dataRowCount;
-    if (expected > 0 && items.length < expected * REGION_COVERAGE_MIN) {
-      issues.push(`xlsx_fast_incomplete_region:${items.length}/${expected}`);
+    // 1. Внутри выбранных областей не потеряли строки (дубли учтены — потому
+    // сравниваем с запасом, а не один-в-один).
+    if (expectedRows > 0 && items.length < expectedRows * REGION_COVERAGE_MIN) {
+      issues.push(`xlsx_fast_incomplete_region:${items.length}/${expectedRows}`);
       return null;
     }
 
-    // 2. Не взяли ли маленькую служебную табличку вместо таблицы товаров.
-    // Сравниваем с тем, сколько строк АНАЛИЗАТОР нашёл во всей книге — это
-    // надёжнее текстовых эвристик: он считал по самой структуре файла.
-    // Порог низкий: в книге законно несколько таблиц (позиции + упаковка +
-    // итоги), поэтому ловим только грубый промах, а не любое расхождение.
-    const fileRows = report.totalDataRows;
-    if (fileRows > 0 && items.length < fileRows * DOC_COVERAGE_MIN) {
-      issues.push(`xlsx_fast_incomplete_doc:${items.length}/${fileRows}`);
+    // 2. НЕЗАВИСИМАЯ мерка. Считаем табличные строки в тексте документа — тем
+    // же счётчиком, по которому включается нарезка. Важно, что он НЕ завязан на
+    // анализатор: прошлый сторож сравнивал результат с числом, которое дал тот
+    // же анализатор, и потому пропустил потерю 84% (анализатор дробил таблицу и
+    // сам занижал ожидание). Порог низкий: в книге законно несколько таблиц.
+    const docRows = countTableRows(rawText);
+    if (docRows > 0 && items.length < docRows * DOC_COVERAGE_MIN) {
+      issues.push(`xlsx_fast_incomplete_doc:${items.length}/${docRows}`);
       return null;
     }
 
     issues.push(
-      `xlsx_fast_used:rows=${items.length},cols=${mapped.length},region=${choice.region.index},sheet=${choice.region.sheet}`,
+      `xlsx_fast_used:rows=${items.length},cols=${mapped.length},regions=${usedRegions.join('+')}`,
     );
     return items;
   }
@@ -285,7 +307,7 @@ export class MultiPassLlmParser implements DocumentParser {
     let fastItems: unknown[] | null = null;
     if (itemsSchema && this.cfg.xlsxFastPath) {
       if (override?.tables?.length) {
-        fastItems = await this.tryTableFastPath(override, itemsSchema, issues);
+        fastItems = await this.tryTableFastPath(override, itemsSchema, rawText, issues);
       } else {
         // Флаг включён, но структуры нет — значит документ не из Excel либо
         // структура не доехала. Без этого следа причина неотличима от «путь
