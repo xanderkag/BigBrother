@@ -197,8 +197,13 @@ export class MultiPassLlmParser implements DocumentParser {
     }
 
     // Позиции документа нередко разбиты по нескольким листам (продолжение
-    // списка), поэтому собираем из всех выбранных областей. Дубли снимаем тем
-    // же ключом, что и склейка кусков: модель могла указать и перевод того же
+    // списка), поэтому собираем из всех выбранных областей.
+    //
+    // Дубли снимаем ТОЛЬКО МЕЖДУ областями. Внутри одной таблицы строка — это
+    // строка: в боевом прайсе комплектующие набора («plastic armrest (1pair)»)
+    // законно повторяются у белого и чёрного исполнения, и сквозной дедуп съел
+    // их как дубли — 14 разложенных строк из 18, отказ по охвату области.
+    // Между областями дедуп нужен: модель могла указать и перевод того же
     // перечня, несмотря на инструкцию.
     const items: Record<string, string>[] = [];
     const seen = new Set<string>();
@@ -209,14 +214,18 @@ export class MultiPassLlmParser implements DocumentParser {
       if (!cand) continue;
       expectedRows += choice.region.dataRowCount;
       usedRegions.push(`${choice.region.index}:${choice.region.sheet}`);
+      const first = items.length === 0;
+      const fromRegion: Record<string, string>[] = [];
       for (const it of applyColumnMapping(cand, choice.mapping)) {
         const key = itemDedupKey(it);
-        if (key !== null) {
-          if (seen.has(key)) continue;
-          seen.add(key);
-        }
-        items.push(it);
+        if (!first && key !== null && seen.has(key)) continue;
+        fromRegion.push(it);
       }
+      for (const it of fromRegion) {
+        const key = itemDedupKey(it);
+        if (key !== null) seen.add(key);
+      }
+      items.push(...fromRegion);
     }
     if (items.length === 0) {
       issues.push('xlsx_fast_region_lost');

@@ -435,3 +435,63 @@ describe('сторожа полноты: «быстро» не должно по
     expect(issues.some((i) => i.startsWith('xlsx_fast_used:'))).toBe(true);
   });
 });
+
+/**
+ * Регрессия боевого прайса 2026-07-24: дедуп внутри одной таблицы.
+ *
+ * В прайсе комплектующие набора («plastic armrest (1pair)») законно
+ * повторяются у белого и чёрного исполнения — цена стоит только у головной
+ * строки, у комплектующих лишь артикул и наименование. Сквозной дедуп по
+ * ключу позиции съедал их как дубли: 14 разложенных строк из 18 и отказ по
+ * охвату области. Внутри таблицы строка — это строка.
+ */
+describe('дубли снимаются между таблицами, а не внутри одной', () => {
+  const REPEATS: OcrTable[] = [
+    {
+      sheet: 'PRICE LIST',
+      rows: [
+        ['Артикул', 'Наименование', 'Кол-во', 'Цена'],
+        ['CX0898H/white', 'outer back frame', '1', '136.50'],
+        ['CX0898H/white', 'plastic armrest (1pair)', '', ''],
+        ['CX0898H/white', 'plastic headrest (1pcs)', '', ''],
+        ['CX0898H/black', 'outer back frame', '1', '122.00'],
+        ['CX0898H/black', 'plastic armrest (1pair)', '', ''],
+        ['CX0898H/black', 'plastic headrest (1pcs)', '', ''],
+      ],
+    },
+  ];
+  const TEXT = ['Артикул,Наименование,Кол-во,Цена']
+    .concat(REPEATS[0]!.rows.slice(1).map((r) => r.join(',')))
+    .join('\n');
+
+  it('повторяющиеся комплектующие остаются отдельными позициями', async () => {
+    const calls: Call[] = [];
+    const parser = new MultiPassLlmParser(
+      makeLlm({
+        mapping: {
+          regions: [
+            {
+              region: 0,
+              mapping: [
+                { field: 'name', column: 1 },
+                { field: 'quantity', column: 2 },
+                { field: 'price', column: 3 },
+              ],
+            },
+          ],
+        },
+        calls,
+      }),
+      'invoice',
+      CFG,
+    );
+
+    const res = await parser.parse(TEXT, { llmSchema: SCHEMA, tables: REPEATS });
+
+    const items = res.extracted.items as Array<Record<string, string>>;
+    // Все шесть строк таблицы, включая одинаковые по наименованию.
+    expect(items).toHaveLength(6);
+    expect(items.filter((i) => i.name === 'plastic armrest (1pair)')).toHaveLength(2);
+    expect(calls.filter((c) => c.kind === 'chunk')).toHaveLength(0);
+  });
+});
