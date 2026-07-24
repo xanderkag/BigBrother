@@ -292,6 +292,30 @@ export class MultiPassLlmParser implements DocumentParser {
       return null;
     }
 
+    // 2б. Продолжение той же таблицы. Если на ТОМ ЖЕ листе осталась
+    // невыбранная область ТОЙ ЖЕ ширины — это почти наверняка та же таблица,
+    // разорванная строкой-разделителем, а не посторонний блок.
+    //
+    // Откуда правило (набор из 15 боевых документов, 2026-07-24). В
+    // спецификации «Товар в грузе» позиции лежали двумя блоками одного листа,
+    // 9 и 6 строк, оба по 3 колонки. Модель вернула только первый — 9 позиций
+    // вместо 15. Сторож «пропущена область крупнее» это не ловит: 6 меньше 9.
+    // Уступаем прежнему пути: он такие разрывы не замечает, потому что читает
+    // сплошной текст.
+    const chosenWidths = new Map<string, Set<number>>();
+    for (const c of choices) {
+      const set = chosenWidths.get(c.region.sheet) ?? new Set<number>();
+      set.add(c.region.width);
+      chosenWidths.set(c.region.sheet, set);
+    }
+    for (const r of report.regions) {
+      if (chosen.has(r.index)) continue;
+      if (chosenWidths.get(r.sheet)?.has(r.width)) {
+        issues.push(`xlsx_fast_split_table:${r.sheet}:${r.dataRowCount}x${r.width}`);
+        return null;
+      }
+    }
+
     // 3. Сверка с текстом документа — ТОЛЬКО пометка, не отказ.
     //
     // Раньше здесь стоял жёсткий порог «извлеки хотя бы четверть табличных
