@@ -12,7 +12,7 @@
  */
 import { describe, it, expect } from 'vitest';
 
-import { MultiPassLlmParser, type MultipassConfig } from '../src/pipeline/parsers/multipass-llm.js';
+import { MultiPassLlmParser, fieldTokens, type MultipassConfig } from '../src/pipeline/parsers/multipass-llm.js';
 import type { LlmClient } from '../src/pipeline/llm/types.js';
 import type { OcrTable } from '../src/pipeline/ocr/types.js';
 
@@ -173,5 +173,29 @@ describe('XLSX-FAST врезка в multipass', () => {
 
     expect(calls.filter((c) => c.kind === 'mapping')).toHaveLength(0);
     expect(calls.filter((c) => c.kind === 'chunk').length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * Регрессия боевого случая: подстрочная проверка имён полей браковала ВЕРНУЮ
+ * разметку прайса — `country_of_origin` считался числовым, потому что внутри
+ * «country» сидит «count» (лог: xlsx_fast_rejected:not_numeric:country_of_origin:0.00).
+ */
+describe('имена полей разбираются по токенам, а не по подстрокам', () => {
+  it('country_of_origin НЕ числовое (внутри «count»)', () => {
+    expect(fieldTokens('country_of_origin')).toEqual(['country', 'of', 'origin']);
+    expect(fieldTokens('country_of_origin')).not.toContain('count');
+  });
+
+  it('настоящие числовые поля распознаются', () => {
+    expect(fieldTokens('quantity')).toContain('quantity');
+    expect(fieldTokens('unit_price')).toContain('price');
+    expect(fieldTokens('netWeight')).toContain('weight');
+    expect(fieldTokens('total-amount')).toContain('amount');
+  });
+
+  it('accountant / discount не превращаются в «count»', () => {
+    expect(fieldTokens('accountant')).not.toContain('count');
+    expect(fieldTokens('discount_percent')).not.toContain('count');
   });
 });

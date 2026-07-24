@@ -88,6 +88,33 @@ const DEFAULT_MULTIPASS_CONFIG: MultipassConfig = {
   xlsxFastPath: false,
 };
 
+/**
+ * Токены имён полей для проверки раскладки XLSX-FAST. Сравниваем именно
+ * токенами (`country_of_origin` → [country, of, origin]), а не подстрокой:
+ * подстрочная версия ловила «count» внутри «country» и браковала верную
+ * разметку боевого прайса.
+ */
+const NUMERIC_TOKENS = new Set([
+  'qty', 'quantity', 'count', 'price', 'amount', 'sum', 'total', 'cost',
+  'rate', 'weight', 'netweight', 'grossweight', 'volume', 'pcs', 'value',
+]);
+const NAME_TOKENS = new Set([
+  'name', 'description', 'title', 'article', 'sku', 'model', 'goods', 'product',
+]);
+
+/** Разбивает имя поля на токены: snake_case, camelCase, дефисы, цифры. */
+export function fieldTokens(field: string): string[] {
+  return field
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean)
+    .map((t) => t.toLowerCase());
+}
+
+function hasToken(field: string, tokens: Set<string>): boolean {
+  return fieldTokens(field).some((t) => tokens.has(t));
+}
+
 export class MultiPassLlmParser implements DocumentParser {
   readonly type: DocumentTypeSlug;
   private readonly cfg: MultipassConfig;
@@ -143,10 +170,14 @@ export class MultiPassLlmParser implements DocumentParser {
     // Числовыми считаем поля с «денежно-количественными» именами, обязательным —
     // первое поле-наименование. Так проверка ловит съехавшие колонки, но не
     // придирается к таблицам, где части полей просто нет.
-    const numericFields = mapped.filter((f) =>
-      /qty|quant|count|price|amount|sum|total|weight|cost|rate/i.test(f),
-    );
-    const nameLike = mapped.find((f) => /name|description|title|article|code/i.test(f));
+    //
+    // ВАЖНО по подстрокам: сравниваем ТОКЕНЫ, а не вхождения. Первая версия
+    // искала подстроку и на боевом прайсе отбраковала ВЕРНУЮ разметку —
+    // `country_of_origin` попал в «числовые», потому что в «country» сидит
+    // «count», а названия стран числами не являются (лог:
+    // xlsx_fast_rejected:not_numeric:country_of_origin:0.00).
+    const numericFields = mapped.filter((f) => hasToken(f, NUMERIC_TOKENS));
+    const nameLike = mapped.find((f) => hasToken(f, NAME_TOKENS));
     const validation = validateMappedItems(items, {
       requiredFields: nameLike ? [nameLike] : [],
       numericFields,
