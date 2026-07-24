@@ -232,6 +232,15 @@ const ConfigSchema = z.object({
     // полей ≈ 2-4К ВЫХОДНЫХ токенов — предиктор провала по ExtractBench),
     // а не только по входным байтам. 0 = выключить (резать как раньше).
     targetRowsPerChunk: numberFromEnv(30),
+    /**
+     * XLSX-FAST: раскладывать позиции Excel по структуре таблицы (модель
+     * размечает колонки одним вызовом, строки раскладывает код) вместо
+     * построчной перепечатки таблицы моделью. Замер 2026-07-24: у проформ и
+     * прайсов ~21 вызов и 2-7 минут на документ, при том что чтение файла 0.2с.
+     * Любая неуверенность → откат на прежнюю нарезку. Выключено по умолчанию:
+     * включаем после замера «было/стало» на боевых документах.
+     */
+    xlsxFastPath: booleanFromEnv(false),
   }),
 
   /**
@@ -816,6 +825,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       maxItemsTotal: env.MULTIPASS_MAX_ITEMS_TOTAL,
       itemsParallelism: env.MULTIPASS_ITEMS_PARALLELISM,
       targetRowsPerChunk: env.MULTIPASS_TARGET_ROWS,
+      xlsxFastPath: env.XLSX_FAST_PATH_ENABLED,
     },
     requality: {
       enabled: env.REQUALITY_ENABLED,

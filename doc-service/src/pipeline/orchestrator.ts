@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import type { Logger } from 'pino';
 import { config } from '../config.js';
 import { jobsRepo } from '../storage/jobs.js';
-import type { OcrEngine, OcrInput, OcrResult } from './ocr/types.js';
+import type { OcrEngine, OcrInput, OcrResult, OcrTable } from './ocr/types.js';
 import { detectOcrRefusal, OcrRefusedError } from './ocr/refusal.js';
 import { HttpAsrTranscriber, type AsrTranscriber } from './asr/transcribe.js';
 import { isAudioMime } from './asr/mime.js';
@@ -705,6 +705,8 @@ async function processJobInner(
         classifyOnly: skipExtract,
         imagePath: firstPageImage.imagePath,
         forceExtractFromImage,
+        // XLSX-FAST: структура таблицы от xlsx-движка (у прочих undefined).
+        tables: ocr.tables,
         // Hybrid-routing (SLAI #3). Гейтится HYBRID_ROUTING_ENABLED — при
         // выключенном флаге pipeline игнорирует hybrid и ведёт себя как раньше.
         hybrid: config.hybridRouting.enabled
@@ -1630,6 +1632,12 @@ export async function runDocumentPipeline(
      */
     forceExtractFromImage?: boolean;
     /**
+     * XLSX-FAST: структура таблиц из xlsx-движка (строки × колонки). Позволяет
+     * multipass разложить позиции кодом по разметке колонок (один вызов модели
+     * вместо 20+). Не задан / не xlsx → прежняя нарезка текста.
+     */
+    tables?: OcrTable[];
+    /**
      * Hybrid-routing (SLAI #3). Когда задан — после classify роутер решает
      * text/vision PATH по дешёвым сигналам и (при vision) маршрутизирует
      * extract через designated vision-провайдера + картинку. Передаётся ТОЛЬКО
@@ -1928,6 +1936,9 @@ export async function runDocumentPipeline(
           // переспросить документ с другим промптом для одного конкретного
           // job (через `POST /jobs/:id/reprocess` с metadata.prompt_override).
           llmPrompt: options.promptOverride ?? typeConfig!.llmPrompt ?? undefined,
+          // XLSX-FAST: структура таблицы (если движок её отдал) — multipass
+          // разложит позиции кодом по разметке колонок вместо 20+ вызовов.
+          tables: options.tables,
         });
       return applyTypeModel ? dynamicLlm.withModelOverride(typePreferredModel!, exec) : exec();
     };

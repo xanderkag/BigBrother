@@ -1,4 +1,6 @@
 import type { OcrTable } from '../ocr/types.js';
+import type { LlmClient } from '../llm/types.js';
+import type { DocumentTypeSlug } from '../../types/documents.js';
 
 /**
  * XLSX-FAST (замер 2026-07-24): у Excel таблица уже структурирована, но мы
@@ -266,4 +268,96 @@ export function validateMappedItems(
     }
   }
   return { ok: true, items: items.length };
+}
+
+/** Имена полей позиции из схемы типа — то, что ищем в колонках. */
+export function itemFieldNames(itemsSchema: unknown): string[] {
+  const s = itemsSchema as { items?: { properties?: Record<string, unknown> } } | undefined;
+  const props = s?.items?.properties;
+  if (!props || typeof props !== 'object') return [];
+  return Object.keys(props);
+}
+
+/**
+ * Просит модель разметить колонки — ОДИН короткий вызов вместо перепечатки
+ * всей таблицы. Ключевая экономия XLSX-FAST.
+ *
+ * Почему это дёшево и точно: тип документа уже определён классификатором, а с
+ * ним известна схема — значит спрашиваем не «разбери таблицу», а прицельно
+ * «какая колонка это `quantity`, какая `price`». На входе — только шапка и
+ * 3 строки-образца, на выходе — десяток чисел. Промпт и ответ крошечные,
+ * поэтому вызов идёт за секунды независимо от того, 50 в таблице строк или 800.
+ *
+ * Возвращает null при любой неуверенности (модель упала, ответ пустой,
+ * колонки вне диапазона) — caller откатывается на обычную нарезку.
+ */
+export async function mapColumnsWithLlm(
+  llm: LlmClient,
+  cand: TableCandidate,
+  fields: string[],
+  hint?: DocumentTypeSlug,
+): Promise<ColumnMapping | null> {
+  if (fields.length === 0) return null;
+  const preview = headerPreview(cand, 3);
+  if (preview.length === 0) return null;
+
+  // Колонки нумеруем явно — модели проще ссылаться на индекс, чем на позицию.
+  const width = Math.max(...preview.map((r) => r.length));
+  const colLine = Array.from({ length: width }, (_, i) => `[${i}]`).join(' | ');
+  const rowsText = preview.map((r) => r.map((c) => c ?? '').join(' | ')).join('\n');
+  const text = `Колонки: ${colLine}\n\nСтрока заголовков (индекс ${cand.headerRowIndex}) и примеры строк:\n${rowsText}`;
+
+  const prompt =
+    'Это таблица позиций из Excel. Определи, какая КОЛОНКА содержит какое поле. ' +
+    `Доступные поля: ${fields.join(', ')}. ` +
+    'Верни header_row (индекс строки заголовков) и mapping — массив пар {field, column}, ' +
+    'где column — номер колонки в квадратных скобках. ' +
+    'Включай ТОЛЬКО поля, которые реально есть в таблице. Если поля нет — не выдумывай его.';
+
+  const schema = {
+    type: 'object',
+    properties: {
+      header_row: { type: 'number' },
+      mapping: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: { field: { type: 'string' }, column: { type: 'number' } },
+        },
+      },
+    },
+  };
+
+  let raw: Record<string, unknown>;
+  try {
+    const res = await llm.extract({ text, schema, hint, promptOverride: prompt });
+    raw = (res.extracted ?? {}) as Record<string, unknown>;
+  } catch {
+    return null; // модель недоступна/упала — молча откатываемся
+  }
+
+  const pairs = raw.mapping;
+  if (!Array.isArray(pairs) || pairs.length === 0) return null;
+
+  const allowed = new Set(fields);
+  const columns: Record<string, number> = {};
+  for (const p of pairs) {
+    if (!p || typeof p !== 'object') continue;
+    const field = (p as { field?: unknown }).field;
+    const column = (p as { column?: unknown }).column;
+    if (typeof field !== 'string' || !allowed.has(field)) continue;
+    const idx = typeof column === 'number' ? column : Number.parseInt(String(column), 10);
+    // Колонка вне таблицы — признак, что модель промахнулась; такое поле не берём.
+    if (!Number.isInteger(idx) || idx < 0 || idx >= width) continue;
+    columns[field] = idx;
+  }
+  if (Object.keys(columns).length === 0) return null;
+
+  const hr = raw.header_row;
+  const headerRow =
+    typeof hr === 'number' && Number.isInteger(hr) && hr >= 0 && hr < cand.rows.length
+      ? hr
+      : cand.headerRowIndex;
+
+  return { headerRow, columns };
 }

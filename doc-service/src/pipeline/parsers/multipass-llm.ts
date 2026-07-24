@@ -37,6 +37,13 @@
 import type { DocumentTypeSlug } from '../../types/documents.js';
 import type { LlmClient, LlmExtractDebug } from '../llm/types.js';
 import type { DocumentParser, ParseResult, ParserOverride } from './types.js';
+import {
+  pickItemTable,
+  itemFieldNames,
+  mapColumnsWithLlm,
+  applyColumnMapping,
+  validateMappedItems,
+} from './xlsx-table-map.js';
 
 /** Пороги multipass — приходят из config.multipass (env), см. config.ts. */
 export type MultipassConfig = {
@@ -54,6 +61,16 @@ export type MultipassConfig = {
    * пределом для прозы (длинные .doc без табличных строк).
    */
   targetRowsPerChunk: number;
+  /**
+   * XLSX-FAST: пробовать раскладку позиций по структуре таблицы Excel.
+   * Когда движок отдал матрицу (`override.tables`), модель отвечает на ОДИН
+   * вопрос «где шапка и что в колонках», а строки раскладывает код — вместо
+   * 20+ вызовов на перепечатку таблицы. Любая неуверенность (не нашли таблицу,
+   * модель не разметила, проверка не прошла) → молчаливый откат на нарезку,
+   * то есть худший исход равен сегодняшнему поведению.
+   * Выключено по умолчанию — включаем флагом после замера на боевых доках.
+   */
+  xlsxFastPath: boolean;
 };
 
 /** Дефолты на случай прямого инстанцирования (тесты) без явного config'а. */
@@ -68,6 +85,7 @@ const DEFAULT_MULTIPASS_CONFIG: MultipassConfig = {
   maxItemsTotal: 1_000,
   itemsParallelism: 3,
   targetRowsPerChunk: 30,
+  xlsxFastPath: false,
 };
 
 export class MultiPassLlmParser implements DocumentParser {
@@ -81,6 +99,55 @@ export class MultiPassLlmParser implements DocumentParser {
   ) {
     this.type = slug;
     this.cfg = cfg;
+  }
+
+  /**
+   * XLSX-FAST: разложить позиции по структуре таблицы Excel вместо перепечатки
+   * её моделью. Один короткий вызов (разметка колонок) + раскладка кодом.
+   *
+   * Возвращает null при ЛЮБОЙ неуверенности — не нашли таблицу, модель не
+   * разметила, проверка не прошла. Тогда caller идёт прежней нарезкой, то есть
+   * худший исход быстрого пути равен сегодняшнему поведению. Причина отказа
+   * пишется в issues — чтобы по проду было видно, где путь не сработал.
+   */
+  private async tryTableFastPath(
+    override: ParserOverride,
+    itemsSchema: { properties?: Record<string, unknown> },
+    issues: string[],
+  ): Promise<unknown[] | null> {
+    const cand = pickItemTable(override.tables);
+    if (!cand) return null;
+
+    const fields = itemFieldNames(itemsSchema.properties?.items);
+    if (fields.length === 0) return null;
+
+    const mapping = await mapColumnsWithLlm(this.llm, cand, fields, this.type);
+    if (!mapping) {
+      issues.push('xlsx_fast_mapping_failed');
+      return null;
+    }
+
+    const items = applyColumnMapping(cand, mapping);
+    const mapped = Object.keys(mapping.columns);
+    // Числовыми считаем поля с «денежно-количественными» именами, обязательным —
+    // первое поле-наименование. Так проверка ловит съехавшие колонки, но не
+    // придирается к таблицам, где части полей просто нет.
+    const numericFields = mapped.filter((f) =>
+      /qty|quant|count|price|amount|sum|total|weight|cost|rate/i.test(f),
+    );
+    const nameLike = mapped.find((f) => /name|description|title|article|code/i.test(f));
+    const validation = validateMappedItems(items, {
+      requiredFields: nameLike ? [nameLike] : [],
+      numericFields,
+    });
+    if (!validation.ok) {
+      issues.push(`xlsx_fast_rejected:${validation.reason ?? 'unknown'}`);
+      return null;
+    }
+
+    // Маркер для замера «было/стало»: видно, что документ прошёл быстрым путём.
+    issues.push(`xlsx_fast_used:rows=${validation.items},cols=${mapped.length}`);
+    return items;
   }
 
   async parse(rawText: string, override?: ParserOverride): Promise<ParseResult> {
@@ -143,7 +210,17 @@ export class MultiPassLlmParser implements DocumentParser {
     let chunksFailed = 0;
     const issues: string[] = [];
 
-    if (itemsSchema) {
+    // ── XLSX-FAST: попытка разложить позиции по структуре таблицы ──────────
+    // Если удалось — вместо 20+ вызовов на перепечатку строк уходит один
+    // короткий вызов на разметку колонок. Не удалось — молча идём по-старому.
+    let fastItems: unknown[] | null = null;
+    if (itemsSchema && this.cfg.xlsxFastPath && override?.tables?.length) {
+      fastItems = await this.tryTableFastPath(override, itemsSchema, issues);
+    }
+
+    if (fastItems) {
+      allItems = fastItems;
+    } else if (itemsSchema) {
       const allChunks = splitForItems(rawText, this.cfg.chunkSizeBytes, this.cfg.targetRowsPerChunk);
       const chunks = allChunks.slice(0, this.cfg.maxPasses);
       // Раньше хвост за maxPasses выбрасывался МОЛЧА — на 128КБ .xls терялись

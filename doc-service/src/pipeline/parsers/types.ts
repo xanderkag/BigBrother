@@ -1,5 +1,6 @@
 import type { DocumentTypeSlug } from '../../types/documents.js';
 import type { LlmExtractDebug } from '../llm/types.js';
+import type { OcrTable } from '../ocr/types.js';
 
 export type ParseResult = {
   extracted: Record<string, unknown>;
@@ -54,6 +55,13 @@ export type ParserOverride = {
    * extract (поведение не меняется).
    */
   imagePath?: string;
+  /**
+   * XLSX-FAST: структура таблиц Excel (строки × колонки) — если движок её отдал.
+   * Позволяет multipass разложить позиции кодом по разметке колонок (1 вызов
+   * модели вместо 20+), вместо построчной перепечатки таблицы моделью.
+   * Не задан / не xlsx → прежний путь нарезки текста.
+   */
+  tables?: OcrTable[];
 };
 
 export interface DocumentParser {
