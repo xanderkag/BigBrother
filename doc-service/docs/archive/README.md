@@ -24,3 +24,16 @@
 - `FINAL_VED_FIXES_2026-05-18.md`
 - `REAL_DOCS_SMOKE_RESULTS_2026-05-18.md` (подмножество FULL_REPORT)
 - `REAL_DOCS_FULL_REPORT_2026-05-18.md`
+
+## Переписка SLAI — июль 2026 (перенесено 2026-07-24 со стола)
+
+Лежало только на рабочем столе, в git не было — забрано, чтобы не потерялось
+при уборке. Всё исполнено/свёрнуто, живая правда — в `SLAI_INTEGRATION_BACKLOG.md`.
+
+- `PARSDOCS_SVERKA_SLAI_2026-07-07.md` — сверка 07.07 (флаги, cutover-план клиентских эндпоинтов).
+- `SLAI_QUESTIONS_2026-07-07.md` — вопросы SLAI 07.07 (в т.ч. dadata/embeddings/chat — включение пакетом).
+- `SLAI_QUESTIONS_2026-07-19.md` — вопросы SLAI 19.07.
+- `SLAI_NEWTYPES_2026-07-16.md` — новые типы документов 16.07.
+- `SLAI_INN_FIXES_2026-07-17.md` — правки по ИНН 17.07.
+- `SLAI_LEGS_DENSITY_DESIGN_BRIEF_2026-07-13.md` — дизайн-бриф по плотности плеч 13.07.
+- `parsdocs-вопросы-по-сверке.md` — наши вопросы по сверке.
