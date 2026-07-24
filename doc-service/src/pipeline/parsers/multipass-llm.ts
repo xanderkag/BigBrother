@@ -205,9 +205,15 @@ export class MultiPassLlmParser implements DocumentParser {
     // их как дубли — 14 разложенных строк из 18, отказ по охвату области.
     // Между областями дедуп нужен: модель могла указать и перевод того же
     // перечня, несмотря на инструкцию.
+    const mapped = Array.from(new Set(choices.flatMap((c) => Object.keys(c.mapping.columns))));
+    // Поле-наименование понадобится дважды: отсеять строки без него и проверить
+    // заполненность. Берём по приоритету, идентификаторы не участвуют.
+    const nameLike = pickNameField(mapped);
+
     const items: Record<string, string>[] = [];
     const seen = new Set<string>();
     let expectedRows = 0;
+    let droppedNameless = 0;
     const usedRegions: string[] = [];
     for (const choice of choices) {
       const cand = regionToCandidate(override.tables, choice.region);
@@ -217,6 +223,13 @@ export class MultiPassLlmParser implements DocumentParser {
       const first = items.length === 0;
       const fromRegion: Record<string, string>[] = [];
       for (const it of applyColumnMapping(cand, choice.mapping)) {
+        // Позиция без наименования — не позиция. На боевом прайсе так в товары
+        // попадала строка подписей сторон («For and on behalf of the SELLER»),
+        // стоявшая сразу под таблицей: она заполнена, но наименования у неё нет.
+        if (nameLike && (it[nameLike] ?? '').trim() === '') {
+          droppedNameless++;
+          continue;
+        }
         const key = itemDedupKey(it);
         if (!first && key !== null && seen.has(key)) continue;
         fromRegion.push(it);
@@ -232,12 +245,10 @@ export class MultiPassLlmParser implements DocumentParser {
       return null;
     }
 
-    const mapped = Array.from(new Set(choices.flatMap((c) => Object.keys(c.mapping.columns))));
-    // Числовыми считаем поля с «денежно-количественными» именами, обязательным —
-    // первое поле-наименование. Сравниваем ТОКЕНЫ, а не подстроки: подстрочная
-    // версия ловила «count» внутри «country» и браковала верную разметку.
+    // Числовыми считаем поля с «денежно-количественными» именами. Сравниваем
+    // ТОКЕНЫ, а не подстроки: подстрочная версия ловила «count» внутри
+    // «country» и браковала верную разметку.
     const numericFields = mapped.filter((f) => hasToken(f, NUMERIC_TOKENS));
-    const nameLike = pickNameField(mapped);
     const validation = validateMappedItems(items, {
       requiredFields: nameLike ? [nameLike] : [],
       numericFields,
@@ -299,10 +310,11 @@ export class MultiPassLlmParser implements DocumentParser {
     const skippedNote = biggestSkipped
       ? `,skipped_max=${biggestSkipped.sheet}:${biggestSkipped.rows}`
       : '';
+    const namelessNote = droppedNameless > 0 ? `,nameless=${droppedNameless}` : '';
 
     issues.push(
       `xlsx_fast_used:rows=${items.length},cols=${mapped.length},` +
-        `regions=${usedRegions.join('+')}${skippedNote}${docNote}`,
+        `regions=${usedRegions.join('+')}${skippedNote}${namelessNote}${docNote}`,
     );
     return items;
   }
